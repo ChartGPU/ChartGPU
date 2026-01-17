@@ -1,4 +1,5 @@
-import { createGPUContext, initializeGPUContext, getCanvasTexture } from '../../src/index';
+import { createGPUContext, initializeGPUContext, getCanvasTexture, createLinearScale } from '../../src/index';
+import { createAxisRenderer } from '../../src/renderers/createAxisRenderer';
 import { createGridRenderer } from '../../src/renderers/createGridRenderer';
 import type { GridArea } from '../../src/renderers/createGridRenderer';
 
@@ -31,6 +32,8 @@ async function main() {
   let gpuContext: Awaited<ReturnType<typeof initializeGPUContext>> | null = null;
   let animationFrameId: number | null = null;
   let gridRenderer: ReturnType<typeof createGridRenderer> | null = null;
+  let xAxisRenderer: ReturnType<typeof createAxisRenderer> | null = null;
+  let yAxisRenderer: ReturnType<typeof createAxisRenderer> | null = null;
 
   // Track current line counts
   let currentHorizontal = parseInt(horizontalSlider.value, 10);
@@ -59,11 +62,34 @@ async function main() {
       canvasHeight: canvas.height,
     };
 
+    // Create clip-space scales for axis ticks.
+    // Note: scale.range() is clip-space [-1, 1] in this project.
+    const dpr = window.devicePixelRatio || 1;
+    const plotLeft = gridArea.left * dpr;
+    const plotRight = gridArea.canvasWidth - gridArea.right * dpr;
+    const plotTop = gridArea.top * dpr;
+    const plotBottom = gridArea.canvasHeight - gridArea.bottom * dpr;
+
+    const plotLeftClip = (plotLeft / gridArea.canvasWidth) * 2.0 - 1.0;
+    const plotRightClip = (plotRight / gridArea.canvasWidth) * 2.0 - 1.0;
+    const plotTopClip = 1.0 - (plotTop / gridArea.canvasHeight) * 2.0;
+    const plotBottomClip = 1.0 - (plotBottom / gridArea.canvasHeight) * 2.0;
+
+    const xScale = createLinearScale().domain(0, 100).range(plotLeftClip, plotRightClip);
+    const yScale = createLinearScale().domain(0, 100).range(plotBottomClip, plotTopClip);
+
+    // Create axis renderers (X + Y).
+    xAxisRenderer = createAxisRenderer(gpuDevice);
+    yAxisRenderer = createAxisRenderer(gpuDevice);
+
     // Initial prepare
     gridRenderer.prepare(gridArea, {
       horizontal: currentHorizontal,
       vertical: currentVertical,
     });
+
+    xAxisRenderer.prepare({ type: 'value', tickLength: 6 }, xScale, 'x', gridArea);
+    yAxisRenderer.prepare({ type: 'value', tickLength: 6 }, yScale, 'y', gridArea);
 
     // Update line count displays
     const updateDisplay = () => {
@@ -117,6 +143,10 @@ async function main() {
       // Render grid
       gridRenderer.render(passEncoder);
 
+      // Render axes + ticks
+      xAxisRenderer?.render(passEncoder);
+      yAxisRenderer?.render(passEncoder);
+
       passEncoder.end();
 
       gpuDevice.queue.submit([commandEncoder.finish()]);
@@ -136,6 +166,12 @@ async function main() {
       if (gridRenderer) {
         gridRenderer.dispose();
       }
+      if (xAxisRenderer) {
+        xAxisRenderer.dispose();
+      }
+      if (yAxisRenderer) {
+        yAxisRenderer.dispose();
+      }
       if (gpuContext) {
         gpuContext.device?.destroy();
       }
@@ -150,6 +186,12 @@ async function main() {
     // Clean up on error
     if (gridRenderer) {
       gridRenderer.dispose();
+    }
+    if (xAxisRenderer) {
+      xAxisRenderer.dispose();
+    }
+    if (yAxisRenderer) {
+      yAxisRenderer.dispose();
     }
     if (gpuContext) {
       gpuContext.device?.destroy();

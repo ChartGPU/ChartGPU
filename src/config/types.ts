@@ -26,6 +26,8 @@ export interface AxisConfig {
   readonly type: AxisType;
   readonly min?: number;
   readonly max?: number;
+  /** Tick length in CSS pixels (default: 6). */
+  readonly tickLength?: number;
   readonly name?: string;
 }
 

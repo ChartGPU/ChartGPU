@@ -24,6 +24,7 @@ See [`defaults.ts`](../src/config/defaults.ts) for the defaults (including grid,
 
 - **Default grid**: `left: 60`, `right: 20`, `top: 40`, `bottom: 40`
 - **Palette / series colors**: `palette` is used to fill missing `series[i].color` by index
+- **Axis ticks**: `AxisConfig.tickLength` controls tick length in CSS pixels (default: 6)
 
 ### `resolveOptions(userOptions?: ChartGPUOptions)` / `OptionResolver.resolve(userOptions?: ChartGPUOptions)`
 
@@ -200,6 +201,15 @@ Shader source: [`line.wgsl`](../src/shaders/line.wgsl).
 A minimal grid-line renderer factory lives in [`createGridRenderer.ts`](../src/renderers/createGridRenderer.ts). It renders horizontal/vertical grid lines directly in clip space and is exercised by the interactive example in [`examples/grid-test/main.ts`](../examples/grid-test/main.ts). Shader source: [`grid.wgsl`](../src/shaders/grid.wgsl).
 
 The factory supports `createGridRenderer(device, options?)` where `options.targetFormat?: GPUTextureFormat` must match the canvas context format used for the render pass color attachment (usually `GPUContextState.preferredFormat`) to avoid a WebGPU validation error caused by a pipeline/attachment format mismatch.
+
+#### Axis renderer (internal / contributor notes)
+
+A minimal axis (baseline + ticks) renderer factory lives in [`createAxisRenderer.ts`](../src/renderers/createAxisRenderer.ts). It is currently internal (not part of the public API exports) and is exercised by [`examples/grid-test/main.ts`](../examples/grid-test/main.ts).
+
+- **`AxisRenderer.prepare(axisConfig: AxisConfig, scale: LinearScale, orientation: 'x' | 'y', gridArea: GridArea): void`**
+  - **`orientation`**: `'x'` renders the baseline along the bottom edge of the plot area (ticks extend outward/down); `'y'` renders along the left edge (ticks extend outward/left).
+  - **Ticks**: placed at regular intervals across the axis domain.
+  - **Tick length**: `AxisConfig.tickLength` is in CSS pixels (default: 6).
 
 **WGSL imports:** renderers may import WGSL as a raw string via Vite’s `?raw` query (e.g. `*.wgsl?raw`). TypeScript support for this pattern is provided by [`wgsl-raw.d.ts`](../src/wgsl-raw.d.ts).
 
