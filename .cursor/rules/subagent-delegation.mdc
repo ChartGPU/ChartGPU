@@ -9,6 +9,7 @@ alwaysApply: true
 
 ## Available Subagents
 
+- **webgpu-pro**: WebGPU programming, shaders, GPU compute, rendering
 - **api-designer**: Frontend charting library API expert designing intuitive, performant chart APIs. Creates declarative and imperative interfaces for data visualization, focusing on developer ergonomics, rendering performance, and flexible customization.
 - **build-engineer**: Build systems, CI/CD, tooling, dependencies
 - **code-reviewer**: Code quality, security, best practices, review feedback
@@ -19,7 +20,6 @@ alwaysApply: true
 - **performance-engineer**: Performance optimization, profiling, bottlenecks
 - **test-automator**: Testing, test automation, test strategies, coverage
 - **typescript-pro**: TypeScript-specific patterns, types, advanced features
-- **webgpu-pro**: WebGPU programming, shaders, GPU compute, rendering
 
 ## Delegation Rules
 
