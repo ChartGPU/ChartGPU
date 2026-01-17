@@ -262,6 +262,19 @@ See [`findNearestPoint.ts`](../src/interaction/findNearestPoint.ts).
   - If you pass **clip-space coordinates**, then the scales must also output clip space (and `maxDistance` is interpreted in clip-space units).
 - **Performance**: per-series lower-bound binary search on x with outward expansion based on x-distance pruning; uses squared distances internally and computes `sqrt` only for the final match.
 
+#### Points-at-x lookup (internal)
+
+See [`findPointsAtX.ts`](../src/interaction/findPointsAtX.ts).
+
+- **Function**: `findPointsAtX(series: ReadonlyArray<ResolvedSeriesConfig>, xValue: number, xScale: LinearScale, tolerance?: number): ReadonlyArray<PointsAtXMatch>`
+- **Return type**: `ReadonlyArray<PointsAtXMatch>` where `PointsAtXMatch = { seriesIndex, dataIndex, point }`
+- **Coordinate system contract (critical)**:
+  - `xValue` and `tolerance` MUST be in the same units as `xScale` **range-space**.
+  - Note: ChartGPU’s internal render scales are currently in clip space (NDC, typically \[-1, 1\]); in that case, convert pointer x into clip space before calling this helper.
+- **Tolerance behavior**: when `tolerance` is finite, matches with \(|xScale.scale(point.x) - xValue|\) beyond tolerance are omitted; when `tolerance` is omitted or non-finite, returns the nearest point per series when possible.
+- **Sorted-x requirement**: each series must be sorted by increasing `x` in domain space for the binary search path to be correct.
+- **NaN-x fallback**: if a series contains any `NaN` x values, this helper falls back to an O(n) scan for correctness (NaN breaks total ordering for binary search).
+
 ### Text overlay (internal / contributor notes)
 
 An internal DOM helper for rendering text labels above the canvas using an absolutely-positioned HTML overlay. See [`createTextOverlay.ts`](../src/components/createTextOverlay.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`).
