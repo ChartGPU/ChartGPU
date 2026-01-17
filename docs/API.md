@@ -246,6 +246,7 @@ An internal DOM helper for rendering text labels above the canvas using an absol
   - `dispose(): void`
 - **Coordinates**: `x` / `y` are in CSS pixels relative to the container’s top-left corner.
 - **Pointer events**: the overlay uses `pointer-events: none` so it won’t intercept mouse/touch input.
+- **Current usage**: used by the render coordinator to render numeric axis tick value labels above the canvas. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
 
 ### Render coordinator (internal / contributor notes)
 
@@ -271,6 +272,7 @@ See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) for t
   - Background clear uses `resolvedOptions.theme.backgroundColor`.
   - Grid lines use `resolvedOptions.theme.gridLineColor`.
   - Axes use `resolvedOptions.theme.axisLineColor` (baseline) and `resolvedOptions.theme.axisTickColor` (ticks).
+  - Axis tick value labels are rendered as DOM text (via the internal [text overlay](#text-overlay-internal--contributor-notes)) and styled using `resolvedOptions.theme.textColor`, `resolvedOptions.theme.fontSize`, and `resolvedOptions.theme.fontFamily` (see [`ThemeConfig`](../src/themes/types.ts)).
 
 ### Renderer utilities (Contributor notes)
 
@@ -329,6 +331,7 @@ A minimal axis (baseline + ticks) renderer factory lives in [`createAxisRenderer
 - **`AxisRenderer.prepare(axisConfig: AxisConfig, scale: LinearScale, orientation: 'x' | 'y', gridArea: GridArea, axisLineColor?: string, axisTickColor?: string): void`**
   - **`orientation`**: `'x'` renders the baseline along the bottom edge of the plot area (ticks extend outward/down); `'y'` renders along the left edge (ticks extend outward/left).
   - **Ticks**: placed at regular intervals across the axis domain.
+  - **Tick labels**: numeric tick value labels are rendered for each tick mark (label count matches tick count). The current tick count is fixed at 5; see [`createAxisRenderer.ts`](../src/renderers/createAxisRenderer.ts) and [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
   - **Tick length**: `AxisConfig.tickLength` is in CSS pixels (default: 6).
   - **Baseline vs ticks**: the baseline and tick segments can be styled with separate colors (`axisLineColor` vs `axisTickColor`).
 

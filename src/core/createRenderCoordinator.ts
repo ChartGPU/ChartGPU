@@ -9,6 +9,8 @@ import { createLineRenderer } from '../renderers/createLineRenderer';
 import { createLinearScale } from '../utils/scales';
 import type { LinearScale } from '../utils/scales';
 import { parseCssColorToGPUColor } from '../utils/colors';
+import { createTextOverlay } from '../components/createTextOverlay';
+import type { TextOverlay, TextOverlayAnchor } from '../components/createTextOverlay';
 
 export interface GPUContextLike {
   readonly device: GPUDevice | null;
@@ -27,6 +29,9 @@ export interface RenderCoordinator {
 type Bounds = Readonly<{ xMin: number; xMax: number; yMin: number; yMax: number }>;
 
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
+const DEFAULT_TICK_COUNT: number = 5;
+const DEFAULT_TICK_LENGTH_CSS_PX: number = 6;
+const LABEL_PADDING_CSS_PX = 4;
 
 const assertUnreachable = (value: never): never => {
   // Intentionally minimal message: this is used for compile-time exhaustiveness.
@@ -129,6 +134,44 @@ const computePlotClipRect = (
   };
 };
 
+const clipXToCanvasCssPx = (xClip: number, canvasCssWidth: number): number => ((xClip + 1) / 2) * canvasCssWidth;
+const clipYToCanvasCssPx = (yClip: number, canvasCssHeight: number): number => ((1 - yClip) / 2) * canvasCssHeight;
+
+const DEFAULT_MAX_TICK_FRACTION_DIGITS = 6;
+
+const computeMaxFractionDigitsFromStep = (tickStep: number, cap: number = DEFAULT_MAX_TICK_FRACTION_DIGITS): number => {
+  const stepAbs = Math.abs(tickStep);
+  if (!Number.isFinite(stepAbs) || stepAbs === 0) return 0;
+
+  // Prefer “clean” decimal representations (e.g. 2.5, 0.25, 0.125) without relying on magnitude alone.
+  // We accept floating-point noise and cap the search to keep formatting reasonable.
+  for (let d = 0; d <= cap; d++) {
+    const scaled = stepAbs * 10 ** d;
+    const rounded = Math.round(scaled);
+    const err = Math.abs(scaled - rounded);
+    const tol = 1e-9 * Math.max(1, Math.abs(scaled));
+    if (err <= tol) return d;
+  }
+
+  // Fallback for repeating decimals (e.g. 1/3): show a small number of digits based on magnitude.
+  // The +1 nudges values like 0.333.. towards 2 decimals rather than 1.
+  return Math.max(0, Math.min(cap, Math.ceil(-Math.log10(stepAbs)) + 1));
+};
+
+const createTickFormatter = (tickStep: number): Intl.NumberFormat => {
+  const maximumFractionDigits = computeMaxFractionDigitsFromStep(tickStep);
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits });
+};
+
+const formatTickValue = (nf: Intl.NumberFormat, v: number): string | null => {
+  if (!Number.isFinite(v)) return null;
+  // Avoid displaying "-0" from floating-point artifacts.
+  const normalized = Math.abs(v) < 1e-12 ? 0 : v;
+  const formatted = nf.format(normalized);
+  // Guard against unexpected output like "NaN" even after the finite check (defensive).
+  return formatted === 'NaN' ? null : formatted;
+};
+
 const computeScales = (
   options: ResolvedChartGPUOptions,
   gridArea: GridArea
@@ -166,6 +209,8 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
   }
 
   const targetFormat = gpuContext.preferredFormat ?? DEFAULT_TARGET_FORMAT;
+  const overlayContainer = gpuContext.canvas.parentElement;
+  const overlay: TextOverlay | null = overlayContainer ? createTextOverlay(overlayContainer) : null;
 
   let disposed = false;
   let currentOptions: ResolvedChartGPUOptions = options;
@@ -242,6 +287,7 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
 
     const gridArea = computeGridArea(gpuContext, currentOptions);
     const { xScale, yScale } = computeScales(currentOptions, gridArea);
+    const plotClipRect = computePlotClipRect(gridArea);
 
     gridRenderer.prepare(gridArea, { color: currentOptions.theme.gridLineColor });
     xAxisRenderer.prepare(
@@ -337,6 +383,76 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
 
     pass.end();
     device.queue.submit([encoder.finish()]);
+
+    if (overlay && overlayContainer) {
+      const canvas = gpuContext.canvas;
+      // IMPORTANT: overlay positioning must be done in *CSS pixels* and in the overlayContainer's
+      // coordinate space (its padding box). Using `canvas.width / dpr` + `getBoundingClientRect()`
+      // deltas can drift under CSS scaling/zoom and misalign with container padding/border.
+      const canvasCssWidth = canvas.clientWidth;
+      const canvasCssHeight = canvas.clientHeight;
+      if (canvasCssWidth <= 0 || canvasCssHeight <= 0) return;
+
+      // Since the overlay is absolutely positioned relative to the canvas container,
+      // `offsetLeft/offsetTop` match that coordinate space.
+      const offsetX = canvas.offsetLeft;
+      const offsetY = canvas.offsetTop;
+
+      const plotLeftCss = clipXToCanvasCssPx(plotClipRect.left, canvasCssWidth);
+      const plotBottomCss = clipYToCanvasCssPx(plotClipRect.bottom, canvasCssHeight);
+
+      overlay.clear();
+
+      // Mirror tick generation logic from `createAxisRenderer` exactly (tick count and domain fallback).
+      const xTickCount = DEFAULT_TICK_COUNT;
+      const xTickLengthCssPx = currentOptions.xAxis.tickLength ?? DEFAULT_TICK_LENGTH_CSS_PX;
+      const xDomainMin = currentOptions.xAxis.min ?? xScale.invert(plotClipRect.left);
+      const xDomainMax = currentOptions.xAxis.max ?? xScale.invert(plotClipRect.right);
+      const xTickStep = xTickCount === 1 ? 0 : (xDomainMax - xDomainMin) / (xTickCount - 1);
+      const xFormatter = createTickFormatter(xTickStep);
+      const xLabelY = plotBottomCss + xTickLengthCssPx + LABEL_PADDING_CSS_PX + currentOptions.theme.fontSize * 0.5;
+
+      for (let i = 0; i < xTickCount; i++) {
+        const t = xTickCount === 1 ? 0.5 : i / (xTickCount - 1);
+        const v = xDomainMin + t * (xDomainMax - xDomainMin);
+        const xClip = xScale.scale(v);
+        const xCss = clipXToCanvasCssPx(xClip, canvasCssWidth);
+
+        const anchor: TextOverlayAnchor = i === 0 ? 'start' : i === xTickCount - 1 ? 'end' : 'middle';
+        const label = formatTickValue(xFormatter, v);
+        if (label == null) continue;
+        const span = overlay.addLabel(label, offsetX + xCss, offsetY + xLabelY, {
+          fontSize: currentOptions.theme.fontSize,
+          color: currentOptions.theme.textColor,
+          anchor,
+        });
+        span.style.fontFamily = currentOptions.theme.fontFamily;
+      }
+
+      const yTickCount = DEFAULT_TICK_COUNT;
+      const yTickLengthCssPx = currentOptions.yAxis.tickLength ?? DEFAULT_TICK_LENGTH_CSS_PX;
+      const yDomainMin = currentOptions.yAxis.min ?? yScale.invert(plotClipRect.bottom);
+      const yDomainMax = currentOptions.yAxis.max ?? yScale.invert(plotClipRect.top);
+      const yTickStep = yTickCount === 1 ? 0 : (yDomainMax - yDomainMin) / (yTickCount - 1);
+      const yFormatter = createTickFormatter(yTickStep);
+      const yLabelX = plotLeftCss - yTickLengthCssPx - LABEL_PADDING_CSS_PX;
+
+      for (let i = 0; i < yTickCount; i++) {
+        const t = yTickCount === 1 ? 0.5 : i / (yTickCount - 1);
+        const v = yDomainMin + t * (yDomainMax - yDomainMin);
+        const yClip = yScale.scale(v);
+        const yCss = clipYToCanvasCssPx(yClip, canvasCssHeight);
+
+        const label = formatTickValue(yFormatter, v);
+        if (label == null) continue;
+        const span = overlay.addLabel(label, offsetX + yLabelX, offsetY + yCss, {
+          fontSize: currentOptions.theme.fontSize,
+          color: currentOptions.theme.textColor,
+          anchor: 'end',
+        });
+        span.style.fontFamily = currentOptions.theme.fontFamily;
+      }
+    }
   };
 
   const dispose: RenderCoordinator['dispose'] = () => {
@@ -358,6 +474,8 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
     yAxisRenderer.dispose();
 
     dataStore.dispose();
+
+    overlay?.dispose();
   };
 
   return { setOptions, render, dispose };
