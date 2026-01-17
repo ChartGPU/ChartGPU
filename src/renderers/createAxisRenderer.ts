@@ -10,6 +10,16 @@ export interface AxisRenderer {
   dispose(): void;
 }
 
+export interface AxisRendererOptions {
+  /**
+   * Must match the canvas context format used for the render pass color attachment.
+   * Usually this is `gpuContext.preferredFormat`.
+   *
+   * Defaults to `'bgra8unorm'` for backward compatibility.
+   */
+  readonly targetFormat?: GPUTextureFormat;
+}
+
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
 const DEFAULT_TICK_COUNT = 5;
 const DEFAULT_TICK_LENGTH_CSS_PX = 6;
@@ -132,8 +142,9 @@ const generateAxisVertices = (
   return vertices;
 };
 
-export function createAxisRenderer(device: GPUDevice): AxisRenderer {
+export function createAxisRenderer(device: GPUDevice, options?: AxisRendererOptions): AxisRenderer {
   let disposed = false;
+  const targetFormat = options?.targetFormat ?? DEFAULT_TARGET_FORMAT;
 
   const bindGroupLayout = device.createBindGroupLayout({
     entries: [
@@ -170,7 +181,7 @@ export function createAxisRenderer(device: GPUDevice): AxisRenderer {
     fragment: {
       code: gridWgsl,
       label: 'grid.wgsl',
-      formats: DEFAULT_TARGET_FORMAT,
+      formats: targetFormat,
       blend: {
         color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
         alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },

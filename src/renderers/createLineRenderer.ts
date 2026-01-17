@@ -9,6 +9,16 @@ export interface LineRenderer {
   dispose(): void;
 }
 
+export interface LineRendererOptions {
+  /**
+   * Must match the canvas context format used for the render pass color attachment.
+   * Usually this is `gpuContext.preferredFormat`.
+   *
+   * Defaults to `'bgra8unorm'` for backward compatibility.
+   */
+  readonly targetFormat?: GPUTextureFormat;
+}
+
 type Rgba = readonly [r: number, g: number, b: number, a: number];
 
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
@@ -150,8 +160,9 @@ const createTransformMat4Buffer = (ax: number, bx: number, ay: number, by: numbe
   return buffer;
 };
 
-export function createLineRenderer(device: GPUDevice): LineRenderer {
+export function createLineRenderer(device: GPUDevice, options?: LineRendererOptions): LineRenderer {
   let disposed = false;
+  const targetFormat = options?.targetFormat ?? DEFAULT_TARGET_FORMAT;
 
   const bindGroupLayout = device.createBindGroupLayout({
     entries: [
@@ -188,7 +199,13 @@ export function createLineRenderer(device: GPUDevice): LineRenderer {
     fragment: {
       code: lineWgsl,
       label: 'line.wgsl',
-      formats: DEFAULT_TARGET_FORMAT,
+      formats: targetFormat,
+      // Enable standard alpha blending so per-series `lineStyle.opacity` behaves
+      // correctly against an opaque cleared background.
+      blend: {
+        color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
+        alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+      },
     },
     primitive: { topology: 'line-strip', cullMode: 'none' },
     multisample: { count: 1 },

@@ -174,6 +174,27 @@ All WebGPU types are provided by `@webgpu/types`. See [GPUContext.ts](../src/cor
 
 Chart data uploads and per-series GPU vertex buffer caching are handled by the internal `createDataStore(device)` helper. See [`createDataStore.ts`](../src/data/createDataStore.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`).
 
+### Render coordinator (internal / contributor notes)
+
+A small orchestration layer for “resolved options → render pass submission”.
+
+See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) for the complete implementation (including `GPUContextLike` and `RenderCoordinator` types).
+
+- **Factory**: `createRenderCoordinator(gpuContext: GPUContextLike, options: ResolvedChartGPUOptions): RenderCoordinator`
+
+**`RenderCoordinator` methods (essential):**
+
+- **`setOptions(resolvedOptions: ResolvedChartGPUOptions): void`**: updates the current resolved chart options; adjusts per-series renderer/buffer allocations when series count changes.
+- **`render(): void`**: performs a full frame by computing layout (`GridArea`), deriving clip-space scales (`xScale`, `yScale`), preparing renderers, uploading series data via the internal data store, and recording/submitting a render pass.
+- **`dispose(): void`**: destroys renderer resources and the internal data store; safe to call multiple times.
+
+**Responsibilities (essential):**
+
+- **Layout**: computes `GridArea` from resolved grid margins and canvas size.
+- **Scales**: derives `xScale`/`yScale` in clip space; respects explicit axis `min`/`max` overrides and otherwise falls back to global series bounds.
+- **Orchestration order**: clear → grid → axes → series lines (in series order).
+- **Target format**: uses `gpuContext.preferredFormat` (fallback `'bgra8unorm'`) for renderer pipelines; must match the render pass color attachment format.
+
 ### Renderer utilities (Contributor notes)
 
 Shared WebGPU renderer helpers live in [`rendererUtils.ts`](../src/renderers/rendererUtils.ts). These are small, library-friendly utilities intended to reduce repeated boilerplate when building renderers.
@@ -190,6 +211,9 @@ Shared WebGPU renderer helpers live in [`rendererUtils.ts`](../src/renderers/ren
 A minimal line-strip renderer factory lives in [`createLineRenderer.ts`](../src/renderers/createLineRenderer.ts). It’s intended as a reference implementation for renderer structure (pipeline setup, uniforms, and draw calls) and is not part of the public API exports.
 
 - **`createLineRenderer(device: GPUDevice): LineRenderer`**
+- **`createLineRenderer(device: GPUDevice, options?: LineRendererOptions): LineRenderer`**
+- **`LineRendererOptions.targetFormat?: GPUTextureFormat`**: must match the render pass color attachment format (typically `GPUContextState.preferredFormat`). Defaults to `'bgra8unorm'` for backward compatibility.
+- **Alpha blending**: the pipeline enables standard alpha blending so per-series `lineStyle.opacity` composites as expected over an opaque cleared background.
 - **`LineRenderer.prepare(seriesConfig: ResolvedSeriesConfig, dataBuffer: GPUBuffer, xScale: LinearScale, yScale: LinearScale): void`**: updates per-series uniforms and binds the current vertex buffer
 - **`LineRenderer.render(passEncoder: GPURenderPassEncoder): void`**
 - **`LineRenderer.dispose(): void`**
@@ -206,6 +230,8 @@ The factory supports `createGridRenderer(device, options?)` where `options.targe
 
 A minimal axis (baseline + ticks) renderer factory lives in [`createAxisRenderer.ts`](../src/renderers/createAxisRenderer.ts). It is currently internal (not part of the public API exports) and is exercised by [`examples/grid-test/main.ts`](../examples/grid-test/main.ts).
 
+- **`createAxisRenderer(device: GPUDevice, options?: AxisRendererOptions): AxisRenderer`**
+- **`AxisRendererOptions.targetFormat?: GPUTextureFormat`**: must match the render pass color attachment format (typically `GPUContextState.preferredFormat`). Defaults to `'bgra8unorm'` for backward compatibility.
 - **`AxisRenderer.prepare(axisConfig: AxisConfig, scale: LinearScale, orientation: 'x' | 'y', gridArea: GridArea): void`**
   - **`orientation`**: `'x'` renders the baseline along the bottom edge of the plot area (ticks extend outward/down); `'y'` renders along the left edge (ticks extend outward/left).
   - **Ticks**: placed at regular intervals across the axis domain.
@@ -215,9 +241,9 @@ A minimal axis (baseline + ticks) renderer factory lives in [`createAxisRenderer
 
 Notes:
 
-- **Render target format**: the pipeline target format must match the render pass color attachment format, otherwise WebGPU will raise a validation error due to a pipeline/attachment format mismatch. `createLineRenderer` uses a default target format (`bgra8unorm`). `createGridRenderer` allows configuring this via `GridRendererOptions.targetFormat` (typically `GPUContextState.preferredFormat`).
+- **Render target format**: a renderer pipeline’s target format must match the render pass color attachment format (otherwise WebGPU raises a pipeline/attachment format mismatch validation error). `createAxisRenderer`, `createGridRenderer`, and `createLineRenderer` each accept `options.targetFormat` (typically `GPUContextState.preferredFormat`) and default to `'bgra8unorm'` for backward compatibility.
 - **Scale output space**: `prepare(...)` treats scales as affine and uses `scale(...)` samples to build a clip-space transform. Scales that output pixels (or non-linear scales) will require a different transform strategy.
-- **Line width and alpha**: WebGPU line primitives are effectively 1px-class across implementations; wide lines require triangle-based extrusion. Opacity only composites as expected when blending is enabled in the pipeline/target.
+- **Line width and alpha**: line primitives are effectively 1px-class across implementations; wide lines require triangle-based extrusion. `createLineRenderer` enables standard alpha blending so `lineStyle.opacity` composites as expected.
 
 **Caveats (important):**
 

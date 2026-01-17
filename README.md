@@ -138,9 +138,9 @@ The associated shader lives in [`line.wgsl`](src/shaders/line.wgsl).
 
 Notes for contributors:
 
-- **Render target format**: `createLineRenderer` uses a default pipeline target format of `bgra8unorm`; your render pass color attachment format must match (or the pipeline creation needs to be made configurable).
+- **Render target format**: a renderer pipeline’s target format must match the render pass color attachment format (or WebGPU raises a pipeline/attachment format mismatch validation error). `createLineRenderer` accepts `options.targetFormat` and defaults to `'bgra8unorm'` for backward compatibility.
 - **Scale output space**: `prepare(...)` derives a linear transform from `xScale.scale()` / `yScale.scale()` and feeds it directly to the vertex shader’s clip-space output. This assumes your scales map data into clip/NDC-like coordinates (not pixels).
-- **Line width and alpha**: `line-strip` is effectively 1px-class across implementations; “thick lines” require triangle-based extrusion. Opacity only composites as expected if your pipeline/render target is configured with blending.
+- **Line width and alpha**: `line-strip` is effectively 1px-class across implementations; “thick lines” require triangle-based extrusion. `createLineRenderer` enables standard alpha blending so `lineStyle.opacity` composites as expected.
 
 Key caveats to keep in mind when using these helpers:
 
