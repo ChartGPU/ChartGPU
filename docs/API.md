@@ -184,6 +184,25 @@ Shared WebGPU renderer helpers live in [`rendererUtils.ts`](../src/renderers/ren
 - **`createUniformBuffer(device, size, options?)`**: creates a `GPUBuffer` with usage `UNIFORM | COPY_DST`, aligning size (defaults to 16-byte alignment).
 - **`writeUniformBuffer(device, buffer, data)`**: writes `BufferSource` data at offset 0 via `device.queue.writeBuffer(...)`.
 
+#### Line renderer (internal / contributor notes)
+
+A minimal line-strip renderer factory lives in [`createLineRenderer.ts`](../src/renderers/createLineRenderer.ts). It’s intended as a reference implementation for renderer structure (pipeline setup, uniforms, and draw calls) and is not part of the public API exports.
+
+- **`createLineRenderer(device: GPUDevice): LineRenderer`**
+- **`LineRenderer.prepare(seriesConfig: ResolvedSeriesConfig, dataBuffer: GPUBuffer, xScale: LinearScale, yScale: LinearScale): void`**: updates per-series uniforms and binds the current vertex buffer
+- **`LineRenderer.render(passEncoder: GPURenderPassEncoder): void`**
+- **`LineRenderer.dispose(): void`**
+
+Shader source: [`line.wgsl`](../src/shaders/line.wgsl).
+
+**WGSL imports:** renderers may import WGSL as a raw string via Vite’s `?raw` query (e.g. `*.wgsl?raw`). TypeScript support for this pattern is provided by [`wgsl-raw.d.ts`](../src/wgsl-raw.d.ts).
+
+Notes:
+
+- **Render target format**: the pipeline target format must match the render pass color attachment format. `createLineRenderer` currently uses a default target format (`bgra8unorm`).
+- **Scale output space**: `prepare(...)` treats scales as affine and uses `scale(...)` samples to build a clip-space transform. Scales that output pixels (or non-linear scales) will require a different transform strategy.
+- **Line width and alpha**: WebGPU line primitives are effectively 1px-class across implementations; wide lines require triangle-based extrusion. Opacity only composites as expected when blending is enabled in the pipeline/target.
+
 **Caveats (important):**
 
 - **4-byte write rule**: `queue.writeBuffer(...)` requires byte offsets and write sizes to be multiples of 4. `writeUniformBuffer(...)` enforces this (throws if misaligned).

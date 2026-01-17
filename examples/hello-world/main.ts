@@ -1,4 +1,5 @@
 import { GPUContext } from '../../src/index';
+import lineWgsl from '../../src/shaders/line.wgsl?raw';
 
 /**
  * Hello World example - Animated clear color
@@ -60,6 +61,24 @@ async function main() {
   try {
     // Create and initialize GPU context
     context = await GPUContext.create(canvas);
+    const device = context.device;
+    if (!device) {
+      throw new Error('WebGPU device not available after GPUContext initialization');
+    }
+
+    // Example-only smoke check: compile the line shader at runtime.
+    const shaderModule = device.createShaderModule({ code: lineWgsl, label: 'line.wgsl' });
+    const getCompilationInfo = shaderModule.getCompilationInfo?.bind(shaderModule);
+    if (getCompilationInfo) {
+      const info = await getCompilationInfo();
+      const errors = info.messages.filter((m) => m.type === 'error');
+      if (errors.length > 0) {
+        const formatted = errors
+          .map((m) => `${m.lineNum ?? 0}:${m.linePos ?? 0} ${m.message}`)
+          .join('\n');
+        throw new Error(`line.wgsl compilation failed:\n${formatted}`);
+      }
+    }
 
     // Track start time for animation
     const startTime = performance.now();

@@ -124,6 +124,22 @@ Chart data uploads and per-series GPU vertex buffer caching are handled by an in
 
 For renderer-focused WebGPU helpers (shader modules, render pipelines, uniform buffers), see [`rendererUtils.ts`](src/renderers/rendererUtils.ts) and the “Renderer utilities” section in [`docs/API.md`](docs/API.md#renderer-utilities-contributor-notes).
 
+For a concrete reference renderer, see [`createLineRenderer.ts`](src/renderers/createLineRenderer.ts). This implements a minimal line-strip renderer factory (currently internal and not exported from `src/index.ts`) that:
+
+- consumes a per-series vertex buffer (typically provided by the internal [`createDataStore.ts`](src/data/createDataStore.ts))
+- updates per-series uniforms in `prepare(...)` (transform + RGBA color)
+- issues a simple `line-strip` draw in `render(...)`
+
+The associated shader lives in [`line.wgsl`](src/shaders/line.wgsl).
+
+**WGSL imports (Contributor notes):** WGSL is imported as a raw string via Vite’s `?raw` query (e.g. `*.wgsl?raw`). TypeScript support for this pattern is provided by [`wgsl-raw.d.ts`](src/wgsl-raw.d.ts).
+
+Notes for contributors:
+
+- **Render target format**: `createLineRenderer` uses a default pipeline target format of `bgra8unorm`; your render pass color attachment format must match (or the pipeline creation needs to be made configurable).
+- **Scale output space**: `prepare(...)` derives a linear transform from `xScale.scale()` / `yScale.scale()` and feeds it directly to the vertex shader’s clip-space output. This assumes your scales map data into clip/NDC-like coordinates (not pixels).
+- **Line width and alpha**: `line-strip` is effectively 1px-class across implementations; “thick lines” require triangle-based extrusion. Opacity only composites as expected if your pipeline/render target is configured with blending.
+
 Key caveats to keep in mind when using these helpers:
 
 - **4-byte write rule**: `queue.writeBuffer(...)` requires offsets and write sizes to be multiples of 4 (enforced by `writeUniformBuffer(...)`).
