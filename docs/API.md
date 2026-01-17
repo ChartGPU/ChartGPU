@@ -33,6 +33,22 @@ Chart configuration options.
 
 See [`types.ts`](../src/config/types.ts) for the full type definition.
 
+**Data points (essential):**
+
+- **`DataPoint`**: a series data point is either a tuple (`readonly [x, y]`) or an object (`Readonly<{ x, y }>`). See [`types.ts`](../src/config/types.ts).
+
+**Series configuration (essential):**
+
+- **`SeriesType`**: `'line' | 'area'`. See [`types.ts`](../src/config/types.ts).
+- **`SeriesConfig`**: `LineSeriesConfig | AreaSeriesConfig` (discriminated by `series.type`). See [`types.ts`](../src/config/types.ts).
+- **`LineSeriesConfig`**: extends the shared series fields with `type: 'line'`, optional `lineStyle?: LineStyleConfig`, and optional `areaStyle?: AreaStyleConfig`.
+  - When a line series includes `areaStyle`, ChartGPU renders a filled area behind the line (area fills then line strokes). See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
+- **`AreaSeriesConfig`**: extends the shared series fields with `type: 'area'`, optional `baseline?: number`, and optional `areaStyle?: AreaStyleConfig`.
+  - **`baseline`** is a data-space “filled area floor”. If omitted, ChartGPU defaults it to the y-axis minimum.
+  - **`areaStyle.opacity`** controls the fill opacity.
+
+For a working configuration (including a filled line series via `areaStyle`), see [`examples/basic-line/main.ts`](../examples/basic-line/main.ts).
+
 ### `defaultOptions`
 
 Default chart options used as a baseline for resolution.
@@ -211,7 +227,7 @@ See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) for t
 
 - **Layout**: computes `GridArea` from resolved grid margins and canvas size.
 - **Scales**: derives `xScale`/`yScale` in clip space; respects explicit axis `min`/`max` overrides and otherwise falls back to global series bounds.
-- **Orchestration order**: clear → grid → axes → series lines (in series order).
+- **Orchestration order**: clear → grid → area fills → line strokes → axes.
 - **Target format**: uses `gpuContext.preferredFormat` (fallback `'bgra8unorm'`) for renderer pipelines; must match the render pass color attachment format.
 
 ### Renderer utilities (Contributor notes)
@@ -233,11 +249,26 @@ A minimal line-strip renderer factory lives in [`createLineRenderer.ts`](../src/
 - **`createLineRenderer(device: GPUDevice, options?: LineRendererOptions): LineRenderer`**
 - **`LineRendererOptions.targetFormat?: GPUTextureFormat`**: must match the render pass color attachment format (typically `GPUContextState.preferredFormat`). Defaults to `'bgra8unorm'` for backward compatibility.
 - **Alpha blending**: the pipeline enables standard alpha blending so per-series `lineStyle.opacity` composites as expected over an opaque cleared background.
-- **`LineRenderer.prepare(seriesConfig: ResolvedSeriesConfig, dataBuffer: GPUBuffer, xScale: LinearScale, yScale: LinearScale): void`**: updates per-series uniforms and binds the current vertex buffer
+- **`LineRenderer.prepare(seriesConfig: ResolvedLineSeriesConfig, dataBuffer: GPUBuffer, xScale: LinearScale, yScale: LinearScale): void`**: updates per-series uniforms and binds the current vertex buffer
 - **`LineRenderer.render(passEncoder: GPURenderPassEncoder): void`**
 - **`LineRenderer.dispose(): void`**
 
-Shader source: [`line.wgsl`](../src/shaders/line.wgsl).
+Shader sources: [`line.wgsl`](../src/shaders/line.wgsl) and [`area.wgsl`](../src/shaders/area.wgsl) (triangle-strip filled area under a line).
+
+- **Area strip vertex convention (essential)**: `area.wgsl` expects CPU-expanded vertices as `p0,p0,p1,p1,...` (triangle-strip), using `@builtin(vertex_index)` parity to choose between the original y and a uniform `baseline`.
+- **Area uniforms (essential)**: vertex uniform includes `transform` and `baseline`; fragment uniform includes solid `color: vec4<f32>`.
+
+#### Area renderer (internal / contributor notes)
+
+A minimal filled-area renderer factory lives in [`createAreaRenderer.ts`](../src/renderers/createAreaRenderer.ts). It renders a triangle-strip fill under a series using [`area.wgsl`](../src/shaders/area.wgsl) and is exercised by the filled line-series configuration (`areaStyle`) in [`examples/basic-line/main.ts`](../examples/basic-line/main.ts).
+
+- **`createAreaRenderer(device: GPUDevice): AreaRenderer`**
+- **`createAreaRenderer(device: GPUDevice, options?: AreaRendererOptions): AreaRenderer`**
+- **`AreaRendererOptions.targetFormat?: GPUTextureFormat`**: must match the render pass color attachment format (typically `GPUContextState.preferredFormat`). Defaults to `'bgra8unorm'` for backward compatibility.
+- **Alpha blending**: the pipeline enables standard alpha blending so `areaStyle.opacity` composites as expected over an opaque cleared background.
+- **`AreaRenderer.prepare(seriesConfig: ResolvedAreaSeriesConfig, data: ResolvedAreaSeriesConfig['data'], xScale: LinearScale, yScale: LinearScale, baseline?: number): void`**: uploads an expanded triangle-strip vertex buffer (`p0,p0,p1,p1,...`) and updates uniforms (transform + baseline + RGBA color)
+- **`AreaRenderer.render(passEncoder: GPURenderPassEncoder): void`**
+- **`AreaRenderer.dispose(): void`**
 
 #### Grid renderer (internal / contributor notes)
 
@@ -260,6 +291,7 @@ A minimal axis (baseline + ticks) renderer factory lives in [`createAxisRenderer
 
 Notes:
 
+- **Example shader compilation smoke-check**: the hello-world example imports `line.wgsl` and `area.wgsl` via `?raw` and (when supported) uses `GPUShaderModule.getCompilationInfo()` to fail fast on shader compilation errors. See [`examples/hello-world/main.ts`](../examples/hello-world/main.ts).
 - **Render target format**: a renderer pipeline’s target format must match the render pass color attachment format (otherwise WebGPU raises a pipeline/attachment format mismatch validation error). `createAxisRenderer`, `createGridRenderer`, and `createLineRenderer` each accept `options.targetFormat` (typically `GPUContextState.preferredFormat`) and default to `'bgra8unorm'` for backward compatibility.
 - **Scale output space**: `prepare(...)` treats scales as affine and uses `scale(...)` samples to build a clip-space transform. Scales that output pixels (or non-linear scales) will require a different transform strategy.
 - **Line width and alpha**: line primitives are effectively 1px-class across implementations; wide lines require triangle-based extrusion. `createLineRenderer` enables standard alpha blending so `lineStyle.opacity` composites as expected.

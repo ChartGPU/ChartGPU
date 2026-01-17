@@ -2,6 +2,7 @@ import type { DataPoint } from '../config/types';
 
 export interface DataStore {
   setSeries(index: number, data: ReadonlyArray<DataPoint>): void;
+  removeSeries(index: number): void;
   getSeriesBuffer(index: number): GPUBuffer;
   dispose(): void;
 }
@@ -115,6 +116,20 @@ export function createDataStore(device: GPUDevice): DataStore {
     });
   };
 
+  const removeSeries = (index: number): void => {
+    assertNotDisposed();
+
+    const entry = series.get(index);
+    if (!entry) return;
+
+    try {
+      entry.buffer.destroy();
+    } catch {
+      // Ignore destroy errors; removal should be best-effort.
+    }
+    series.delete(index);
+  };
+
   const getSeriesBuffer = (index: number): GPUBuffer => {
     assertNotDisposed();
 
@@ -141,6 +156,7 @@ export function createDataStore(device: GPUDevice): DataStore {
 
   return {
     setSeries,
+    removeSeries,
     getSeriesBuffer,
     dispose,
   };

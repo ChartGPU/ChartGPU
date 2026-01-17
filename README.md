@@ -39,6 +39,8 @@ Options are defined by [`ChartGPUOptions`](src/config/types.ts). Baseline defaul
 
 - **Default grid**: `left: 60`, `right: 20`, `top: 40`, `bottom: 40`
 - **Palette / series colors**: `palette` is used to fill missing `series[i].color` by index
+- **Data points**: `series[i].data` accepts `DataPoint` as either a tuple (`[x, y]`) or an object (`{ x, y }`). See [`types.ts`](src/config/types.ts).
+- **Series types**: `SeriesType` is `'line' | 'area'`, and `series` is a discriminated union (`LineSeriesConfig | AreaSeriesConfig`). Area series support `baseline?: number` (defaults to the y-axis minimum when omitted) and `areaStyle?: { opacity?: number }`. Line series can also include `areaStyle?: { opacity?: number }` to render a filled area behind the line (area fills then line strokes). See [`types.ts`](src/config/types.ts), [`createRenderCoordinator.ts`](src/core/createRenderCoordinator.ts), and [`examples/basic-line/main.ts`](examples/basic-line/main.ts).
 
 To resolve user options against defaults, use [`OptionResolver.resolve(...)`](src/config/OptionResolver.ts) (or [`resolveOptions(...)`](src/config/OptionResolver.ts)). This merges user-provided values with defaults and returns resolved options.
 
@@ -104,7 +106,7 @@ Run `npm run dev` to start the development server. Navigate to `http://localhost
 
 ## Examples
 
-See the [examples directory](examples/) for complete working examples. The `hello-world` example demonstrates continuous rendering by animating the clear color through the full color spectrum.
+See the [examples directory](examples/) for complete working examples. The `hello-world` example demonstrates continuous rendering by animating the clear color through the full color spectrum. It also imports [`line.wgsl`](src/shaders/line.wgsl) and [`area.wgsl`](src/shaders/area.wgsl) and (when supported) uses `GPUShaderModule.getCompilationInfo()` as a runtime shader compilation smoke-check; see [hello-world/main.ts](examples/hello-world/main.ts).
 
 See [hello-world/main.ts](examples/hello-world/main.ts) for implementation.
 
@@ -122,7 +124,7 @@ Contributions are welcome! Please ensure all code follows the project's TypeScri
 
 Chart data uploads and per-series GPU vertex buffer caching are handled by an internal `DataStore` created via `createDataStore(device)`. See [`createDataStore.ts`](src/data/createDataStore.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`).
 
-- **`setSeries(index, data)`**: packs `DataPoint` into a tightly-packed `Float32Array` (x, y) and reuploads/reallocates only when the data changes
+- **`setSeries(index, data)`**: packs `DataPoint` (tuple `[x, y]` or object `{ x, y }`) into a tightly-packed `Float32Array` (x, y) and reuploads/reallocates only when the data changes
 - **`getSeriesBuffer(index)`**: returns the cached GPU vertex buffer for a series (throws if the series hasn’t been set)
 - **`dispose()`**: destroys all cached buffers
 

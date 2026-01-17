@@ -1,21 +1,34 @@
 import type {
+  AreaStyleConfig,
   AxisConfig,
   ChartGPUOptions,
   GridConfig,
   LineStyleConfig,
-  SeriesConfig,
+  AreaSeriesConfig,
+  LineSeriesConfig,
 } from './types';
-import { defaultLineStyle, defaultOptions, defaultPalette } from './defaults';
+import { defaultAreaStyle, defaultLineStyle, defaultOptions, defaultPalette } from './defaults';
 
 export type ResolvedGridConfig = Readonly<Required<GridConfig>>;
 export type ResolvedLineStyleConfig = Readonly<Required<LineStyleConfig>>;
+export type ResolvedAreaStyleConfig = Readonly<Required<AreaStyleConfig>>;
 
-export type ResolvedSeriesConfig = Readonly<
-  Omit<SeriesConfig, 'color' | 'lineStyle'> & {
+export type ResolvedLineSeriesConfig = Readonly<
+  Omit<LineSeriesConfig, 'color' | 'lineStyle' | 'areaStyle'> & {
     readonly color: string;
     readonly lineStyle: ResolvedLineStyleConfig;
+    readonly areaStyle?: ResolvedAreaStyleConfig;
   }
 >;
+
+export type ResolvedAreaSeriesConfig = Readonly<
+  Omit<AreaSeriesConfig, 'color' | 'areaStyle'> & {
+    readonly color: string;
+    readonly areaStyle: ResolvedAreaStyleConfig;
+  }
+>;
+
+export type ResolvedSeriesConfig = ResolvedLineSeriesConfig | ResolvedAreaSeriesConfig;
 
 export interface ResolvedChartGPUOptions
   extends Omit<ChartGPUOptions, 'grid' | 'xAxis' | 'yAxis' | 'palette' | 'series'> {
@@ -75,18 +88,41 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
     : { ...defaultOptions.yAxis };
 
   const series: ReadonlyArray<ResolvedSeriesConfig> = (userOptions.series ?? []).map((s, i) => {
+    const explicitColor = normalizeOptionalColor(s.color);
+    const inheritedColor = paletteForIndexing[i % paletteForIndexing.length];
+    const color = explicitColor ?? inheritedColor;
+
+    if (s.type === 'area') {
+      const areaStyle: ResolvedAreaStyleConfig = {
+        opacity: s.areaStyle?.opacity ?? defaultAreaStyle.opacity,
+      };
+
+      return {
+        ...s,
+        color,
+        areaStyle,
+      };
+    }
+
     const lineStyle: ResolvedLineStyleConfig = {
       width: s.lineStyle?.width ?? defaultLineStyle.width,
       opacity: s.lineStyle?.opacity ?? defaultLineStyle.opacity,
     };
 
-    const explicitColor = normalizeOptionalColor(s.color);
-    const inheritedColor = paletteForIndexing[i % paletteForIndexing.length];
+    // Avoid leaking the unresolved (user) areaStyle shape via object spread.
+    const { areaStyle: _userAreaStyle, ...rest } = s;
 
     return {
-      ...s,
-      color: explicitColor ?? inheritedColor,
+      ...rest,
+      color,
       lineStyle,
+      ...(s.areaStyle
+        ? {
+            areaStyle: {
+              opacity: s.areaStyle.opacity ?? defaultAreaStyle.opacity,
+            },
+          }
+        : null),
     };
   });
 

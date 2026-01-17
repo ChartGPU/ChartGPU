@@ -7,12 +7,15 @@ export const version = '1.0.0';
 // Chart API (Phase 1)
 export { ChartGPU } from './ChartGPU';
 export type {
+  AreaStyleConfig,
   AxisConfig,
   AxisType,
   ChartGPUOptions,
   DataPoint,
   GridConfig,
   LineStyleConfig,
+  AreaSeriesConfig,
+  LineSeriesConfig,
   SeriesConfig,
   SeriesType,
 } from './config/types';
@@ -22,7 +25,10 @@ export { defaultOptions } from './config/defaults';
 export { OptionResolver, resolveOptions } from './config/OptionResolver';
 export type {
   ResolvedChartGPUOptions,
+  ResolvedAreaSeriesConfig,
+  ResolvedAreaStyleConfig,
   ResolvedGridConfig,
+  ResolvedLineSeriesConfig,
   ResolvedLineStyleConfig,
   ResolvedSeriesConfig,
 } from './config/OptionResolver';

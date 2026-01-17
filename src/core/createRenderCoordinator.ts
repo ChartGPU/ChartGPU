@@ -1,9 +1,10 @@
-import type { ResolvedChartGPUOptions } from '../config/OptionResolver';
+import type { ResolvedAreaSeriesConfig, ResolvedChartGPUOptions } from '../config/OptionResolver';
 import type { DataPoint } from '../config/types';
 import { createDataStore } from '../data/createDataStore';
 import { createAxisRenderer } from '../renderers/createAxisRenderer';
 import { createGridRenderer } from '../renderers/createGridRenderer';
 import type { GridArea } from '../renderers/createGridRenderer';
+import { createAreaRenderer } from '../renderers/createAreaRenderer';
 import { createLineRenderer } from '../renderers/createLineRenderer';
 import { createLinearScale } from '../utils/scales';
 import type { LinearScale } from '../utils/scales';
@@ -27,6 +28,11 @@ type Bounds = Readonly<{ xMin: number; xMax: number; yMin: number; yMax: number 
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
 
 const DEFAULT_BACKGROUND_COLOR: GPUColor = { r: 0.1, g: 0.1, b: 0.15, a: 1.0 };
+
+const assertUnreachable = (value: never): never => {
+  // Intentionally minimal message: this is used for compile-time exhaustiveness.
+  throw new Error(`RenderCoordinator: unreachable value: ${String(value)}`);
+};
 
 const isTupleDataPoint = (p: DataPoint): p is readonly [x: number, y: number] => Array.isArray(p);
 
@@ -172,7 +178,18 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
   const xAxisRenderer = createAxisRenderer(device, { targetFormat });
   const yAxisRenderer = createAxisRenderer(device, { targetFormat });
 
+  const areaRenderers: Array<ReturnType<typeof createAreaRenderer>> = [];
   const lineRenderers: Array<ReturnType<typeof createLineRenderer>> = [];
+
+  const ensureAreaRendererCount = (count: number): void => {
+    while (areaRenderers.length > count) {
+      const r = areaRenderers.pop();
+      r?.dispose();
+    }
+    while (areaRenderers.length < count) {
+      areaRenderers.push(createAreaRenderer(device, { targetFormat }));
+    }
+  };
 
   const ensureLineRendererCount = (count: number): void => {
     while (lineRenderers.length > count) {
@@ -184,6 +201,7 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
     }
   };
 
+  ensureAreaRendererCount(currentOptions.series.length);
   ensureLineRendererCount(currentOptions.series.length);
 
   const assertNotDisposed = (): void => {
@@ -195,15 +213,28 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
     currentOptions = resolvedOptions;
 
     const nextCount = resolvedOptions.series.length;
+    ensureAreaRendererCount(nextCount);
     ensureLineRendererCount(nextCount);
 
-    // `createDataStore` has no per-series removal, so recreate when the count shrinks
-    // to ensure old buffers are released.
+    // When the series count shrinks, explicitly destroy per-index GPU buffers for removed series.
+    // This avoids recreating the entire DataStore and keeps existing buffers for retained indices.
     if (nextCount < lastSeriesCount) {
-      dataStore.dispose();
-      dataStore = createDataStore(device);
+      for (let i = nextCount; i < lastSeriesCount; i++) {
+        dataStore.removeSeries(i);
+      }
     }
     lastSeriesCount = nextCount;
+  };
+
+  const shouldRenderArea = (series: ResolvedChartGPUOptions['series'][number]): boolean => {
+    switch (series.type) {
+      case 'area':
+        return true;
+      case 'line':
+        return series.areaStyle != null;
+      default:
+        return assertUnreachable(series);
+    }
   };
 
   const render: RenderCoordinator['render'] = () => {
@@ -217,11 +248,41 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
     xAxisRenderer.prepare(currentOptions.xAxis, xScale, 'x', gridArea);
     yAxisRenderer.prepare(currentOptions.yAxis, yScale, 'y', gridArea);
 
+    const globalBounds = computeGlobalBounds(currentOptions.series);
+    const defaultBaseline = currentOptions.yAxis.min ?? globalBounds.yMin;
+
     for (let i = 0; i < currentOptions.series.length; i++) {
       const s = currentOptions.series[i];
-      dataStore.setSeries(i, s.data);
-      const buffer = dataStore.getSeriesBuffer(i);
-      lineRenderers[i].prepare(s, buffer, xScale, yScale);
+      switch (s.type) {
+        case 'area': {
+          const baseline = s.baseline ?? defaultBaseline;
+          areaRenderers[i].prepare(s, s.data, xScale, yScale, baseline);
+          break;
+        }
+        case 'line': {
+          // Always prepare the line stroke.
+          dataStore.setSeries(i, s.data);
+          const buffer = dataStore.getSeriesBuffer(i);
+          lineRenderers[i].prepare(s, buffer, xScale, yScale);
+
+          // If `areaStyle` is provided on a line series, render a fill behind it.
+          if (s.areaStyle) {
+            const areaLike: ResolvedAreaSeriesConfig = {
+              type: 'area',
+              name: s.name,
+              data: s.data,
+              color: s.color,
+              areaStyle: s.areaStyle,
+            };
+
+            areaRenderers[i].prepare(areaLike, areaLike.data, xScale, yScale, defaultBaseline);
+          }
+
+          break;
+        }
+        default:
+          assertUnreachable(s);
+      }
     }
 
     const textureView = gpuContext.canvasContext.getCurrentTexture().createView();
@@ -239,13 +300,26 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
       ],
     });
 
+    // Render order:
+    // - grid first (background)
+    // - area fills next (so they don't cover strokes/axes)
+    // - line strokes next
+    // - axes last (on top)
     gridRenderer.render(pass);
-    xAxisRenderer.render(pass);
-    yAxisRenderer.render(pass);
 
     for (let i = 0; i < currentOptions.series.length; i++) {
-      lineRenderers[i].render(pass);
+      if (shouldRenderArea(currentOptions.series[i])) {
+        areaRenderers[i].render(pass);
+      }
     }
+    for (let i = 0; i < currentOptions.series.length; i++) {
+      if (currentOptions.series[i].type === 'line') {
+        lineRenderers[i].render(pass);
+      }
+    }
+
+    xAxisRenderer.render(pass);
+    yAxisRenderer.render(pass);
 
     pass.end();
     device.queue.submit([encoder.finish()]);
@@ -254,6 +328,11 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
   const dispose: RenderCoordinator['dispose'] = () => {
     if (disposed) return;
     disposed = true;
+
+    for (let i = 0; i < areaRenderers.length; i++) {
+      areaRenderers[i].dispose();
+    }
+    areaRenderers.length = 0;
 
     for (let i = 0; i < lineRenderers.length; i++) {
       lineRenderers[i].dispose();

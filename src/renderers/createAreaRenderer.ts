@@ -1,15 +1,21 @@
-import lineWgsl from '../shaders/line.wgsl?raw';
-import type { ResolvedLineSeriesConfig } from '../config/OptionResolver';
+import areaWgsl from '../shaders/area.wgsl?raw';
+import type { ResolvedAreaSeriesConfig } from '../config/OptionResolver';
 import type { LinearScale } from '../utils/scales';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
 
-export interface LineRenderer {
-  prepare(seriesConfig: ResolvedLineSeriesConfig, dataBuffer: GPUBuffer, xScale: LinearScale, yScale: LinearScale): void;
+export interface AreaRenderer {
+  prepare(
+    seriesConfig: ResolvedAreaSeriesConfig,
+    data: ResolvedAreaSeriesConfig['data'],
+    xScale: LinearScale,
+    yScale: LinearScale,
+    baseline?: number
+  ): void;
   render(passEncoder: GPURenderPassEncoder): void;
   dispose(): void;
 }
 
-export interface LineRendererOptions {
+export interface AreaRendererOptions {
   /**
    * Must match the canvas context format used for the render pass color attachment.
    * Usually this is `gpuContext.preferredFormat`.
@@ -78,17 +84,18 @@ const parseHexColorToRgba = (color: string): Rgba => {
   return [0, 0, 0, 1];
 };
 
-const isTupleDataPoint = (
-  point: ResolvedLineSeriesConfig['data'][number]
-): point is readonly [x: number, y: number] => Array.isArray(point);
+const isTupleDataPoint = (point: ResolvedAreaSeriesConfig['data'][number]): point is readonly [x: number, y: number] =>
+  Array.isArray(point);
 
-const getPointXY = (point: ResolvedLineSeriesConfig['data'][number]): { readonly x: number; readonly y: number } => {
+const getPointXY = (
+  point: ResolvedAreaSeriesConfig['data'][number]
+): { readonly x: number; readonly y: number } => {
   if (isTupleDataPoint(point)) return { x: point[0], y: point[1] };
   return { x: point.x, y: point.y };
 };
 
 const computeDataBounds = (
-  data: ResolvedLineSeriesConfig['data']
+  data: ResolvedAreaSeriesConfig['data']
 ): { readonly xMin: number; readonly xMax: number; readonly yMin: number; readonly yMax: number } => {
   let xMin = Number.POSITIVE_INFINITY;
   let xMax = Number.NEGATIVE_INFINITY;
@@ -160,7 +167,44 @@ const createTransformMat4Buffer = (ax: number, bx: number, ay: number, by: numbe
   return buffer;
 };
 
-export function createLineRenderer(device: GPUDevice, options?: LineRendererOptions): LineRenderer {
+const createVsUniformBuffer = (transformMat4: ArrayBuffer, baseline: number): ArrayBuffer => {
+  // VSUniforms:
+  // - mat4x4<f32> (64 bytes)
+  // - baseline: f32 (4 bytes)
+  // - (implicit padding to next 16B boundary) (12 bytes)
+  // - _pad0: vec3<f32> (occupies 16 bytes in a uniform buffer)
+  // Total: 96 bytes.
+  //
+  // Layout details (uniform address space):
+  // - transform at byte offset 0
+  // - baseline at byte offset 64 (f32[16])
+  // - _pad0 at byte offset 80 (f32[20..22]) with trailing 4B padding
+  const buffer = new ArrayBuffer(96);
+  const f32 = new Float32Array(buffer);
+  f32.set(new Float32Array(transformMat4), 0);
+  f32[16] = baseline;
+  return buffer;
+};
+
+const createAreaVertices = (data: ResolvedAreaSeriesConfig['data']): Float32Array => {
+  // Triangle-strip expects duplicated vertices:
+  // p0,p0,p1,p1,... and WGSL uses vertex_index parity to swap y to baseline for odd indices.
+  const n = data.length;
+  const out = new Float32Array(n * 2 * 2); // n * 2 vertices * vec2<f32>
+
+  let idx = 0;
+  for (let i = 0; i < n; i++) {
+    const { x, y } = getPointXY(data[i]);
+    out[idx++] = x;
+    out[idx++] = y;
+    out[idx++] = x;
+    out[idx++] = y;
+  }
+
+  return out;
+};
+
+export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOptions): AreaRenderer {
   let disposed = false;
   const targetFormat = options?.targetFormat ?? DEFAULT_TARGET_FORMAT;
 
@@ -171,8 +215,8 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     ],
   });
 
-  const vsUniformBuffer = createUniformBuffer(device, 64, { label: 'lineRenderer/vsUniforms' });
-  const fsUniformBuffer = createUniformBuffer(device, 16, { label: 'lineRenderer/fsUniforms' });
+  const vsUniformBuffer = createUniformBuffer(device, 96, { label: 'areaRenderer/vsUniforms' });
+  const fsUniformBuffer = createUniformBuffer(device, 16, { label: 'areaRenderer/fsUniforms' });
 
   const bindGroup = device.createBindGroup({
     layout: bindGroupLayout,
@@ -183,11 +227,11 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
   });
 
   const pipeline = createRenderPipeline(device, {
-    label: 'lineRenderer/pipeline',
+    label: 'areaRenderer/pipeline',
     bindGroupLayouts: [bindGroupLayout],
     vertex: {
-      code: lineWgsl,
-      label: 'line.wgsl',
+      code: areaWgsl,
+      label: 'area.wgsl',
       buffers: [
         {
           arrayStride: 8,
@@ -197,63 +241,93 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
       ],
     },
     fragment: {
-      code: lineWgsl,
-      label: 'line.wgsl',
+      code: areaWgsl,
+      label: 'area.wgsl',
       formats: targetFormat,
-      // Enable standard alpha blending so per-series `lineStyle.opacity` behaves
-      // correctly against an opaque cleared background.
+      // Enable standard alpha blending so `areaStyle.opacity` behaves correctly.
       blend: {
         color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
         alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
       },
     },
-    primitive: { topology: 'line-strip', cullMode: 'none' },
+    primitive: { topology: 'triangle-strip', cullMode: 'none' },
     multisample: { count: 1 },
   });
 
-  let currentVertexBuffer: GPUBuffer | null = null;
-  let currentVertexCount = 0;
+  let vertexBuffer: GPUBuffer | null = null;
+  let vertexCount = 0;
 
   const assertNotDisposed = (): void => {
-    if (disposed) throw new Error('LineRenderer is disposed.');
+    if (disposed) throw new Error('AreaRenderer is disposed.');
   };
 
-  const prepare: LineRenderer['prepare'] = (seriesConfig, dataBuffer, xScale, yScale) => {
+  const prepare: AreaRenderer['prepare'] = (seriesConfig, data, xScale, yScale, baseline) => {
     assertNotDisposed();
 
-    currentVertexBuffer = dataBuffer;
-    currentVertexCount = seriesConfig.data.length;
+    const vertices = createAreaVertices(data);
+    const requiredSize = vertices.byteLength;
+    const bufferSize = Math.max(4, requiredSize);
 
-    const { xMin, xMax, yMin, yMax } = computeDataBounds(seriesConfig.data);
+    if (!vertexBuffer || vertexBuffer.size < bufferSize) {
+      if (vertexBuffer) {
+        try {
+          vertexBuffer.destroy();
+        } catch {
+          // best-effort
+        }
+      }
+      vertexBuffer = device.createBuffer({
+        label: 'areaRenderer/vertexBuffer',
+        size: bufferSize,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      });
+    }
+
+    if (vertices.byteLength > 0) {
+      device.queue.writeBuffer(vertexBuffer, 0, vertices.buffer, 0, vertices.byteLength);
+    }
+    vertexCount = vertices.length / 2;
+
+    const { xMin, xMax, yMin, yMax } = computeDataBounds(data);
     const { a: ax, b: bx } = computeClipAffineFromScale(xScale, xMin, xMax);
     const { a: ay, b: by } = computeClipAffineFromScale(yScale, yMin, yMax);
 
+    const baselineValue =
+      Number.isFinite(baseline ?? Number.NaN) ? (baseline as number) : Number.isFinite(yMin) ? yMin : 0;
+
     const transformBuffer = createTransformMat4Buffer(ax, bx, ay, by);
-    writeUniformBuffer(device, vsUniformBuffer, transformBuffer);
+    writeUniformBuffer(device, vsUniformBuffer, createVsUniformBuffer(transformBuffer, baselineValue));
 
     const [r, g, b, a] = parseHexColorToRgba(seriesConfig.color);
-    const opacity = clamp01(seriesConfig.lineStyle.opacity);
+    const opacity = clamp01(seriesConfig.areaStyle.opacity);
     const colorBuffer = new ArrayBuffer(4 * 4);
     new Float32Array(colorBuffer).set([r, g, b, clamp01(a * opacity)]);
     writeUniformBuffer(device, fsUniformBuffer, colorBuffer);
   };
 
-  const render: LineRenderer['render'] = (passEncoder) => {
+  const render: AreaRenderer['render'] = (passEncoder) => {
     assertNotDisposed();
-    if (!currentVertexBuffer || currentVertexCount < 2) return;
+    if (!vertexBuffer || vertexCount < 4) return;
 
     passEncoder.setPipeline(pipeline);
     passEncoder.setBindGroup(0, bindGroup);
-    passEncoder.setVertexBuffer(0, currentVertexBuffer);
-    passEncoder.draw(currentVertexCount);
+    passEncoder.setVertexBuffer(0, vertexBuffer);
+    passEncoder.draw(vertexCount);
   };
 
-  const dispose: LineRenderer['dispose'] = () => {
+  const dispose: AreaRenderer['dispose'] = () => {
     if (disposed) return;
     disposed = true;
 
-    currentVertexBuffer = null;
-    currentVertexCount = 0;
+    if (vertexBuffer) {
+      try {
+        vertexBuffer.destroy();
+      } catch {
+        // best-effort
+      }
+    }
+    vertexBuffer = null;
+    vertexCount = 0;
 
     try {
       vsUniformBuffer.destroy();
@@ -269,3 +343,4 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
 
   return { prepare, render, dispose };
 }
+

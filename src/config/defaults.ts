@@ -1,4 +1,4 @@
-import type { ChartGPUOptions, GridConfig, LineStyleConfig } from './types';
+import type { AreaStyleConfig, ChartGPUOptions, GridConfig, LineStyleConfig } from './types';
 
 export const defaultGrid = {
   left: 60,
@@ -23,6 +23,10 @@ export const defaultLineStyle = {
   width: 2,
   opacity: 1,
 } as const satisfies Required<LineStyleConfig>;
+
+export const defaultAreaStyle = {
+  opacity: 0.25,
+} as const satisfies Required<AreaStyleConfig>;
 
 export const defaultOptions = {
   grid: defaultGrid,

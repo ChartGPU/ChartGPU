@@ -1,5 +1,6 @@
 import { GPUContext } from '../../src/index';
 import lineWgsl from '../../src/shaders/line.wgsl?raw';
+import areaWgsl from '../../src/shaders/area.wgsl?raw';
 
 /**
  * Hello World example - Animated clear color
@@ -77,6 +78,20 @@ async function main() {
           .map((m) => `${m.lineNum ?? 0}:${m.linePos ?? 0} ${m.message}`)
           .join('\n');
         throw new Error(`line.wgsl compilation failed:\n${formatted}`);
+      }
+    }
+
+    // Example-only smoke check: compile the area shader at runtime.
+    const areaShaderModule = device.createShaderModule({ code: areaWgsl, label: 'area.wgsl' });
+    const getAreaCompilationInfo = areaShaderModule.getCompilationInfo?.bind(areaShaderModule);
+    if (getAreaCompilationInfo) {
+      const info = await getAreaCompilationInfo();
+      const errors = info.messages.filter((m) => m.type === 'error');
+      if (errors.length > 0) {
+        const formatted = errors
+          .map((m) => `${m.lineNum ?? 0}:${m.linePos ?? 0} ${m.message}`)
+          .join('\n');
+        throw new Error(`area.wgsl compilation failed:\n${formatted}`);
       }
     }
 
