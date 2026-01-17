@@ -51,7 +51,13 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
   - **`baseline`** is a data-space “filled area floor”. If omitted, ChartGPU defaults it to the y-axis minimum.
   - **`areaStyle.opacity`** controls the fill opacity.
 
-For a working configuration (including a filled line series via `areaStyle`), see [`examples/basic-line/main.ts`](../examples/basic-line/main.ts).
+**Axis configuration (essential):**
+
+- **`AxisConfig`**: configuration for `xAxis` / `yAxis`. See [`types.ts`](../src/config/types.ts).
+- **`AxisConfig.name?: string`**: renders an axis title when provided (and non-empty after `trim()`): x-axis titles are centered below x-axis tick labels, and y-axis titles are rotated \(-90°\) and placed left of y-axis tick labels; titles can be clipped if `grid.bottom` / `grid.left` margins are too small.
+- **Axis title styling**: titles are rendered via the internal DOM text overlay and use the resolved theme’s `textColor` and `fontFamily` with slightly larger, bold text (label elements also set `dir='auto'`).
+
+For a working configuration (including axis titles via `AxisConfig.name` and a filled line series via `areaStyle`), see [`examples/basic-line/main.ts`](../examples/basic-line/main.ts).
 
 ### `defaultOptions`
 
