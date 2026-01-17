@@ -235,6 +235,18 @@ All WebGPU types are provided by `@webgpu/types`. See [GPUContext.ts](../src/cor
 
 Chart data uploads and per-series GPU vertex buffer caching are handled by the internal `createDataStore(device)` helper. See [`createDataStore.ts`](../src/data/createDataStore.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`).
 
+### Text overlay (internal / contributor notes)
+
+An internal DOM helper for rendering text labels above the canvas using an absolutely-positioned HTML overlay. See [`createTextOverlay.ts`](../src/components/createTextOverlay.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`).
+
+- **Factory**: `createTextOverlay(container: HTMLElement): TextOverlay`
+- **`TextOverlay` methods (essential)**:
+  - `clear(): void`
+  - `addLabel(text: string, x: number, y: number, options?: TextOverlayLabelOptions): HTMLSpanElement`
+  - `dispose(): void`
+- **Coordinates**: `x` / `y` are in CSS pixels relative to the container’s top-left corner.
+- **Pointer events**: the overlay uses `pointer-events: none` so it won’t intercept mouse/touch input.
+
 ### Render coordinator (internal / contributor notes)
 
 A small orchestration layer for “resolved options → render pass submission”.
