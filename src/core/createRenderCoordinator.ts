@@ -1,5 +1,5 @@
 import type { ResolvedAreaSeriesConfig, ResolvedChartGPUOptions } from '../config/OptionResolver';
-import type { DataPoint } from '../config/types';
+import type { DataPoint, TooltipParams } from '../config/types';
 import { createDataStore } from '../data/createDataStore';
 import { createAxisRenderer } from '../renderers/createAxisRenderer';
 import { createGridRenderer } from '../renderers/createGridRenderer';
@@ -10,6 +10,8 @@ import { createCrosshairRenderer } from '../renderers/createCrosshairRenderer';
 import type { CrosshairRenderOptions } from '../renderers/createCrosshairRenderer';
 import { createEventManager } from '../interaction/createEventManager';
 import type { ChartGPUEventPayload } from '../interaction/createEventManager';
+import { findNearestPoint } from '../interaction/findNearestPoint';
+import { findPointsAtX } from '../interaction/findPointsAtX';
 import { createLinearScale } from '../utils/scales';
 import type { LinearScale } from '../utils/scales';
 import { parseCssColorToGPUColor, parseCssColorToRgba01 } from '../utils/colors';
@@ -17,6 +19,9 @@ import { createTextOverlay } from '../components/createTextOverlay';
 import type { TextOverlay, TextOverlayAnchor } from '../components/createTextOverlay';
 import { createLegend } from '../components/createLegend';
 import type { Legend } from '../components/createLegend';
+import { createTooltip } from '../components/createTooltip';
+import type { Tooltip } from '../components/createTooltip';
+import { formatTooltipAxis, formatTooltipItem } from '../components/formatTooltip';
 
 export interface GPUContextLike {
   readonly device: GPUDevice | null;
@@ -251,6 +256,10 @@ export function createRenderCoordinator(
   let currentOptions: ResolvedChartGPUOptions = options;
   let lastSeriesCount = options.series.length;
 
+  // Tooltip is a DOM overlay element; enable by default unless explicitly disabled.
+  let tooltip: Tooltip | null =
+    overlayContainer && currentOptions.tooltip?.show !== false ? createTooltip(overlayContainer) : null;
+
   legend?.update(currentOptions.series, currentOptions.theme);
 
   let dataStore = createDataStore(device);
@@ -267,25 +276,87 @@ export function createRenderCoordinator(
   type PointerState = Readonly<{
     x: number;
     y: number;
+    gridX: number;
+    gridY: number;
     isInGrid: boolean;
     hasPointer: boolean;
   }>;
 
-  let pointerState: PointerState = { x: 0, y: 0, isInGrid: false, hasPointer: false };
+  let pointerState: PointerState = { x: 0, y: 0, gridX: 0, gridY: 0, isInGrid: false, hasPointer: false };
 
   const requestRender = (): void => {
     callbacks?.onRequestRender?.();
   };
 
+  const getPlotSizeCssPx = (
+    canvas: HTMLCanvasElement,
+    gridArea: GridArea
+  ): { readonly plotWidthCss: number; readonly plotHeightCss: number } | null => {
+    const rect = canvas.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return null;
+
+    const plotWidthCss = rect.width - gridArea.left - gridArea.right;
+    const plotHeightCss = rect.height - gridArea.top - gridArea.bottom;
+    if (!(plotWidthCss > 0) || !(plotHeightCss > 0)) return null;
+
+    return { plotWidthCss, plotHeightCss };
+  };
+
+  const computeInteractionScalesGridCssPx = (
+    gridArea: GridArea
+  ): { readonly xScale: LinearScale; readonly yScale: LinearScale } | null => {
+    const canvas = gpuContext.canvas;
+    if (!canvas) return null;
+
+    const plotSize = getPlotSizeCssPx(canvas, gridArea);
+    if (!plotSize) return null;
+
+    const bounds = computeGlobalBounds(currentOptions.series);
+
+    const xMin = currentOptions.xAxis.min ?? bounds.xMin;
+    const xMax = currentOptions.xAxis.max ?? bounds.xMax;
+    const yMin = currentOptions.yAxis.min ?? bounds.yMin;
+    const yMax = currentOptions.yAxis.max ?? bounds.yMax;
+
+    const xDomain = normalizeDomain(xMin, xMax);
+    const yDomain = normalizeDomain(yMin, yMax);
+
+    // IMPORTANT: grid-local CSS px ranges (0..plotWidth/Height), for interaction hit-testing.
+    const xScale = createLinearScale().domain(xDomain.min, xDomain.max).range(0, plotSize.plotWidthCss);
+    const yScale = createLinearScale().domain(yDomain.min, yDomain.max).range(plotSize.plotHeightCss, 0);
+
+    return { xScale, yScale };
+  };
+
+  const buildTooltipParams = (seriesIndex: number, dataIndex: number, point: DataPoint): TooltipParams => {
+    const s = currentOptions.series[seriesIndex];
+    const { x, y } = getPointXY(point);
+    return {
+      seriesName: s?.name ?? '',
+      seriesIndex,
+      dataIndex,
+      value: [x, y],
+      color: s?.color ?? '#888',
+    };
+  };
+
   const onMouseMove = (payload: ChartGPUEventPayload): void => {
-    pointerState = { x: payload.x, y: payload.y, isInGrid: payload.isInGrid, hasPointer: true };
+    pointerState = {
+      x: payload.x,
+      y: payload.y,
+      gridX: payload.gridX,
+      gridY: payload.gridY,
+      isInGrid: payload.isInGrid,
+      hasPointer: true,
+    };
     crosshairRenderer.setVisible(payload.isInGrid);
     requestRender();
   };
 
   const onMouseLeave = (_payload: ChartGPUEventPayload): void => {
-    pointerState = { x: pointerState.x, y: pointerState.y, isInGrid: false, hasPointer: false };
+    pointerState = { ...pointerState, isInGrid: false, hasPointer: false };
     crosshairRenderer.setVisible(false);
+    tooltip?.hide();
     requestRender();
   };
 
@@ -326,6 +397,15 @@ export function createRenderCoordinator(
     assertNotDisposed();
     currentOptions = resolvedOptions;
     legend?.update(resolvedOptions.series, resolvedOptions.theme);
+
+    // Tooltip enablement may change at runtime.
+    if (overlayContainer) {
+      const shouldHaveTooltip = currentOptions.tooltip?.show !== false;
+      if (shouldHaveTooltip && !tooltip) tooltip = createTooltip(overlayContainer);
+      if (!shouldHaveTooltip && tooltip) tooltip.hide();
+    } else {
+      tooltip?.hide();
+    }
 
     const nextCount = resolvedOptions.series.length;
     ensureAreaRendererCount(nextCount);
@@ -391,6 +471,54 @@ export function createRenderCoordinator(
       crosshairRenderer.setVisible(true);
     } else {
       crosshairRenderer.setVisible(false);
+    }
+
+    // Tooltip: on hover, find matches and render tooltip near cursor.
+    if (tooltip && pointerState.hasPointer && pointerState.isInGrid) {
+      const scales = computeInteractionScalesGridCssPx(gridArea);
+      const canvas = gpuContext.canvas;
+
+      if (scales && canvas && currentOptions.tooltip?.show !== false) {
+        const formatter = currentOptions.tooltip?.formatter;
+        const trigger = currentOptions.tooltip?.trigger ?? 'item';
+
+        const containerX = canvas.offsetLeft + pointerState.x;
+        const containerY = canvas.offsetTop + pointerState.y;
+
+        if (trigger === 'axis') {
+          const matches = findPointsAtX(currentOptions.series, pointerState.gridX, scales.xScale);
+          if (matches.length === 0) {
+            tooltip.hide();
+          } else {
+            const paramsArray = matches.map((m) => buildTooltipParams(m.seriesIndex, m.dataIndex, m.point));
+            const content = formatter
+              ? (formatter as (p: ReadonlyArray<TooltipParams>) => string)(paramsArray)
+              : formatTooltipAxis(paramsArray);
+            if (content) tooltip.show(containerX, containerY, content);
+            else tooltip.hide();
+          }
+        } else {
+          const match = findNearestPoint(
+            currentOptions.series,
+            pointerState.gridX,
+            pointerState.gridY,
+            scales.xScale,
+            scales.yScale
+          );
+          if (!match) {
+            tooltip.hide();
+          } else {
+            const params = buildTooltipParams(match.seriesIndex, match.dataIndex, match.point);
+            const content = formatter ? (formatter as (p: TooltipParams) => string)(params) : formatTooltipItem(params);
+            if (content) tooltip.show(containerX, containerY, content);
+            else tooltip.hide();
+          }
+        }
+      } else {
+        tooltip.hide();
+      }
+    } else {
+      tooltip?.hide();
     }
 
     const globalBounds = computeGlobalBounds(currentOptions.series);
@@ -613,7 +741,9 @@ export function createRenderCoordinator(
 
     dataStore.dispose();
 
-    // Dispose the legend before the text overlay (both touch container positioning).
+    // Dispose tooltip/legend before the text overlay (all touch container positioning).
+    tooltip?.dispose();
+    tooltip = null;
     legend?.dispose();
     overlay?.dispose();
   };

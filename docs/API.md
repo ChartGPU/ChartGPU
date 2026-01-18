@@ -64,12 +64,14 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
 **Tooltip configuration (type definitions):**
 
 - **`ChartGPUOptions.tooltip?: TooltipConfig`**: optional tooltip configuration. See [`types.ts`](../src/config/types.ts).
+- **Enablement**: when `tooltip.show !== false`, ChartGPU creates an internal DOM tooltip overlay and updates it on hover; when `tooltip.show === false`, the tooltip is not shown.
+- **Hover behavior**: tooltip updates on pointer movement within the plot grid, and hides on pointer leave.
 - **`TooltipConfig.trigger?: 'item' | 'axis'`**: tooltip trigger mode.
 - **`TooltipConfig.formatter?: (params: TooltipParams | TooltipParams[]) => string`**: custom formatter function. Receives a single `TooltipParams` when `trigger` is `'item'`, or an array of `TooltipParams` when `trigger` is `'axis'`. See [`types.ts`](../src/config/types.ts) for `TooltipParams` fields (`seriesName`, `seriesIndex`, `dataIndex`, `value`, `color`).
 
 Default tooltip formatter helpers are available in [`formatTooltip.ts`](../src/components/formatTooltip.ts): `formatTooltipItem(params: TooltipParams): string` (item mode) and `formatTooltipAxis(params: TooltipParams[]): string` (axis mode). Both return HTML strings intended for the internal tooltip overlay’s `innerHTML` usage; the axis formatter includes an x header line.
 
-Note: Tooltip configuration types are currently defined, but ChartGPU does not yet wire them into the render coordinator. There is an internal DOM tooltip overlay helper available for contributors; see [Tooltip overlay (internal)](#tooltip-overlay-internal--contributor-notes) and [`createTooltip.ts`](../src/components/createTooltip.ts).
+**Content safety (important)**: the tooltip overlay assigns `content` via `innerHTML`. Only return trusted/sanitized strings from `TooltipConfig.formatter`. See the internal tooltip overlay helper in [`createTooltip.ts`](../src/components/createTooltip.ts) and the default formatter helpers in [`formatTooltip.ts`](../src/components/formatTooltip.ts).
 
 For a working configuration (including axis titles via `AxisConfig.name` and a filled line series via `areaStyle`), see [`examples/basic-line/main.ts`](../examples/basic-line/main.ts).
 

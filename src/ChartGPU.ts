@@ -33,7 +33,10 @@ export async function createChartGPU(
   let coordinatorTargetFormat: GPUTextureFormat | null = null;
 
   let currentOptions: ChartGPUOptions = options;
-  let resolvedOptions: ResolvedChartGPUOptions = resolveOptions(currentOptions);
+  let resolvedOptions: ResolvedChartGPUOptions = {
+    ...resolveOptions(currentOptions),
+    tooltip: currentOptions.tooltip,
+  };
 
   let scheduledRaf: number | null = null;
   let lastConfigured: { width: number; height: number; format: GPUTextureFormat } | null = null;
@@ -147,7 +150,7 @@ export async function createChartGPU(
     setOption(nextOptions) {
       if (disposed) return;
       currentOptions = nextOptions;
-      resolvedOptions = resolveOptions(nextOptions);
+      resolvedOptions = { ...resolveOptions(nextOptions), tooltip: nextOptions.tooltip };
       coordinator?.setOptions(resolvedOptions);
 
       // Requirement: setOption triggers a render (and thus series parsing/extent/scales update inside render).
