@@ -116,6 +116,10 @@ const LABEL_PADDING_CSS_PX = 4;
 const DEFAULT_CROSSHAIR_LINE_WIDTH_CSS_PX = 1;
 const DEFAULT_HIGHLIGHT_SIZE_CSS_PX = 4;
 
+// Story 5.17: CPU-side update interpolation can be expensive for very large series.
+// We still animate domains for large series, but skip per-point y interpolation past this cap.
+const MAX_ANIMATED_POINTS_PER_SERIES = 20_000;
+
 const assertUnreachable = (value: never): never => {
   // Intentionally minimal message: this is used for compile-time exhaustiveness.
   throw new Error(`RenderCoordinator: unreachable value: ${String(value)}`);
@@ -335,6 +339,16 @@ const computePlotClipRect = (
 
 const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
 const clampInt = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v | 0));
+
+const lerp = (a: number, b: number, t01: number): number => a + (b - a) * clamp01(t01);
+
+const lerpDomain = (
+  from: { readonly min: number; readonly max: number },
+  to: { readonly min: number; readonly max: number },
+  t01: number
+): { readonly min: number; readonly max: number } => {
+  return normalizeDomain(lerp(from.min, to.min, t01), lerp(from.max, to.max, t01));
+};
 
 const computePlotScissorDevicePx = (
   gridArea: GridArea
@@ -565,39 +579,6 @@ const formatTickValue = (nf: Intl.NumberFormat, v: number): string | null => {
   return formatted === 'NaN' ? null : formatted;
 };
 
-const computeScales = (
-  options: ResolvedChartGPUOptions,
-  gridArea: GridArea,
-  zoomRange?: ZoomRange | null,
-  runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null
-): { readonly xScale: LinearScale; readonly yScale: LinearScale } => {
-  const clipRect = computePlotClipRect(gridArea);
-  const bounds = computeGlobalBounds(options.series, runtimeRawBoundsByIndex);
-
-  const baseMin = options.xAxis.min ?? bounds.xMin;
-  const baseMax = options.xAxis.max ?? bounds.xMax;
-  const yMin = options.yAxis.min ?? bounds.yMin;
-  const yMax = options.yAxis.max ?? bounds.yMax;
-
-  const baseXDomain = normalizeDomain(baseMin, baseMax);
-  const xDomain = (() => {
-    if (!zoomRange) return baseXDomain;
-    const span = baseXDomain.max - baseXDomain.min;
-    if (!Number.isFinite(span) || span === 0) return baseXDomain;
-    const start = zoomRange.start;
-    const end = zoomRange.end;
-    const xMin = baseXDomain.min + (start / 100) * span;
-    const xMax = baseXDomain.min + (end / 100) * span;
-    return normalizeDomain(xMin, xMax);
-  })();
-  const yDomain = normalizeDomain(yMin, yMax);
-
-  const xScale = createLinearScale().domain(xDomain.min, xDomain.max).range(clipRect.left, clipRect.right);
-  const yScale = createLinearScale().domain(yDomain.min, yDomain.max).range(clipRect.bottom, clipRect.top);
-
-  return { xScale, yScale };
-};
-
 const computeBaseXDomain = (
   options: ResolvedChartGPUOptions,
   runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null
@@ -606,6 +587,16 @@ const computeBaseXDomain = (
   const baseMin = options.xAxis.min ?? bounds.xMin;
   const baseMax = options.xAxis.max ?? bounds.xMax;
   return normalizeDomain(baseMin, baseMax);
+};
+
+const computeBaseYDomain = (
+  options: ResolvedChartGPUOptions,
+  runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null
+): { readonly min: number; readonly max: number } => {
+  const bounds = computeGlobalBounds(options.series, runtimeRawBoundsByIndex);
+  const yMin = options.yAxis.min ?? bounds.yMin;
+  const yMax = options.yAxis.max ?? bounds.yMax;
+  return normalizeDomain(yMin, yMax);
 };
 
 const computeVisibleXDomain = (
@@ -629,7 +620,7 @@ const computeVisibleXDomain = (
 
 type IntroPhase = 'pending' | 'running' | 'done';
 
-const resolveIntroAnimationConfig = (
+const resolveAnimationConfig = (
   animation: ResolvedChartGPUOptions['animation']
 ):
   | {
@@ -655,6 +646,9 @@ const resolveIntroAnimationConfig = (
     easing: getEasing(cfg.easing),
   };
 };
+
+const resolveIntroAnimationConfig = (animation: ResolvedChartGPUOptions['animation']) => resolveAnimationConfig(animation);
+const resolveUpdateAnimationConfig = (animation: ResolvedChartGPUOptions['animation']) => resolveAnimationConfig(animation);
 
 const computeBaselineForBarsFromData = (seriesConfigs: ReadonlyArray<ResolvedBarSeriesConfig>): number => {
   let yMin = Number.POSITIVE_INFINITY;
@@ -762,6 +756,194 @@ export function createRenderCoordinator(
   let introProgress01 = 0;
   const introAnimController = createAnimationController();
   let introAnimId: AnimationId | null = null;
+
+  // Story 5.17 (step 1): data update transition state (snapshots only; interpolation occurs later).
+  type UpdateTransitionSnapshot = Readonly<{
+    readonly xBaseDomain: { readonly min: number; readonly max: number };
+    readonly xVisibleDomain: { readonly min: number; readonly max: number };
+    readonly yBaseDomain: { readonly min: number; readonly max: number };
+    readonly series: ResolvedChartGPUOptions['series'];
+  }>;
+
+  type UpdateTransition = Readonly<{
+    readonly from: UpdateTransitionSnapshot;
+    readonly to: UpdateTransitionSnapshot;
+  }>;
+
+  let hasRenderedOnce = false;
+  const updateAnimController = createAnimationController();
+  let updateAnimId: AnimationId | null = null;
+  let updateProgress01 = 1;
+  let updateTransition: UpdateTransition | null = null;
+
+  type UpdateInterpolationCaches = Readonly<{
+    readonly cartesianDataBySeriesIndex: Array<DataPoint[] | null>;
+    readonly pieDataBySeriesIndex: Array<ResolvedPieSeriesConfig['data'] | null>;
+  }>;
+
+  const updateInterpolationCaches: UpdateInterpolationCaches = {
+    cartesianDataBySeriesIndex: [],
+    pieDataBySeriesIndex: [],
+  };
+
+  const resetUpdateInterpolationCaches = (): void => {
+    updateInterpolationCaches.cartesianDataBySeriesIndex.length = 0;
+    updateInterpolationCaches.pieDataBySeriesIndex.length = 0;
+  };
+
+  const interpolateCartesianSeriesDataByIndex = (
+    fromData: ReadonlyArray<DataPoint>,
+    toData: ReadonlyArray<DataPoint>,
+    t01: number,
+    cache: DataPoint[] | null
+  ): DataPoint[] | null => {
+    if (fromData.length !== toData.length) return null;
+    const n = toData.length;
+    if (n === 0) return cache ?? [];
+
+    const out =
+      cache && cache.length === n
+        ? cache
+        : (() => {
+            const created: DataPoint[] = new Array(n);
+            for (let i = 0; i < n; i++) {
+              const pTo = toData[i]!;
+              const { x } = getPointXY(pTo);
+              const size = isTupleDataPoint(pTo) ? pTo[2] : (pTo as any)?.size;
+              created[i] = isTupleDataPoint(pTo)
+                ? (size == null ? ([x, 0] as const) : ([x, 0, size] as const))
+                : (size == null ? ({ x, y: 0 } as const) : ({ x, y: 0, size } as const));
+            }
+            return created;
+          })();
+
+    const t = clamp01(t01);
+    for (let i = 0; i < n; i++) {
+      const yFrom = getPointXY(fromData[i]!).y;
+      const yTo = getPointXY(toData[i]!).y;
+      const y = Number.isFinite(yFrom) && Number.isFinite(yTo) ? lerp(yFrom, yTo, t) : yTo;
+      const p = out[i]!;
+      if (isTupleDataPoint(p)) {
+        (p as unknown as number[])[1] = y;
+      } else {
+        (p as any).y = y;
+      }
+    }
+
+    return out;
+  };
+
+  const interpolatePieSeriesByIndex = (
+    fromSeries: ResolvedPieSeriesConfig,
+    toSeries: ResolvedPieSeriesConfig,
+    t01: number,
+    cache: ResolvedPieSeriesConfig['data'] | null
+  ): ResolvedPieSeriesConfig => {
+    const fromData = fromSeries.data;
+    const toData = toSeries.data;
+    if (fromData.length !== toData.length) return toSeries;
+
+    const n = toData.length;
+    const out =
+      cache && cache.length === n
+        ? cache
+        : (() => {
+            const created: any[] = new Array(n);
+            for (let i = 0; i < n; i++) {
+              // Preserve name/color from "to"; patch value per frame.
+              created[i] = { ...toData[i]!, value: 0 };
+            }
+            return created as ResolvedPieSeriesConfig['data'];
+          })();
+
+    const t = clamp01(t01);
+    for (let i = 0; i < n; i++) {
+      const vFrom = (fromData[i] as any)?.value;
+      const vTo = (toData[i] as any)?.value;
+      const next =
+        typeof vFrom === 'number' && typeof vTo === 'number' && Number.isFinite(vFrom) && Number.isFinite(vTo)
+          ? Math.max(0, lerp(vFrom, vTo, t))
+          : typeof vTo === 'number' && Number.isFinite(vTo)
+            ? vTo
+            : 0;
+      (out[i] as any).value = next;
+    }
+
+    return { ...toSeries, data: out };
+  };
+
+  const interpolateSeriesForUpdate = (
+    fromSeries: ResolvedChartGPUOptions['series'],
+    toSeries: ResolvedChartGPUOptions['series'],
+    t01: number,
+    caches: UpdateInterpolationCaches | null
+  ): ResolvedChartGPUOptions['series'] => {
+    if (fromSeries.length !== toSeries.length) return toSeries;
+
+    const out: ResolvedChartGPUOptions['series'][number][] = new Array(toSeries.length);
+
+    for (let i = 0; i < toSeries.length; i++) {
+      const a = fromSeries[i]!;
+      const b = toSeries[i]!;
+
+      if (a.type !== b.type) {
+        out[i] = b;
+        continue;
+      }
+
+      if (b.type === 'pie') {
+        const cache = caches?.pieDataBySeriesIndex[i] ?? null;
+        const animated = interpolatePieSeriesByIndex(a as ResolvedPieSeriesConfig, b as ResolvedPieSeriesConfig, t01, cache);
+        if (caches) caches.pieDataBySeriesIndex[i] = animated.data as any;
+        out[i] = animated;
+        continue;
+      }
+
+      // Cartesian series: interpolate y-values by index. Keep x from "to".
+      const aAny = a as unknown as { readonly data: ReadonlyArray<DataPoint> };
+      const bAny = b as unknown as { readonly data: ReadonlyArray<DataPoint> };
+      const aData = aAny.data;
+      const bData = bAny.data;
+
+      if (aData.length !== bData.length) {
+        out[i] = b;
+        continue;
+      }
+      if (bData.length > MAX_ANIMATED_POINTS_PER_SERIES) {
+        out[i] = b;
+        continue;
+      }
+
+      const cache = caches?.cartesianDataBySeriesIndex[i] ?? null;
+      const animatedData = interpolateCartesianSeriesDataByIndex(aData, bData, t01, cache);
+      if (!animatedData) {
+        out[i] = b;
+        continue;
+      }
+      if (caches) caches.cartesianDataBySeriesIndex[i] = animatedData;
+
+      out[i] = { ...(b as any), data: animatedData };
+    }
+
+    return out;
+  };
+
+  const computeUpdateSnapshotAtProgress = (
+    transition: UpdateTransition,
+    t01: number,
+    zoomRange: ZoomRange | null
+  ): UpdateTransitionSnapshot => {
+    const xBase = lerpDomain(transition.from.xBaseDomain, transition.to.xBaseDomain, t01);
+    const xVisible = computeVisibleXDomain(xBase, zoomRange);
+    const yBase = lerpDomain(transition.from.yBaseDomain, transition.to.yBaseDomain, t01);
+    const series = interpolateSeriesForUpdate(transition.from.series, transition.to.series, t01, null);
+    return {
+      xBaseDomain: xBase,
+      xVisibleDomain: { min: xVisible.min, max: xVisible.max },
+      yBaseDomain: yBase,
+      series,
+    };
+  };
 
   // Prevent spamming console.warn for repeated misuse.
   const warnedPieAppendSeries = new Set<number>();
@@ -879,7 +1061,7 @@ export function createRenderCoordinator(
 
   const computeInteractionScalesGridCssPx = (
     gridArea: GridArea,
-    zoomRange?: ZoomRange | null
+    domains: { readonly xDomain: { readonly min: number; readonly max: number }; readonly yDomain: { readonly min: number; readonly max: number } }
   ):
     | {
         readonly xScale: LinearScale;
@@ -894,29 +1076,9 @@ export function createRenderCoordinator(
     const plotSize = getPlotSizeCssPx(canvas, gridArea);
     if (!plotSize) return null;
 
-    const bounds = computeGlobalBounds(currentOptions.series, runtimeRawBoundsByIndex);
-
-    const baseMin = currentOptions.xAxis.min ?? bounds.xMin;
-    const baseMax = currentOptions.xAxis.max ?? bounds.xMax;
-    const yMin = currentOptions.yAxis.min ?? bounds.yMin;
-    const yMax = currentOptions.yAxis.max ?? bounds.yMax;
-
-    const baseXDomain = normalizeDomain(baseMin, baseMax);
-    const xDomain = (() => {
-      if (!zoomRange) return baseXDomain;
-      const span = baseXDomain.max - baseXDomain.min;
-      if (!Number.isFinite(span) || span === 0) return baseXDomain;
-      const start = zoomRange.start;
-      const end = zoomRange.end;
-      const xMin = baseXDomain.min + (start / 100) * span;
-      const xMax = baseXDomain.min + (end / 100) * span;
-      return normalizeDomain(xMin, xMax);
-    })();
-    const yDomain = normalizeDomain(yMin, yMax);
-
     // IMPORTANT: grid-local CSS px ranges (0..plotWidth/Height), for interaction hit-testing.
-    const xScale = createLinearScale().domain(xDomain.min, xDomain.max).range(0, plotSize.plotWidthCss);
-    const yScale = createLinearScale().domain(yDomain.min, yDomain.max).range(plotSize.plotHeightCss, 0);
+    const xScale = createLinearScale().domain(domains.xDomain.min, domains.xDomain.max).range(0, plotSize.plotWidthCss);
+    const yScale = createLinearScale().domain(domains.yDomain.min, domains.yDomain.max).range(plotSize.plotHeightCss, 0);
 
     return { xScale, yScale, plotWidthCss: plotSize.plotWidthCss, plotHeightCss: plotSize.plotHeightCss };
   };
@@ -1207,8 +1369,82 @@ export function createRenderCoordinator(
     if (disposed) throw new Error('RenderCoordinator is disposed.');
   };
 
+  const cancelUpdateTransition = (): void => {
+    if (updateAnimId) {
+      try {
+        updateAnimController.cancel(updateAnimId);
+      } catch {
+        // best-effort
+      }
+    }
+    updateAnimId = null;
+    updateProgress01 = 1;
+    updateTransition = null;
+    resetUpdateInterpolationCaches();
+  };
+
+  const isDomainEqual = (a: { readonly min: number; readonly max: number }, b: { readonly min: number; readonly max: number }): boolean =>
+    a.min === b.min && a.max === b.max;
+
+  const didSeriesDataLikelyChange = (
+    prev: ResolvedChartGPUOptions['series'],
+    next: ResolvedChartGPUOptions['series']
+  ): boolean => {
+    if (prev.length !== next.length) return true;
+    for (let i = 0; i < prev.length; i++) {
+      const a = prev[i]!;
+      const b = next[i]!;
+      if (a.type !== b.type) return true;
+
+      // Prefer cheap reference checks (good enough for eligibility gating).
+      if (a.type === 'pie') {
+        const aPie = a as ResolvedPieSeriesConfig;
+        const bPie = b as ResolvedPieSeriesConfig;
+        if (aPie.data !== bPie.data) return true;
+        if (aPie.data.length !== bPie.data.length) return true;
+      } else {
+        const aAny = a as unknown as { readonly rawData?: ReadonlyArray<DataPoint>; readonly data: ReadonlyArray<DataPoint> };
+        const bAny = b as unknown as { readonly rawData?: ReadonlyArray<DataPoint>; readonly data: ReadonlyArray<DataPoint> };
+        const aRaw = (aAny.rawData ?? aAny.data) as ReadonlyArray<DataPoint>;
+        const bRaw = (bAny.rawData ?? bAny.data) as ReadonlyArray<DataPoint>;
+        if (aRaw !== bRaw) return true;
+        if (aRaw.length !== bRaw.length) return true;
+      }
+    }
+    return false;
+  };
+
   const setOptions: RenderCoordinator['setOptions'] = (resolvedOptions) => {
     assertNotDisposed();
+
+    // Capture "from" snapshot BEFORE overwriting coordinator state.
+    const fromZoomRange = zoomState?.getRange() ?? null;
+    const fromSnapshot: UpdateTransitionSnapshot = (() => {
+      // Requirement (mid-flight updates): if a transition is running, rebase from the current blended state.
+      if (updateTransition && updateAnimId) {
+        try {
+          updateAnimController.update(performance.now());
+        } catch {
+          // best-effort
+        }
+        return computeUpdateSnapshotAtProgress(updateTransition, updateProgress01, fromZoomRange);
+      }
+
+      const fromXBase = computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
+      const fromXVisible = computeVisibleXDomain(fromXBase, fromZoomRange);
+      const fromYBase = computeBaseYDomain(currentOptions, runtimeRawBoundsByIndex);
+      return {
+        xBaseDomain: fromXBase,
+        xVisibleDomain: { min: fromXVisible.min, max: fromXVisible.max },
+        yBaseDomain: fromYBase,
+        series: renderSeries,
+      };
+    })();
+
+    // Cancel any prior update transition AFTER capturing the rebased "from" snapshot.
+    cancelUpdateTransition();
+    const likelyDataChanged = didSeriesDataLikelyChange(currentOptions.series, resolvedOptions.series);
+
     currentOptions = resolvedOptions;
     runtimeBaseSeries = resolvedOptions.series;
     renderSeries = resolvedOptions.series;
@@ -1254,6 +1490,78 @@ export function createRenderCoordinator(
       introPhase = 'done';
       introProgress01 = 1;
     }
+
+    // If animation is explicitly disabled, ensure any running update transition is stopped.
+    if (currentOptions.animation === false) {
+      cancelUpdateTransition();
+      return;
+    }
+
+    // Capture "to" snapshot after recompute.
+    const toZoomRange = zoomState?.getRange() ?? null;
+    const toXBase = computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
+    const toXVisible = computeVisibleXDomain(toXBase, toZoomRange);
+    const toYBase = computeBaseYDomain(currentOptions, runtimeRawBoundsByIndex);
+    const toSeriesForTransition = renderSeries;
+
+    const domainChanged = !isDomainEqual(fromSnapshot.xBaseDomain, toXBase) || !isDomainEqual(fromSnapshot.yBaseDomain, toYBase);
+
+    const shouldAnimateUpdate = hasRenderedOnce && (domainChanged || likelyDataChanged);
+    if (!shouldAnimateUpdate) return;
+
+    const updateCfg = resolveUpdateAnimationConfig(currentOptions.animation);
+    if (!updateCfg) return;
+
+    updateTransition = {
+      from: {
+        xBaseDomain: fromSnapshot.xBaseDomain,
+        xVisibleDomain: fromSnapshot.xVisibleDomain,
+        yBaseDomain: fromSnapshot.yBaseDomain,
+        series: fromSnapshot.series,
+      },
+      to: {
+        xBaseDomain: toXBase,
+        xVisibleDomain: { min: toXVisible.min, max: toXVisible.max },
+        yBaseDomain: toYBase,
+        series: toSeriesForTransition,
+      },
+    };
+    resetUpdateInterpolationCaches();
+
+    const totalMs = updateCfg.delayMs + updateCfg.durationMs;
+    const easingWithDelay: EasingFunction = (t01) => {
+      const t = clamp01(t01);
+      if (!(totalMs > 0)) return 1;
+
+      const elapsedMs = t * totalMs;
+      if (elapsedMs <= updateCfg.delayMs) return 0;
+
+      if (!(updateCfg.durationMs > 0)) return 1;
+      const innerT = (elapsedMs - updateCfg.delayMs) / updateCfg.durationMs;
+      return updateCfg.easing(innerT);
+    };
+
+    updateProgress01 = 0;
+    const id = updateAnimController.animate(
+      0,
+      1,
+      totalMs,
+      easingWithDelay,
+      (value) => {
+        if (disposed || updateAnimId !== id) return;
+        updateProgress01 = clamp01(value);
+        // Render-on-demand: request frames only while the update transition is active.
+        if (updateProgress01 < 1) requestRender();
+      },
+      () => {
+        if (disposed || updateAnimId !== id) return;
+        updateProgress01 = 1;
+        updateTransition = null;
+        updateAnimId = null;
+        resetUpdateInterpolationCaches();
+      }
+    );
+    updateAnimId = id;
   };
 
   const flushPendingAppendsIfNeeded = (): void => {
@@ -1394,15 +1702,15 @@ export function createRenderCoordinator(
     flushPendingAppendsIfNeeded();
 
     const hasCartesianSeries = currentOptions.series.some((s) => s.type !== 'pie');
-    const seriesForRender = renderSeries;
+    const seriesForIntro = renderSeries;
 
     // Story 5.16: start/update intro animation once we have drawable series marks.
     if (introPhase !== 'done') {
       const introCfg = resolveIntroAnimationConfig(currentOptions.animation);
 
       const hasDrawableSeriesMarks = (() => {
-        for (let i = 0; i < seriesForRender.length; i++) {
-          const s = seriesForRender[i]!;
+        for (let i = 0; i < seriesForIntro.length; i++) {
+          const s = seriesForIntro[i]!;
           switch (s.type) {
             case 'pie': {
               // Pie renderer only emits slices with value > 0.
@@ -1465,15 +1773,44 @@ export function createRenderCoordinator(
       introAnimController.update(performance.now());
     }
 
+    // Story 5.17: progress update animation based on wall-clock time.
+    // (Interpolation is applied below; this tick just advances progress.)
+    if (updateTransition !== null && updateAnimId) {
+      updateAnimController.update(performance.now());
+    }
+
     const gridArea = computeGridArea(gpuContext, currentOptions);
     eventManager.updateGridArea(gridArea);
     const zoomRange = zoomState?.getRange() ?? null;
-    const { xScale, yScale } = computeScales(currentOptions, gridArea, zoomRange, runtimeRawBoundsByIndex);
+
+    const updateP = updateTransition ? clamp01(updateProgress01) : 1;
+    const baseXDomain = updateTransition
+      ? lerpDomain(updateTransition.from.xBaseDomain, updateTransition.to.xBaseDomain, updateP)
+      : computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
+    const yBaseDomain = updateTransition
+      ? lerpDomain(updateTransition.from.yBaseDomain, updateTransition.to.yBaseDomain, updateP)
+      : computeBaseYDomain(currentOptions, runtimeRawBoundsByIndex);
+    const visibleXDomain = computeVisibleXDomain(baseXDomain, zoomRange);
+
     const plotClipRect = computePlotClipRect(gridArea);
     const plotScissor = computePlotScissorDevicePx(gridArea);
 
-    const interactionScales = computeInteractionScalesGridCssPx(gridArea, zoomRange);
+    const xScale = createLinearScale()
+      .domain(visibleXDomain.min, visibleXDomain.max)
+      .range(plotClipRect.left, plotClipRect.right);
+    const yScale = createLinearScale().domain(yBaseDomain.min, yBaseDomain.max).range(plotClipRect.bottom, plotClipRect.top);
+
+    const interactionScales = computeInteractionScalesGridCssPx(gridArea, {
+      xDomain: { min: visibleXDomain.min, max: visibleXDomain.max },
+      yDomain: yBaseDomain,
+    });
     lastInteractionScales = interactionScales;
+
+    // Story 5.17: during update transitions, render animated series snapshots.
+    const seriesForRender =
+      updateTransition && updateP < 1
+        ? interpolateSeriesForUpdate(updateTransition.from.series, updateTransition.to.series, updateP, updateInterpolationCaches)
+        : renderSeries;
 
     // Keep `interactionX` in sync with real pointer movement (domain units).
     if (
@@ -1752,8 +2089,7 @@ export function createRenderCoordinator(
       tooltip?.hide();
     }
 
-    const globalBounds = computeGlobalBounds(currentOptions.series, runtimeRawBoundsByIndex);
-    const defaultBaseline = currentOptions.yAxis.min ?? globalBounds.yMin;
+    const defaultBaseline = currentOptions.yAxis.min ?? yBaseDomain.min;
     const barSeriesConfigs: ResolvedBarSeriesConfig[] = [];
 
     const introP = introPhase === 'running' ? clamp01(introProgress01) : 1;
@@ -1930,6 +2266,8 @@ export function createRenderCoordinator(
     pass.end();
     device.queue.submit([encoder.finish()]);
 
+    hasRenderedOnce = true;
+
     if (overlay && overlayContainer) {
       const canvas = gpuContext.canvas;
       // IMPORTANT: overlay positioning must be done in *CSS pixels* and in the overlayContainer's
@@ -2064,6 +2402,17 @@ export function createRenderCoordinator(
     introAnimId = null;
     introPhase = 'done';
     introProgress01 = 1;
+
+    // Story 5.17: stop update animation and avoid further render requests.
+    try {
+      if (updateAnimId) updateAnimController.cancel(updateAnimId);
+      updateAnimController.cancelAll();
+    } catch {
+      // best-effort
+    }
+    updateAnimId = null;
+    updateProgress01 = 1;
+    updateTransition = null;
 
     if (resampleTimer !== null) {
       clearTimeout(resampleTimer);
