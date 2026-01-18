@@ -97,7 +97,11 @@ const computeGlobalBounds = (series: ResolvedChartGPUOptions['series']): Bounds 
   let yMax = Number.NEGATIVE_INFINITY;
 
   for (let s = 0; s < series.length; s++) {
-    const data = series[s].data;
+    const seriesConfig = series[s];
+    // Pie series are non-cartesian; they don't participate in x/y bounds.
+    if (seriesConfig.type === 'pie') continue;
+
+    const data = seriesConfig.data;
     for (let i = 0; i < data.length; i++) {
       const { x, y } = getPointXY(data[i]);
       if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
@@ -558,6 +562,8 @@ export function createRenderCoordinator(
         return false;
       case 'scatter':
         return false;
+      case 'pie':
+        return false;
       default:
         return assertUnreachable(series);
     }
@@ -804,6 +810,10 @@ export function createRenderCoordinator(
         }
         case 'scatter': {
           scatterRenderers[i].prepare(s, s.data, xScale, yScale, gridArea);
+          break;
+        }
+        case 'pie': {
+          // Pie is currently non-cartesian and not rendered by the coordinator yet.
           break;
         }
         default:

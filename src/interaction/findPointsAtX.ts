@@ -162,7 +162,11 @@ export function findPointsAtX(
   const barLayout = computeBarHitTestLayout(series, xScale);
 
   for (let s = 0; s < series.length; s++) {
-    const data = series[s]?.data;
+    const seriesConfig = series[s];
+    // Pie is non-cartesian; it can't match an x position.
+    if (seriesConfig.type === 'pie') continue;
+
+    const data = seriesConfig.data;
     const n = data.length;
     if (n === 0) continue;
 
@@ -172,7 +176,7 @@ export function findPointsAtX(
     // Bar series: return the correct bar dataIndex for xValue when inside the bar interval.
     // When tolerance is finite: require an (expanded) interval hit.
     // When tolerance is non-finite: attempt exact hit, otherwise fall back to nearest-x behavior below.
-    if (series[s]?.type === 'bar' && barLayout) {
+    if (seriesConfig.type === 'bar' && barLayout) {
       const clusterIndex = barLayout.clusterIndexByGlobalSeriesIndex.get(s);
       if (clusterIndex !== undefined) {
         const { barWidth, gap, clusterWidth } = barLayout;

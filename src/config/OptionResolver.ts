@@ -7,6 +7,7 @@ import type {
   AreaSeriesConfig,
   BarSeriesConfig,
   LineSeriesConfig,
+  PieSeriesConfig,
   ScatterSeriesConfig,
 } from './types';
 import { defaultAreaStyle, defaultLineStyle, defaultOptions, defaultPalette } from './defaults';
@@ -44,11 +45,18 @@ export type ResolvedScatterSeriesConfig = Readonly<
   }
 >;
 
+export type ResolvedPieSeriesConfig = Readonly<
+  Omit<PieSeriesConfig, 'color'> & {
+    readonly color: string;
+  }
+>;
+
 export type ResolvedSeriesConfig =
   | ResolvedLineSeriesConfig
   | ResolvedAreaSeriesConfig
   | ResolvedBarSeriesConfig
-  | ResolvedScatterSeriesConfig;
+  | ResolvedScatterSeriesConfig
+  | ResolvedPieSeriesConfig;
 
 export interface ResolvedChartGPUOptions
   extends Omit<ChartGPUOptions, 'grid' | 'xAxis' | 'yAxis' | 'theme' | 'palette' | 'series'> {
@@ -110,6 +118,16 @@ const normalizeOptionalColor = (color: unknown): string | undefined => {
   if (typeof color !== 'string') return undefined;
   const trimmed = color.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+};
+
+const assertUnreachable = (value: never): never => {
+  // Should never happen if SeriesConfig union is exhaustively handled.
+  // This is defensive runtime safety for JS callers / invalid inputs.
+  throw new Error(
+    `Unhandled series type: ${
+      (value as unknown as { readonly type?: unknown } | null)?.type ?? 'unknown'
+    }`
+  );
 };
 
 export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChartGPUOptions {
@@ -203,6 +221,12 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
       }
       case 'scatter': {
         return { ...s, color };
+      }
+      case 'pie': {
+        return { ...s, color };
+      }
+      default: {
+        return assertUnreachable(s);
       }
     }
   });
