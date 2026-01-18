@@ -7,6 +7,7 @@ import type {
   AreaSeriesConfig,
   BarSeriesConfig,
   LineSeriesConfig,
+  PieDataItem,
   PieSeriesConfig,
   ScatterSeriesConfig,
 } from './types';
@@ -45,9 +46,12 @@ export type ResolvedScatterSeriesConfig = Readonly<
   }
 >;
 
+export type ResolvedPieDataItem = Readonly<Omit<PieDataItem, 'color'> & { readonly color: string }>;
+
 export type ResolvedPieSeriesConfig = Readonly<
-  Omit<PieSeriesConfig, 'color'> & {
+  Omit<PieSeriesConfig, 'color' | 'data'> & {
     readonly color: string;
+    readonly data: ReadonlyArray<ResolvedPieDataItem>;
   }
 >;
 
@@ -223,7 +227,16 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
         return { ...s, color };
       }
       case 'pie': {
-        return { ...s, color };
+        const resolvedData: ReadonlyArray<ResolvedPieDataItem> = (s.data ?? []).map((item, itemIndex) => {
+          const itemColor = normalizeOptionalColor(item?.color);
+          const fallback = theme.colorPalette[(i + itemIndex) % theme.colorPalette.length];
+          return {
+            ...item,
+            color: itemColor ?? fallback,
+          };
+        });
+
+        return { ...s, color, data: resolvedData };
       }
       default: {
         return assertUnreachable(s);

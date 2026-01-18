@@ -110,7 +110,7 @@ export interface ScatterSeriesConfig extends SeriesConfigBase {
   readonly symbol?: ScatterSymbol;
 }
 
-export type PieDataItem = Readonly<{ value: number; name: string }>;
+export type PieDataItem = Readonly<{ value: number; name: string; color?: string }>;
 
 export interface PieItemStyleConfig {
   readonly borderRadius?: number;

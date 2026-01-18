@@ -97,7 +97,7 @@ Now that you have a GPU context initialized, you can:
 
 See the [examples directory](../examples/) for complete working examples.
 
-Chart series types include `'line' | 'area' | 'bar' | 'scatter' | 'pie'`; see [`types.ts`](../src/config/types.ts). Note: pie series are currently type support only (not rendered / non-cartesian); see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
+Chart series types include `'line' | 'area' | 'bar' | 'scatter' | 'pie'`; see [`types.ts`](../src/config/types.ts). Note: pie series are non-cartesian and do not participate in cartesian x/y bounds derivation or cartesian hit-testing; see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts), [`findNearestPoint.ts`](../src/interaction/findNearestPoint.ts), and [`findPointsAtX.ts`](../src/interaction/findPointsAtX.ts).
 
 ChartGPU also supports syncing interaction across multiple charts (crosshair x-position + tooltip x-value). See the public `connectCharts(...)` helper in [`createChartSync.ts`](../src/interaction/createChartSync.ts) and the API notes in [`API.md`](./API.md).
 
@@ -116,6 +116,8 @@ The `basic-line` example demonstrates line series configuration (including a fil
 The `scatter` example demonstrates instanced scatter rendering with thousands of points, including fixed `symbolSize`, per-point `[x, y, size]`, and a functional `symbolSize`. See [scatter/main.ts](../examples/scatter/main.ts).
 
 The `grouped-bar` example demonstrates clustered + stacked bar rendering (via `series[i].stack`, including negative values) and bar layout options (`barWidth`, `barGap`, `barCategoryGap`). See [grouped-bar/main.ts](../examples/grouped-bar/main.ts).
+
+The `pie` example demonstrates pie/donut rendering and per-slice `PieDataItem.color?: string`. See [pie/main.ts](../examples/pie/main.ts) and the option types in [`types.ts`](../src/config/types.ts).
 
 The `interactive` example demonstrates two vertically stacked charts with synced interaction (via `connectCharts(...)`), axis-trigger tooltip mode (`ChartGPUOptions.tooltip.trigger = 'axis'`) with a custom formatter, and click logging. See [interactive/main.ts](../examples/interactive/main.ts) and [createChartSync.ts](../src/interaction/createChartSync.ts).
 

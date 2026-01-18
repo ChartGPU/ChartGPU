@@ -118,7 +118,9 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
   - Scatter point tuples may include an optional third `size` value (`readonly [x, y, size?]`).
   - **Rendering (current)**: scatter series render as instanced circles (SDF + alpha blending). Size is treated as a **radius in CSS pixels** from either the per-point `size` (when provided) or `series.symbolSize` as a fallback. See the internal renderer [`createScatterRenderer.ts`](../src/renderers/createScatterRenderer.ts) and shader [`scatter.wgsl`](../src/shaders/scatter.wgsl).
 - **`PieSeriesConfig`**: extends the shared series fields with `type: 'pie'`. See [`types.ts`](../src/config/types.ts).
-  - **Current limitations (important)**: pie series are **non-cartesian** and are currently **type support only**. They are not rendered by the coordinator yet (see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts)) and do not participate in cartesian x/y bounds derivation or cartesian hit-testing (see [`findNearestPoint.ts`](../src/interaction/findNearestPoint.ts) and [`findPointsAtX.ts`](../src/interaction/findPointsAtX.ts)).
+  - **Behavior notes (important)**: pie series are **non-cartesian** and are rendered as pie/donut slices by the render coordinator (see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) and [`createPieRenderer.ts`](../src/renderers/createPieRenderer.ts)).
+  - **Limitations (important)**: pie series do not participate in cartesian x/y bounds derivation and do not participate in cartesian hit-testing / tooltip matching (see [`findNearestPoint.ts`](../src/interaction/findNearestPoint.ts) and [`findPointsAtX.ts`](../src/interaction/findPointsAtX.ts)).
+  - **Slice colors**: each `PieDataItem` supports `color?: string`. Color precedence is **`item.color`** when provided, otherwise a palette fallback (see [`resolveOptions`](../src/config/OptionResolver.ts)). For a working example, see [`examples/pie/`](../examples/pie/).
 - **`BarItemStyleConfig`**: bar styling options. See [`types.ts`](../src/config/types.ts).
   - **`borderRadius?: number`**
   - **`borderWidth?: number`**
@@ -506,7 +508,7 @@ Shader sources: [`line.wgsl`](../src/shaders/line.wgsl) and [`area.wgsl`](../src
 
 Bar renderer implementation: [`createBarRenderer.ts`](../src/renderers/createBarRenderer.ts). Shader source: [`bar.wgsl`](../src/shaders/bar.wgsl) (instanced rectangle expansion; per-instance `vec4<f32>(x, y, width, height)`; intended draw call uses 6 vertices per instance for 2 triangles).
 
-Pie slice shader source: [`pie.wgsl`](../src/shaders/pie.wgsl) (instanced quad + SDF mask for pie/donut slices; currently not wired into [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts)).
+Pie slice shader source: [`pie.wgsl`](../src/shaders/pie.wgsl) (instanced quad + SDF mask for pie/donut slices; wired via [`createPieRenderer.ts`](../src/renderers/createPieRenderer.ts) and orchestrated by [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts)).
 
 #### Scatter renderer (internal / contributor notes)
 

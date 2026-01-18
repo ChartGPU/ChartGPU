@@ -8,6 +8,7 @@ import { createAreaRenderer } from '../renderers/createAreaRenderer';
 import { createLineRenderer } from '../renderers/createLineRenderer';
 import { createBarRenderer } from '../renderers/createBarRenderer';
 import { createScatterRenderer } from '../renderers/createScatterRenderer';
+import { createPieRenderer } from '../renderers/createPieRenderer';
 import { createCrosshairRenderer } from '../renderers/createCrosshairRenderer';
 import type { CrosshairRenderOptions } from '../renderers/createCrosshairRenderer';
 import { createHighlightRenderer } from '../renderers/createHighlightRenderer';
@@ -483,6 +484,7 @@ export function createRenderCoordinator(
   const areaRenderers: Array<ReturnType<typeof createAreaRenderer>> = [];
   const lineRenderers: Array<ReturnType<typeof createLineRenderer>> = [];
   const scatterRenderers: Array<ReturnType<typeof createScatterRenderer>> = [];
+  const pieRenderers: Array<ReturnType<typeof createPieRenderer>> = [];
   const barRenderer = createBarRenderer(device, { targetFormat });
 
   const ensureAreaRendererCount = (count: number): void => {
@@ -515,9 +517,20 @@ export function createRenderCoordinator(
     }
   };
 
+  const ensurePieRendererCount = (count: number): void => {
+    while (pieRenderers.length > count) {
+      const r = pieRenderers.pop();
+      r?.dispose();
+    }
+    while (pieRenderers.length < count) {
+      pieRenderers.push(createPieRenderer(device, { targetFormat }));
+    }
+  };
+
   ensureAreaRendererCount(currentOptions.series.length);
   ensureLineRendererCount(currentOptions.series.length);
   ensureScatterRendererCount(currentOptions.series.length);
+  ensurePieRendererCount(currentOptions.series.length);
 
   const assertNotDisposed = (): void => {
     if (disposed) throw new Error('RenderCoordinator is disposed.');
@@ -541,6 +554,7 @@ export function createRenderCoordinator(
     ensureAreaRendererCount(nextCount);
     ensureLineRendererCount(nextCount);
     ensureScatterRendererCount(nextCount);
+    ensurePieRendererCount(nextCount);
 
     // When the series count shrinks, explicitly destroy per-index GPU buffers for removed series.
     // This avoids recreating the entire DataStore and keeps existing buffers for retained indices.
@@ -813,7 +827,7 @@ export function createRenderCoordinator(
           break;
         }
         case 'pie': {
-          // Pie is currently non-cartesian and not rendered by the coordinator yet.
+          pieRenderers[i].prepare(s, gridArea);
           break;
         }
         default:
@@ -842,6 +856,7 @@ export function createRenderCoordinator(
 
     // Render order:
     // - grid first (background)
+    // - pies early (non-cartesian, visible behind cartesian series)
     // - area fills next (so they don't cover strokes/axes)
     // - bars next (fills)
     // - scatter next (points on top of fills, below strokes/overlays)
@@ -849,6 +864,12 @@ export function createRenderCoordinator(
     // - highlight next (on top of strokes)
     // - axes last (on top)
     gridRenderer.render(pass);
+
+    for (let i = 0; i < currentOptions.series.length; i++) {
+      if (currentOptions.series[i].type === 'pie') {
+        pieRenderers[i].render(pass);
+      }
+    }
 
     for (let i = 0; i < currentOptions.series.length; i++) {
       if (shouldRenderArea(currentOptions.series[i])) {
@@ -1016,6 +1037,11 @@ export function createRenderCoordinator(
       scatterRenderers[i].dispose();
     }
     scatterRenderers.length = 0;
+
+    for (let i = 0; i < pieRenderers.length; i++) {
+      pieRenderers[i].dispose();
+    }
+    pieRenderers.length = 0;
 
     barRenderer.dispose();
 

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pie / Donut - ChartGPU</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #0a0a0a;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    }
+    .page {
+      min-height: 100%;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 16px;
+      padding: 20px;
+      box-sizing: border-box;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.4rem;
+      color: #fff;
+    }
+    header p {
+      margin: 8px 0 0;
+      color: #aaa;
+      line-height: 1.4;
+    }
+    .back {
+      display: inline-block;
+      margin-top: 10px;
+      color: #aaa;
+      text-decoration: none;
+    }
+    .back:hover { color: #fff; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 14px;
+      align-items: stretch;
+    }
+    @media (min-width: 940px) {
+      .grid {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+    .chart-shell {
+      border: 1px solid #333;
+      border-radius: 12px;
+      background: #0f0f14;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      height: clamp(320px, 48vh, 540px);
+      min-height: 320px;
+    }
+    .chart-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.0));
+    }
+    .chart-title {
+      font-size: 0.95rem;
+      font-weight: 650;
+      color: #fff;
+      letter-spacing: 0.01em;
+    }
+    .chart-subtitle {
+      font-size: 0.85rem;
+      color: #9aa0aa;
+    }
+    .chart {
+      width: 100%;
+      height: 100%;
+      flex: 1 1 auto;
+    }
+    .error {
+      padding: 16px;
+      color: #ffb4b4;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1>Pie / Donut</h1>
+      <p>Two charts side-by-side: a pie (inner radius 0) and a donut (inner radius &gt; 0). Each slice sets its own <code>color</code>.</p>
+      <a class="back" href="../index.html">← Back to examples</a>
+    </header>
+
+    <div class="grid">
+      <div class="chart-shell">
+        <div class="chart-head">
+          <div class="chart-title">Pie</div>
+          <div class="chart-subtitle">radius: [0, '72%']</div>
+        </div>
+        <div id="chart-pie" class="chart"></div>
+      </div>
+
+      <div class="chart-shell">
+        <div class="chart-head">
+          <div class="chart-title">Donut</div>
+          <div class="chart-subtitle">radius: ['40%', '72%']</div>
+        </div>
+        <div id="chart-donut" class="chart"></div>
+      </div>
+    </div>
+
+    <div id="error" class="error" style="display:none;"></div>
+  </div>
+
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>
