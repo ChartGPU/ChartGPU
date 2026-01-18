@@ -99,8 +99,8 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
 
 **Series configuration (essential):**
 
-- **`SeriesType`**: `'line' | 'area' | 'bar' | 'scatter'`. See [`types.ts`](../src/config/types.ts).
-- **`SeriesConfig`**: `LineSeriesConfig | AreaSeriesConfig | BarSeriesConfig | ScatterSeriesConfig` (discriminated by `series.type`). See [`types.ts`](../src/config/types.ts).
+- **`SeriesType`**: `'line' | 'area' | 'bar' | 'scatter' | 'pie'`. See [`types.ts`](../src/config/types.ts).
+- **`SeriesConfig`**: `LineSeriesConfig | AreaSeriesConfig | BarSeriesConfig | ScatterSeriesConfig | PieSeriesConfig` (discriminated by `series.type`). See [`types.ts`](../src/config/types.ts).
 - **`LineSeriesConfig`**: extends the shared series fields with `type: 'line'`, optional `lineStyle?: LineStyleConfig`, and optional `areaStyle?: AreaStyleConfig`.
   - When a line series includes `areaStyle`, ChartGPU renders a filled area behind the line (area fills then line strokes). See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
 - **`AreaSeriesConfig`**: extends the shared series fields with `type: 'area'`, optional `baseline?: number`, and optional `areaStyle?: AreaStyleConfig`.
@@ -117,6 +117,8 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
 - **`ScatterSeriesConfig`**: extends the shared series fields with `type: 'scatter'`, optional `symbol?: ScatterSymbol`, and optional `symbolSize?: number | ((value: ScatterPointTuple) => number)`. See [`types.ts`](../src/config/types.ts).
   - Scatter point tuples may include an optional third `size` value (`readonly [x, y, size?]`).
   - **Rendering (current)**: scatter series render as instanced circles (SDF + alpha blending). Size is treated as a **radius in CSS pixels** from either the per-point `size` (when provided) or `series.symbolSize` as a fallback. See the internal renderer [`createScatterRenderer.ts`](../src/renderers/createScatterRenderer.ts) and shader [`scatter.wgsl`](../src/shaders/scatter.wgsl).
+- **`PieSeriesConfig`**: extends the shared series fields with `type: 'pie'`. See [`types.ts`](../src/config/types.ts).
+  - **Current limitations (important)**: pie series are **non-cartesian** and are currently **type support only**. They are not rendered by the coordinator yet (see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts)) and do not participate in cartesian x/y bounds derivation or cartesian hit-testing (see [`findNearestPoint.ts`](../src/interaction/findNearestPoint.ts) and [`findPointsAtX.ts`](../src/interaction/findPointsAtX.ts)).
 - **`BarItemStyleConfig`**: bar styling options. See [`types.ts`](../src/config/types.ts).
   - **`borderRadius?: number`**
   - **`borderWidth?: number`**
