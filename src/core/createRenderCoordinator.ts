@@ -4,7 +4,7 @@ import type {
   ResolvedChartGPUOptions,
   ResolvedPieSeriesConfig,
 } from '../config/OptionResolver';
-import type { DataPoint, DataPointTuple, PieCenter, PieRadius } from '../config/types';
+import type { AnimationConfig, DataPoint, DataPointTuple, PieCenter, PieRadius } from '../config/types';
 import { createDataStore } from '../data/createDataStore';
 import { sampleSeriesDataPoints } from '../data/sampleSeries';
 import { createAxisRenderer } from '../renderers/createAxisRenderer';
@@ -38,6 +38,10 @@ import { createTooltip } from '../components/createTooltip';
 import type { Tooltip } from '../components/createTooltip';
 import type { TooltipParams } from '../config/types';
 import { formatTooltipAxis, formatTooltipItem } from '../components/formatTooltip';
+import { createAnimationController } from './createAnimationController';
+import type { AnimationId } from './createAnimationController';
+import { getEasing } from '../utils/easing';
+import type { EasingFunction } from '../utils/easing';
 
 export interface GPUContextLike {
   readonly device: GPUDevice | null;
@@ -329,6 +333,7 @@ const computePlotClipRect = (
   };
 };
 
+const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
 const clampInt = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v | 0));
 
 const computePlotScissorDevicePx = (
@@ -622,6 +627,108 @@ const computeVisibleXDomain = (
   return { min: normalized.min, max: normalized.max, spanFraction };
 };
 
+type IntroPhase = 'pending' | 'running' | 'done';
+
+const resolveIntroAnimationConfig = (
+  animation: ResolvedChartGPUOptions['animation']
+):
+  | {
+      readonly durationMs: number;
+      readonly delayMs: number;
+      readonly easing: EasingFunction;
+    }
+  | null => {
+  if (animation === false || animation == null) return null;
+
+  const cfg: AnimationConfig | null = animation === true ? {} : animation;
+  if (!cfg) return null;
+
+  const durationMsRaw = cfg.duration ?? 300;
+  const delayMsRaw = cfg.delay ?? 0;
+
+  const durationMs = Number.isFinite(durationMsRaw) ? Math.max(0, durationMsRaw) : 300;
+  const delayMs = Number.isFinite(delayMsRaw) ? Math.max(0, delayMsRaw) : 0;
+
+  return {
+    durationMs,
+    delayMs,
+    easing: getEasing(cfg.easing),
+  };
+};
+
+const computeBaselineForBarsFromData = (seriesConfigs: ReadonlyArray<ResolvedBarSeriesConfig>): number => {
+  let yMin = Number.POSITIVE_INFINITY;
+  let yMax = Number.NEGATIVE_INFINITY;
+
+  for (let s = 0; s < seriesConfigs.length; s++) {
+    const data = seriesConfigs[s]!.data;
+    for (let i = 0; i < data.length; i++) {
+      const { y } = getPointXY(data[i]!);
+      if (!Number.isFinite(y)) continue;
+      if (y < yMin) yMin = y;
+      if (y > yMax) yMax = y;
+    }
+  }
+
+  if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) return 0;
+  if (yMin <= 0 && 0 <= yMax) return 0;
+  return Math.abs(yMin) < Math.abs(yMax) ? yMin : yMax;
+};
+
+const computeBaselineForBarsFromAxis = (
+  seriesConfigs: ReadonlyArray<ResolvedBarSeriesConfig>,
+  yScale: LinearScale,
+  plotClipRect: Readonly<{ top: number; bottom: number }>
+): number => {
+  const yDomainA = yScale.invert(plotClipRect.bottom);
+  const yDomainB = yScale.invert(plotClipRect.top);
+  const yMin = Math.min(yDomainA, yDomainB);
+  const yMax = Math.max(yDomainA, yDomainB);
+
+  if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) {
+    return computeBaselineForBarsFromData(seriesConfigs);
+  }
+
+  if (yMin <= 0 && 0 <= yMax) return 0;
+  if (yMin > 0) return yMin;
+  if (yMax < 0) return yMax;
+  return computeBaselineForBarsFromData(seriesConfigs);
+};
+
+const createAnimatedBarYScale = (
+  baseYScale: LinearScale,
+  plotClipRect: Readonly<{ top: number; bottom: number }>,
+  barSeriesConfigs: ReadonlyArray<ResolvedBarSeriesConfig>,
+  progress01: number
+): LinearScale => {
+  const p = clamp01(progress01);
+  if (p >= 1) return baseYScale;
+
+  const baselineDomain = computeBaselineForBarsFromAxis(barSeriesConfigs, baseYScale, plotClipRect);
+  const baselineClip = baseYScale.scale(baselineDomain);
+
+  const wrapper: LinearScale = {
+    domain(min: number, max: number) {
+      baseYScale.domain(min, max);
+      return wrapper;
+    },
+    range(min: number, max: number) {
+      baseYScale.range(min, max);
+      return wrapper;
+    },
+    scale(value: number) {
+      const v = baseYScale.scale(value);
+      if (!Number.isFinite(v) || !Number.isFinite(baselineClip)) return v;
+      return baselineClip + (v - baselineClip) * p;
+    },
+    invert(pixel: number) {
+      return baseYScale.invert(pixel);
+    },
+  };
+
+  return wrapper;
+};
+
 export function createRenderCoordinator(
   gpuContext: GPUContextLike,
   options: ResolvedChartGPUOptions,
@@ -649,6 +756,12 @@ export function createRenderCoordinator(
   let disposed = false;
   let currentOptions: ResolvedChartGPUOptions = options;
   let lastSeriesCount = options.series.length;
+
+  // Story 5.16: initial-load intro animation (series marks only).
+  let introPhase: IntroPhase = 'pending';
+  let introProgress01 = 0;
+  const introAnimController = createAnimationController();
+  let introAnimId: AnimationId | null = null;
 
   // Prevent spamming console.warn for repeated misuse.
   const warnedPieAppendSeries = new Set<number>();
@@ -1133,6 +1246,14 @@ export function createRenderCoordinator(
       }
     }
     lastSeriesCount = nextCount;
+
+    // If animation is explicitly disabled mid-flight, stop the intro without scheduling more frames.
+    if (currentOptions.animation === false && introPhase === 'running') {
+      introAnimController.cancelAll();
+      introAnimId = null;
+      introPhase = 'done';
+      introProgress01 = 1;
+    }
   };
 
   const flushPendingAppendsIfNeeded = (): void => {
@@ -1275,11 +1396,81 @@ export function createRenderCoordinator(
     const hasCartesianSeries = currentOptions.series.some((s) => s.type !== 'pie');
     const seriesForRender = renderSeries;
 
+    // Story 5.16: start/update intro animation once we have drawable series marks.
+    if (introPhase !== 'done') {
+      const introCfg = resolveIntroAnimationConfig(currentOptions.animation);
+
+      const hasDrawableSeriesMarks = (() => {
+        for (let i = 0; i < seriesForRender.length; i++) {
+          const s = seriesForRender[i]!;
+          switch (s.type) {
+            case 'pie': {
+              // Pie renderer only emits slices with value > 0.
+              if (s.data.some((it) => typeof it?.value === 'number' && Number.isFinite(it.value) && it.value > 0)) {
+                return true;
+              }
+              break;
+            }
+            case 'line':
+            case 'area':
+            case 'bar':
+            case 'scatter': {
+              if (s.data.length > 0) return true;
+              break;
+            }
+            default:
+              assertUnreachable(s);
+          }
+        }
+        return false;
+      })();
+
+      if (introPhase === 'pending' && introCfg && hasDrawableSeriesMarks) {
+        const totalMs = introCfg.delayMs + introCfg.durationMs;
+        const easingWithDelay: EasingFunction = (t01) => {
+          const t = clamp01(t01);
+          if (!(totalMs > 0)) return 1;
+
+          const elapsedMs = t * totalMs;
+          if (elapsedMs <= introCfg.delayMs) return 0;
+
+          if (!(introCfg.durationMs > 0)) return 1;
+          const innerT = (elapsedMs - introCfg.delayMs) / introCfg.durationMs;
+          return introCfg.easing(innerT);
+        };
+
+        introProgress01 = 0;
+        introPhase = 'running';
+        introAnimId = introAnimController.animate(
+          0,
+          1,
+          totalMs,
+          easingWithDelay,
+          (value) => {
+            if (disposed || introPhase !== 'running') return;
+            introProgress01 = clamp01(value);
+            // Render-on-demand: request frames only while the intro is active.
+            if (introProgress01 < 1) requestRender();
+          },
+          () => {
+            if (disposed) return;
+            introPhase = 'done';
+            introProgress01 = 1;
+            introAnimId = null;
+          }
+        );
+      }
+
+      // Progress animations based on wall-clock time. This is cheap when no animations are active.
+      introAnimController.update(performance.now());
+    }
+
     const gridArea = computeGridArea(gpuContext, currentOptions);
     eventManager.updateGridArea(gridArea);
     const zoomRange = zoomState?.getRange() ?? null;
     const { xScale, yScale } = computeScales(currentOptions, gridArea, zoomRange, runtimeRawBoundsByIndex);
     const plotClipRect = computePlotClipRect(gridArea);
+    const plotScissor = computePlotScissorDevicePx(gridArea);
 
     const interactionScales = computeInteractionScalesGridCssPx(gridArea, zoomRange);
     lastInteractionScales = interactionScales;
@@ -1565,6 +1756,8 @@ export function createRenderCoordinator(
     const defaultBaseline = currentOptions.yAxis.min ?? globalBounds.yMin;
     const barSeriesConfigs: ResolvedBarSeriesConfig[] = [];
 
+    const introP = introPhase === 'running' ? clamp01(introProgress01) : 1;
+
     for (let i = 0; i < seriesForRender.length; i++) {
       const s = seriesForRender[i];
       switch (s.type) {
@@ -1619,10 +1812,32 @@ export function createRenderCoordinator(
           break;
         }
         case 'scatter': {
-          scatterRenderers[i].prepare(s, s.data, xScale, yScale, gridArea);
+          // Scatter renderer sets/resets its own scissor. Animate intro via alpha fade.
+          const animated = introP < 1 ? ({ ...s, color: withAlpha(s.color, introP) } as const) : s;
+          scatterRenderers[i].prepare(animated, s.data, xScale, yScale, gridArea);
           break;
         }
         case 'pie': {
+          // Pie renderer sets/resets its own scissor. Animate intro via radius scale (CSS px).
+          if (introP < 1) {
+            const canvas = gpuContext.canvas;
+            const plotWidthCss = interactionScales?.plotWidthCss ?? (canvas ? getPlotSizeCssPx(canvas, gridArea)?.plotWidthCss : null);
+            const plotHeightCss =
+              interactionScales?.plotHeightCss ?? (canvas ? getPlotSizeCssPx(canvas, gridArea)?.plotHeightCss : null);
+            const maxRadiusCss =
+              typeof plotWidthCss === 'number' && typeof plotHeightCss === 'number'
+                ? 0.5 * Math.min(plotWidthCss, plotHeightCss)
+                : 0;
+
+            if (maxRadiusCss > 0) {
+              const radiiCss = resolvePieRadiiCss(s.radius, maxRadiusCss);
+              const inner = Math.max(0, radiiCss.inner) * introP;
+              const outer = Math.max(inner, radiiCss.outer) * introP;
+              const animated: ResolvedPieSeriesConfig = { ...s, radius: [inner, outer] as const };
+              pieRenderers[i].prepare(animated, gridArea);
+              break;
+            }
+          }
           pieRenderers[i].prepare(s, gridArea);
           break;
         }
@@ -1632,7 +1847,8 @@ export function createRenderCoordinator(
     }
 
     // Bars are prepared once and rendered via a single instanced draw call.
-    barRenderer.prepare(barSeriesConfigs, dataStore, xScale, yScale, gridArea);
+    const yScaleForBars = introP < 1 ? createAnimatedBarYScale(yScale, plotClipRect, barSeriesConfigs, introP) : yScale;
+    barRenderer.prepare(barSeriesConfigs, dataStore, xScale, yScaleForBars, gridArea);
 
     const textureView = gpuContext.canvasContext.getCurrentTexture().createView();
     const encoder = device.createCommandEncoder({ label: 'renderCoordinator/commandEncoder' });
@@ -1669,7 +1885,17 @@ export function createRenderCoordinator(
 
     for (let i = 0; i < seriesForRender.length; i++) {
       if (shouldRenderArea(seriesForRender[i])) {
-        areaRenderers[i].render(pass);
+        // Line/area intro reveal: left-to-right plot scissor.
+        if (introP < 1) {
+          const w = clampInt(Math.floor(plotScissor.w * introP), 0, plotScissor.w);
+          if (w > 0 && plotScissor.h > 0) {
+            pass.setScissorRect(plotScissor.x, plotScissor.y, w, plotScissor.h);
+            areaRenderers[i].render(pass);
+            pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+          }
+        } else {
+          areaRenderers[i].render(pass);
+        }
       }
     }
     barRenderer.render(pass);
@@ -1680,7 +1906,17 @@ export function createRenderCoordinator(
     }
     for (let i = 0; i < seriesForRender.length; i++) {
       if (seriesForRender[i].type === 'line') {
-        lineRenderers[i].render(pass);
+        // Line intro reveal: left-to-right plot scissor.
+        if (introP < 1) {
+          const w = clampInt(Math.floor(plotScissor.w * introP), 0, plotScissor.w);
+          if (w > 0 && plotScissor.h > 0) {
+            pass.setScissorRect(plotScissor.x, plotScissor.y, w, plotScissor.h);
+            lineRenderers[i].render(pass);
+            pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+          }
+        } else {
+          lineRenderers[i].render(pass);
+        }
       }
     }
 
@@ -1817,6 +2053,17 @@ export function createRenderCoordinator(
   const dispose: RenderCoordinator['dispose'] = () => {
     if (disposed) return;
     disposed = true;
+
+    // Story 5.16: stop intro animation and avoid further render requests.
+    try {
+      if (introAnimId) introAnimController.cancel(introAnimId);
+      introAnimController.cancelAll();
+    } catch {
+      // best-effort
+    }
+    introAnimId = null;
+    introPhase = 'done';
+    introProgress01 = 1;
 
     if (resampleTimer !== null) {
       clearTimeout(resampleTimer);
