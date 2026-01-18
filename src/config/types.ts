@@ -70,6 +70,32 @@ export interface AreaSeriesConfig extends SeriesConfigBase {
 
 export type SeriesConfig = LineSeriesConfig | AreaSeriesConfig;
 
+/**
+ * Parameters passed to tooltip formatter function.
+ */
+export interface TooltipParams {
+  readonly seriesName: string;
+  readonly seriesIndex: number;
+  readonly dataIndex: number;
+  readonly value: [number, number];
+  readonly color: string;
+}
+
+/**
+ * Tooltip configuration.
+ */
+export interface TooltipConfig {
+  readonly show?: boolean;
+  readonly trigger?: 'item' | 'axis';
+  /**
+   * Custom formatter function for tooltip content.
+   * When trigger is 'item', receives a single TooltipParams.
+   * When trigger is 'axis', receives an array of TooltipParams.
+   * When trigger is undefined, formatter should handle both signatures.
+   */
+  readonly formatter?: ((params: TooltipParams) => string) | ((params: ReadonlyArray<TooltipParams>) => string);
+}
+
 export interface ChartGPUOptions {
   readonly grid?: GridConfig;
   readonly xAxis?: AxisConfig;
@@ -85,5 +111,6 @@ export interface ChartGPUOptions {
    * explicitly specify `color`. Colors should be valid CSS color strings.
    */
   readonly palette?: ReadonlyArray<string>;
+  readonly tooltip?: TooltipConfig;
 }
 

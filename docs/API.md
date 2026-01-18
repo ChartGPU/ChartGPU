@@ -249,6 +249,19 @@ Chart data uploads and per-series GPU vertex buffer caching are handled by the i
 
 Interaction helpers live in [`src/interaction/`](../src/interaction/). These modules are currently internal (not exported from the public entrypoint `src/index.ts`).
 
+#### Event manager (internal)
+
+See [`createEventManager.ts`](../src/interaction/createEventManager.ts).
+
+- **Factory**: `createEventManager(canvas: HTMLCanvasElement, initialGridArea: GridArea): EventManager`
+- **Purpose**: normalizes pointer input into chart-friendly coordinates and emits `'mousemove' | 'click' | 'mouseleave'` events.
+- **Coordinate contract (critical)**:
+  - `payload.x` / `payload.y` are **canvas-local CSS pixels** (relative to the canvas top-left in CSS px via `getBoundingClientRect()`).
+  - `payload.gridX` / `payload.gridY` are **plot-area-local CSS pixels** (canvas-local CSS px minus `GridArea` CSS-pixel margins).
+  - `payload.isInGrid` is computed in **CSS pixels** against the current plot rect.
+- **Layout updates**: `EventManager.updateGridArea(gridArea)` must be called when grid/layout changes (ChartGPU’s internal render coordinator updates it each render).
+- **Current usage**: used internally by the render coordinator to drive the crosshair overlay and to request renders in render-on-demand systems. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
+
 #### Hover state manager (internal)
 
 See [`createHoverState.ts`](../src/interaction/createHoverState.ts).
@@ -315,7 +328,9 @@ A small orchestration layer for “resolved options → render pass submission�
 
 See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) for the complete implementation (including `GPUContextLike` and `RenderCoordinator` types).
 
-- **Factory**: `createRenderCoordinator(gpuContext: GPUContextLike, options: ResolvedChartGPUOptions): RenderCoordinator`
+- **Factory**: `createRenderCoordinator(gpuContext: GPUContextLike, options: ResolvedChartGPUOptions, callbacks?: RenderCoordinatorCallbacks): RenderCoordinator`
+
+- **Callbacks (optional)**: `RenderCoordinatorCallbacks` currently supports `onRequestRender?: () => void` for render-on-demand integration (e.g. schedule a render on pointer-driven interaction state changes). See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
 
 **`RenderCoordinator` methods (essential):**
 
@@ -327,7 +342,9 @@ See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) for t
 
 - **Layout**: computes `GridArea` from resolved grid margins and canvas size.
 - **Scales**: derives `xScale`/`yScale` in clip space; respects explicit axis `min`/`max` overrides and otherwise falls back to global series bounds.
-- **Orchestration order**: clear → grid → area fills → line strokes → axes.
+- **Orchestration order**: clear → grid → area fills → line strokes → axes → crosshair.
+- **Interaction + crosshair (internal)**: the render coordinator creates an internal [event manager](#event-manager-internal) and an internal [crosshair renderer](#crosshair-renderer-internal--contributor-notes). Pointer `mousemove`/`mouseleave` updates crosshair visibility/position; when provided, `callbacks.onRequestRender?.()` is used so pointer movement schedules renders in render-on-demand systems (e.g. `ChartGPU`).
+- **Pointer coordinate contract (high-level)**: the crosshair `prepare(...)` path expects **canvas-local CSS pixels** (`EventManager` payload `x`/`y`). See [`createEventManager.ts`](../src/interaction/createEventManager.ts) and [`createCrosshairRenderer.ts`](../src/renderers/createCrosshairRenderer.ts).
 - **Target format**: uses `gpuContext.preferredFormat` (fallback `'bgra8unorm'`) for renderer pipelines; must match the render pass color attachment format.
 - **Theme application (essential)**: see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
   - Background clear uses `resolvedOptions.theme.backgroundColor`.

@@ -63,7 +63,7 @@ export async function createChartGPU(
     if (!gpuContext || !gpuContext.initialized) return;
 
     coordinator?.dispose();
-    coordinator = createRenderCoordinator(gpuContext, resolvedOptions);
+    coordinator = createRenderCoordinator(gpuContext, resolvedOptions, { onRequestRender: requestRender });
     coordinatorTargetFormat = gpuContext.preferredFormat;
   };
 

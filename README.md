@@ -33,6 +33,8 @@ Chart instances render on demand. `ChartGPU.create(...)` schedules an initial re
 
 `setOption(...)` resolves the provided options against defaults via [`resolveOptions`](src/config/OptionResolver.ts) and applies the resolved result to the internal render coordinator. The per-frame work (series data upload, bounds/extents, and clip-space scales) happens inside [`createRenderCoordinator.ts`](src/core/createRenderCoordinator.ts) during `RenderCoordinator.render()`.
 
+ChartGPU also listens to pointer events on the canvas via an internal event manager to drive an internal crosshair overlay. Pointer movement may schedule on-demand renders (coalesced) so the crosshair stays in sync. This behavior is currently internal and not configurable via `ChartGPUOptions`; see [`createRenderCoordinator.ts`](src/core/createRenderCoordinator.ts), [`createEventManager.ts`](src/interaction/createEventManager.ts), and [`createCrosshairRenderer.ts`](src/renderers/createCrosshairRenderer.ts).
+
 ### Options and defaults
 
 Options are defined by [`ChartGPUOptions`](src/config/types.ts). Baseline defaults live in [`defaultOptions`](src/config/defaults.ts).

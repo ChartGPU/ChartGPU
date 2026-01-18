@@ -6,9 +6,13 @@ import { createGridRenderer } from '../renderers/createGridRenderer';
 import type { GridArea } from '../renderers/createGridRenderer';
 import { createAreaRenderer } from '../renderers/createAreaRenderer';
 import { createLineRenderer } from '../renderers/createLineRenderer';
+import { createCrosshairRenderer } from '../renderers/createCrosshairRenderer';
+import type { CrosshairRenderOptions } from '../renderers/createCrosshairRenderer';
+import { createEventManager } from '../interaction/createEventManager';
+import type { ChartGPUEventPayload } from '../interaction/createEventManager';
 import { createLinearScale } from '../utils/scales';
 import type { LinearScale } from '../utils/scales';
-import { parseCssColorToGPUColor } from '../utils/colors';
+import { parseCssColorToGPUColor, parseCssColorToRgba01 } from '../utils/colors';
 import { createTextOverlay } from '../components/createTextOverlay';
 import type { TextOverlay, TextOverlayAnchor } from '../components/createTextOverlay';
 import { createLegend } from '../components/createLegend';
@@ -28,12 +32,21 @@ export interface RenderCoordinator {
   dispose(): void;
 }
 
+export type RenderCoordinatorCallbacks = Readonly<{
+  /**
+   * Optional hook for render-on-demand systems (like `ChartGPU`) to re-render when
+   * interaction state changes (e.g. crosshair on pointer move).
+   */
+  readonly onRequestRender?: () => void;
+}>;
+
 type Bounds = Readonly<{ xMin: number; xMax: number; yMin: number; yMax: number }>;
 
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
 const DEFAULT_TICK_COUNT: number = 5;
 const DEFAULT_TICK_LENGTH_CSS_PX: number = 6;
 const LABEL_PADDING_CSS_PX = 4;
+const DEFAULT_CROSSHAIR_LINE_WIDTH_CSS_PX = 1;
 
 const assertUnreachable = (value: never): never => {
   // Intentionally minimal message: this is used for compile-time exhaustiveness.
@@ -110,6 +123,21 @@ const computeGridArea = (gpuContext: GPUContextLike, options: ResolvedChartGPUOp
     canvasWidth: canvas.width,
     canvasHeight: canvas.height,
   };
+};
+
+const rgba01ToCssRgba = (rgba: readonly [number, number, number, number]): string => {
+  const r = Math.max(0, Math.min(255, Math.round(rgba[0] * 255)));
+  const g = Math.max(0, Math.min(255, Math.round(rgba[1] * 255)));
+  const b = Math.max(0, Math.min(255, Math.round(rgba[2] * 255)));
+  const a = Math.max(0, Math.min(1, rgba[3]));
+  return `rgba(${r},${g},${b},${a})`;
+};
+
+const withAlpha = (cssColor: string, alphaMultiplier: number): string => {
+  const parsed = parseCssColorToRgba01(cssColor);
+  if (!parsed) return cssColor;
+  const a = Math.max(0, Math.min(1, parsed[3] * alphaMultiplier));
+  return rgba01ToCssRgba([parsed[0], parsed[1], parsed[2], a]);
 };
 
 const computePlotClipRect = (
@@ -195,7 +223,11 @@ const computeScales = (
   return { xScale, yScale };
 };
 
-export function createRenderCoordinator(gpuContext: GPUContextLike, options: ResolvedChartGPUOptions): RenderCoordinator {
+export function createRenderCoordinator(
+  gpuContext: GPUContextLike,
+  options: ResolvedChartGPUOptions,
+  callbacks?: RenderCoordinatorCallbacks
+): RenderCoordinator {
   if (!gpuContext.initialized) {
     throw new Error('RenderCoordinator: gpuContext must be initialized.');
   }
@@ -226,6 +258,39 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
   const gridRenderer = createGridRenderer(device, { targetFormat });
   const xAxisRenderer = createAxisRenderer(device, { targetFormat });
   const yAxisRenderer = createAxisRenderer(device, { targetFormat });
+  const crosshairRenderer = createCrosshairRenderer(device, { targetFormat });
+  crosshairRenderer.setVisible(false);
+
+  const initialGridArea = computeGridArea(gpuContext, currentOptions);
+  const eventManager = createEventManager(gpuContext.canvas, initialGridArea);
+
+  type PointerState = Readonly<{
+    x: number;
+    y: number;
+    isInGrid: boolean;
+    hasPointer: boolean;
+  }>;
+
+  let pointerState: PointerState = { x: 0, y: 0, isInGrid: false, hasPointer: false };
+
+  const requestRender = (): void => {
+    callbacks?.onRequestRender?.();
+  };
+
+  const onMouseMove = (payload: ChartGPUEventPayload): void => {
+    pointerState = { x: payload.x, y: payload.y, isInGrid: payload.isInGrid, hasPointer: true };
+    crosshairRenderer.setVisible(payload.isInGrid);
+    requestRender();
+  };
+
+  const onMouseLeave = (_payload: ChartGPUEventPayload): void => {
+    pointerState = { x: pointerState.x, y: pointerState.y, isInGrid: false, hasPointer: false };
+    crosshairRenderer.setVisible(false);
+    requestRender();
+  };
+
+  eventManager.on('mousemove', onMouseMove);
+  eventManager.on('mouseleave', onMouseLeave);
 
   const areaRenderers: Array<ReturnType<typeof createAreaRenderer>> = [];
   const lineRenderers: Array<ReturnType<typeof createLineRenderer>> = [];
@@ -292,6 +357,7 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
     if (!gpuContext.canvasContext || !gpuContext.canvas) return;
 
     const gridArea = computeGridArea(gpuContext, currentOptions);
+    eventManager.updateGridArea(gridArea);
     const { xScale, yScale } = computeScales(currentOptions, gridArea);
     const plotClipRect = computePlotClipRect(gridArea);
 
@@ -312,6 +378,20 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
       currentOptions.theme.axisLineColor,
       currentOptions.theme.axisTickColor
     );
+
+    // Crosshair prepare uses canvas-local CSS px (EventManager payload x/y) and current gridArea.
+    if (pointerState.hasPointer && pointerState.isInGrid) {
+      const crosshairOptions: CrosshairRenderOptions = {
+        showX: true,
+        showY: true,
+        color: withAlpha(currentOptions.theme.axisLineColor, 0.6),
+        lineWidth: DEFAULT_CROSSHAIR_LINE_WIDTH_CSS_PX,
+      };
+      crosshairRenderer.prepare(pointerState.x, pointerState.y, gridArea, crosshairOptions);
+      crosshairRenderer.setVisible(true);
+    } else {
+      crosshairRenderer.setVisible(false);
+    }
 
     const globalBounds = computeGlobalBounds(currentOptions.series);
     const defaultBaseline = currentOptions.yAxis.min ?? globalBounds.yMin;
@@ -386,6 +466,7 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
 
     xAxisRenderer.render(pass);
     yAxisRenderer.render(pass);
+    crosshairRenderer.render(pass);
 
     pass.end();
     device.queue.submit([encoder.finish()]);
@@ -512,6 +593,9 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
   const dispose: RenderCoordinator['dispose'] = () => {
     if (disposed) return;
     disposed = true;
+
+    eventManager.dispose();
+    crosshairRenderer.dispose();
 
     for (let i = 0; i < areaRenderers.length; i++) {
       areaRenderers[i].dispose();
