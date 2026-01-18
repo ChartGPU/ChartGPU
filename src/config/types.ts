@@ -5,7 +5,7 @@
 import type { ThemeConfig } from '../themes/types';
 
 export type AxisType = 'value' | 'time' | 'category';
-export type SeriesType = 'line' | 'area';
+export type SeriesType = 'line' | 'area' | 'bar';
 
 /**
  * A single data point for a series.
@@ -68,7 +68,32 @@ export interface AreaSeriesConfig extends SeriesConfigBase {
   readonly areaStyle?: AreaStyleConfig;
 }
 
-export type SeriesConfig = LineSeriesConfig | AreaSeriesConfig;
+export interface BarItemStyleConfig {
+  readonly borderRadius?: number;
+  readonly borderWidth?: number;
+  readonly borderColor?: string;
+}
+
+export interface BarSeriesConfig extends SeriesConfigBase {
+  readonly type: 'bar';
+  /**
+   * Bar width in CSS pixels, or as a percentage of the category width (e.g. '50%').
+   */
+  readonly barWidth?: number | string;
+  /**
+   * Gap between bars in the same category, as a ratio in [0, 1].
+   */
+  readonly barGap?: number;
+  /**
+   * Gap between categories, as a ratio in [0, 1].
+   */
+  readonly barCategoryGap?: number;
+  /** Stack group id. Bars with the same id may be stacked. */
+  readonly stack?: string;
+  readonly itemStyle?: BarItemStyleConfig;
+}
+
+export type SeriesConfig = LineSeriesConfig | AreaSeriesConfig | BarSeriesConfig;
 
 /**
  * Parameters passed to tooltip formatter function.

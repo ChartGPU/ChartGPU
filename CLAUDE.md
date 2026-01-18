@@ -92,12 +92,13 @@ Resolves user options against defaults following specific patterns:
 - Line style: per-series `lineStyle` merged with `defaultLineStyle`
 
 #### Scales (`src/utils/scales.ts`)
-Pure utility for linear scale mapping.
+Pure utility for linear and category scale mapping.
 
 **Critical behaviors:**
 - Chainable setters: `scale.domain(0, 100).range(0, 500)`
 - No clamping: extrapolates beyond domain/range
 - Zero-span domain handling: returns range midpoint for `scale()`, returns domain min for `invert()`
+- Category scales: evenly distribute categories across the range; unknown categories map to `NaN`; duplicate categories in a domain throw
 
 ### Directory Structure
 
@@ -115,7 +116,7 @@ src/
 ├── renderers/      # Rendering utilities
 │   └── rendererUtils.ts     # WebGPU helpers (pipelines, uniforms, shaders)
 ├── utils/          # Utilities
-│   └── scales.ts            # Linear scale mapping
+│   └── scales.ts            # Scale mapping
 ├── shaders/        # WGSL shader files
 └── index.ts        # Public API exports
 ```
@@ -211,7 +212,7 @@ See `src/index.ts` for complete public API surface. Key exports:
 - `defaultOptions`, `resolveOptions()`, `OptionResolver`
 
 **Utilities:**
-- `createLinearScale()` - pure scale utilities
+- `createLinearScale()`, `createCategoryScale()` - pure scale utilities
 
 **Internal modules not exported:**
 - `createDataStore` - GPU buffer management

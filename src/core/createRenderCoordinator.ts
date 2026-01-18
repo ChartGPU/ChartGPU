@@ -1,4 +1,4 @@
-import type { ResolvedAreaSeriesConfig, ResolvedChartGPUOptions } from '../config/OptionResolver';
+import type { ResolvedAreaSeriesConfig, ResolvedBarSeriesConfig, ResolvedChartGPUOptions } from '../config/OptionResolver';
 import type { DataPoint } from '../config/types';
 import { createDataStore } from '../data/createDataStore';
 import { createAxisRenderer } from '../renderers/createAxisRenderer';
@@ -6,6 +6,7 @@ import { createGridRenderer } from '../renderers/createGridRenderer';
 import type { GridArea } from '../renderers/createGridRenderer';
 import { createAreaRenderer } from '../renderers/createAreaRenderer';
 import { createLineRenderer } from '../renderers/createLineRenderer';
+import { createBarRenderer } from '../renderers/createBarRenderer';
 import { createCrosshairRenderer } from '../renderers/createCrosshairRenderer';
 import type { CrosshairRenderOptions } from '../renderers/createCrosshairRenderer';
 import { createHighlightRenderer } from '../renderers/createHighlightRenderer';
@@ -476,6 +477,7 @@ export function createRenderCoordinator(
 
   const areaRenderers: Array<ReturnType<typeof createAreaRenderer>> = [];
   const lineRenderers: Array<ReturnType<typeof createLineRenderer>> = [];
+  const barRenderer = createBarRenderer(device, { targetFormat });
 
   const ensureAreaRendererCount = (count: number): void => {
     while (areaRenderers.length > count) {
@@ -538,6 +540,8 @@ export function createRenderCoordinator(
         return true;
       case 'line':
         return series.areaStyle != null;
+      case 'bar':
+        return false;
       default:
         return assertUnreachable(series);
     }
@@ -747,6 +751,7 @@ export function createRenderCoordinator(
 
     const globalBounds = computeGlobalBounds(currentOptions.series);
     const defaultBaseline = currentOptions.yAxis.min ?? globalBounds.yMin;
+    const barSeriesConfigs: ResolvedBarSeriesConfig[] = [];
 
     for (let i = 0; i < currentOptions.series.length; i++) {
       const s = currentOptions.series[i];
@@ -777,10 +782,17 @@ export function createRenderCoordinator(
 
           break;
         }
+        case 'bar': {
+          barSeriesConfigs.push(s);
+          break;
+        }
         default:
           assertUnreachable(s);
       }
     }
+
+    // Bars are prepared once and rendered via a single instanced draw call.
+    barRenderer.prepare(barSeriesConfigs, dataStore, xScale, yScale, gridArea);
 
     const textureView = gpuContext.canvasContext.getCurrentTexture().createView();
     const encoder = device.createCommandEncoder({ label: 'renderCoordinator/commandEncoder' });
@@ -801,6 +813,7 @@ export function createRenderCoordinator(
     // Render order:
     // - grid first (background)
     // - area fills next (so they don't cover strokes/axes)
+    // - bars next (fills)
     // - line strokes next
     // - highlight next (on top of strokes)
     // - axes last (on top)
@@ -811,6 +824,7 @@ export function createRenderCoordinator(
         areaRenderers[i].render(pass);
       }
     }
+    barRenderer.render(pass);
     for (let i = 0; i < currentOptions.series.length; i++) {
       if (currentOptions.series[i].type === 'line') {
         lineRenderers[i].render(pass);
@@ -961,6 +975,8 @@ export function createRenderCoordinator(
       lineRenderers[i].dispose();
     }
     lineRenderers.length = 0;
+
+    barRenderer.dispose();
 
     gridRenderer.dispose();
     xAxisRenderer.dispose();

@@ -16,6 +16,7 @@ export type {
 } from './ChartGPU';
 export type {
   AreaStyleConfig,
+  BarItemStyleConfig,
   AxisConfig,
   AxisType,
   ChartGPUOptions,
@@ -24,6 +25,7 @@ export type {
   LineStyleConfig,
   AreaSeriesConfig,
   LineSeriesConfig,
+  BarSeriesConfig,
   SeriesConfig,
   SeriesType,
   TooltipParams,
@@ -48,8 +50,8 @@ export { darkTheme, lightTheme, getTheme } from './themes';
 export type { ThemeName } from './themes';
 
 // Scales - Pure utilities
-export { createLinearScale } from './utils/scales';
-export type { LinearScale } from './utils/scales';
+export { createLinearScale, createCategoryScale } from './utils/scales';
+export type { LinearScale, CategoryScale } from './utils/scales';
 
 // Chart sync (interaction)
 export { connectCharts } from './interaction/createChartSync';

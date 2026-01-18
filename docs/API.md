@@ -99,13 +99,25 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
 
 **Series configuration (essential):**
 
-- **`SeriesType`**: `'line' | 'area'`. See [`types.ts`](../src/config/types.ts).
-- **`SeriesConfig`**: `LineSeriesConfig | AreaSeriesConfig` (discriminated by `series.type`). See [`types.ts`](../src/config/types.ts).
+- **`SeriesType`**: `'line' | 'area' | 'bar'`. See [`types.ts`](../src/config/types.ts).
+- **`SeriesConfig`**: `LineSeriesConfig | AreaSeriesConfig | BarSeriesConfig` (discriminated by `series.type`). See [`types.ts`](../src/config/types.ts).
 - **`LineSeriesConfig`**: extends the shared series fields with `type: 'line'`, optional `lineStyle?: LineStyleConfig`, and optional `areaStyle?: AreaStyleConfig`.
   - When a line series includes `areaStyle`, ChartGPU renders a filled area behind the line (area fills then line strokes). See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
 - **`AreaSeriesConfig`**: extends the shared series fields with `type: 'area'`, optional `baseline?: number`, and optional `areaStyle?: AreaStyleConfig`.
   - **`baseline`** is a data-space “filled area floor”. If omitted, ChartGPU defaults it to the y-axis minimum.
   - **`areaStyle.opacity`** controls the fill opacity.
+- **`BarSeriesConfig`**: extends the shared series fields with `type: 'bar'` and bar-specific layout/styling. See [`types.ts`](../src/config/types.ts).
+  - **`barWidth?: number | string`**: bar width in CSS pixels or as a percentage string (relative to the category width).
+  - **`barGap?: number`**: gap between bars in the same category (ratio in \([0, 1]\)).
+  - **`barCategoryGap?: number`**: gap between categories (ratio in \([0, 1]\)).
+  - **`stack?: string`**: stack group id (bars with the same id may be stacked).
+  - **`itemStyle?: BarItemStyleConfig`**: per-bar styling.
+  - **Rendering (current)**: bar series render as clustered bars per x-category via an instanced draw path. If multiple bar series share the same **non-empty** `stack` id, they render as stacked segments within the same cluster slot (positive values stack upward from the baseline; negative values stack downward). See [`createBarRenderer.ts`](../src/renderers/createBarRenderer.ts), shader source [`bar.wgsl`](../src/shaders/bar.wgsl), and coordinator wiring in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts). For an example, see [`examples/grouped-bar/`](../examples/grouped-bar/).
+    - Note: y-axis auto bounds are currently derived from raw series y-values (not stacked totals). If stacked bars clip, set `yAxis.min` / `yAxis.max`.
+- **`BarItemStyleConfig`**: bar styling options. See [`types.ts`](../src/config/types.ts).
+  - **`borderRadius?: number`**
+  - **`borderWidth?: number`**
+  - **`borderColor?: string`**
 
 **Axis configuration (essential):**
 
@@ -173,7 +185,7 @@ ChartGPU provides built-in theme presets and a small helper for selecting them. 
 
 ## Scales (Pure utilities)
 
-ChartGPU exports a small set of pure utilities for mapping numeric domains to numeric ranges. See [`scales.ts`](../src/utils/scales.ts).
+ChartGPU exports a small set of pure utilities for mapping numeric and categorical domains to numeric ranges. See [`scales.ts`](../src/utils/scales.ts).
 
 ### `createLinearScale(): LinearScale`
 
@@ -188,6 +200,22 @@ Creates a linear scale with an initial identity mapping (domain `[0, 1]` -> rang
 ### `LinearScale`
 
 Type definition for the scale returned by `createLinearScale()`. See [`scales.ts`](../src/utils/scales.ts).
+
+### `createCategoryScale(): CategoryScale`
+
+Creates a category scale for mapping an ordered set of string categories to evenly spaced x-positions across a numeric range. See [`scales.ts`](../src/utils/scales.ts).
+
+**Behavior notes (essential):**
+
+- **Even spacing**: categories are evenly distributed across the configured range; `scale(category)` returns the center position of the category’s band.
+- **Unknown category**: `scale(category)` returns `NaN` when the category is not in the domain, and `categoryIndex(category)` returns `-1`.
+- **Empty domain**: `bandwidth()` returns `0`, and `scale(category)` returns the midpoint of the range.
+- **Domain uniqueness**: `domain(categories)` throws if duplicates exist (ambiguous mapping).
+- **Reversed ranges**: reversed ranges are allowed (e.g. `range(max, min)`); positions decrease across the domain.
+
+### `CategoryScale`
+
+Type definition for the scale returned by `createCategoryScale()`. See [`scales.ts`](../src/utils/scales.ts).
 
 ## Functional API (Preferred)
 
@@ -460,6 +488,8 @@ A minimal line-strip renderer factory lives in [`createLineRenderer.ts`](../src/
 - **`LineRenderer.dispose(): void`**
 
 Shader sources: [`line.wgsl`](../src/shaders/line.wgsl) and [`area.wgsl`](../src/shaders/area.wgsl) (triangle-strip filled area under a line).
+
+Bar renderer implementation: [`createBarRenderer.ts`](../src/renderers/createBarRenderer.ts). Shader source: [`bar.wgsl`](../src/shaders/bar.wgsl) (instanced rectangle expansion; per-instance `vec4<f32>(x, y, width, height)`; intended draw call uses 6 vertices per instance for 2 triangles).
 
 - **Area strip vertex convention (essential)**: `area.wgsl` expects CPU-expanded vertices as `p0,p0,p1,p1,...` (triangle-strip), using `@builtin(vertex_index)` parity to choose between the original y and a uniform `baseline`.
 - **Area uniforms (essential)**: vertex uniform includes `transform` and `baseline`; fragment uniform includes solid `color: vec4<f32>`.

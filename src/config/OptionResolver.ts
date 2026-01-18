@@ -5,6 +5,7 @@ import type {
   GridConfig,
   LineStyleConfig,
   AreaSeriesConfig,
+  BarSeriesConfig,
   LineSeriesConfig,
 } from './types';
 import { defaultAreaStyle, defaultLineStyle, defaultOptions, defaultPalette } from './defaults';
@@ -30,7 +31,16 @@ export type ResolvedAreaSeriesConfig = Readonly<
   }
 >;
 
-export type ResolvedSeriesConfig = ResolvedLineSeriesConfig | ResolvedAreaSeriesConfig;
+export type ResolvedBarSeriesConfig = Readonly<
+  Omit<BarSeriesConfig, 'color'> & {
+    readonly color: string;
+  }
+>;
+
+export type ResolvedSeriesConfig =
+  | ResolvedLineSeriesConfig
+  | ResolvedAreaSeriesConfig
+  | ResolvedBarSeriesConfig;
 
 export interface ResolvedChartGPUOptions
   extends Omit<ChartGPUOptions, 'grid' | 'xAxis' | 'yAxis' | 'theme' | 'palette' | 'series'> {
@@ -146,38 +156,44 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
     const inheritedColor = theme.colorPalette[i % theme.colorPalette.length];
     const color = explicitColor ?? inheritedColor;
 
-    if (s.type === 'area') {
-      const areaStyle: ResolvedAreaStyleConfig = {
-        opacity: s.areaStyle?.opacity ?? defaultAreaStyle.opacity,
-      };
+    switch (s.type) {
+      case 'area': {
+        const areaStyle: ResolvedAreaStyleConfig = {
+          opacity: s.areaStyle?.opacity ?? defaultAreaStyle.opacity,
+        };
 
-      return {
-        ...s,
-        color,
-        areaStyle,
-      };
+        return {
+          ...s,
+          color,
+          areaStyle,
+        };
+      }
+      case 'line': {
+        const lineStyle: ResolvedLineStyleConfig = {
+          width: s.lineStyle?.width ?? defaultLineStyle.width,
+          opacity: s.lineStyle?.opacity ?? defaultLineStyle.opacity,
+        };
+
+        // Avoid leaking the unresolved (user) areaStyle shape via object spread.
+        const { areaStyle: _userAreaStyle, ...rest } = s;
+
+        return {
+          ...rest,
+          color,
+          lineStyle,
+          ...(s.areaStyle
+            ? {
+                areaStyle: {
+                  opacity: s.areaStyle.opacity ?? defaultAreaStyle.opacity,
+                },
+              }
+            : null),
+        };
+      }
+      case 'bar': {
+        return { ...s, color };
+      }
     }
-
-    const lineStyle: ResolvedLineStyleConfig = {
-      width: s.lineStyle?.width ?? defaultLineStyle.width,
-      opacity: s.lineStyle?.opacity ?? defaultLineStyle.opacity,
-    };
-
-    // Avoid leaking the unresolved (user) areaStyle shape via object spread.
-    const { areaStyle: _userAreaStyle, ...rest } = s;
-
-    return {
-      ...rest,
-      color,
-      lineStyle,
-      ...(s.areaStyle
-        ? {
-            areaStyle: {
-              opacity: s.areaStyle.opacity ?? defaultAreaStyle.opacity,
-            },
-          }
-        : null),
-    };
   });
 
   return {

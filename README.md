@@ -44,20 +44,16 @@ Options are defined by [`ChartGPUOptions`](src/config/types.ts). Baseline defaul
 - **Default grid**: `left: 60`, `right: 20`, `top: 40`, `bottom: 40`
 - **Palette / series colors**: `ChartGPUOptions.palette` overrides the resolved theme palette (`resolvedOptions.theme.colorPalette`), and default series colors come from `resolvedOptions.theme.colorPalette[i % ...]` when `series[i].color` is missing. Theme also drives background/grid/axis colors during rendering; see [`createRenderCoordinator.ts`](src/core/createRenderCoordinator.ts).
 - **Data points**: `series[i].data` accepts `DataPoint` as either a tuple (`[x, y]`) or an object (`{ x, y }`). See [`types.ts`](src/config/types.ts).
-- **Series types**: `SeriesType` is `'line' | 'area'`, and `series` is a discriminated union (`LineSeriesConfig | AreaSeriesConfig`). Area series support `baseline?: number` (defaults to the y-axis minimum when omitted) and `areaStyle?: { opacity?: number }`. Line series can also include `areaStyle?: { opacity?: number }` to render a filled area behind the line (area fills then line strokes). See [`types.ts`](src/config/types.ts), [`createRenderCoordinator.ts`](src/core/createRenderCoordinator.ts), and [`examples/basic-line/main.ts`](examples/basic-line/main.ts).
+- **Series types**: `SeriesType` is `'line' | 'area' | 'bar'`, and `series` is a discriminated union (`LineSeriesConfig | AreaSeriesConfig | BarSeriesConfig`). See [`types.ts`](src/config/types.ts).
+  - **Line / area**: area series support `baseline?: number` (defaults to the y-axis minimum when omitted) and `areaStyle?: { opacity?: number }`. Line series can also include `areaStyle?: { opacity?: number }` to render a filled area behind the line (area fills then line strokes). See [`createRenderCoordinator.ts`](src/core/createRenderCoordinator.ts) and [`examples/basic-line/main.ts`](examples/basic-line/main.ts).
+  - **Bar (implemented)**: bar series render as clustered bars per x-category. If multiple bar series share the same **non-empty** `stack` id (`series[i].stack`), they render as stacked segments within the same cluster slot. Layout options include `barWidth` (CSS px or % of category width), `barGap` (ratio gap between bars within a category), and `barCategoryGap` (ratio gap between categories). See [`types.ts`](src/config/types.ts), [`createBarRenderer.ts`](src/renderers/createBarRenderer.ts), [`bar.wgsl`](src/shaders/bar.wgsl), and coordinator wiring in [`createRenderCoordinator.ts`](src/core/createRenderCoordinator.ts). For an example, see [`examples/grouped-bar/`](examples/grouped-bar/).
 - **Tooltip configuration**: `ChartGPUOptions.tooltip?: TooltipConfig` supports `trigger?: 'item' | 'axis'` and `formatter?: (params: TooltipParams | TooltipParams[]) => string`. `TooltipParams` includes `seriesName`, `seriesIndex`, `dataIndex`, `value`, and `color` and is exported from the public entrypoint [`src/index.ts`](src/index.ts). See [`types.ts`](src/config/types.ts) and tooltip rendering behavior in [`createRenderCoordinator.ts`](src/core/createRenderCoordinator.ts) (uses the internal DOM tooltip overlay helper [`createTooltip.ts`](src/components/createTooltip.ts)); see also [`docs/API.md`](docs/API.md).
 
 To resolve user options against defaults, use [`OptionResolver.resolve(...)`](src/config/OptionResolver.ts) (or [`resolveOptions(...)`](src/config/OptionResolver.ts)). This merges user-provided values with defaults and returns resolved options.
 
 ## Scales (Pure utilities)
 
-ChartGPU also exports a small pure linear scale utility for mapping numeric domains to numeric ranges. See [`scales.ts`](src/utils/scales.ts) and the “Scales” section in [`docs/API.md`](docs/API.md#scales-pure-utilities).
-
-**Behavior notes (essential):**
-
-- **Chainable setters**: `domain(min, max)` and `range(min, max)` return the same scale instance for chaining.
-- **`scale(value)` / `invert(pixel)`**: no clamping; values outside the configured domain/range extrapolate.
-- **Zero-span domain**: if `min === max`, `scale` returns the midpoint of the range and `invert` returns `min` for any input.
+ChartGPU exports small pure scale utilities for mapping domains to numeric ranges: a linear scale (`createLinearScale()`) and a category scale (`createCategoryScale()`). See [`docs/API.md#scales-pure-utilities`](docs/API.md#scales-pure-utilities) and [`src/utils/scales.ts`](src/utils/scales.ts).
 
 ## Browser Compatibility
 
@@ -116,6 +112,8 @@ See the [examples directory](examples/) for complete working examples. The `hell
 See [hello-world/main.ts](examples/hello-world/main.ts) for implementation.
 
 The `grid-test` example demonstrates matching a renderer pipeline’s target format to the configured canvas format (to avoid a WebGPU validation error caused by a pipeline/attachment format mismatch). See [grid-test/main.ts](examples/grid-test/main.ts) and [`createGridRenderer.ts`](src/renderers/createGridRenderer.ts).
+
+The `grouped-bar` example demonstrates clustered + stacked bars (via `series[i].stack`, including negative values) and bar layout options (`barWidth`, `barGap`, `barCategoryGap`). See [grouped-bar/main.ts](examples/grouped-bar/main.ts).
 
 The `interactive` example demonstrates two stacked charts with synced crosshair/tooltip interaction (via `connectCharts(...)`), axis-trigger tooltips showing all series values at the hovered x, a custom tooltip formatter, and click logging. See [interactive/main.ts](examples/interactive/main.ts).
 
