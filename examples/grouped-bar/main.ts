@@ -19,14 +19,15 @@ async function main() {
     throw new Error('Chart container not found');
   }
 
-  // Story 4.4 acceptance harness:
-  // - 3 bar series share identical x values so grouping is visible
-  // - includes negative y values to validate baseline (0) behavior
+  // Story 4.5 acceptance harness:
+  // - Series A + B share a stack id so they render STACKED (not side-by-side)
+  // - Series C is unstacked, so it renders as a separate clustered bar
+  // - includes negative y values to validate downward stacking behavior
   // - uses barWidth / barGap / barCategoryGap to validate spacing controls
   const xs = [0, 1, 2, 3, 4, 5];
 
   const dataA = makeSeries(xs, [8, 6, -3, 5, 2, -2]);
-  const dataB = makeSeries(xs, [5, -1, 4, 3, -4, 1]);
+  const dataB = makeSeries(xs, [5, -1, -2, 3, -4, 1]);
   const dataC = makeSeries(xs, [2, 3, 1, -2, 6, -5]);
 
   const options: ChartGPUOptions = {
@@ -41,6 +42,7 @@ async function main() {
         name: 'Series A',
         data: dataA,
         color: '#4a9eff',
+        stack: 's1',
         barWidth: '70%',
         barGap: 0.25,
         barCategoryGap: 0.35,
@@ -50,6 +52,7 @@ async function main() {
         name: 'Series B',
         data: dataB,
         color: '#ff4ab0',
+        stack: 's1',
       },
       {
         type: 'bar',

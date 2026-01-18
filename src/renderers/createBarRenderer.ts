@@ -66,6 +66,12 @@ const parsePercent = (value: string): number | null => {
   return Number.isFinite(p) ? p : null;
 };
 
+const normalizeStackId = (stack: unknown): string => {
+  if (typeof stack !== 'string') return '';
+  const trimmed = stack.trim();
+  return trimmed.length > 0 ? trimmed : '';
+};
+
 const isTupleDataPoint = (p: DataPoint): p is readonly [x: number, y: number] => Array.isArray(p);
 
 const getPointXY = (p: DataPoint): { readonly x: number; readonly y: number } => {
@@ -294,7 +300,29 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
     const clipPerCssX = plotSize.plotWidthCss > 0 ? plotClipWidth / plotSize.plotWidthCss : 0;
     void plotClipHeight; // reserved for future y-size conversions (e.g. border radius)
 
-    const groupCount = seriesConfigs.length;
+    // Cluster slots:
+    // - Each unique non-empty stackId gets a single cluster slot.
+    // - Each unstacked series gets its own cluster slot.
+    const stackIdToClusterIndex = new Map<string, number>();
+    const clusterIndexBySeries: number[] = new Array(seriesConfigs.length);
+    let clusterCount = 0;
+    for (let i = 0; i < seriesConfigs.length; i++) {
+      const stackId = normalizeStackId(seriesConfigs[i].stack);
+      if (stackId !== '') {
+        const existing = stackIdToClusterIndex.get(stackId);
+        if (existing !== undefined) {
+          clusterIndexBySeries[i] = existing;
+        } else {
+          const idx = clusterCount++;
+          stackIdToClusterIndex.set(stackId, idx);
+          clusterIndexBySeries[i] = idx;
+        }
+      } else {
+        clusterIndexBySeries[i] = clusterCount++;
+      }
+    }
+    clusterCount = Math.max(1, clusterCount);
+
     const categoryStep = computeBarCategoryStep(seriesConfigs);
     const layout = computeSharedBarLayout(seriesConfigs);
     const barGap = clamp01(layout.barGap ?? DEFAULT_BAR_GAP);
@@ -318,21 +346,23 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
     }
 
     if (!(barWidthClip > 0)) {
-      const denom = groupCount + Math.max(0, groupCount - 1) * barGap;
+      const denom = clusterCount + Math.max(0, clusterCount - 1) * barGap;
       barWidthClip = denom > 0 ? categoryInnerWidthClip / denom : 0;
     }
     barWidthClip = Math.min(barWidthClip, categoryInnerWidthClip);
 
     const gapClip = barWidthClip * barGap;
-    const clusterWidthClip = groupCount * barWidthClip + Math.max(0, groupCount - 1) * gapClip;
+    const clusterWidthClip = clusterCount * barWidthClip + Math.max(0, clusterCount - 1) * gapClip;
 
-    const baselineDomain = computeBaselineForBarsFromAxis(seriesConfigs, yScale, plotClipRect);
+    let baselineDomain = computeBaselineForBarsFromAxis(seriesConfigs, yScale, plotClipRect);
     let baselineClip = yScale.scale(baselineDomain);
     if (!Number.isFinite(baselineClip)) {
       // Fallback for pathological scales: revert to data-derived baseline, then 0.
       const fallbackBaselineDomain = computeBaselineForBarsFromData(seriesConfigs);
+      baselineDomain = fallbackBaselineDomain;
       baselineClip = yScale.scale(fallbackBaselineDomain);
       if (!Number.isFinite(baselineClip)) {
+        baselineDomain = 0;
         baselineClip = yScale.scale(0);
       }
       if (!Number.isFinite(baselineClip)) {
@@ -348,23 +378,77 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
     const f32 = cpuInstanceStagingF32;
     let outFloats = 0;
 
-    for (let groupIndex = 0; groupIndex < seriesConfigs.length; groupIndex++) {
-      const series = seriesConfigs[groupIndex];
+    // Per-stack, per-x running sums in domain units (supports negative stacking too).
+    const stackSumsByStackId = new Map<string, Map<number, { posSum: number; negSum: number }>>();
+
+    for (let seriesIndex = 0; seriesIndex < seriesConfigs.length; seriesIndex++) {
+      const series = seriesConfigs[seriesIndex];
       const data = series.data;
       const [r, g, b, a] = parseSeriesColorToRgba01(series.color);
+      const stackId = normalizeStackId(series.stack);
+      const clusterIndex = clusterIndexBySeries[seriesIndex] ?? 0;
 
       for (let i = 0; i < data.length; i++) {
         const { x, y } = getPointXY(data[i]);
         const xClipCenter = xScale.scale(x);
-        const yClip = yScale.scale(y);
+        if (!Number.isFinite(xClipCenter) || !Number.isFinite(y)) continue;
 
-        if (!Number.isFinite(xClipCenter) || !Number.isFinite(yClip)) continue;
+        const left = xClipCenter - clusterWidthClip / 2 + clusterIndex * (barWidthClip + gapClip);
 
-        const left = xClipCenter - clusterWidthClip / 2 + groupIndex * (barWidthClip + gapClip);
-        const height = yClip - baselineClip;
+        let baseClip = baselineClip;
+        let height = 0;
+
+        if (stackId !== '') {
+          let sumsForX = stackSumsByStackId.get(stackId);
+          if (!sumsForX) {
+            sumsForX = new Map<number, { posSum: number; negSum: number }>();
+            stackSumsByStackId.set(stackId, sumsForX);
+          }
+
+          // NOTE: Never key stacks by raw `x` (float equality is fragile). Instead, compute a stable
+          // integer "category" key so visually-equivalent bars stack together even with tiny noise.
+          let xKey: number;
+          if (Number.isFinite(categoryWidthClip) && categoryWidthClip > 0 && Number.isFinite(xClipCenter)) {
+            xKey = Math.round((xClipCenter - plotClipRect.left) / categoryWidthClip);
+          } else if (Number.isFinite(categoryStep) && categoryStep > 0) {
+            xKey = Math.round(x / categoryStep);
+          } else {
+            // Last-resort: stable-ish quantization in domain space.
+            xKey = Math.round(x * 1e6);
+          }
+
+          let sums = sumsForX.get(xKey);
+          if (!sums) {
+            sums = { posSum: baselineDomain, negSum: baselineDomain };
+            sumsForX.set(xKey, sums);
+          }
+
+          // Stack upward for y>=0, downward for y<0 (domain units).
+          let baseDomain: number;
+          let topDomain: number;
+          if (y >= 0) {
+            baseDomain = sums.posSum;
+            topDomain = baseDomain + y;
+            sums.posSum = topDomain;
+          } else {
+            baseDomain = sums.negSum;
+            topDomain = baseDomain + y;
+            sums.negSum = topDomain;
+          }
+
+          const bClip = yScale.scale(baseDomain);
+          const tClip = yScale.scale(topDomain);
+          if (!Number.isFinite(bClip) || !Number.isFinite(tClip)) continue;
+          baseClip = bClip;
+          height = tClip - bClip;
+        } else {
+          const yClip = yScale.scale(y);
+          if (!Number.isFinite(yClip)) continue;
+          height = yClip - baselineClip;
+        }
 
         f32[outFloats + 0] = left;
-        f32[outFloats + 1] = baselineClip;
+        f32[outFloats + 1] = baseClip;
         f32[outFloats + 2] = barWidthClip;
         f32[outFloats + 3] = height;
         f32[outFloats + 4] = r;

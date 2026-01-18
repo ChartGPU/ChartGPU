@@ -112,7 +112,8 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
   - **`barCategoryGap?: number`**: gap between categories (ratio in \([0, 1]\)).
   - **`stack?: string`**: stack group id (bars with the same id may be stacked).
   - **`itemStyle?: BarItemStyleConfig`**: per-bar styling.
-  - **Rendering (current)**: bar series render as grouped bars (multiple `type: 'bar'` series side-by-side per category) via an instanced draw path. See [`createBarRenderer.ts`](../src/renderers/createBarRenderer.ts), shader source [`bar.wgsl`](../src/shaders/bar.wgsl), and coordinator wiring in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts). For a working example, see [`examples/grouped-bar/`](../examples/grouped-bar/).
+  - **Rendering (current)**: bar series render as clustered bars per x-category via an instanced draw path. If multiple bar series share the same **non-empty** `stack` id, they render as stacked segments within the same cluster slot (positive values stack upward from the baseline; negative values stack downward). See [`createBarRenderer.ts`](../src/renderers/createBarRenderer.ts), shader source [`bar.wgsl`](../src/shaders/bar.wgsl), and coordinator wiring in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts). For an example, see [`examples/grouped-bar/`](../examples/grouped-bar/).
+    - Note: y-axis auto bounds are currently derived from raw series y-values (not stacked totals). If stacked bars clip, set `yAxis.min` / `yAxis.max`.
 - **`BarItemStyleConfig`**: bar styling options. See [`types.ts`](../src/config/types.ts).
   - **`borderRadius?: number`**
   - **`borderWidth?: number`**
