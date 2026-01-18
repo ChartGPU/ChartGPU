@@ -1,4 +1,4 @@
-import type { DataPoint } from '../config/types';
+import type { DataPoint, DataPointTuple } from '../config/types';
 import type { ResolvedBarSeriesConfig, ResolvedSeriesConfig } from '../config/OptionResolver';
 import type { LinearScale } from '../utils/scales';
 
@@ -45,7 +45,7 @@ const normalizeStackId = (stack: unknown): string => {
   return trimmed.length > 0 ? trimmed : '';
 };
 
-const isTupleDataPoint = (p: DataPoint): p is readonly [x: number, y: number] => Array.isArray(p);
+const isTupleDataPoint = (p: DataPoint): p is DataPointTuple => Array.isArray(p);
 
 const getPointXY = (p: DataPoint): { readonly x: number; readonly y: number } => {
   if (isTupleDataPoint(p)) return { x: p[0], y: p[1] };

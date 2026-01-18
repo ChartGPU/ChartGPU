@@ -1,5 +1,6 @@
 import lineWgsl from '../shaders/line.wgsl?raw';
 import type { ResolvedLineSeriesConfig } from '../config/OptionResolver';
+import type { DataPointTuple } from '../config/types';
 import type { LinearScale } from '../utils/scales';
 import { parseCssColorToRgba01 } from '../utils/colors';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
@@ -30,7 +31,7 @@ const parseSeriesColorToRgba01 = (color: string): Rgba =>
 
 const isTupleDataPoint = (
   point: ResolvedLineSeriesConfig['data'][number]
-): point is readonly [x: number, y: number] => Array.isArray(point);
+): point is DataPointTuple => Array.isArray(point);
 
 const getPointXY = (point: ResolvedLineSeriesConfig['data'][number]): { readonly x: number; readonly y: number } => {
   if (isTupleDataPoint(point)) return { x: point[0], y: point[1] };

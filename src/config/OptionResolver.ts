@@ -7,6 +7,7 @@ import type {
   AreaSeriesConfig,
   BarSeriesConfig,
   LineSeriesConfig,
+  ScatterSeriesConfig,
 } from './types';
 import { defaultAreaStyle, defaultLineStyle, defaultOptions, defaultPalette } from './defaults';
 import { getTheme } from '../themes';
@@ -37,10 +38,17 @@ export type ResolvedBarSeriesConfig = Readonly<
   }
 >;
 
+export type ResolvedScatterSeriesConfig = Readonly<
+  Omit<ScatterSeriesConfig, 'color'> & {
+    readonly color: string;
+  }
+>;
+
 export type ResolvedSeriesConfig =
   | ResolvedLineSeriesConfig
   | ResolvedAreaSeriesConfig
-  | ResolvedBarSeriesConfig;
+  | ResolvedBarSeriesConfig
+  | ResolvedScatterSeriesConfig;
 
 export interface ResolvedChartGPUOptions
   extends Omit<ChartGPUOptions, 'grid' | 'xAxis' | 'yAxis' | 'theme' | 'palette' | 'series'> {
@@ -191,6 +199,9 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
         };
       }
       case 'bar': {
+        return { ...s, color };
+      }
+      case 'scatter': {
         return { ...s, color };
       }
     }

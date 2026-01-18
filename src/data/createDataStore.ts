@@ -1,4 +1,4 @@
-import type { DataPoint } from '../config/types';
+import type { DataPoint, DataPointTuple } from '../config/types';
 
 export interface DataStore {
   setSeries(index: number, data: ReadonlyArray<DataPoint>): void;
@@ -21,7 +21,7 @@ function roundUpToMultipleOf4(bytes: number): number {
   return (bytes + 3) & ~3;
 }
 
-function isTupleDataPoint(point: DataPoint): point is readonly [x: number, y: number] {
+function isTupleDataPoint(point: DataPoint): point is DataPointTuple {
   // `DataPoint` uses a readonly tuple; `Array.isArray` doesn't narrow it well without a predicate.
   return Array.isArray(point);
 }

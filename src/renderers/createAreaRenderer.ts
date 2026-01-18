@@ -1,5 +1,6 @@
 import areaWgsl from '../shaders/area.wgsl?raw';
 import type { ResolvedAreaSeriesConfig } from '../config/OptionResolver';
+import type { DataPointTuple } from '../config/types';
 import type { LinearScale } from '../utils/scales';
 import { parseCssColorToRgba01 } from '../utils/colors';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
@@ -34,8 +35,7 @@ const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
 const parseSeriesColorToRgba01 = (color: string): Rgba =>
   parseCssColorToRgba01(color) ?? ([0, 0, 0, 1] as const);
 
-const isTupleDataPoint = (point: ResolvedAreaSeriesConfig['data'][number]): point is readonly [x: number, y: number] =>
-  Array.isArray(point);
+const isTupleDataPoint = (point: ResolvedAreaSeriesConfig['data'][number]): point is DataPointTuple => Array.isArray(point);
 
 const getPointXY = (
   point: ResolvedAreaSeriesConfig['data'][number]

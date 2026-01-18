@@ -5,14 +5,21 @@
 import type { ThemeConfig } from '../themes/types';
 
 export type AxisType = 'value' | 'time' | 'category';
-export type SeriesType = 'line' | 'area' | 'bar';
+export type SeriesType = 'line' | 'area' | 'bar' | 'scatter';
 
 /**
  * A single data point for a series.
  */
-export type DataPoint =
-  | readonly [x: number, y: number]
-  | Readonly<{ x: number; y: number }>;
+export type DataPointTuple = readonly [x: number, y: number, size?: number];
+
+export type DataPoint = DataPointTuple | Readonly<{ x: number; y: number; size?: number }>;
+
+/**
+ * Scatter points use the tuple form `[x, y, size?]`.
+ */
+export type ScatterPointTuple = DataPointTuple;
+
+export type ScatterSymbol = 'circle' | 'rect' | 'triangle';
 
 /**
  * Grid/padding around the plot area, in CSS pixels.
@@ -93,7 +100,17 @@ export interface BarSeriesConfig extends SeriesConfigBase {
   readonly itemStyle?: BarItemStyleConfig;
 }
 
-export type SeriesConfig = LineSeriesConfig | AreaSeriesConfig | BarSeriesConfig;
+export interface ScatterSeriesConfig extends SeriesConfigBase {
+  readonly type: 'scatter';
+  /**
+   * Scatter symbol size in CSS pixels. When a function is provided, it receives
+   * the point tuple `[x, y, size?]`.
+   */
+  readonly symbolSize?: number | ((value: ScatterPointTuple) => number);
+  readonly symbol?: ScatterSymbol;
+}
+
+export type SeriesConfig = LineSeriesConfig | AreaSeriesConfig | BarSeriesConfig | ScatterSeriesConfig;
 
 /**
  * Parameters passed to tooltip formatter function.

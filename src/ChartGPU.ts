@@ -3,7 +3,7 @@ import { createRenderCoordinator } from './core/createRenderCoordinator';
 import type { RenderCoordinator } from './core/createRenderCoordinator';
 import { resolveOptions } from './config/OptionResolver';
 import type { ResolvedChartGPUOptions } from './config/OptionResolver';
-import type { ChartGPUOptions, DataPoint } from './config/types';
+import type { ChartGPUOptions, DataPoint, DataPointTuple } from './config/types';
 import { findNearestPoint } from './interaction/findNearestPoint';
 import type { NearestPointMatch } from './interaction/findNearestPoint';
 import { createLinearScale } from './utils/scales';
@@ -83,7 +83,7 @@ const DEFAULT_TAP_MAX_TIME_MS = 500;
 
 type Bounds = Readonly<{ xMin: number; xMax: number; yMin: number; yMax: number }>;
 
-const isTupleDataPoint = (p: DataPoint): p is readonly [x: number, y: number] => Array.isArray(p);
+const isTupleDataPoint = (p: DataPoint): p is DataPointTuple => Array.isArray(p);
 
 const getPointXY = (p: DataPoint): { readonly x: number; readonly y: number } => {
   if (isTupleDataPoint(p)) return { x: p[0], y: p[1] };

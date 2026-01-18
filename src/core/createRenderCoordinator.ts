@@ -1,5 +1,5 @@
 import type { ResolvedAreaSeriesConfig, ResolvedBarSeriesConfig, ResolvedChartGPUOptions } from '../config/OptionResolver';
-import type { DataPoint } from '../config/types';
+import type { DataPoint, DataPointTuple } from '../config/types';
 import { createDataStore } from '../data/createDataStore';
 import { createAxisRenderer } from '../renderers/createAxisRenderer';
 import { createGridRenderer } from '../renderers/createGridRenderer';
@@ -82,7 +82,7 @@ const assertUnreachable = (value: never): never => {
   throw new Error(`RenderCoordinator: unreachable value: ${String(value)}`);
 };
 
-const isTupleDataPoint = (p: DataPoint): p is readonly [x: number, y: number] => Array.isArray(p);
+const isTupleDataPoint = (p: DataPoint): p is DataPointTuple => Array.isArray(p);
 
 const getPointXY = (p: DataPoint): { readonly x: number; readonly y: number } => {
   if (isTupleDataPoint(p)) return { x: p[0], y: p[1] };
@@ -542,6 +542,8 @@ export function createRenderCoordinator(
         return series.areaStyle != null;
       case 'bar':
         return false;
+      case 'scatter':
+        return false;
       default:
         return assertUnreachable(series);
     }
@@ -784,6 +786,10 @@ export function createRenderCoordinator(
         }
         case 'bar': {
           barSeriesConfigs.push(s);
+          break;
+        }
+        case 'scatter': {
+          // Scatter rendering is not implemented yet; ignore for now.
           break;
         }
         default:
