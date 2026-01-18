@@ -112,6 +112,7 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
   - **`barCategoryGap?: number`**: gap between categories (ratio in \([0, 1]\)).
   - **`stack?: string`**: stack group id (bars with the same id may be stacked).
   - **`itemStyle?: BarItemStyleConfig`**: per-bar styling.
+  - **Rendering (current)**: bar series render as grouped bars (multiple `type: 'bar'` series side-by-side per category) via an instanced draw path. See [`createBarRenderer.ts`](../src/renderers/createBarRenderer.ts), shader source [`bar.wgsl`](../src/shaders/bar.wgsl), and coordinator wiring in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts). For a working example, see [`examples/grouped-bar/`](../examples/grouped-bar/).
 - **`BarItemStyleConfig`**: bar styling options. See [`types.ts`](../src/config/types.ts).
   - **`borderRadius?: number`**
   - **`borderWidth?: number`**
@@ -487,7 +488,7 @@ A minimal line-strip renderer factory lives in [`createLineRenderer.ts`](../src/
 
 Shader sources: [`line.wgsl`](../src/shaders/line.wgsl) and [`area.wgsl`](../src/shaders/area.wgsl) (triangle-strip filled area under a line).
 
-Additional shader source: [`bar.wgsl`](../src/shaders/bar.wgsl) (instanced rectangle expansion; per-instance `vec4<f32>(x, y, width, height)`; intended draw call uses 6 vertices per instance for 2 triangles).
+Bar renderer implementation: [`createBarRenderer.ts`](../src/renderers/createBarRenderer.ts). Shader source: [`bar.wgsl`](../src/shaders/bar.wgsl) (instanced rectangle expansion; per-instance `vec4<f32>(x, y, width, height)`; intended draw call uses 6 vertices per instance for 2 triangles).
 
 - **Area strip vertex convention (essential)**: `area.wgsl` expects CPU-expanded vertices as `p0,p0,p1,p1,...` (triangle-strip), using `@builtin(vertex_index)` parity to choose between the original y and a uniform `baseline`.
 - **Area uniforms (essential)**: vertex uniform includes `transform` and `baseline`; fragment uniform includes solid `color: vec4<f32>`.
