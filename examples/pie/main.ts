@@ -1,5 +1,5 @@
 import { ChartGPU, darkTheme } from '../../src/index';
-import type { ChartGPUInstance, ChartGPUOptions, PieDataItem, ThemeConfig } from '../../src/index';
+import type { ChartGPUInstance, ChartGPUOptions, PieDataItem, PieRadius, ThemeConfig } from '../../src/index';
 
 const showError = (message: string): void => {
   const el = document.getElementById('error');
@@ -49,11 +49,7 @@ const slices: ReadonlyArray<PieDataItem> = [
 
 const createOptions = (
   title: string,
-  radius: ChartGPUOptions['series'] extends ReadonlyArray<infer S>
-    ? S extends { type: 'pie'; radius?: infer R }
-      ? R
-      : never
-    : never
+  radius: PieRadius
 ): ChartGPUOptions => {
   return {
     // Leave room on the right for the built-in legend overlay.

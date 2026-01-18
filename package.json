@@ -17,12 +17,14 @@
   ],
   "scripts": {
     "dev": "vite",
+    "acceptance:zoom-state": "tsx examples/acceptance/zoom-state.ts",
     "build": "tsc && vite build",
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {
     "@types/node": "^25.0.9",
     "@webgpu/types": "^0.1.69",
+    "tsx": "^4.21.0",
     "typescript": "^5.0.0",
     "vite": "^5.0.0"
   }

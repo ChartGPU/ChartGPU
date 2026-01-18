@@ -108,7 +108,8 @@ const createOptions = (
   seriesB: ReadonlyArray<DataPoint>,
   palette: readonly [string, string]
 ): ChartGPUOptions => {
-  const isTupleDataPoint = (p: DataPoint): p is readonly [x: number, y: number] => Array.isArray(p);
+  type DataPointTupleLocal = readonly [x: number, y: number, size?: number];
+  const isTupleDataPoint = (p: DataPoint): p is DataPointTupleLocal => Array.isArray(p) && p.length >= 2;
   const getX = (p: DataPoint): number => (isTupleDataPoint(p) ? p[0] : p.x);
   const first = seriesA[0];
   const last = seriesA.length > 0 ? seriesA[seriesA.length - 1] : undefined;
