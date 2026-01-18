@@ -2,6 +2,8 @@ import type {
   AreaStyleConfig,
   AxisConfig,
   ChartGPUOptions,
+  DataPoint,
+  DataPointTuple,
   DataZoomConfig,
   GridConfig,
   LineStyleConfig,
@@ -11,39 +13,75 @@ import type {
   PieDataItem,
   PieSeriesConfig,
   ScatterSeriesConfig,
+  SeriesSampling,
 } from './types';
 import { defaultAreaStyle, defaultLineStyle, defaultOptions, defaultPalette } from './defaults';
 import { getTheme } from '../themes';
 import type { ThemeConfig } from '../themes/types';
+import { sampleSeriesDataPoints } from '../data/sampleSeries';
 
 export type ResolvedGridConfig = Readonly<Required<GridConfig>>;
 export type ResolvedLineStyleConfig = Readonly<Required<LineStyleConfig>>;
 export type ResolvedAreaStyleConfig = Readonly<Required<AreaStyleConfig>>;
 
+export type RawBounds = Readonly<{ xMin: number; xMax: number; yMin: number; yMax: number }>;
+
 export type ResolvedLineSeriesConfig = Readonly<
-  Omit<LineSeriesConfig, 'color' | 'lineStyle' | 'areaStyle'> & {
+  Omit<LineSeriesConfig, 'color' | 'lineStyle' | 'areaStyle' | 'sampling' | 'samplingThreshold' | 'data'> & {
     readonly color: string;
     readonly lineStyle: ResolvedLineStyleConfig;
     readonly areaStyle?: ResolvedAreaStyleConfig;
+    readonly sampling: SeriesSampling;
+    readonly samplingThreshold: number;
+    readonly data: Readonly<LineSeriesConfig['data']>;
+    /**
+     * Bounds computed from the original (unsampled) data. Used for axis auto-bounds so sampling
+     * cannot clip outliers.
+     */
+    readonly rawBounds?: RawBounds;
   }
 >;
 
 export type ResolvedAreaSeriesConfig = Readonly<
-  Omit<AreaSeriesConfig, 'color' | 'areaStyle'> & {
+  Omit<AreaSeriesConfig, 'color' | 'areaStyle' | 'sampling' | 'samplingThreshold' | 'data'> & {
     readonly color: string;
     readonly areaStyle: ResolvedAreaStyleConfig;
+    readonly sampling: SeriesSampling;
+    readonly samplingThreshold: number;
+    readonly data: Readonly<AreaSeriesConfig['data']>;
+    /**
+     * Bounds computed from the original (unsampled) data. Used for axis auto-bounds so sampling
+     * cannot clip outliers.
+     */
+    readonly rawBounds?: RawBounds;
   }
 >;
 
 export type ResolvedBarSeriesConfig = Readonly<
-  Omit<BarSeriesConfig, 'color'> & {
+  Omit<BarSeriesConfig, 'color' | 'sampling' | 'samplingThreshold' | 'data'> & {
     readonly color: string;
+    readonly sampling: SeriesSampling;
+    readonly samplingThreshold: number;
+    readonly data: Readonly<BarSeriesConfig['data']>;
+    /**
+     * Bounds computed from the original (unsampled) data. Used for axis auto-bounds so sampling
+     * cannot clip outliers.
+     */
+    readonly rawBounds?: RawBounds;
   }
 >;
 
 export type ResolvedScatterSeriesConfig = Readonly<
-  Omit<ScatterSeriesConfig, 'color'> & {
+  Omit<ScatterSeriesConfig, 'color' | 'sampling' | 'samplingThreshold' | 'data'> & {
     readonly color: string;
+    readonly sampling: SeriesSampling;
+    readonly samplingThreshold: number;
+    readonly data: Readonly<ScatterSeriesConfig['data']>;
+    /**
+     * Bounds computed from the original (unsampled) data. Used for axis auto-bounds so sampling
+     * cannot clip outliers.
+     */
+    readonly rawBounds?: RawBounds;
   }
 >;
 
@@ -158,6 +196,50 @@ const normalizeOptionalColor = (color: unknown): string | undefined => {
   return trimmed.length > 0 ? trimmed : undefined;
 };
 
+const normalizeSampling = (value: unknown): SeriesSampling | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const v = value.trim().toLowerCase();
+  return v === 'none' || v === 'lttb' || v === 'average' || v === 'max' || v === 'min'
+    ? (v as SeriesSampling)
+    : undefined;
+};
+
+const normalizeSamplingThreshold = (value: unknown): number | undefined => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  const t = Math.floor(value);
+  return t > 0 ? t : undefined;
+};
+
+const isTupleDataPoint = (p: DataPoint): p is DataPointTuple => Array.isArray(p);
+
+const computeRawBoundsFromData = (data: ReadonlyArray<DataPoint>): RawBounds | undefined => {
+  let xMin = Number.POSITIVE_INFINITY;
+  let xMax = Number.NEGATIVE_INFINITY;
+  let yMin = Number.POSITIVE_INFINITY;
+  let yMax = Number.NEGATIVE_INFINITY;
+
+  for (let i = 0; i < data.length; i++) {
+    const p = data[i]!;
+    const x = isTupleDataPoint(p) ? p[0] : p.x;
+    const y = isTupleDataPoint(p) ? p[1] : p.y;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    if (x < xMin) xMin = x;
+    if (x > xMax) xMax = x;
+    if (y < yMin) yMin = y;
+    if (y > yMax) yMax = y;
+  }
+
+  if (!Number.isFinite(xMin) || !Number.isFinite(xMax) || !Number.isFinite(yMin) || !Number.isFinite(yMax)) {
+    return undefined;
+  }
+
+  // Keep bounds usable for downstream scale derivation.
+  if (xMin === xMax) xMax = xMin + 1;
+  if (yMin === yMax) yMax = yMin + 1;
+
+  return { xMin, xMax, yMin, yMax };
+};
+
 const assertUnreachable = (value: never): never => {
   // Should never happen if SeriesConfig union is exhaustively handled.
   // This is defensive runtime safety for JS callers / invalid inputs.
@@ -220,16 +302,25 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
     const inheritedColor = theme.colorPalette[i % theme.colorPalette.length];
     const color = explicitColor ?? inheritedColor;
 
+    const sampling: SeriesSampling = normalizeSampling((s as unknown as { sampling?: unknown }).sampling) ?? 'lttb';
+    const samplingThreshold: number =
+      normalizeSamplingThreshold((s as unknown as { samplingThreshold?: unknown }).samplingThreshold) ?? 5000;
+
     switch (s.type) {
       case 'area': {
         const areaStyle: ResolvedAreaStyleConfig = {
           opacity: s.areaStyle?.opacity ?? defaultAreaStyle.opacity,
         };
 
+        const rawBounds = computeRawBoundsFromData(s.data);
         return {
           ...s,
+          data: sampleSeriesDataPoints(s.data, sampling, samplingThreshold),
           color,
           areaStyle,
+          sampling,
+          samplingThreshold,
+          rawBounds,
         };
       }
       case 'line': {
@@ -240,9 +331,12 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
 
         // Avoid leaking the unresolved (user) areaStyle shape via object spread.
         const { areaStyle: _userAreaStyle, ...rest } = s;
+        const rawBounds = computeRawBoundsFromData(s.data);
+        const sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
 
         return {
           ...rest,
+          data: sampledData,
           color,
           lineStyle,
           ...(s.areaStyle
@@ -251,16 +345,42 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
                   opacity: s.areaStyle.opacity ?? defaultAreaStyle.opacity,
                 },
               }
-            : null),
+            : {}),
+          sampling,
+          samplingThreshold,
+          rawBounds,
         };
       }
       case 'bar': {
-        return { ...s, color };
+        const rawBounds = computeRawBoundsFromData(s.data);
+        return {
+          ...s,
+          data: sampleSeriesDataPoints(s.data, sampling, samplingThreshold),
+          color,
+          sampling,
+          samplingThreshold,
+          rawBounds,
+        };
       }
       case 'scatter': {
-        return { ...s, color };
+        const rawBounds = computeRawBoundsFromData(s.data);
+        return {
+          ...s,
+          data: sampleSeriesDataPoints(s.data, sampling, samplingThreshold),
+          color,
+          sampling,
+          samplingThreshold,
+          rawBounds,
+        };
       }
       case 'pie': {
+        // Pie series intentionally do NOT support sampling at runtime.
+        // For JS callers, strip any extra sampling keys so they don't leak through the resolver.
+        const { sampling: _sampling, samplingThreshold: _samplingThreshold, ...rest } = s as PieSeriesConfig & {
+          readonly sampling?: unknown;
+          readonly samplingThreshold?: unknown;
+        };
+
         const resolvedData: ReadonlyArray<ResolvedPieDataItem> = (s.data ?? []).map((item, itemIndex) => {
           const itemColor = normalizeOptionalColor(item?.color);
           const fallback = theme.colorPalette[(i + itemIndex) % theme.colorPalette.length];
@@ -270,7 +390,7 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
           };
         });
 
-        return { ...s, color, data: resolvedData };
+        return { ...rest, color, data: resolvedData };
       }
       default: {
         return assertUnreachable(s);

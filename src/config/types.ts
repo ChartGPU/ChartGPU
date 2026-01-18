@@ -14,6 +14,8 @@ export type DataPointTuple = readonly [x: number, y: number, size?: number];
 
 export type DataPoint = DataPointTuple | Readonly<{ x: number; y: number; size?: number }>;
 
+export type SeriesSampling = 'none' | 'lttb' | 'average' | 'max' | 'min';
+
 /**
  * Scatter points use the tuple form `[x, y, size?]`.
  */
@@ -64,6 +66,20 @@ export interface SeriesConfigBase {
   readonly name?: string;
   readonly data: ReadonlyArray<DataPoint>;
   readonly color?: string;
+  /**
+   * Optional per-series sampling strategy for large datasets.
+   *
+   * When `sampling !== 'none'` and `data.length > samplingThreshold`, ChartGPU may downsample
+   * the series for rendering and interaction hit-testing. Sampling does not affect axis
+   * auto-bounds derivation (bounds use raw/unsampled series data).
+   */
+  readonly sampling?: SeriesSampling;
+  /**
+   * Auto-sample when point count exceeds this threshold.
+   *
+   * Note: when `sampling === 'none'`, this value is ignored at runtime but may still be provided.
+   */
+  readonly samplingThreshold?: number;
 }
 
 export interface LineSeriesConfig extends SeriesConfigBase {
@@ -131,7 +147,7 @@ export interface PieItemStyleConfig {
 export type PieRadius = number | string | readonly [inner: number | string, outer: number | string];
 export type PieCenter = readonly [x: number | string, y: number | string];
 
-export interface PieSeriesConfig extends Omit<SeriesConfigBase, 'data'> {
+export interface PieSeriesConfig extends Omit<SeriesConfigBase, 'data' | 'sampling' | 'samplingThreshold'> {
   readonly type: 'pie';
   /**
    * Radius in CSS pixels, as a percent string (e.g. '50%'), or a tuple [inner, outer].

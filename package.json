@@ -17,6 +17,7 @@
   ],
   "scripts": {
     "dev": "vite",
+    "acceptance:sampling-config": "tsx examples/acceptance/sampling-config.ts",
     "acceptance:zoom-state": "tsx examples/acceptance/zoom-state.ts",
     "acceptance:lttb-sample": "tsx examples/acceptance/lttb-sample.ts",
     "build": "tsc && vite build",

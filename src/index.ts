@@ -36,6 +36,7 @@ export type {
   ScatterSymbol,
   ScatterPointTuple,
   SeriesConfig,
+  SeriesSampling,
   SeriesType,
   TooltipParams,
 } from './config/types';

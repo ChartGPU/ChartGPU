@@ -127,6 +127,25 @@ const computeGlobalBounds = (series: ResolvedChartGPUOptions['series']): Bounds 
     // Pie series are non-cartesian; they don't participate in x/y bounds.
     if (seriesConfig.type === 'pie') continue;
 
+    // Prefer precomputed bounds from the original (unsampled) data when available.
+    // This ensures sampling cannot affect axis auto-bounds and avoids per-render O(n) scans.
+    const rawBoundsCandidate = (seriesConfig as unknown as { readonly rawBounds?: Bounds }).rawBounds;
+    if (rawBoundsCandidate) {
+      const b = rawBoundsCandidate;
+      if (
+        Number.isFinite(b.xMin) &&
+        Number.isFinite(b.xMax) &&
+        Number.isFinite(b.yMin) &&
+        Number.isFinite(b.yMax)
+      ) {
+        if (b.xMin < xMin) xMin = b.xMin;
+        if (b.xMax > xMax) xMax = b.xMax;
+        if (b.yMin < yMin) yMin = b.yMin;
+        if (b.yMax > yMax) yMax = b.yMax;
+        continue;
+      }
+    }
+
     const data = seriesConfig.data;
     for (let i = 0; i < data.length; i++) {
       const { x, y } = getPointXY(data[i]);
@@ -1081,6 +1100,8 @@ export function createRenderCoordinator(
               data: s.data,
               color: s.color,
               areaStyle: s.areaStyle,
+              sampling: s.sampling,
+              samplingThreshold: s.samplingThreshold,
             };
 
             areaRenderers[i].prepare(areaLike, areaLike.data, xScale, yScale, defaultBaseline);
