@@ -95,12 +95,12 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
 
 **Data points (essential):**
 
-- **`DataPoint`**: a series data point is either a tuple (`readonly [x, y]`) or an object (`Readonly<{ x, y }>`). See [`types.ts`](../src/config/types.ts).
+- **`DataPoint`**: a series data point is either a tuple (`readonly [x, y, size?]`) or an object (`Readonly<{ x, y, size? }>`). See [`types.ts`](../src/config/types.ts).
 
 **Series configuration (essential):**
 
-- **`SeriesType`**: `'line' | 'area' | 'bar'`. See [`types.ts`](../src/config/types.ts).
-- **`SeriesConfig`**: `LineSeriesConfig | AreaSeriesConfig | BarSeriesConfig` (discriminated by `series.type`). See [`types.ts`](../src/config/types.ts).
+- **`SeriesType`**: `'line' | 'area' | 'bar' | 'scatter'`. See [`types.ts`](../src/config/types.ts).
+- **`SeriesConfig`**: `LineSeriesConfig | AreaSeriesConfig | BarSeriesConfig | ScatterSeriesConfig` (discriminated by `series.type`). See [`types.ts`](../src/config/types.ts).
 - **`LineSeriesConfig`**: extends the shared series fields with `type: 'line'`, optional `lineStyle?: LineStyleConfig`, and optional `areaStyle?: AreaStyleConfig`.
   - When a line series includes `areaStyle`, ChartGPU renders a filled area behind the line (area fills then line strokes). See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
 - **`AreaSeriesConfig`**: extends the shared series fields with `type: 'area'`, optional `baseline?: number`, and optional `areaStyle?: AreaStyleConfig`.
@@ -114,6 +114,9 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
   - **`itemStyle?: BarItemStyleConfig`**: per-bar styling.
   - **Rendering (current)**: bar series render as clustered bars per x-category via an instanced draw path. If multiple bar series share the same **non-empty** `stack` id, they render as stacked segments within the same cluster slot (positive values stack upward from the baseline; negative values stack downward). See [`createBarRenderer.ts`](../src/renderers/createBarRenderer.ts), shader source [`bar.wgsl`](../src/shaders/bar.wgsl), and coordinator wiring in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts). For an example, see [`examples/grouped-bar/`](../examples/grouped-bar/).
     - Note: y-axis auto bounds are currently derived from raw series y-values (not stacked totals). If stacked bars clip, set `yAxis.min` / `yAxis.max`.
+- **`ScatterSeriesConfig`**: extends the shared series fields with `type: 'scatter'`, optional `symbol?: ScatterSymbol`, and optional `symbolSize?: number | ((value: ScatterPointTuple) => number)`. See [`types.ts`](../src/config/types.ts).
+  - Scatter point tuples may include an optional third `size` value (`readonly [x, y, size?]`).
+  - Note: scatter support is currently type-level; rendering behavior may be added in a later phase.
 - **`BarItemStyleConfig`**: bar styling options. See [`types.ts`](../src/config/types.ts).
   - **`borderRadius?: number`**
   - **`borderWidth?: number`**
