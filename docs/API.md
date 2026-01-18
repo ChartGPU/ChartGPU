@@ -67,7 +67,7 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
 - **`TooltipConfig.trigger?: 'item' | 'axis'`**: tooltip trigger mode.
 - **`TooltipConfig.formatter?: (params: TooltipParams | TooltipParams[]) => string`**: custom formatter function. Receives a single `TooltipParams` when `trigger` is `'item'`, or an array of `TooltipParams` when `trigger` is `'axis'`. See [`types.ts`](../src/config/types.ts) for `TooltipParams` fields (`seriesName`, `seriesIndex`, `dataIndex`, `value`, `color`).
 
-Note: Tooltip configuration types are currently defined but tooltip rendering is not yet implemented.
+Note: Tooltip configuration types are currently defined, but ChartGPU does not yet wire them into the render coordinator. There is an internal DOM tooltip overlay helper available for contributors; see [Tooltip overlay (internal)](#tooltip-overlay-internal--contributor-notes) and [`createTooltip.ts`](../src/components/createTooltip.ts).
 
 For a working configuration (including axis titles via `AxisConfig.name` and a filled line series via `areaStyle`), see [`examples/basic-line/main.ts`](../examples/basic-line/main.ts).
 
@@ -329,6 +329,20 @@ An internal DOM helper for rendering a series legend (color swatch + series name
   - `update(series: ReadonlyArray<SeriesConfig>, theme: ThemeConfig): void`
   - `dispose(): void`
 - **Current usage**: created and updated by the render coordinator (default position `'right'`). See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
+
+### Tooltip overlay (internal / contributor notes)
+
+An internal DOM helper for rendering an HTML tooltip above the canvas. See [`createTooltip.ts`](../src/components/createTooltip.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`).
+
+- **Factory**: `createTooltip(container: HTMLElement): Tooltip`
+- **`Tooltip` methods (essential)**:
+  - `show(x: number, y: number, content: string): void`
+  - `hide(): void`
+  - `dispose(): void`
+- **Coordinates**: `x` / `y` are in CSS pixels relative to the container’s top-left corner (container-local CSS px).
+- **Positioning behavior**: positions the tooltip near the cursor with flip/clamp logic so it stays within the container bounds.
+- **Content**: `content` is treated as HTML and assigned via `innerHTML`. Only pass trusted/sanitized strings.
+- **Pointer events**: the tooltip uses `pointer-events: none` so it won’t intercept mouse/touch input.
 
 ### Render coordinator (internal / contributor notes)
 
