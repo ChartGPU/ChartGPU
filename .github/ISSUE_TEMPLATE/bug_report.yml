@@ -1,0 +1,116 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in ChartGPU
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the sections below to help us diagnose and fix the issue.
+
+  - type: checkboxes
+    id: browser-support
+    attributes:
+      label: Browser Support Verification
+      description: Please confirm you've tested in a supported browser
+      options:
+        - label: I have verified this bug occurs in a supported browser (Chrome/Edge 113+, Safari 18+)
+          required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and Version
+      description: Which browser and version are you using?
+      placeholder: e.g., Chrome 120, Edge 119, Safari 18.1
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      description: What OS are you running?
+      placeholder: e.g., macOS 14.2, Windows 11, Ubuntu 22.04
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU (if known)
+      description: Your graphics card or GPU model (if you know it)
+      placeholder: e.g., Apple M2, NVIDIA RTX 3080, Intel Iris Xe
+
+  - type: input
+    id: version
+    attributes:
+      label: ChartGPU Version
+      description: Which version of ChartGPU are you using?
+      placeholder: e.g., 0.1.0, main branch commit hash
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear description of what the bug is
+      placeholder: Describe the issue you're experiencing
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Detailed steps to reproduce the behavior
+      placeholder: |
+        1. Create a chart with...
+        2. Call method...
+        3. Observe that...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+      placeholder: I expected the chart to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened?
+      placeholder: Instead, the chart...
+    validations:
+      required: true
+
+  - type: textarea
+    id: console-errors
+    attributes:
+      label: Console Errors / WebGPU Validation Errors
+      description: Any errors or warnings in the browser console or WebGPU validation layer
+      placeholder: |
+        Paste console output here. Include WebGPU validation errors if present.
+      render: shell
+
+  - type: input
+    id: reproduction-link
+    attributes:
+      label: Minimal Reproduction Link
+      description: |
+        A link to a minimal reproduction (StackBlitz, CodeSandbox, JSFiddle) or a PR that adds/modifies an example in `examples/`
+        
+        **Tip**: PRs modifying `examples/` are the fastest way to get bugs fixed!
+      placeholder: https://stackblitz.com/... or https://github.com/.../pull/123
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Any other context, screenshots, or information about the problem

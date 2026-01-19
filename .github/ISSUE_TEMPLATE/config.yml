@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Getting Started Guide
+    url: https://github.com/hunterg325/ChartGPU/blob/main/docs/GETTING_STARTED.md
+    about: New to ChartGPU? Start here to learn the basics
+  - name: API Reference
+    url: https://github.com/hunterg325/ChartGPU/blob/main/docs/API.md
+    about: Complete API documentation and examples
+  - name: GitHub Discussions
+    url: https://github.com/hunterg325/ChartGPU/discussions
+    about: Ask questions, share ideas, and discuss with the community

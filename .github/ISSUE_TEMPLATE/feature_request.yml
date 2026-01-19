@@ -1,0 +1,88 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for ChartGPU
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a feature! We appreciate ideas that make ChartGPU better.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: Is your feature request related to a problem? Please describe.
+      placeholder: I'm frustrated when... / It would be useful if...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the solution you'd like
+      placeholder: I'd like to see...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Have you considered any alternative solutions or workarounds?
+      placeholder: I've tried... / Another option could be...
+
+  - type: dropdown
+    id: feature-type
+    attributes:
+      label: Feature Type
+      description: What kind of feature is this?
+      options:
+        - New chart type (e.g., heatmap, candlestick)
+        - Performance improvement
+        - API enhancement
+        - Documentation improvement
+        - Developer experience
+        - Visual/styling improvement
+        - Interaction/events
+        - Data handling
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: breaking-change
+    attributes:
+      label: API Impact
+      options:
+        - label: This feature might require API changes or breaking changes
+
+  - type: textarea
+    id: api-sketch
+    attributes:
+      label: API Sketch (optional)
+      description: If you have an idea of what the API could look like, sketch it here
+      placeholder: |
+        ```typescript
+        chart.setOption({
+          series: [{
+            type: 'heatmap',
+            // ...
+          }]
+        });
+        ```
+      render: typescript
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use Case
+      description: Describe your use case or scenario where this would be helpful
+      placeholder: I'm building a dashboard that needs...
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Any other context, examples, or resources that might be helpful
