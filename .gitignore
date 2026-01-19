@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Cursor
+.cursor/
+
 # Build output
 dist/
 
