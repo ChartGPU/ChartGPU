@@ -1,0 +1,34 @@
+---
+description: Prefer functional patterns over class-based TypeScript
+globs: "**/*.{ts,tsx}"
+alwaysApply: false
+---
+
+# Functional over class-based TypeScript
+
+## Rule
+- Prefer **functions**, **factory functions**, and **object literals** over `class`.
+- Favor **pure functions** and **explicit dependencies** via parameters.
+- Prefer **immutable state**: `const`, readonly types, non-mutating operations; avoid shared mutable singletons.
+- Favor **composition** over inheritance; avoid deep prototype chains.
+- Prefer **data + functions** over “smart objects”.
+
+## Allowed exceptions (when clearly justified)
+- **Interop/framework requirements** that mandate `class`/prototype usage.
+- **React error boundaries** (class components specifically for error boundaries).
+- **Domain entities** only when invariants/identity/lifecycle are best modeled as a class.
+- **Performance/ergonomics** where a class measurably improves the outcome.
+- **Decorators/metadata** frameworks that rely on class decorators/reflect metadata.
+
+## Before/after (brief)
+```ts
+// ❌ Before (class)
+class Counter {
+  private n = 0;
+  inc() { this.n += 1; return this.n; }
+}
+
+// ✅ After (functional)
+type Counter = Readonly<{ n: number }>;
+const inc = (c: Counter): Counter => ({ n: c.n + 1 });
+```

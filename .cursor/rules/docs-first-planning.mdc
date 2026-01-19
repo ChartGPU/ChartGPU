@@ -1,0 +1,15 @@
+---
+description: Read project docs before planning or proposing changes
+alwaysApply: true
+---
+
+# Docs-first planning (ChartGPU)
+
+Before creating a plan, proposing an API, or making implementation changes:
+
+- Read the relevant files in `docs/` (start with `docs/API.md` and `docs/GETTING_STARTED.md`).
+- If the work touches public API or examples, also skim `README.md` for behavioral expectations.
+- Base your plan on **documented contracts** (types, lifecycle, invariants, “critical” coordinate systems, safety notes like tooltip `innerHTML`, and WebGPU caveats).
+- When uncertain, prefer the documented source links in `docs/` (e.g. `src/ChartGPU.ts`, `src/core/createRenderCoordinator.ts`) as the next place to confirm behavior.
+
+When presenting the plan, explicitly call out which `docs/` sections informed it (by file + section heading).
