@@ -42,6 +42,7 @@
     "acceptance:data-store-append": "tsx examples/acceptance/data-store-append.ts",
     "acceptance:easing": "tsx examples/acceptance/easing.ts",
     "acceptance:line-style-color": "tsx examples/acceptance/line-style-color.ts",
+    "acceptance:area-style-color": "tsx examples/acceptance/area-style-color.ts",
     "build": "tsc && vite build",
     "prepublishOnly": "npm run build"
   },

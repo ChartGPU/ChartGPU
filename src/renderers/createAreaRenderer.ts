@@ -250,7 +250,8 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
 
     writeVsUniforms(ax, bx, ay, by, baselineValue);
 
-    const [r, g, b, a] = parseSeriesColorToRgba01(seriesConfig.color);
+    // Use the resolved fill color from areaStyle.color (not seriesConfig.color).
+    const [r, g, b, a] = parseSeriesColorToRgba01(seriesConfig.areaStyle.color);
     const opacity = clamp01(seriesConfig.areaStyle.opacity);
     fsUniformScratchF32[0] = r;
     fsUniformScratchF32[1] = g;

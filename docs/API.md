@@ -244,7 +244,9 @@ See [`defaults.ts`](../src/config/defaults.ts) for the defaults (including grid,
 
 - **Default grid**: `left: 60`, `right: 20`, `top: 40`, `bottom: 40`
 - **Palette / series colors**: `ChartGPUOptions.palette` acts as an override for the resolved theme palette (`resolvedOptions.theme.colorPalette`). When `series[i].color` is missing, the default series color comes from `resolvedOptions.theme.colorPalette[i % ...]`. For backward compatibility, the resolved `palette` is the resolved theme palette. See [`resolveOptions`](../src/config/OptionResolver.ts) and [`ThemeConfig`](../src/themes/types.ts).
-- **Line series color precedence**: for `type: 'line'`, effective color follows: `lineStyle.color` → `series.color` → theme palette. See [`resolveOptions`](../src/config/OptionResolver.ts).
+- **Line series stroke color precedence**: for `type: 'line'`, effective stroke color follows: `lineStyle.color` → `series.color` → theme palette. See [`resolveOptions`](../src/config/OptionResolver.ts).
+- **Line series fill color precedence**: for `type: 'line'` with `areaStyle`, effective fill color follows: `areaStyle.color` → resolved stroke color (from above precedence). See [`resolveOptions`](../src/config/OptionResolver.ts).
+- **Area series fill color precedence**: for `type: 'area'`, effective fill color follows: `areaStyle.color` → `series.color` → theme palette. See [`resolveOptions`](../src/config/OptionResolver.ts).
 - **Axis ticks**: `AxisConfig.tickLength` controls tick length in CSS pixels (default: 6)
 
 ### `resolveOptions(userOptions?: ChartGPUOptions)` / `OptionResolver.resolve(userOptions?: ChartGPUOptions)`

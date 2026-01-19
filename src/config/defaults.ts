@@ -26,7 +26,7 @@ export const defaultLineStyle = {
 
 export const defaultAreaStyle = {
   opacity: 0.25,
-} as const satisfies Required<AreaStyleConfig>;
+} as const satisfies Required<Omit<AreaStyleConfig, 'color'>>;
 
 export const defaultOptions = {
   grid: defaultGrid,

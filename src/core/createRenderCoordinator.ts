@@ -2269,7 +2269,7 @@ export function createRenderCoordinator(
               name: s.name,
               rawData: s.data,
               data: s.data,
-              color: s.color,
+              color: s.areaStyle.color,
               areaStyle: s.areaStyle,
               sampling: s.sampling,
               samplingThreshold: s.samplingThreshold,

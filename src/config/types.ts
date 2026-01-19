@@ -61,6 +61,7 @@ export interface LineStyleConfig {
 
 export interface AreaStyleConfig {
   readonly opacity?: number;
+  readonly color?: string;
 }
 
 export interface SeriesConfigBase {

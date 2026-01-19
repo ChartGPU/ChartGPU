@@ -254,11 +254,17 @@ Additional fields:
   - **`width?: number`**: line width in pixels
   - **`opacity?: number`**: line opacity (0-1)
 - **`areaStyle?: AreaStyleConfig`** (optional fill under the line; default opacity when provided: `0.25`)
+  - **`color?: string`**: fill color override (takes precedence over line stroke color)
+  - **`opacity?: number`**: fill opacity (0-1)
 
-**Line series color precedence:**
+**Line series stroke color precedence:**
 1. `lineStyle.color` (highest priority)
 2. `series.color`
 3. `theme.colorPalette[i % palette.length]` (fallback)
+
+**Line series fill color precedence (when `areaStyle` is present):**
+1. `areaStyle.color` (highest priority)
+2. Resolved stroke color (from above precedence)
 
 Example:
 
@@ -280,6 +286,13 @@ Additional fields:
 
 - **`baseline?: number`** (if omitted, defaults to y-axis minimum at render time)
 - **`areaStyle?: AreaStyleConfig`** (defaults: `{ opacity: 0.25 }`)
+  - **`color?: string`**: fill color override
+  - **`opacity?: number`**: fill opacity (0-1)
+
+**Area series fill color precedence:**
+1. `areaStyle.color` (highest priority)
+2. `series.color`
+3. `theme.colorPalette[i % palette.length]` (fallback)
 
 #### Bar series (`type: 'bar'`)
 

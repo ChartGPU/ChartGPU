@@ -159,20 +159,29 @@ const chart = ChartGPU.create(container, {
 
 The `colorPalette` array determines default series colors:
 
-1. **Line series color precedence:**  
+1. **Line series stroke color precedence:**  
    - Explicit `lineStyle.color` (highest priority)
    - Explicit `series[i].color`
    - `theme.colorPalette[i % colorPalette.length]` (fallback)
 
-2. **Other series color precedence:**  
+2. **Line series fill color precedence (when `areaStyle` is present):**  
+   - Explicit `areaStyle.color` (highest priority)
+   - Resolved stroke color (from above precedence)
+
+3. **Area series fill color precedence:**  
+   - Explicit `areaStyle.color` (highest priority)
+   - Explicit `series[i].color`
+   - `theme.colorPalette[i % colorPalette.length]` (fallback)
+
+4. **Other series color precedence (bar, scatter):**  
    - Explicit `series[i].color` (highest priority)
    - `theme.colorPalette[i % colorPalette.length]` (fallback)
 
-3. **Pie chart slices:**  
+5. **Pie chart slices:**  
    - Explicit `PieDataItem.color` (highest priority)
    - `theme.colorPalette[(seriesIndex + itemIndex) % colorPalette.length]` (fallback)
 
-3. **Palette override option:**  
+6. **Palette override option:**  
    You can override just the palette without creating a full theme:
 
 ```typescript
