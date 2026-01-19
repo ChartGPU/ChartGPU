@@ -22,7 +22,7 @@ export const defaultPalette = [
 export const defaultLineStyle = {
   width: 2,
   opacity: 1,
-} as const satisfies Required<LineStyleConfig>;
+} as const satisfies Required<Omit<LineStyleConfig, 'color'>>;
 
 export const defaultAreaStyle = {
   opacity: 0.25,

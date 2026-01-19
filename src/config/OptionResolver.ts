@@ -21,7 +21,7 @@ import type { ThemeConfig } from '../themes/types';
 import { sampleSeriesDataPoints } from '../data/sampleSeries';
 
 export type ResolvedGridConfig = Readonly<Required<GridConfig>>;
-export type ResolvedLineStyleConfig = Readonly<Required<LineStyleConfig>>;
+export type ResolvedLineStyleConfig = Readonly<Required<Omit<LineStyleConfig, 'color'>> & { readonly color: string }>;
 export type ResolvedAreaStyleConfig = Readonly<Required<AreaStyleConfig>>;
 
 export type RawBounds = Readonly<{ xMin: number; xMax: number; yMin: number; yMax: number }>;
@@ -353,9 +353,14 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
         };
       }
       case 'line': {
+        // Resolve effective color with precedence: lineStyle.color → series.color → palette
+        const lineStyleColor = normalizeOptionalColor(s.lineStyle?.color);
+        const effectiveColor = lineStyleColor ?? explicitColor ?? inheritedColor;
+
         const lineStyle: ResolvedLineStyleConfig = {
           width: s.lineStyle?.width ?? defaultLineStyle.width,
           opacity: s.lineStyle?.opacity ?? defaultLineStyle.opacity,
+          color: effectiveColor,
         };
 
         // Avoid leaking the unresolved (user) areaStyle shape via object spread.
@@ -367,7 +372,7 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
           ...rest,
           rawData: s.data,
           data: sampledData,
-          color,
+          color: effectiveColor,
           lineStyle,
           ...(s.areaStyle
             ? {

@@ -250,7 +250,15 @@ export type DataPoint = DataPointTuple | Readonly<{ x: number; y: number; size?:
 Additional fields:
 
 - **`lineStyle?: LineStyleConfig`** (defaults: `{ width: 2, opacity: 1 }`)
+  - **`color?: string`**: line color override (takes precedence over `series.color` and theme palette)
+  - **`width?: number`**: line width in pixels
+  - **`opacity?: number`**: line opacity (0-1)
 - **`areaStyle?: AreaStyleConfig`** (optional fill under the line; default opacity when provided: `0.25`)
+
+**Line series color precedence:**
+1. `lineStyle.color` (highest priority)
+2. `series.color`
+3. `theme.colorPalette[i % palette.length]` (fallback)
 
 Example:
 
@@ -260,7 +268,7 @@ series: [
     type: 'line',
     name: 'CPU',
     data: [[0, 10], [1, 40], [2, 25]],
-    lineStyle: { width: 2, opacity: 1 },
+    lineStyle: { width: 2, opacity: 1, color: '#ff6b6b' },
     areaStyle: { opacity: 0.15 },
   },
 ]

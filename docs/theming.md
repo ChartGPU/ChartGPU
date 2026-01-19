@@ -159,11 +159,16 @@ const chart = ChartGPU.create(container, {
 
 The `colorPalette` array determines default series colors:
 
-1. **Series color precedence:**  
+1. **Line series color precedence:**  
+   - Explicit `lineStyle.color` (highest priority)
+   - Explicit `series[i].color`
+   - `theme.colorPalette[i % colorPalette.length]` (fallback)
+
+2. **Other series color precedence:**  
    - Explicit `series[i].color` (highest priority)
    - `theme.colorPalette[i % colorPalette.length]` (fallback)
 
-2. **Pie chart slices:**  
+3. **Pie chart slices:**  
    - Explicit `PieDataItem.color` (highest priority)
    - `theme.colorPalette[(seriesIndex + itemIndex) % colorPalette.length]` (fallback)
 

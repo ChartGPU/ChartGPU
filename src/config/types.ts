@@ -56,6 +56,7 @@ export interface DataZoomConfig {
 export interface LineStyleConfig {
   readonly width?: number;
   readonly opacity?: number;
+  readonly color?: string;
 }
 
 export interface AreaStyleConfig {

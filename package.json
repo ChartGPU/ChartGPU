@@ -41,6 +41,7 @@
     "acceptance:auto-scroll-policy": "tsx examples/acceptance/auto-scroll-policy.ts",
     "acceptance:data-store-append": "tsx examples/acceptance/data-store-append.ts",
     "acceptance:easing": "tsx examples/acceptance/easing.ts",
+    "acceptance:line-style-color": "tsx examples/acceptance/line-style-color.ts",
     "build": "tsc && vite build",
     "prepublishOnly": "npm run build"
   },
