@@ -6,6 +6,7 @@ export const version = '1.0.0';
 
 // Chart API (Phase 1)
 export { ChartGPU } from './ChartGPU';
+export { createChartGPU as createChart } from './ChartGPU';
 export type { ChartGPUInstance } from './ChartGPU';
 export type {
   ChartGPUEventName,

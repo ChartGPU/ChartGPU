@@ -1,0 +1,18 @@
+---
+description: Delegate clarifying questions to subagents instead of asking the user
+alwaysApply: true
+---
+
+# Delegate clarifying questions (CRITICAL)
+
+When you need clarification during planning or execution:
+
+- **Do NOT ask the user by default** and do not wait for user input.
+- **Delegate the question(s) to the appropriate subagent(s)** instead.
+- **Accept the subagent answer(s)**, choose the most reasonable assumptions, and proceed.
+- **Only ask the user** if the question is truly blocking and cannot be answered by any subagent or the repo/context.
+
+## Multiple questions
+
+- Delegate in **parallel** when possible (multiple subagents).
+- Then **summarize the answers** and continue with a concrete next step.

@@ -1,0 +1,135 @@
+---
+description: Always delegate work to appropriate subagents for specialized tasks
+alwaysApply: true
+---
+
+# Subagent Delegation
+
+**CRITICAL**: Always delegate work to the appropriate subagent(s) for any and all tasks that match their expertise.
+
+## Available Subagents
+
+- **webgpu-pro**: WebGPU programming, shaders, GPU compute, rendering
+- **api-documenter**: Expert API documenter specializing in creating comprehensive, developer-friendly API documentation. Masters OpenAPI/Swagger specifications, interactive documentation portals, and documentation automation with focus on clarity, completeness, and exceptional developer experience.
+- **api-designer**: Frontend charting library API expert designing intuitive, performant chart APIs. Creates declarative and imperative interfaces for data visualization, focusing on developer ergonomics, rendering performance, and flexible customization.
+- **build-engineer**: Build systems, CI/CD, tooling, dependencies
+- **code-reviewer**: Code quality, security, best practices, review feedback
+- **data-analyst**: Data analysis, statistics, data visualization, insights
+- **documentation-engineer**: Documentation, README files, API docs, guides
+- **frontend-developer**: Frontend UI/UX, React/Vue/Angular, web interfaces
+- **javascript-pro**: JavaScript/TypeScript expertise, language features, patterns
+- **performance-engineer**: Performance optimization, profiling, bottlenecks
+- **test-automator**: Testing, test automation, test strategies, coverage
+- **typescript-pro**: TypeScript-specific patterns, types, advanced features
+
+## Delegation Rules
+
+### When to Delegate
+
+**ALWAYS delegate when:**
+- Task matches a subagent's expertise domain
+- Documentation work is required → delegate to `documentation-engineer`
+- API documentation work (OpenAPI/Swagger, REST API docs, interactive portals) → delegate to `api-documenter`
+- WebGPU/GPU work is involved → delegate to `webgpu-pro`
+- TypeScript-specific patterns needed → delegate to `typescript-pro`
+- Performance optimization needed → delegate to `performance-engineer`
+- Testing required → delegate to `test-automator`
+- Build/tooling changes → delegate to `build-engineer`
+- API design work → delegate to `api-designer`
+- Frontend UI work → delegate to `frontend-developer`
+- Data analysis needed → delegate to `data-analyst`
+
+### Delegation Process
+
+1. **Identify the task type** and match it to the appropriate subagent(s)
+2. **Use the Task tool** with `subagent_type` parameter to delegate
+3. **Provide clear context** in the delegation prompt:
+   - What needs to be done
+   - Relevant files or code sections
+   - Any constraints or requirements
+   - Expected outcomes
+4. **On build approval, provide a confirmation message** that lists:
+   - Each subagent delegated for the task(s)
+   - What each subagent's assigned task is
+   - Example format:
+     ```
+     Delegated to:
+     - code-reviewer: Review GPUContext.ts for code quality, security, and best practices
+     - webgpu-pro: Optimize WebGPU render pipeline for performance
+     ```
+
+### Multiple Subagents
+
+Some tasks may require multiple subagents:
+- **Code review + WebGPU work**: Delegate to both `code-reviewer` and `webgpu-pro`
+- **API design + Documentation**: Delegate to both `api-designer` and `documentation-engineer`
+- **API design + API documentation**: Delegate to both `api-designer` and `api-documenter`
+- **Performance + Testing**: Delegate to both `performance-engineer` and `test-automator`
+
+Delegate to all relevant subagents in parallel when appropriate.
+
+## Examples
+
+### Example 1: Code Review Request
+
+```markdown
+User: "Review my GPUContext implementation"
+
+✅ CORRECT: Delegate to code-reviewer
+Task(subagent_type="code-reviewer", prompt="Review GPUContext.ts for code quality, security, and best practices")
+```
+
+### Example 2: WebGPU Work
+
+```markdown
+User: "Optimize my compute shader"
+
+✅ CORRECT: Delegate to webgpu-pro
+Task(subagent_type="webgpu-pro", prompt="Optimize compute shader in [file] for better GPU performance")
+```
+
+### Example 3: Documentation
+
+```markdown
+User: "Write API documentation"
+
+✅ CORRECT: Delegate to documentation-engineer
+Task(subagent_type="documentation-engineer", prompt="Create API documentation for GPUContext following project standards")
+```
+
+### Example 5: API Documentation
+
+```markdown
+User: "Create OpenAPI specification for our REST API"
+
+✅ CORRECT: Delegate to api-documenter
+Task(subagent_type="api-documenter", prompt="Create OpenAPI 3.1 specification for REST API endpoints with examples and interactive documentation")
+```
+
+### Example 4: Multiple Subagents
+
+```markdown
+User: "Review and optimize my WebGPU render pipeline"
+
+✅ CORRECT: Delegate to both
+Task(subagent_type="code-reviewer", prompt="Review render pipeline code for quality and security")
+Task(subagent_type="webgpu-pro", prompt="Optimize WebGPU render pipeline for performance")
+```
+
+## Important Notes
+
+- **Never skip delegation** - If a task matches a subagent's domain, delegate it
+- **Don't do the work yourself** - Let the specialized subagent handle it
+- **Provide full context** - Include file paths, code snippets, and requirements
+- **Trust the subagent** - They have specialized knowledge and tools
+- **Delegate proactively** - Don't wait for the user to ask, delegate automatically
+
+## Non-Delegation Cases
+
+Only handle tasks directly when:
+- Task is too simple (e.g., single line change, typo fix)
+- Task doesn't match any subagent's expertise
+- Task is conversational/informational only
+- User explicitly requests you handle it directly
+
+For all other cases, **delegate to the appropriate subagent(s)**.
