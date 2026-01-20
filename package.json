@@ -13,12 +13,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hunterg325/ChartGPU.git"
+    "url": "https://github.com/chartgpu/chartgpu.git"
   },
   "bugs": {
-    "url": "https://github.com/hunterg325/ChartGPU/issues"
+    "url": "https://github.com/ChartGPU/chartgpu/issues"
   },
-  "homepage": "https://github.com/hunterg325/ChartGPU#readme",
+  "homepage": "https://github.com/ChartGPU/chartgpu#readme",
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",
