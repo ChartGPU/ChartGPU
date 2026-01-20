@@ -44,6 +44,7 @@
     "acceptance:line-style-color": "tsx examples/acceptance/line-style-color.ts",
     "acceptance:area-style-color": "tsx examples/acceptance/area-style-color.ts",
     "build": "tsc && vite build",
+    "build:examples": "vite build examples --outDir examples/dist --base /chartgpu/",
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {
