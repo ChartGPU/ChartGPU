@@ -43,7 +43,7 @@ await ChartGPU.create(container, {
 React bindings are available via [`chartgpu-react`](https://github.com/ChartGPU/chartgpu-react):
 
 ```bash
-npm install chartgpu-react chartgpu react react-dom
+npm install chartgpu-react
 ```
 
 ```tsx
