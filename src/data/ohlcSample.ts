@@ -40,63 +40,78 @@ export function ohlcSample(
 
   if (threshold === 2) return out;
 
+  // Hoist tuple-vs-object detection once (assume homogeneous arrays).
+  const isTuple = isTupleOHLCDataPoint(data[0]!);
+
   // Bucket size for interior points: (n - 2) interior input points → (threshold - 2) interior output points.
   const bucketSize = (n - 2) / (threshold - 2);
 
-  for (let bucket = 0; bucket < threshold - 2; bucket++) {
-    // Bucket range: [rangeStart, rangeEndExclusive)
-    let rangeStart = Math.floor(bucketSize * bucket) + 1;
-    let rangeEndExclusive = Math.min(Math.floor(bucketSize * (bucket + 1)) + 1, n - 1);
+  if (isTuple) {
+    // Tuple format path: [timestamp, open, close, low, high]
+    const dataAsTuples = data as ReadonlyArray<OHLCDataPointTuple>;
 
-    // Defensive: ensure at least one candidate point.
-    if (rangeStart >= rangeEndExclusive) {
-      rangeStart = Math.min(rangeStart, n - 2);
-      rangeEndExclusive = Math.min(rangeStart + 1, n - 1);
-    }
+    for (let bucket = 0; bucket < threshold - 2; bucket++) {
+      // Bucket range: [rangeStart, rangeEndExclusive)
+      let rangeStart = Math.floor(bucketSize * bucket) + 1;
+      let rangeEndExclusive = Math.min(Math.floor(bucketSize * (bucket + 1)) + 1, n - 1);
 
-    // Extract first and last candles in bucket.
-    const firstCandle = data[rangeStart]!;
-    const lastCandle = data[rangeEndExclusive - 1]!;
+      // Defensive: ensure at least one candidate point.
+      if (rangeStart >= rangeEndExclusive) {
+        rangeStart = Math.min(rangeStart, n - 2);
+        rangeEndExclusive = Math.min(rangeStart + 1, n - 1);
+      }
 
-    let timestamp: number;
-    let open: number;
-    let close: number;
-    let high: number;
-    let low: number;
+      // Extract first and last candles in bucket.
+      const firstCandle = dataAsTuples[rangeStart]!;
+      const lastCandle = dataAsTuples[rangeEndExclusive - 1]!;
 
-    const isTuple = isTupleOHLCDataPoint(firstCandle);
-
-    if (isTuple) {
-      // Tuple format: [timestamp, open, close, low, high]
-      timestamp = firstCandle[0];
-      open = firstCandle[1];
-      close = (lastCandle as OHLCDataPointTuple)[2];
+      const timestamp = firstCandle[0];
+      const open = firstCandle[1];
+      const close = lastCandle[2];
 
       // Aggregate high and low across the bucket.
-      high = -Infinity;
-      low = Infinity;
+      let high = -Infinity;
+      let low = Infinity;
       for (let i = rangeStart; i < rangeEndExclusive; i++) {
-        const candle = data[i] as OHLCDataPointTuple;
+        const candle = dataAsTuples[i]!;
         const candleLow = candle[3];
         const candleHigh = candle[4];
         if (candleHigh > high) high = candleHigh;
         if (candleLow < low) low = candleLow;
       }
 
-      out[bucket + 1] = [timestamp, open, close, low, high] as OHLCDataPointTuple;
-    } else {
-      // Object format: { timestamp, open, close, low, high }
-      timestamp = firstCandle.timestamp;
-      open = firstCandle.open;
-      close = (lastCandle as Exclude<OHLCDataPoint, OHLCDataPointTuple>).close;
+      out[bucket + 1] = [timestamp, open, close, low, high];
+    }
+  } else {
+    // Object format path: { timestamp, open, close, low, high }
+    const dataAsObjects = data as ReadonlyArray<Exclude<OHLCDataPoint, OHLCDataPointTuple>>;
+
+    for (let bucket = 0; bucket < threshold - 2; bucket++) {
+      // Bucket range: [rangeStart, rangeEndExclusive)
+      let rangeStart = Math.floor(bucketSize * bucket) + 1;
+      let rangeEndExclusive = Math.min(Math.floor(bucketSize * (bucket + 1)) + 1, n - 1);
+
+      // Defensive: ensure at least one candidate point.
+      if (rangeStart >= rangeEndExclusive) {
+        rangeStart = Math.min(rangeStart, n - 2);
+        rangeEndExclusive = Math.min(rangeStart + 1, n - 1);
+      }
+
+      // Extract first and last candles in bucket.
+      const firstCandle = dataAsObjects[rangeStart]!;
+      const lastCandle = dataAsObjects[rangeEndExclusive - 1]!;
+
+      const timestamp = firstCandle.timestamp;
+      const open = firstCandle.open;
+      const close = lastCandle.close;
 
       // Aggregate high and low across the bucket.
-      high = -Infinity;
-      low = Infinity;
+      let high = -Infinity;
+      let low = Infinity;
       for (let i = rangeStart; i < rangeEndExclusive; i++) {
-        const candle = data[i]! as Exclude<OHLCDataPoint, OHLCDataPointTuple>;
-        const candleLow = candle.low;
+        const candle = dataAsObjects[i]!;
         const candleHigh = candle.high;
+        const candleLow = candle.low;
         if (candleHigh > high) high = candleHigh;
         if (candleLow < low) low = candleLow;
       }

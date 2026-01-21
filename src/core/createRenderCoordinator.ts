@@ -241,9 +241,42 @@ const computeGlobalBounds = (
       }
     }
 
-    // Candlestick series: bounds already computed in OptionResolver from timestamp/low/high.
-    // If we reach here, rawBounds was undefined; fallback to data iteration (should not happen in practice).
-    if (seriesConfig.type === 'candlestick') continue;
+    // Candlestick series: bounds should be precomputed in OptionResolver from timestamp/low/high.
+    // If we reach here, `rawBounds` was undefined; fall back to a raw OHLC scan so axes don't break.
+    if (seriesConfig.type === 'candlestick') {
+      const rawOHLC = (seriesConfig.rawData ?? seriesConfig.data) as ReadonlyArray<OHLCDataPoint>;
+      for (let i = 0; i < rawOHLC.length; i++) {
+        const p = rawOHLC[i]!;
+        if (isTupleOHLCDataPoint(p)) {
+          const timestamp = p[0];
+          const low = p[3];
+          const high = p[4];
+          if (!Number.isFinite(timestamp) || !Number.isFinite(low) || !Number.isFinite(high)) continue;
+
+          const yLow = Math.min(low, high);
+          const yHigh = Math.max(low, high);
+
+          if (timestamp < xMin) xMin = timestamp;
+          if (timestamp > xMax) xMax = timestamp;
+          if (yLow < yMin) yMin = yLow;
+          if (yHigh > yMax) yMax = yHigh;
+        } else {
+          const timestamp = p.timestamp;
+          const low = p.low;
+          const high = p.high;
+          if (!Number.isFinite(timestamp) || !Number.isFinite(low) || !Number.isFinite(high)) continue;
+
+          const yLow = Math.min(low, high);
+          const yHigh = Math.max(low, high);
+
+          if (timestamp < xMin) xMin = timestamp;
+          if (timestamp > xMax) xMax = timestamp;
+          if (yLow < yMin) yMin = yLow;
+          if (yHigh > yMax) yMax = yHigh;
+        }
+      }
+      continue;
+    }
 
     const data = seriesConfig.data;
     for (let i = 0; i < data.length; i++) {
@@ -386,27 +419,47 @@ const isTuplePoint = (p: DataPoint): p is TuplePoint => Array.isArray(p);
 const isTupleDataArray = (data: ReadonlyArray<DataPoint>): data is ReadonlyArray<TuplePoint> =>
   data.length > 0 && isTuplePoint(data[0]!);
 
+// Cache monotonicity checks to avoid O(n) scans on every zoom operation.
+const monotonicXCache = new WeakMap<ReadonlyArray<DataPoint>, boolean>();
+
 const isMonotonicNonDecreasingFiniteX = (data: ReadonlyArray<DataPoint>, isTuple: boolean): boolean => {
+  const cached = monotonicXCache.get(data);
+  if (cached !== undefined) return cached;
+
   let prevX = Number.NEGATIVE_INFINITY;
 
   if (isTuple) {
     const tupleData = data as ReadonlyArray<TuplePoint>;
     for (let i = 0; i < tupleData.length; i++) {
       const x = tupleData[i][0];
-      if (!Number.isFinite(x)) return false;
-      if (x < prevX) return false;
+      if (!Number.isFinite(x)) {
+        monotonicXCache.set(data, false);
+        return false;
+      }
+      if (x < prevX) {
+        monotonicXCache.set(data, false);
+        return false;
+      }
       prevX = x;
     }
+    monotonicXCache.set(data, true);
     return true;
   }
 
   const objectData = data as ReadonlyArray<ObjectPoint>;
   for (let i = 0; i < objectData.length; i++) {
     const x = objectData[i].x;
-    if (!Number.isFinite(x)) return false;
-    if (x < prevX) return false;
+    if (!Number.isFinite(x)) {
+      monotonicXCache.set(data, false);
+      return false;
+    }
+    if (x < prevX) {
+      monotonicXCache.set(data, false);
+      return false;
+    }
     prevX = x;
   }
+  monotonicXCache.set(data, true);
   return true;
 };
 
@@ -490,18 +543,33 @@ const sliceVisibleRangeByX = (data: ReadonlyArray<DataPoint>, xMin: number, xMax
   return out;
 };
 
-const isTupleOHLCDataPoint = (p: OHLCDataPoint): p is OHLCDataPointTuple => Array.isArray(p);
+function isTupleOHLCDataPoint(p: OHLCDataPoint): p is OHLCDataPointTuple {
+  return Array.isArray(p);
+}
+
+// Cache monotonicity checks to avoid O(n) scans on every zoom operation.
+const monotonicTimestampCache = new WeakMap<ReadonlyArray<OHLCDataPoint>, boolean>();
 
 const isMonotonicNonDecreasingFiniteTimestamp = (data: ReadonlyArray<OHLCDataPoint>): boolean => {
+  const cached = monotonicTimestampCache.get(data);
+  if (cached !== undefined) return cached;
+
   let prevTimestamp = Number.NEGATIVE_INFINITY;
 
   for (let i = 0; i < data.length; i++) {
     const p = data[i]!;
     const timestamp = isTupleOHLCDataPoint(p) ? p[0] : p.timestamp;
-    if (!Number.isFinite(timestamp)) return false;
-    if (timestamp < prevTimestamp) return false;
+    if (!Number.isFinite(timestamp)) {
+      monotonicTimestampCache.set(data, false);
+      return false;
+    }
+    if (timestamp < prevTimestamp) {
+      monotonicTimestampCache.set(data, false);
+      return false;
+    }
     prevTimestamp = timestamp;
   }
+  monotonicTimestampCache.set(data, true);
   return true;
 };
 
@@ -1063,7 +1131,7 @@ export function createRenderCoordinator(
   // Coordinator-owned runtime series store (cartesian only).
   // - `runtimeRawDataByIndex[i]` owns a mutable array for streaming appends.
   // - `runtimeRawBoundsByIndex[i]` tracks raw bounds for axis auto-bounds and zoom mapping.
-  let runtimeRawDataByIndex: Array<DataPoint[] | null> = new Array(options.series.length).fill(null);
+  let runtimeRawDataByIndex: Array<DataPoint[] | OHLCDataPoint[] | null> = new Array(options.series.length).fill(null);
   let runtimeRawBoundsByIndex: Array<Bounds | null> = new Array(options.series.length).fill(null);
 
   // Baseline sampled series list derived from runtime raw data (used as the “full span” baseline).
@@ -1219,7 +1287,8 @@ export function createRenderCoordinator(
       if (!s || s.type === 'pie' || s.type === 'candlestick') continue;
       didAppendAny = true;
 
-      let raw = runtimeRawDataByIndex[seriesIndex];
+      // Note: candlestick series are filtered out above, so this is always cartesian `DataPoint[]`.
+      let raw = runtimeRawDataByIndex[seriesIndex] as DataPoint[] | null;
       if (!raw) {
         const seed = (s.rawData ?? s.data) as ReadonlyArray<DataPoint>;
         raw = seed.length === 0 ? [] : seed.slice();
@@ -1562,7 +1631,7 @@ export function createRenderCoordinator(
         // Store candlestick raw OHLC data (not for streaming append, but for zoom-aware resampling).
         const rawOHLC = (s.rawData ?? s.data) as ReadonlyArray<OHLCDataPoint>;
         const owned = rawOHLC.length === 0 ? [] : rawOHLC.slice();
-        runtimeRawDataByIndex[i] = owned as unknown as DataPoint[];
+        runtimeRawDataByIndex[i] = owned;
         runtimeRawBoundsByIndex[i] = s.rawBounds ?? null;
         continue;
       }
@@ -1585,16 +1654,19 @@ export function createRenderCoordinator(
       }
 
       if (s.type === 'candlestick') {
-        const rawOHLC = (runtimeRawDataByIndex[i] as unknown as ReadonlyArray<OHLCDataPoint> | null) ?? ((s.rawData ?? s.data) as ReadonlyArray<OHLCDataPoint>);
+        const rawOHLC =
+          (runtimeRawDataByIndex[i] as ReadonlyArray<OHLCDataPoint> | null) ??
+          ((s.rawData ?? s.data) as ReadonlyArray<OHLCDataPoint>);
         const bounds = runtimeRawBoundsByIndex[i] ?? s.rawBounds ?? undefined;
         const baselineSampled = s.sampling === 'ohlc' && rawOHLC.length > s.samplingThreshold
           ? ohlcSample(rawOHLC, s.samplingThreshold)
           : rawOHLC;
-        next[i] = { ...s, rawData: rawOHLC as any, rawBounds: bounds, data: baselineSampled as any };
+        next[i] = { ...s, rawData: rawOHLC, rawBounds: bounds, data: baselineSampled };
         continue;
       }
 
-      const raw = runtimeRawDataByIndex[i] ?? ((s.rawData ?? s.data) as ReadonlyArray<DataPoint>);
+      const raw =
+        (runtimeRawDataByIndex[i] as DataPoint[] | null) ?? ((s.rawData ?? s.data) as ReadonlyArray<DataPoint>);
       const bounds = runtimeRawBoundsByIndex[i] ?? s.rawBounds ?? undefined;
       const baselineSampled = sampleSeriesDataPoints(raw, s.sampling, s.samplingThreshold);
       next[i] = { ...s, rawData: raw, rawBounds: bounds, data: baselineSampled };
@@ -1640,7 +1712,9 @@ export function createRenderCoordinator(
 
       // Candlestick series: OHLC-specific slicing + sampling.
       if (s.type === 'candlestick') {
-        const rawOHLC = (runtimeRawDataByIndex[i] as unknown as ReadonlyArray<OHLCDataPoint> | null) ?? ((s.rawData ?? s.data) as ReadonlyArray<OHLCDataPoint>);
+        const rawOHLC =
+          (runtimeRawDataByIndex[i] as ReadonlyArray<OHLCDataPoint> | null) ??
+          ((s.rawData ?? s.data) as ReadonlyArray<OHLCDataPoint>);
         const visibleOHLC = sliceVisibleRangeByOHLC(rawOHLC, visibleX.min, visibleX.max);
 
         const sampling = s.sampling;
@@ -1659,7 +1733,8 @@ export function createRenderCoordinator(
       }
 
       // Cartesian series (line, area, bar, scatter).
-      const rawData = runtimeRawDataByIndex[i] ?? ((s.rawData ?? s.data) as ReadonlyArray<DataPoint>);
+      const rawData =
+        (runtimeRawDataByIndex[i] as DataPoint[] | null) ?? ((s.rawData ?? s.data) as ReadonlyArray<DataPoint>);
       const visibleRaw = sliceVisibleRangeByX(rawData, visibleX.min, visibleX.max);
 
       const sampling = s.sampling;

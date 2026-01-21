@@ -293,25 +293,54 @@ const computeRawBoundsFromData = (data: ReadonlyArray<DataPoint>): RawBounds | u
 const isTupleOHLCDataPoint = (p: OHLCDataPoint): p is OHLCDataPointTuple => Array.isArray(p);
 
 const computeRawBoundsFromOHLC = (data: ReadonlyArray<OHLCDataPoint>): RawBounds | undefined => {
+  if (data.length === 0) return undefined;
+
   let xMin = Number.POSITIVE_INFINITY;
   let xMax = Number.NEGATIVE_INFINITY;
   let yMin = Number.POSITIVE_INFINITY;
   let yMax = Number.NEGATIVE_INFINITY;
 
-  for (let i = 0; i < data.length; i++) {
-    const p = data[i]!;
-    const x = isTupleOHLCDataPoint(p) ? p[0] : p.timestamp;
-    const low = isTupleOHLCDataPoint(p) ? p[3] : p.low;
-    const high = isTupleOHLCDataPoint(p) ? p[4] : p.high;
-    if (!Number.isFinite(x) || !Number.isFinite(low) || !Number.isFinite(high)) continue;
+  // Hoist tuple-vs-object detection once (assume homogeneous arrays).
+  const isTuple = isTupleOHLCDataPoint(data[0]!);
 
-    const yLow = Math.min(low, high);
-    const yHigh = Math.max(low, high);
+  if (isTuple) {
+    // Tuple format path: [timestamp, open, close, low, high]
+    const dataAsTuples = data as ReadonlyArray<OHLCDataPointTuple>;
 
-    if (x < xMin) xMin = x;
-    if (x > xMax) xMax = x;
-    if (yLow < yMin) yMin = yLow;
-    if (yHigh > yMax) yMax = yHigh;
+    for (let i = 0; i < dataAsTuples.length; i++) {
+      const p = dataAsTuples[i]!;
+      const x = p[0];
+      const low = p[3];
+      const high = p[4];
+      if (!Number.isFinite(x) || !Number.isFinite(low) || !Number.isFinite(high)) continue;
+
+      const yLow = Math.min(low, high);
+      const yHigh = Math.max(low, high);
+
+      if (x < xMin) xMin = x;
+      if (x > xMax) xMax = x;
+      if (yLow < yMin) yMin = yLow;
+      if (yHigh > yMax) yMax = yHigh;
+    }
+  } else {
+    // Object format path: { timestamp, open, close, low, high }
+    const dataAsObjects = data as ReadonlyArray<Exclude<OHLCDataPoint, OHLCDataPointTuple>>;
+
+    for (let i = 0; i < dataAsObjects.length; i++) {
+      const p = dataAsObjects[i]!;
+      const x = p.timestamp;
+      const low = p.low;
+      const high = p.high;
+      if (!Number.isFinite(x) || !Number.isFinite(low) || !Number.isFinite(high)) continue;
+
+      const yLow = Math.min(low, high);
+      const yHigh = Math.max(low, high);
+
+      if (x < xMin) xMin = x;
+      if (x > xMax) xMax = x;
+      if (yLow < yMin) yMin = yLow;
+      if (yHigh > yMax) yMax = yHigh;
+    }
   }
 
   if (!Number.isFinite(xMin) || !Number.isFinite(xMax) || !Number.isFinite(yMin) || !Number.isFinite(yMax)) {
