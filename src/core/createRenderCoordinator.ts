@@ -63,7 +63,7 @@ export interface RenderCoordinator {
    *
    * Appends are coalesced and flushed once per render frame.
    */
-  appendData(seriesIndex: number, newPoints: ReadonlyArray<DataPoint>): void;
+  appendData(seriesIndex: number, newPoints: ReadonlyArray<DataPoint> | ReadonlyArray<OHLCDataPoint>): void;
   /**
    * Gets the current “interaction x” in domain units (or `null` when inactive).
    *
@@ -201,6 +201,38 @@ const extendBoundsWithDataPoints = (bounds: Bounds | null, points: ReadonlyArray
     if (x > xMax) xMax = x;
     if (y < yMin) yMin = y;
     if (y > yMax) yMax = y;
+  }
+
+  // Keep bounds usable for downstream scale derivation.
+  if (xMin === xMax) xMax = xMin + 1;
+  if (yMin === yMax) yMax = yMin + 1;
+
+  return { xMin, xMax, yMin, yMax };
+};
+
+const extendBoundsWithOHLCDataPoints = (bounds: Bounds | null, points: ReadonlyArray<OHLCDataPoint>): Bounds | null => {
+  if (points.length === 0) return bounds;
+
+  let xMin = bounds?.xMin ?? Number.POSITIVE_INFINITY;
+  let xMax = bounds?.xMax ?? Number.NEGATIVE_INFINITY;
+  let yMin = bounds?.yMin ?? Number.POSITIVE_INFINITY;
+  let yMax = bounds?.yMax ?? Number.NEGATIVE_INFINITY;
+
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i]!;
+    const timestamp = isTupleOHLCDataPoint(p) ? p[0] : p.timestamp;
+    const low = isTupleOHLCDataPoint(p) ? p[3] : p.low;
+    const high = isTupleOHLCDataPoint(p) ? p[4] : p.high;
+
+    if (!Number.isFinite(timestamp) || !Number.isFinite(low) || !Number.isFinite(high)) continue;
+    if (timestamp < xMin) xMin = timestamp;
+    if (timestamp > xMax) xMax = timestamp;
+    if (low < yMin) yMin = low;
+    if (high > yMax) yMax = high;
+  }
+
+  if (!Number.isFinite(xMin) || !Number.isFinite(xMax) || !Number.isFinite(yMin) || !Number.isFinite(yMax)) {
+    return bounds;
   }
 
   // Keep bounds usable for downstream scale derivation.
@@ -1363,7 +1395,6 @@ export function createRenderCoordinator(
 
   // Prevent spamming console.warn for repeated misuse.
   const warnedPieAppendSeries = new Set<number>();
-  const warnedCandlestickAppendSeries = new Set<number>();
 
   // Coordinator-owned runtime series store (cartesian only).
   // - `runtimeRawDataByIndex[i]` owns a mutable array for streaming appends.
@@ -1389,7 +1420,7 @@ export function createRenderCoordinator(
   let zoomResampleDue = false;
 
   // Coalesced streaming appends (flushed at the start of `render()`).
-  const pendingAppendByIndex = new Map<number, DataPoint[]>();
+  const pendingAppendByIndex = new Map<number, Array<DataPoint | OHLCDataPoint>>();
 
   // Tracks what the DataStore currently represents for each series index.
   // Used to decide whether `appendSeries(...)` is a correct fast-path.
@@ -1526,37 +1557,60 @@ export function createRenderCoordinator(
     for (const [seriesIndex, points] of pendingAppendByIndex) {
       if (points.length === 0) continue;
       const s = currentOptions.series[seriesIndex];
-      if (!s || s.type === 'pie' || s.type === 'candlestick') continue;
+      if (!s || s.type === 'pie') continue;
       didAppendAny = true;
 
-      // Note: candlestick series are filtered out above, so this is always cartesian `DataPoint[]`.
-      let raw = runtimeRawDataByIndex[seriesIndex] as DataPoint[] | null;
-      if (!raw) {
-        const seed = (s.rawData ?? s.data) as ReadonlyArray<DataPoint>;
-        raw = seed.length === 0 ? [] : seed.slice();
-        runtimeRawDataByIndex[seriesIndex] = raw;
-        runtimeRawBoundsByIndex[seriesIndex] = s.rawBounds ?? computeRawBoundsFromData(raw);
-      }
-
-      // Optional fast-path: if the GPU buffer currently represents the full, unsampled line series,
-      // we can append just the new points to the existing GPU buffer (no full re-upload).
-      if (
-        s.type === 'line' &&
-        s.sampling === 'none' &&
-        isFullSpanZoomBefore &&
-        gpuSeriesKindByIndex[seriesIndex] === 'fullRawLine'
-      ) {
-        try {
-          dataStore.appendSeries(seriesIndex, points);
-          appendedGpuThisFrame.add(seriesIndex);
-        } catch {
-          // If the DataStore has not been initialized for this index (or any other error occurs),
-          // fall back to the normal full upload path later in render().
+      if (s.type === 'candlestick') {
+        // Handle candlestick OHLC data.
+        let raw = runtimeRawDataByIndex[seriesIndex] as OHLCDataPoint[] | null;
+        if (!raw) {
+          const seed = (s.rawData ?? s.data) as ReadonlyArray<OHLCDataPoint>;
+          raw = seed.length === 0 ? [] : seed.slice();
+          runtimeRawDataByIndex[seriesIndex] = raw;
+          runtimeRawBoundsByIndex[seriesIndex] = s.rawBounds ?? null;
         }
-      }
 
-      raw.push(...points);
-      runtimeRawBoundsByIndex[seriesIndex] = extendBoundsWithDataPoints(runtimeRawBoundsByIndex[seriesIndex], points);
+        const ohlcPoints = points as unknown as ReadonlyArray<OHLCDataPoint>;
+        raw.push(...ohlcPoints);
+        runtimeRawBoundsByIndex[seriesIndex] = extendBoundsWithOHLCDataPoints(
+          runtimeRawBoundsByIndex[seriesIndex],
+          ohlcPoints
+        );
+      } else {
+        // Handle other cartesian series (line, area, bar, scatter).
+        let raw = runtimeRawDataByIndex[seriesIndex] as DataPoint[] | null;
+        if (!raw) {
+          const seed = (s.rawData ?? s.data) as ReadonlyArray<DataPoint>;
+          raw = seed.length === 0 ? [] : seed.slice();
+          runtimeRawDataByIndex[seriesIndex] = raw;
+          runtimeRawBoundsByIndex[seriesIndex] = s.rawBounds ?? computeRawBoundsFromData(raw);
+        }
+
+        const dataPoints = points as unknown as ReadonlyArray<DataPoint>;
+        
+        // Optional fast-path: if the GPU buffer currently represents the full, unsampled line series,
+        // we can append just the new points to the existing GPU buffer (no full re-upload).
+        if (
+          s.type === 'line' &&
+          s.sampling === 'none' &&
+          isFullSpanZoomBefore &&
+          gpuSeriesKindByIndex[seriesIndex] === 'fullRawLine'
+        ) {
+          try {
+            dataStore.appendSeries(seriesIndex, dataPoints);
+            appendedGpuThisFrame.add(seriesIndex);
+          } catch {
+            // If the DataStore has not been initialized for this index (or any other error occurs),
+            // fall back to the normal full upload path later in render().
+          }
+        }
+
+        raw.push(...dataPoints);
+        runtimeRawBoundsByIndex[seriesIndex] = extendBoundsWithDataPoints(
+          runtimeRawBoundsByIndex[seriesIndex],
+          dataPoints
+        );
+      }
     }
 
     pendingAppendByIndex.clear();
@@ -2376,23 +2430,13 @@ export function createRenderCoordinator(
       }
       return;
     }
-    if (s.type === 'candlestick') {
-      // Candlestick series are not yet implemented and currently not supported by streaming append.
-      if (!warnedCandlestickAppendSeries.has(seriesIndex)) {
-        warnedCandlestickAppendSeries.add(seriesIndex);
-        console.warn(
-          `RenderCoordinator.appendData(${seriesIndex}, ...): candlestick series are not yet implemented.`
-        );
-      }
-      return;
-    }
 
     const existing = pendingAppendByIndex.get(seriesIndex);
     if (existing) {
-      existing.push(...newPoints);
+      existing.push(...(newPoints as Array<DataPoint | OHLCDataPoint>));
     } else {
       // Copy into a mutable staging array so repeated appends coalesce without extra allocations.
-      pendingAppendByIndex.set(seriesIndex, Array.from(newPoints));
+      pendingAppendByIndex.set(seriesIndex, Array.from(newPoints as Array<DataPoint | OHLCDataPoint>));
     }
 
     // Coalesce appends + any required resampling + GPU streaming updates into a single flush.
@@ -2430,7 +2474,7 @@ export function createRenderCoordinator(
       executeFlush({ requestRenderAfter: false });
     }
 
-    const hasCartesianSeries = currentOptions.series.some((s) => s.type !== 'pie' && s.type !== 'candlestick');
+    const hasCartesianSeries = currentOptions.series.some((s) => s.type !== 'pie');
     const seriesForIntro = renderSeries;
 
     // Story 5.16: start/update intro animation once we have drawable series marks.

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChartGPU - Live Crypto Streaming</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <span class="logo-icon">📊</span>
+        <span class="logo-text">ChartGPU</span>
+        <span class="logo-badge">WebGPU</span>
+      </div>
+      <div class="symbol-info">
+        <span class="symbol-name">BTC/USD</span>
+        <span id="current-price" class="current-price" data-price="0">$67,500.00</span>
+      </div>
+      <div class="timeframes">
+        <button class="timeframe-btn" data-tf="1m">1m</button>
+        <button class="timeframe-btn active" data-tf="5m">5m</button>
+        <button class="timeframe-btn" data-tf="15m">15m</button>
+        <button class="timeframe-btn" data-tf="1h">1H</button>
+        <button class="timeframe-btn" data-tf="4h">4H</button>
+        <button class="timeframe-btn" data-tf="1d">1D</button>
+      </div>
+    </header>
+
+    <!-- Stats Bar -->
+    <div class="stats-bar">
+      <div class="stat">
+        <span class="stat-label">FPS</span>
+        <span id="stat-fps" class="stat-value">60</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Candles</span>
+        <span id="stat-candles" class="stat-value">10,000</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Tick Rate</span>
+        <span id="stat-ticks" class="stat-value">0/s</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Total Ticks</span>
+        <span id="stat-total-ticks" class="stat-value">0</span>
+      </div>
+      <div class="stat-separator"></div>
+      <button id="toggle-btn" class="control-btn">▶ Start</button>
+      <button id="style-btn" class="control-btn secondary">Style: Classic</button>
+    </div>
+
+    <!-- Chart Container -->
+    <div id="chart" class="chart-container"></div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span>Powered by WebGPU • 10,000+ candles • 75 ticks/sec simulated feed</span>
+      <a href="https://github.com/ChartGPU/chartgpu" target="_blank">GitHub</a>
+    </footer>
+  </div>
+
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

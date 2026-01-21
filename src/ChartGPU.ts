@@ -22,9 +22,11 @@ export interface ChartGPUInstance {
   /**
    * Appends new points to a cartesian series at runtime (streaming).
    *
-   * Pie series are non-cartesian and are currently not supported by streaming append.
+   * For candlestick series, pass `OHLCDataPoint[]`.
+   * For other cartesian series (line, area, bar, scatter), pass `DataPoint[]`.
+   * Pie series are non-cartesian and are not supported by streaming append.
    */
-  appendData(seriesIndex: number, newPoints: DataPoint[]): void;
+  appendData(seriesIndex: number, newPoints: DataPoint[] | OHLCDataPoint[]): void;
   resize(): void;
   dispose(): void;
   on(eventName: 'crosshairMove', callback: ChartGPUCrosshairMoveCallback): void;
@@ -197,6 +199,38 @@ const extendBoundsWithDataPoints = (bounds: Bounds | null, points: ReadonlyArray
     if (x > xMax) xMax = x;
     if (y < yMin) yMin = y;
     if (y > yMax) yMax = y;
+  }
+
+  // Keep bounds usable for downstream scale derivation.
+  if (xMin === xMax) xMax = xMin + 1;
+  if (yMin === yMax) yMax = yMin + 1;
+
+  return { xMin, xMax, yMin, yMax };
+};
+
+const extendBoundsWithOHLCDataPoints = (bounds: Bounds | null, points: ReadonlyArray<OHLCDataPoint>): Bounds | null => {
+  if (points.length === 0) return bounds;
+
+  let xMin = bounds?.xMin ?? Number.POSITIVE_INFINITY;
+  let xMax = bounds?.xMax ?? Number.NEGATIVE_INFINITY;
+  let yMin = bounds?.yMin ?? Number.POSITIVE_INFINITY;
+  let yMax = bounds?.yMax ?? Number.NEGATIVE_INFINITY;
+
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i]!;
+    const timestamp = getOHLCTimestamp(p);
+    const low = isTupleOHLCDataPoint(p) ? p[3] : p.low;
+    const high = isTupleOHLCDataPoint(p) ? p[4] : p.high;
+
+    if (!Number.isFinite(timestamp) || !Number.isFinite(low) || !Number.isFinite(high)) continue;
+    if (timestamp < xMin) xMin = timestamp;
+    if (timestamp > xMax) xMax = timestamp;
+    if (low < yMin) yMin = low;
+    if (high > yMax) yMax = high;
+  }
+
+  if (!Number.isFinite(xMin) || !Number.isFinite(xMax) || !Number.isFinite(yMin) || !Number.isFinite(yMax)) {
+    return bounds;
   }
 
   // Keep bounds usable for downstream scale derivation.
@@ -425,7 +459,7 @@ export async function createChartGPU(
   // Chart-owned runtime series store for hit-testing only (cartesian only).
   // - `runtimeRawDataByIndex[i]` is a mutable array used to reflect streaming appends.
   // - `runtimeRawBoundsByIndex[i]` is incrementally updated to keep scale/bounds derivation cheap.
-  let runtimeRawDataByIndex: DataPoint[][] = new Array(resolvedOptions.series.length).fill(null).map(() => []);
+  let runtimeRawDataByIndex: Array<DataPoint[] | OHLCDataPoint[]> = new Array(resolvedOptions.series.length).fill(null).map(() => []);
   let runtimeRawBoundsByIndex: Array<Bounds | null> = new Array(resolvedOptions.series.length).fill(null);
   let runtimeHitTestSeriesCache: ResolvedChartGPUOptions['series'] | null = null;
   let runtimeHitTestSeriesVersion = 0;
@@ -440,9 +474,15 @@ export async function createChartGPU(
       const s = resolvedOptions.series[i]!;
       if (s.type === 'pie') continue;
 
-      const raw = ((s as unknown as { rawData?: ReadonlyArray<DataPoint> }).rawData ?? s.data) as ReadonlyArray<DataPoint>;
-      runtimeRawDataByIndex[i] = raw.length === 0 ? [] : raw.slice();
-      runtimeRawBoundsByIndex[i] = ((s as unknown as { rawBounds?: Bounds | null }).rawBounds ?? null) ?? computeRawBoundsFromData(raw);
+      if (s.type === 'candlestick') {
+        const raw = ((s as unknown as { rawData?: ReadonlyArray<OHLCDataPoint> }).rawData ?? s.data) as ReadonlyArray<OHLCDataPoint>;
+        runtimeRawDataByIndex[i] = raw.length === 0 ? [] : raw.slice();
+        runtimeRawBoundsByIndex[i] = ((s as unknown as { rawBounds?: Bounds | null }).rawBounds ?? null);
+      } else {
+        const raw = ((s as unknown as { rawData?: ReadonlyArray<DataPoint> }).rawData ?? s.data) as ReadonlyArray<DataPoint>;
+        runtimeRawDataByIndex[i] = raw.length === 0 ? [] : raw.slice();
+        runtimeRawBoundsByIndex[i] = ((s as unknown as { rawBounds?: Bounds | null }).rawBounds ?? null) ?? computeRawBoundsFromData(raw);
+      }
     }
   };
 
@@ -451,6 +491,9 @@ export async function createChartGPU(
     // Replace cartesian series `data` with chart-owned runtime data (pie series are unchanged).
     runtimeHitTestSeriesCache = resolvedOptions.series.map((s, i) => {
       if (s.type === 'pie') return s;
+      if (s.type === 'candlestick') {
+        return { ...s, data: runtimeRawDataByIndex[i] ?? (s.data as ReadonlyArray<OHLCDataPoint>) };
+      }
       return { ...s, data: runtimeRawDataByIndex[i] ?? (s.data as ReadonlyArray<DataPoint>) };
     }) as ResolvedChartGPUOptions['series'];
     return runtimeHitTestSeriesCache;
@@ -476,7 +519,6 @@ export async function createChartGPU(
 
   // Prevent spamming console.warn for repeated misuse.
   const warnedPieAppendSeries = new Set<number>();
-  const warnedCandlestickAppendSeries = new Set<number>();
 
   let scheduledRaf: number | null = null;
   let lastConfigured: { width: number; height: number; format: GPUTextureFormat } | null = null;
@@ -1098,26 +1140,33 @@ export async function createChartGPU(
         }
         return;
       }
-      if (s.type === 'candlestick') {
-        // Candlestick series are currently not supported by streaming append.
-        if (!warnedCandlestickAppendSeries.has(seriesIndex)) {
-          warnedCandlestickAppendSeries.add(seriesIndex);
-          console.warn(
-            `ChartGPU.appendData(${seriesIndex}, ...): candlestick series are not supported by streaming append. Use setOption(...) to replace candlestick data.`
-          );
-        }
-        return;
-      }
 
       // Forward to coordinator (GPU buffers + render-state updates), then keep ChartGPU's
       // hit-testing runtime store in sync.
       coordinator?.appendData(seriesIndex, newPoints);
 
-      const owned = runtimeRawDataByIndex[seriesIndex] ?? [];
-      owned.push(...newPoints);
-      runtimeRawDataByIndex[seriesIndex] = owned;
+      if (s.type === 'candlestick') {
+        // Handle candlestick series with OHLC data points.
+        const owned = (runtimeRawDataByIndex[seriesIndex] ?? []) as OHLCDataPoint[];
+        owned.push(...(newPoints as OHLCDataPoint[]));
+        runtimeRawDataByIndex[seriesIndex] = owned;
 
-      runtimeRawBoundsByIndex[seriesIndex] = extendBoundsWithDataPoints(runtimeRawBoundsByIndex[seriesIndex], newPoints);
+        runtimeRawBoundsByIndex[seriesIndex] = extendBoundsWithOHLCDataPoints(
+          runtimeRawBoundsByIndex[seriesIndex],
+          newPoints as OHLCDataPoint[]
+        );
+      } else {
+        // Handle other cartesian series (line, area, bar, scatter).
+        const owned = (runtimeRawDataByIndex[seriesIndex] ?? []) as DataPoint[];
+        owned.push(...(newPoints as DataPoint[]));
+        runtimeRawDataByIndex[seriesIndex] = owned;
+
+        runtimeRawBoundsByIndex[seriesIndex] = extendBoundsWithDataPoints(
+          runtimeRawBoundsByIndex[seriesIndex],
+          newPoints as DataPoint[]
+        );
+      }
+
       cachedGlobalBounds = computeGlobalBounds(resolvedOptions.series, runtimeRawBoundsByIndex);
 
       runtimeHitTestSeriesCache = null;
