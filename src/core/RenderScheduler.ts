@@ -32,6 +32,7 @@ interface RenderSchedulerInternalState {
   callback: RenderCallback | null;
   lastFrameTime: number;
   dirty: boolean;
+  frameHandler: ((time: number) => void) | null;
 }
 
 /**
@@ -58,6 +59,7 @@ export function createRenderScheduler(): RenderSchedulerState {
     callback: null,
     lastFrameTime: 0,
     dirty: false,
+    frameHandler: null,
   });
 
   return state;
@@ -108,26 +110,39 @@ export function startRenderScheduler(
       return;
     }
 
-    const deltaTime = currentTime - currentInternalState.lastFrameTime;
+    // Clear rafId at the start - we are no longer scheduled (now idle)
+    currentInternalState.rafId = null;
+
+    // Calculate deltaTime with capping to prevent animation jumps after idle
+    let deltaTime = currentTime - currentInternalState.lastFrameTime;
+    // Cap deltaTime to 100ms (1/10th second) to prevent huge jumps
+    const MAX_DELTA_TIME = 100;
+    if (deltaTime > MAX_DELTA_TIME) {
+      deltaTime = MAX_DELTA_TIME;
+    }
     currentInternalState.lastFrameTime = currentTime;
 
-    // Future optimization: skip render if not dirty
-    // Currently always renders, but dirty flag is tracked for future use
+    // Only render if dirty
     if (currentInternalState.dirty) {
-      // Reset dirty flag after checking (for future frame-skipping optimization)
+      // Reset dirty flag BEFORE calling callback
       currentInternalState.dirty = false;
-    }
 
-    // Call the render callback with delta time
-    currentInternalState.callback(deltaTime);
+      // Call the render callback with delta time
+      currentInternalState.callback(deltaTime);
 
-    // Continue the loop if still running
-    // Re-check internal state in case it was destroyed during callback execution
-    const nextInternalState = internalStateMap.get(schedulerId);
-    if (nextInternalState && nextInternalState.callback) {
-      nextInternalState.rafId = requestAnimationFrame(frameHandler);
+      // After callback returns, check if dirty was set again (callback-triggered renders for animations)
+      // Re-check internal state in case it was destroyed during callback execution
+      const nextInternalState = internalStateMap.get(schedulerId);
+      if (nextInternalState && nextInternalState.callback && nextInternalState.dirty) {
+        // Schedule another frame since callback requested a render
+        nextInternalState.rafId = requestAnimationFrame(frameHandler);
+      }
     }
+    // If not dirty, we remain idle (rafId stays null, no frame scheduled)
   };
+
+  // Store frameHandler in internal state so requestRender() can access it
+  internalState.frameHandler = frameHandler;
 
   // Start the first frame
   internalState.rafId = requestAnimationFrame(frameHandler);
@@ -157,6 +172,7 @@ export function stopRenderScheduler(state: RenderSchedulerState): RenderSchedule
   }
 
   internalState.callback = null;
+  internalState.frameHandler = null;
 
   if (internalState.rafId !== null) {
     cancelAnimationFrame(internalState.rafId);
@@ -171,11 +187,10 @@ export function stopRenderScheduler(state: RenderSchedulerState): RenderSchedule
 }
 
 /**
- * Marks the current frame as dirty, indicating it needs to be rendered.
+ * Marks the current frame as dirty and schedules a render if idle.
  * 
- * This function is prepared for future optimization where frames can be
- * skipped if nothing has changed. Currently, all frames render regardless
- * of the dirty flag.
+ * This function implements render-on-demand: it schedules a frame when the
+ * scheduler is idle. Multiple calls coalesce into a single frame.
  * 
  * @param state - The scheduler state
  * @throws {Error} If state is invalid
@@ -186,8 +201,27 @@ export function requestRender(state: RenderSchedulerState): void {
     throw new Error('Invalid scheduler state. Use createRenderScheduler() to create a new state.');
   }
 
-  // Mark as dirty even if not running (for future use when scheduler starts)
+  // Mark as dirty
   internalState.dirty = true;
+
+  // If not running, return early
+  if (internalState.callback === null) {
+    return;
+  }
+
+  // If already scheduled, return early (coalescing)
+  if (internalState.rafId !== null) {
+    return;
+  }
+
+  // Idle - schedule a frame
+  // Reset lastFrameTime to current time to ensure reasonable deltaTime after idle
+  internalState.lastFrameTime = performance.now();
+  
+  // Schedule RAF using the stored frameHandler
+  if (internalState.frameHandler) {
+    internalState.rafId = requestAnimationFrame(internalState.frameHandler);
+  }
 }
 
 /**
@@ -212,8 +246,9 @@ export function destroyRenderScheduler(state: RenderSchedulerState): RenderSched
       internalState.rafId = null;
     }
     
-    // Clear callback to prevent further execution
+    // Clear callback and frameHandler to prevent further execution
     internalState.callback = null;
+    internalState.frameHandler = null;
     
     // Clean up internal state from map to prevent memory leak
     internalStateMap.delete(state.id);
