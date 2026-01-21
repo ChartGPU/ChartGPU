@@ -4,27 +4,27 @@ import type { ChartGPUOptions, OHLCDataPoint } from '../../src/index';
 const showError = (message: string): void => {
   const el = document.getElementById('error');
   if (!el) return;
-  el.textContent = message;
+  el.textContent = message; 
   el.style.display = 'block';
 };
 
 /**
  * Generate synthetic OHLC data for demonstration.
- * Simulates a stock price with random walk and candles spanning ~30 days.
+ * Simulates a stock price with random walk and candles at 1-second intervals.
  */
 function generateOHLCData(numCandles: number, startPrice: number = 100): ReadonlyArray<OHLCDataPoint> {
   const data: OHLCDataPoint[] = [];
-  const msPerDay = 24 * 60 * 60 * 1000;
-  const startTimestamp = Date.now() - numCandles * msPerDay;
+  const msPerSecond = 1000;
+  const startTimestamp = Date.now() - numCandles * msPerSecond;
 
   let currentPrice = startPrice;
 
   for (let i = 0; i < numCandles; i++) {
-    const timestamp = startTimestamp + i * msPerDay;
+    const timestamp = startTimestamp + i * msPerSecond;
 
     // Random walk with trend
     const openPrice = currentPrice;
-    const volatility = 0.03; // 3% daily volatility
+    const volatility = 0.03; // 3% volatility per interval
     const trend = (Math.random() - 0.48) * 0.02; // Slight upward bias
     const change = openPrice * (trend + (Math.random() - 0.5) * volatility);
     const closePrice = openPrice + change;
@@ -48,7 +48,7 @@ async function main() {
     throw new Error('Chart container not found');
   }
 
-  // Generate 60 candles (approximately 2 months of daily data)
+  // Generate 60 candles (60 seconds of data at 1-second intervals)
   const ohlcData = generateOHLCData(60);
 
   // Extract min/max for axis bounds
@@ -69,9 +69,9 @@ async function main() {
   const priceRange = maxPrice - minPrice;
   const pricePadding = priceRange * 0.05;
 
-  // Add padding to timestamp range (1 day on each side)
-  const msPerDay = 24 * 60 * 60 * 1000;
-  const timestampPadding = msPerDay;
+  // Add padding to timestamp range (1 second on each side)
+  const msPerSecond = 1000;
+  const timestampPadding = msPerSecond;
 
   const initialOptions: ChartGPUOptions = {
     grid: { left: 70, right: 24, top: 24, bottom: 56 },
@@ -79,7 +79,7 @@ async function main() {
       type: 'value',
       min: minTimestamp - timestampPadding,
       max: maxTimestamp + timestampPadding,
-      name: 'Date',
+      name: 'Time',
     },
     yAxis: {
       type: 'value',
@@ -110,6 +110,9 @@ async function main() {
   };
 
   const chart = await ChartGPU.create(container, initialOptions);
+  // IMPORTANT: `setOption(...)` replaces options (no merging). Preserve full options
+  // when updating just the candlestick series styling.
+  let currentOptions: ChartGPUOptions = initialOptions;
 
   // Keep the canvas crisp as the container resizes.
   let scheduled = false;
@@ -138,26 +141,28 @@ async function main() {
     const downColor = downColorInput?.value ?? '#ef5350';
     const borderWidth = borderWidthInput ? parseFloat(borderWidthInput.value) : 1;
 
-    chart.setOption({
+    const series0 = currentOptions.series?.[0];
+    if (!series0 || series0.type !== 'candlestick') return;
+
+    currentOptions = {
+      ...currentOptions,
       series: [
         {
-          type: 'candlestick',
-          name: 'Stock Price',
+          ...series0,
           data: ohlcData,
           style,
           itemStyle: {
+            ...series0.itemStyle,
             upColor,
             downColor,
             upBorderColor: upColor,
             downBorderColor: downColor,
             borderWidth,
           },
-          barWidth: '80%',
-          barMinWidth: 2,
-          barMaxWidth: 40,
         },
       ],
-    });
+    };
+    chart.setOption(currentOptions);
   };
 
   styleSelect?.addEventListener('change', updateChart);

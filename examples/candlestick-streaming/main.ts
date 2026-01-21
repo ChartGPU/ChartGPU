@@ -7,6 +7,11 @@ const CONFIG = {
   symbol: 'BTC/USD',
   historicalCandles: 10_000, // 10K candles of history
   candleIntervalMs: 60_000, // 1-minute candles
+  // The renderer’s auto-scroll behavior advances the view only when new x-values are appended.
+  // With true 1-minute candles, you’d only see the chart “move right” once per minute.
+  // To make the demo feel alive, we run the candle clock faster than real time.
+  // Example: 30x means a new “1m” candle closes every ~2 seconds at 75 ticks/sec.
+  timeScale: 30,
   ticksPerSecond: 75, // High-frequency ticks
   tickVolatility: 0.0003, // Per-tick volatility
   maxCandles: 15_000, // Memory bound
@@ -19,6 +24,8 @@ let data: OHLCDataPoint[] = [];
 let tickSimulator: ReturnType<typeof createTickSimulator>;
 let candleAggregator: ReturnType<typeof createCandleAggregator>;
 let isStreaming = false;
+// Cache the full chart options to avoid resetting fields on partial setOption calls
+let fullChartOptions: Parameters<ChartGPUInstance['setOption']>[0];
 
 // Stats
 let frameCount = 0;
@@ -27,6 +34,10 @@ let fps = 0;
 let ticksPerSec = 0;
 let lastTickCount = 0;
 let lastTickTime = performance.now();
+
+// Simulated time for candle aggregation (accelerated vs real time).
+let simulatedTimeMs = Date.now();
+let lastSimPerfNow = performance.now();
 
 const isTupleOHLCDataPoint = (
   p: OHLCDataPoint
@@ -56,8 +67,13 @@ async function init() {
   const lastCandle = data[data.length - 1];
   const lastPrice = getClose(lastCandle); // close price
 
+  // Seed simulated time from the most recent historical candle so the first live candle
+  // continues smoothly after history (instead of starting far in the past/future).
+  simulatedTimeMs = getTimestamp(lastCandle) + CONFIG.candleIntervalMs;
+  lastSimPerfNow = performance.now();
+
   // Create chart
-  chart = await createChart(container, {
+  fullChartOptions = {
     xAxis: { type: 'time', name: 'Time' },
     yAxis: { type: 'value', name: `${CONFIG.symbol}` },
     series: [
@@ -80,7 +96,8 @@ async function init() {
     tooltip: { trigger: 'item' },
     animation: false, // Critical for streaming performance
     autoScroll: true,
-  });
+  };
+  chart = await createChart(container, fullChartOptions);
 
   // Setup tick simulator
   candleAggregator = createCandleAggregator(CONFIG.candleIntervalMs);
@@ -103,8 +120,14 @@ async function init() {
 }
 
 function handleTick(tick: Tick) {
-  // Drive the candle aggregator from raw ticks.
-  candleAggregator.processTick(tick);
+  // Advance simulated time (so we can close “1m” candles faster than real time).
+  const now = performance.now();
+  const dtRealMs = Math.max(0, now - lastSimPerfNow);
+  lastSimPerfNow = now;
+  simulatedTimeMs += dtRealMs * CONFIG.timeScale;
+
+  // Drive the candle aggregator from ticks, but using simulated time.
+  candleAggregator.processTick({ ...tick, timestamp: Math.floor(simulatedTimeMs) });
 
   // Update the current (forming) candle in real-time.
   const currentCandle = candleAggregator.getCurrentCandle();
@@ -124,9 +147,20 @@ function handleTick(tick: Tick) {
       // Memory management: trim old candles
       if (data.length > CONFIG.maxCandles) {
         data = data.slice(data.length - CONFIG.maxCandles);
-        chart.setOption({
-          series: [{ type: 'candlestick', name: CONFIG.symbol, data }],
-        });
+        // Preserve full options when trimming data
+        const series0 = fullChartOptions.series?.[0];
+        if (series0 && series0.type === 'candlestick') {
+          fullChartOptions = {
+            ...fullChartOptions,
+            series: [
+              {
+                ...series0,
+                data,
+              },
+            ],
+          };
+          chart.setOption(fullChartOptions);
+        }
       } else {
         // Efficient append (candlesticks supported)
         chart.appendData(0, [currentCandle]);
@@ -144,18 +178,21 @@ function throttledUpdateCurrentCandle() {
   if (now - lastCurrentCandleUpdate < 100) return;
   lastCurrentCandleUpdate = now;
 
-  // Update just the last candle efficiently (replace series data)
+  // Update just the last candle efficiently by updating the full options with new data
   const lastIdx = data.length - 1;
-  if (lastIdx >= 0) {
-    chart.setOption({
+  const series0 = fullChartOptions.series?.[0];
+  if (lastIdx >= 0 && series0 && series0.type === 'candlestick') {
+    // Preserve full series config and only update data
+    fullChartOptions = {
+      ...fullChartOptions,
       series: [
         {
-          type: 'candlestick',
-          name: CONFIG.symbol,
+          ...series0,
           data,
         },
       ],
-    });
+    };
+    chart.setOption(fullChartOptions);
   }
 }
 
@@ -179,16 +216,21 @@ function setupControls() {
   let isHollow = false;
   document.getElementById('style-btn')!.addEventListener('click', () => {
     isHollow = !isHollow;
-    chart.setOption({
-      series: [
-        {
-          type: 'candlestick',
-          name: CONFIG.symbol,
-          data,
-          style: isHollow ? 'hollow' : 'classic',
-        },
-      ],
-    });
+    // Preserve full options when changing style
+    const series0 = fullChartOptions.series?.[0];
+    if (series0 && series0.type === 'candlestick') {
+      fullChartOptions = {
+        ...fullChartOptions,
+        series: [
+          {
+            ...series0,
+            style: isHollow ? 'hollow' : 'classic',
+            data,
+          },
+        ],
+      };
+      chart.setOption(fullChartOptions);
+    }
     document.getElementById('style-btn')!.textContent = isHollow ? 'Style: Hollow' : 'Style: Classic';
   });
 
