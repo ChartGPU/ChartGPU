@@ -8,14 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Horizontal scroll panning** - Touchpad users can now pan the chart view by scrolling left/right. The zoom handler now detects horizontal scroll dominance and performs pan operations accordingly.
 
 ### Changed
+- **Render-on-demand performance** - Charts no longer re-render continuously at 60fps when idle. Rendering now only occurs when changes are detected via dirty tracking, significantly reducing GPU usage and power consumption during static views.
 
 ### Deprecated
 
 ### Removed
 
 ### Fixed
+- **Scissor rect clipping during zoom** - Fixed visual bug where chart data extended past axis boundaries during zoom interactions. Scissor rects are now applied consistently to line and area renderers during all rendering operations, not just intro animations.
 
 ### Security
 

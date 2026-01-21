@@ -522,6 +522,7 @@ export async function createChartGPU(
 
   let scheduledRaf: number | null = null;
   let lastConfigured: { width: number; height: number; format: GPUTextureFormat } | null = null;
+  let isDirty = true;
 
   const hasHoverListeners = (): boolean => listeners.mouseover.size > 0 || listeners.mouseout.size > 0;
   const hasClickListeners = (): boolean => listeners.click.size > 0;
@@ -534,6 +535,7 @@ export async function createChartGPU(
 
   const requestRender = (): void => {
     if (disposed) return;
+    isDirty = true;
     if (scheduledRaf !== null) return;
 
     scheduledRaf = requestAnimationFrame(() => {
@@ -542,7 +544,11 @@ export async function createChartGPU(
 
       // Requirement: on RAF tick, call resize() first.
       resizeInternal(false);
-      coordinator?.render();
+      
+      if (isDirty) {
+        isDirty = false;
+        coordinator?.render();
+      }
     });
   };
 
