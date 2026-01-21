@@ -1409,6 +1409,15 @@ export function createRenderCoordinator(
   // Zoom-aware sampled series list used for rendering + cartesian hit-testing.
   // Derived from `currentOptions.series` (which still includes baseline sampled `data`).
   let renderSeries: ResolvedChartGPUOptions['series'] = currentOptions.series;
+
+  // Cache for sampled data with buffer zones - enables fast slicing during pan without resampling.
+  interface SampledDataCache {
+    data: ReadonlyArray<DataPoint> | ReadonlyArray<OHLCDataPoint>;
+    cachedRange: { min: number; max: number };
+    timestamp: number;
+  }
+  let lastSampledData: Array<SampledDataCache | null> = [];
+
   // Unified flush scheduler (appends + zoom-aware resampling + optional GPU streaming updates).
   let flushScheduled = false;
   let flushRafId: number | null = null;
@@ -1611,6 +1620,9 @@ export function createRenderCoordinator(
           dataPoints
         );
       }
+
+      // Invalidate cache for this series since data has changed
+      lastSampledData[seriesIndex] = null;
     }
 
     pendingAppendByIndex.clear();
@@ -1968,6 +1980,8 @@ export function createRenderCoordinator(
       zoomState = createZoomState(cfg.start, cfg.end);
       lastOptionsZoomRange = { start: cfg.start, end: cfg.end };
       unsubscribeZoom = zoomState.onChange((range) => {
+        // Slice cached data immediately for smooth panning
+        sliceRenderSeriesToVisibleRange();
         // Immediate render for UI feedback (axes/crosshair/slider).
         requestRender();
         // Debounce resampling; the unified flush will do the work.
@@ -2056,10 +2070,84 @@ export function createRenderCoordinator(
     runtimeBaseSeries = next;
   };
 
+  function sliceRenderSeriesToVisibleRange(): void {
+    const zoomRange = zoomState?.getRange() ?? null;
+    const baseXDomain = computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
+    const visibleX = computeVisibleXDomain(baseXDomain, zoomRange);
+
+    // Fast path: no zoom or full span - use baseline directly
+    const isFullSpan =
+      zoomRange == null ||
+      (Number.isFinite(zoomRange.start) &&
+        Number.isFinite(zoomRange.end) &&
+        zoomRange.start <= 0 &&
+        zoomRange.end >= 100);
+    
+    if (isFullSpan) {
+      renderSeries = runtimeBaseSeries;
+      return;
+    }
+
+    const next: ResolvedChartGPUOptions['series'][number][] = new Array(runtimeBaseSeries.length);
+
+    for (let i = 0; i < runtimeBaseSeries.length; i++) {
+      const baseline = runtimeBaseSeries[i]!;
+      
+      // Pie charts don't need slicing
+      if (baseline.type === 'pie') {
+        next[i] = baseline;
+        continue;
+      }
+
+      const cache = lastSampledData[i];
+      
+      // Strategy 1: Use cache if it covers visible range
+      if (cache && 
+          visibleX.min >= cache.cachedRange.min && 
+          visibleX.max <= cache.cachedRange.max) {
+        
+        if (baseline.type === 'candlestick') {
+          next[i] = {
+            ...baseline,
+            data: sliceVisibleRangeByOHLC(cache.data as unknown as ReadonlyArray<OHLCDataPoint>, visibleX.min, visibleX.max)
+          };
+        } else {
+          next[i] = {
+            ...baseline,
+            data: sliceVisibleRangeByX(cache.data as unknown as ReadonlyArray<DataPoint>, visibleX.min, visibleX.max)
+          };
+        }
+        continue;
+      }
+      
+      // Strategy 2: Fallback to baseline sampled data
+      if (baseline.type === 'candlestick') {
+        next[i] = {
+          ...baseline,
+          data: sliceVisibleRangeByOHLC(baseline.data as ReadonlyArray<OHLCDataPoint>, visibleX.min, visibleX.max)
+        };
+      } else {
+        next[i] = {
+          ...baseline,
+          data: sliceVisibleRangeByX(baseline.data as ReadonlyArray<DataPoint>, visibleX.min, visibleX.max)
+        };
+      }
+    }
+
+    renderSeries = next;
+  }
+
   function recomputeRenderSeries(): void {
     const zoomRange = zoomState?.getRange() ?? null;
     const baseXDomain = computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
     const visibleX = computeVisibleXDomain(baseXDomain, zoomRange);
+
+    // Add buffer zone (±10% beyond visible range) for caching
+    const bufferFactor = 0.1;
+    const visibleSpan = visibleX.max - visibleX.min;
+    const bufferSize = visibleSpan * bufferFactor;
+    const bufferedMin = visibleX.min - bufferSize;
+    const bufferedMax = visibleX.max + bufferSize;
 
     // Sampling scale behavior:
     // - Use `samplingThreshold` as baseline at full span.
@@ -2097,7 +2185,8 @@ export function createRenderCoordinator(
         const rawOHLC =
           (runtimeRawDataByIndex[i] as ReadonlyArray<OHLCDataPoint> | null) ??
           ((s.rawData ?? s.data) as ReadonlyArray<OHLCDataPoint>);
-        const visibleOHLC = sliceVisibleRangeByOHLC(rawOHLC, visibleX.min, visibleX.max);
+        // Slice to buffered range for sampling
+        const bufferedOHLC = sliceVisibleRangeByOHLC(rawOHLC, bufferedMin, bufferedMax);
 
         const sampling = s.sampling;
         const baseThreshold = s.samplingThreshold;
@@ -2106,18 +2195,28 @@ export function createRenderCoordinator(
         const maxTarget = Math.min(MAX_TARGET_POINTS_ABS, Math.max(MIN_TARGET_POINTS, baseT * MAX_TARGET_MULTIPLIER));
         const target = clampInt(Math.round(baseT / spanFracSafe), MIN_TARGET_POINTS, maxTarget);
 
-        const sampled = sampling === 'ohlc' && visibleOHLC.length > target
-          ? ohlcSample(visibleOHLC, target)
-          : visibleOHLC;
+        const sampled = sampling === 'ohlc' && bufferedOHLC.length > target
+          ? ohlcSample(bufferedOHLC, target)
+          : bufferedOHLC;
 
-        next[i] = { ...s, data: sampled };
+        // Store sampled data in cache with buffered range
+        lastSampledData[i] = {
+          data: sampled as unknown as ReadonlyArray<DataPoint>,
+          cachedRange: { min: bufferedMin, max: bufferedMax },
+          timestamp: Date.now()
+        };
+
+        // Slice to actual visible range for renderSeries
+        const visibleSampled = sliceVisibleRangeByOHLC(sampled, visibleX.min, visibleX.max);
+        next[i] = { ...s, data: visibleSampled };
         continue;
       }
 
       // Cartesian series (line, area, bar, scatter).
       const rawData =
         (runtimeRawDataByIndex[i] as DataPoint[] | null) ?? ((s.rawData ?? s.data) as ReadonlyArray<DataPoint>);
-      const visibleRaw = sliceVisibleRangeByX(rawData, visibleX.min, visibleX.max);
+      // Slice to buffered range for sampling
+      const bufferedRaw = sliceVisibleRangeByX(rawData, bufferedMin, bufferedMax);
 
       const sampling = s.sampling;
       const baseThreshold = s.samplingThreshold;
@@ -2126,8 +2225,18 @@ export function createRenderCoordinator(
       const maxTarget = Math.min(MAX_TARGET_POINTS_ABS, Math.max(MIN_TARGET_POINTS, baseT * MAX_TARGET_MULTIPLIER));
       const target = clampInt(Math.round(baseT / spanFracSafe), MIN_TARGET_POINTS, maxTarget);
 
-      const sampled = sampleSeriesDataPoints(visibleRaw, sampling, target);
-      next[i] = { ...s, data: sampled };
+      const sampled = sampleSeriesDataPoints(bufferedRaw, sampling, target);
+
+      // Store sampled data in cache with buffered range
+      lastSampledData[i] = {
+        data: sampled,
+        cachedRange: { min: bufferedMin, max: bufferedMax },
+        timestamp: Date.now()
+      };
+
+      // Slice to actual visible range for renderSeries
+      const visibleSampled = sliceVisibleRangeByX(sampled, visibleX.min, visibleX.max);
+      next[i] = { ...s, data: visibleSampled };
     }
 
     renderSeries = next;
@@ -2137,6 +2246,7 @@ export function createRenderCoordinator(
   initRuntimeSeriesFromOptions();
   recomputeRuntimeBaseSeries();
   recomputeRenderSeries();
+  lastSampledData = new Array(currentOptions.series.length).fill(null);
 
   const areaRenderers: Array<ReturnType<typeof createAreaRenderer>> = [];
   const lineRenderers: Array<ReturnType<typeof createLineRenderer>> = [];
@@ -2285,6 +2395,7 @@ export function createRenderCoordinator(
     runtimeBaseSeries = resolvedOptions.series;
     renderSeries = resolvedOptions.series;
     gpuSeriesKindByIndex = new Array(resolvedOptions.series.length).fill('unknown');
+    lastSampledData = new Array(resolvedOptions.series.length).fill(null);
     legend?.update(resolvedOptions.series, resolvedOptions.theme);
     updateZoom();
     cancelZoomResampleDebounce();
