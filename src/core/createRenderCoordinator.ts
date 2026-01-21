@@ -3172,7 +3172,9 @@ export function createRenderCoordinator(
             pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
           }
         } else {
+          pass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
           areaRenderers[i].render(pass);
+          pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
         }
       }
     }
@@ -3198,7 +3200,9 @@ export function createRenderCoordinator(
             pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
           }
         } else {
+          pass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
           lineRenderers[i].render(pass);
+          pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
         }
       }
     }

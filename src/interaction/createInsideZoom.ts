@@ -26,6 +26,23 @@ const normalizeWheelDelta = (e: WheelEvent, basisCssPx: number): number => {
   }
 };
 
+const normalizeWheelDeltaX = (e: WheelEvent, basisCssPx: number): number => {
+  const raw = e.deltaX;
+  if (!Number.isFinite(raw) || raw === 0) return 0;
+
+  // Normalize to CSS pixels-ish so sensitivity is stable across deltaMode.
+  switch (e.deltaMode) {
+    case WheelEvent.DOM_DELTA_PIXEL:
+      return raw;
+    case WheelEvent.DOM_DELTA_LINE:
+      return raw * 16;
+    case WheelEvent.DOM_DELTA_PAGE:
+      return raw * (Number.isFinite(basisCssPx) && basisCssPx > 0 ? basisCssPx : 800);
+    default:
+      return raw;
+  }
+};
+
 const wheelDeltaToZoomFactor = (deltaCssPx: number): number => {
   // Positive delta = scroll down = zoom out; negative = zoom in.
   const abs = Math.abs(deltaCssPx);
@@ -116,10 +133,29 @@ export function createInsideZoom(eventManager: EventManager, zoomState: ZoomStat
     const plotHeightCss = p.plotHeightCss;
     if (!(plotWidthCss > 0) || !(plotHeightCss > 0)) return;
 
-    const deltaCss = normalizeWheelDelta(e, plotHeightCss);
-    if (deltaCss === 0) return;
+    const deltaYCss = normalizeWheelDelta(e, plotHeightCss);
+    const deltaXCss = normalizeWheelDeltaX(e, plotWidthCss);
 
-    const factor = wheelDeltaToZoomFactor(deltaCss);
+    // Check if horizontal scroll is dominant (pan operation).
+    if (Math.abs(deltaXCss) > Math.abs(deltaYCss) && deltaXCss !== 0) {
+      const { start, end } = zoomState.getRange();
+      const span = end - start;
+      if (!Number.isFinite(span) || span === 0) return;
+
+      // Convert horizontal scroll delta to percent pan.
+      // Positive deltaX = scroll right = pan right (show earlier data).
+      const deltaPct = (deltaXCss / plotWidthCss) * span;
+      if (!Number.isFinite(deltaPct) || deltaPct === 0) return;
+
+      e.preventDefault();
+      zoomState.pan(deltaPct);
+      return;
+    }
+
+    // Otherwise, proceed with vertical scroll zoom logic.
+    if (deltaYCss === 0) return;
+
+    const factor = wheelDeltaToZoomFactor(deltaYCss);
     if (!(factor > 1)) return;
 
     const { start, end } = zoomState.getRange();
@@ -131,7 +167,7 @@ export function createInsideZoom(eventManager: EventManager, zoomState: ZoomStat
     // Only prevent default when we are actually consuming the wheel to zoom.
     e.preventDefault();
 
-    if (deltaCss < 0) zoomState.zoomIn(centerPct, factor);
+    if (deltaYCss < 0) zoomState.zoomIn(centerPct, factor);
     else zoomState.zoomOut(centerPct, factor);
   };
 
