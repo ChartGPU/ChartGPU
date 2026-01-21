@@ -155,6 +155,19 @@
     .kv .k {
       color: #a8a8c8;
     }
+    
+    .info-text {
+      font-size: 0.85rem;
+      color: #999;
+      line-height: 1.5;
+      padding: 10px 12px;
+      background: rgba(74, 158, 255, 0.05);
+      border-left: 2px solid rgba(74, 158, 255, 0.3);
+      border-radius: 6px;
+    }
+    .info-text strong {
+      color: #bbb;
+    }
 
     .charts {
       display: grid;
@@ -219,6 +232,11 @@
           Benchmark mode
         </label>
         <button id="resetZoom">Reset zoom</button>
+      </div>
+
+      <div class="info-text">
+        <strong>Benchmark mode:</strong> Continuously renders every frame to measure peak performance. 
+        <strong>Non-benchmark mode:</strong> Render-on-demand (only when interacting or data changes). Low FPS when idle is expected and means the chart is efficiently NOT wasting CPU.
       </div>
 
       <div class="readouts">
