@@ -13,13 +13,13 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/chartgpu">
+  <a href="https://www.npmjs.com/package/chartgpu" style="text-decoration: none;">
     <img src="https://img.shields.io/npm/v/chartgpu" alt="npm">
   </a>
-  <a href="https://github.com/hunterg325/ChartGPU/blob/main/LICENSE">
+  <a href="https://github.com/hunterg325/ChartGPU/blob/main/LICENSE" style="text-decoration: none;">
     <img src="https://img.shields.io/npm/l/chartgpu" alt="license">
   </a>
-  <a href="https://chartgpu.github.io/ChartGPU/">
+  <a href="https://chartgpu.github.io/ChartGPU/" style="text-decoration: none;">
     <img src="https://img.shields.io/badge/demo-live-brightgreen" alt="Live Demo">
   </a>
 </p>
