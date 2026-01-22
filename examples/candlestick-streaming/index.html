@@ -16,8 +16,8 @@
         <span class="logo-badge">WebGPU</span>
       </div>
       <div class="symbol-info">
-        <span class="symbol-name">BTC/USD</span>
-        <span id="current-price" class="current-price" data-price="0">$67,500.00</span>
+        <span class="symbol-name">MEME/USD</span>
+        <span id="current-price" class="current-price" data-price="0">$100.00</span>
       </div>
       <div class="timeframes">
         <button class="timeframe-btn active" data-tf="1s">1s</button>
@@ -43,7 +43,7 @@
       </div>
       <div class="stat">
         <span class="stat-label">Candles</span>
-        <span id="stat-candles" class="stat-value">10,000</span>
+        <span id="stat-candles" class="stat-value">60</span>
       </div>
       <div class="stat">
         <span class="stat-label">Tick Rate</span>
@@ -54,8 +54,20 @@
         <span id="stat-total-ticks" class="stat-value">0</span>
       </div>
       <div class="stat-separator"></div>
+      <div class="candle-presets">
+        <span class="preset-label">Candles:</span>
+        <button class="preset-btn active" data-count="60">60</button>
+        <button class="preset-btn" data-count="1000">1K</button>
+        <button class="preset-btn" data-count="10000">10K</button>
+        <button class="preset-btn" data-count="50000">50K</button>
+        <button class="preset-btn" data-count="100000">100K</button>
+        <button class="preset-btn" data-count="1000000">1M</button>
+        <button class="preset-btn" data-count="5000000">5M</button>
+      </div>
+      <div class="stat-separator"></div>
       <button id="toggle-btn" class="control-btn">▶ Start</button>
       <button id="style-btn" class="control-btn secondary">Style: Classic</button>
+      <button id="autoscroll-btn" class="control-btn secondary toggle-active">📍 Auto-Scroll: ON</button>
     </div>
 
     <!-- Chart Container -->
@@ -63,7 +75,7 @@
 
     <!-- Footer -->
     <footer class="footer">
-      <span>Powered by WebGPU • 10,000+ candles • 75 ticks/sec simulated feed</span>
+      <span>Powered by WebGPU • Scale from 60 to 5M candles • Real-time streaming</span>
       <a href="https://github.com/hunterg325/ChartGPU" target="_blank" rel="noopener noreferrer">GitHub</a>
     </footer>
   </div>

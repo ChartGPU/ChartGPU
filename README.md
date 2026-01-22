@@ -129,7 +129,7 @@ flowchart TB
 
 ### Candlestick Charts
 
-Financial OHLC (open-high-low-close) candlestick rendering with classic/hollow style toggle and color customization.
+Financial OHLC (open-high-low-close) candlestick rendering with classic/hollow style toggle and color customization. The live streaming demo renders **5 million candlesticks at over 100 FPS** with real-time updates.
 
 ![Candlestick chart example](docs/assets/candle-stick-example.png)
 

@@ -100,6 +100,10 @@ Override with explicit bounds if needed by providing `xAxis: { min, max }` or `y
 
 Optimize for continuous data ingestion with bounded memory and responsive UI.
 
+### Candlestick Streaming Demo
+
+The [`examples/candlestick-streaming/`](../examples/candlestick-streaming/) demo showcases ChartGPU's ability to handle massive candlestick datasets at high frame rates. Users can scale from 60 to **5 million candlesticks** with preset buttons, maintaining **over 100 FPS** while streaming real-time tick data. This demo combines sampling, zoom-aware resampling, and auto-scroll to deliver smooth performance at extreme scale.
+
 ### Recommended Configuration
 
 Based on [`examples/live-streaming/main.ts`](../examples/live-streaming/), configure streaming scenarios with:

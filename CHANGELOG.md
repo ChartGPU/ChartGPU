@@ -47,7 +47,7 @@ Initial release of ChartGPU - a GPU-accelerated charting library built with WebG
 - **Streaming updates** - Append new data points dynamically via `appendData(...)` for cartesian charts
 - **Auto-scroll** - Automatic viewport adjustment for streaming data scenarios
 - **Data sampling** - Built-in algorithms (LTTB, average, max, min, none) with zoom-aware resampling and debounce optimization
-- **Large dataset support** - Examples demonstrate rendering up to one million data points
+- **Large dataset support** - Examples demonstrate rendering up to 5 million candlesticks at over 100 FPS
 
 #### Zoom & Navigation
 - **X-axis data zoom** - Interactive zoom with inside gestures including wheel zoom and pan

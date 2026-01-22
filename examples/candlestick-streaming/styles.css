@@ -214,6 +214,50 @@ body {
   border-color: var(--text-secondary);
 }
 
+.control-btn.toggle-active {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Candle Presets */
+.candle-presets {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preset-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-right: 4px;
+}
+
+.preset-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.preset-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+
+.preset-btn.active {
+  color: var(--text-primary);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
 /* Chart */
 .chart-container {
   flex: 1;

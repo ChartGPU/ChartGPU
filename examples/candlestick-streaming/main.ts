@@ -2,21 +2,41 @@ import { createChart, type ChartGPUInstance, type OHLCDataPoint } from '../../sr
 import { generateHistoricalData } from './generateHistoricalData';
 import { createTickSimulator, createCandleAggregator, type Tick } from './tickSimulator';
 
-// Configuration
-const CONFIG = {
-  symbol: 'BTC/USD',
-  historicalCandles: 10_000, // 10K candles of history
-  candleIntervalMs: 60_000, // 1-minute candles
-  // The renderer’s auto-scroll behavior advances the view only when new x-values are appended.
-  // With true 1-minute candles, you’d only see the chart “move right” once per minute.
-  // To make the demo feel alive, we run the candle clock faster than real time.
-  // Example: 30x means a new “1m” candle closes every ~2 seconds at 75 ticks/sec.
-  timeScale: 30,
-  ticksPerSecond: 75, // High-frequency ticks
-  tickVolatility: 0.0003, // Per-tick volatility
-  maxCandles: 15_000, // Memory bound
-  startPrice: 67_500, // Starting BTC price
+// Timeframe intervals in milliseconds
+const TIMEFRAME_INTERVALS: Record<string, number> = {
+  '1s': 1_000,
+  '5m': 5 * 60 * 1_000,
+  '15m': 15 * 60 * 1_000,
+  '1h': 60 * 60 * 1_000,
+  '4h': 4 * 60 * 60 * 1_000,
+  '1d': 24 * 60 * 60 * 1_000,
 };
+
+// TimeScale multipliers per interval (faster for longer intervals so candles form in reasonable demo time)
+const TIMEFRAME_TIMESCALES: Record<string, number> = {
+  '1s': 1, // Real-time for 1s candles
+  '5m': 30, // 30x speed: 5m candle closes every 10s
+  '15m': 60, // 60x speed: 15m candle closes every 15s
+  '1h': 120, // 120x speed: 1h candle closes every 30s
+  '4h': 240, // 240x speed: 4h candle closes every 60s
+  '1d': 720, // 720x speed: 1d candle closes every 120s
+};
+
+// Configuration (base values - some are mutable for user control)
+const CONFIG = {
+  symbol: 'MEME/USD',
+  ticksPerSecond: 20, // Moderate tick rate for visible updates
+  tickVolatility: 0.008, // Per-tick volatility (visible but not wild)
+  startPrice: 100, // Nice round starting price
+};
+
+// Mutable candle count (user-configurable)
+let currentCandleCount = 60;
+
+// Mutable timeframe state (updated when user switches intervals)
+let currentTimeframe = '1s';
+let candleIntervalMs = TIMEFRAME_INTERVALS[currentTimeframe];
+let timeScale = TIMEFRAME_TIMESCALES[currentTimeframe];
 
 // State
 let chart: ChartGPUInstance;
@@ -24,6 +44,7 @@ let data: OHLCDataPoint[] = [];
 let tickSimulator: ReturnType<typeof createTickSimulator>;
 let candleAggregator: ReturnType<typeof createCandleAggregator>;
 let isStreaming = false;
+let autoScrollEnabled = true;
 // Cache the full chart options to avoid resetting fields on partial setOption calls
 let fullChartOptions: Parameters<ChartGPUInstance['setOption']>[0];
 
@@ -46,19 +67,39 @@ const isTupleOHLCDataPoint = (
 const getTimestamp = (p: OHLCDataPoint): number => (isTupleOHLCDataPoint(p) ? p[0] : p.timestamp);
 const getClose = (p: OHLCDataPoint): number => (isTupleOHLCDataPoint(p) ? p[2] : p.close);
 
+// Get appropriate dataZoom config based on candle count
+function getDataZoomConfig(candleCount: number) {
+  if (candleCount <= 200) {
+    // Few candles: just inside zoom, show all data
+    return [{ type: 'inside' }];
+  } else {
+    // Many candles: add slider and zoom to recent data
+    const showPercent = Math.min(100, Math.max(5, 500 / candleCount * 100));
+    return [
+      { type: 'inside' },
+      { type: 'slider', start: 100 - showPercent, end: 100 },
+    ];
+  }
+}
+
+// Get max candles based on current count (allow some growth for streaming)
+function getMaxCandles(candleCount: number): number {
+  return Math.max(candleCount + 1000, candleCount * 1.5);
+}
+
 async function init() {
   const container = document.getElementById('chart')!;
 
   // Generate impressive historical data
-  console.log(`Generating ${CONFIG.historicalCandles.toLocaleString()} historical candles...`);
+  console.log(`Generating ${currentCandleCount.toLocaleString()} historical candles...`);
   const startGen = performance.now();
 
   data = generateHistoricalData({
     symbol: CONFIG.symbol,
     startPrice: CONFIG.startPrice,
-    volatility: 0.025,
-    candleCount: CONFIG.historicalCandles,
-    intervalMs: CONFIG.candleIntervalMs,
+    volatility: 0.03, // 3% volatility like static example for nice candle sizes
+    candleCount: currentCandleCount,
+    intervalMs: candleIntervalMs,
   });
 
   console.log(`Generated in ${(performance.now() - startGen).toFixed(0)}ms`);
@@ -69,7 +110,7 @@ async function init() {
 
   // Seed simulated time from the most recent historical candle so the first live candle
   // continues smoothly after history (instead of starting far in the past/future).
-  simulatedTimeMs = getTimestamp(lastCandle) + CONFIG.candleIntervalMs;
+  simulatedTimeMs = getTimestamp(lastCandle) + candleIntervalMs;
   lastSimPerfNow = performance.now();
 
   // Create chart
@@ -92,7 +133,7 @@ async function init() {
         samplingThreshold: 2000,
       },
     ],
-    dataZoom: [{ type: 'inside' }, { type: 'slider', start: 95, end: 100 }], // Start zoomed to recent
+    dataZoom: getDataZoomConfig(currentCandleCount),
     tooltip: { trigger: 'item' },
     animation: false, // Critical for streaming performance
     autoScroll: true,
@@ -100,7 +141,7 @@ async function init() {
   chart = await createChart(container, fullChartOptions);
 
   // Setup tick simulator
-  candleAggregator = createCandleAggregator(CONFIG.candleIntervalMs);
+  candleAggregator = createCandleAggregator(candleIntervalMs);
 
   tickSimulator = createTickSimulator({
     initialPrice: lastPrice,
@@ -120,11 +161,11 @@ async function init() {
 }
 
 function handleTick(tick: Tick) {
-  // Advance simulated time (so we can close “1m” candles faster than real time).
+  // Advance simulated time (so we can close candles faster than real time).
   const now = performance.now();
   const dtRealMs = Math.max(0, now - lastSimPerfNow);
   lastSimPerfNow = now;
-  simulatedTimeMs += dtRealMs * CONFIG.timeScale;
+  simulatedTimeMs += dtRealMs * timeScale;
 
   // Drive the candle aggregator from ticks, but using simulated time.
   candleAggregator.processTick({ ...tick, timestamp: Math.floor(simulatedTimeMs) });
@@ -145,8 +186,9 @@ function handleTick(tick: Tick) {
       data.push(currentCandle);
 
       // Memory management: trim old candles
-      if (data.length > CONFIG.maxCandles) {
-        data = data.slice(data.length - CONFIG.maxCandles);
+      const maxCandles = getMaxCandles(currentCandleCount);
+      if (data.length > maxCandles) {
+        data = data.slice(data.length - maxCandles);
         // Preserve full options when trimming data
         const series0 = fullChartOptions.series?.[0];
         if (series0 && series0.type === 'candlestick') {
@@ -209,8 +251,185 @@ function toggleStreaming() {
   }
 }
 
+function toggleAutoScroll() {
+  autoScrollEnabled = !autoScrollEnabled;
+  chart.setOption({ autoScroll: autoScrollEnabled });
+  const btn = document.getElementById('autoscroll-btn')!;
+  btn.textContent = autoScrollEnabled ? '📍 Auto-Scroll: ON' : '📍 Auto-Scroll: OFF';
+  btn.classList.toggle('toggle-active', autoScrollEnabled);
+}
+
+/**
+ * Switch to a different candlestick timeframe.
+ * Regenerates historical data and recreates the candle aggregator.
+ */
+function switchTimeframe(tf: string) {
+  if (!TIMEFRAME_INTERVALS[tf]) {
+    console.warn(`Unknown timeframe: ${tf}`);
+    return;
+  }
+
+  // Skip if already on this timeframe
+  if (tf === currentTimeframe) {
+    return;
+  }
+
+  // Remember if we were streaming
+  const wasStreaming = isStreaming;
+
+  // Stop streaming while we regenerate
+  if (isStreaming) {
+    tickSimulator.stop();
+  }
+
+  // Update timeframe state
+  currentTimeframe = tf;
+  candleIntervalMs = TIMEFRAME_INTERVALS[tf];
+  timeScale = TIMEFRAME_TIMESCALES[tf];
+
+  console.log(`Switching to ${tf} timeframe (${candleIntervalMs}ms interval, ${timeScale}x speed)`);
+
+  // Regenerate historical data with new interval
+  const startGen = performance.now();
+  data = generateHistoricalData({
+    symbol: CONFIG.symbol,
+    startPrice: CONFIG.startPrice,
+    volatility: 0.03, // 3% volatility like static example for nice candle sizes
+    candleCount: currentCandleCount,
+    intervalMs: candleIntervalMs,
+  });
+  console.log(`Regenerated ${data.length.toLocaleString()} candles in ${(performance.now() - startGen).toFixed(0)}ms`);
+
+  // Get last price for tick simulator
+  const lastCandle = data[data.length - 1];
+  const lastPrice = getClose(lastCandle);
+
+  // Reset simulated time based on new data
+  simulatedTimeMs = getTimestamp(lastCandle) + candleIntervalMs;
+  lastSimPerfNow = performance.now();
+
+  // Recreate candle aggregator with new interval
+  candleAggregator = createCandleAggregator(candleIntervalMs);
+
+  // Recreate tick simulator with current price
+  tickSimulator = createTickSimulator({
+    initialPrice: lastPrice,
+    ticksPerSecond: CONFIG.ticksPerSecond,
+    volatility: CONFIG.tickVolatility,
+    onTick: handleTick,
+  });
+
+  // Update chart with new data (full replacement)
+  const series0 = fullChartOptions.series?.[0];
+  if (series0 && series0.type === 'candlestick') {
+    fullChartOptions = {
+      ...fullChartOptions,
+      series: [
+        {
+          ...series0,
+          data,
+        },
+      ],
+    };
+    chart.setOption(fullChartOptions);
+  }
+
+  // Reset tick count stats
+  lastTickCount = 0;
+  ticksPerSec = 0;
+
+  // Resume streaming if it was running
+  if (wasStreaming) {
+    tickSimulator.start();
+  }
+
+  updateStats();
+}
+
+/**
+ * Switch to a different candle count.
+ * Regenerates historical data and recreates the chart view.
+ */
+function switchCandleCount(count: number) {
+  // Skip if already at this count
+  if (count === currentCandleCount) {
+    return;
+  }
+
+  // Remember if we were streaming
+  const wasStreaming = isStreaming;
+
+  // Stop streaming while we regenerate
+  if (isStreaming) {
+    tickSimulator.stop();
+  }
+
+  // Update candle count
+  currentCandleCount = count;
+
+  console.log(`Switching to ${count.toLocaleString()} candles`);
+
+  // Regenerate historical data with new count
+  const startGen = performance.now();
+  data = generateHistoricalData({
+    symbol: CONFIG.symbol,
+    startPrice: CONFIG.startPrice,
+    volatility: 0.03,
+    candleCount: currentCandleCount,
+    intervalMs: candleIntervalMs,
+  });
+  console.log(`Regenerated ${data.length.toLocaleString()} candles in ${(performance.now() - startGen).toFixed(0)}ms`);
+
+  // Get last price for tick simulator
+  const lastCandle = data[data.length - 1];
+  const lastPrice = getClose(lastCandle);
+
+  // Reset simulated time based on new data
+  simulatedTimeMs = getTimestamp(lastCandle) + candleIntervalMs;
+  lastSimPerfNow = performance.now();
+
+  // Recreate candle aggregator
+  candleAggregator = createCandleAggregator(candleIntervalMs);
+
+  // Recreate tick simulator with current price
+  tickSimulator = createTickSimulator({
+    initialPrice: lastPrice,
+    ticksPerSecond: CONFIG.ticksPerSecond,
+    volatility: CONFIG.tickVolatility,
+    onTick: handleTick,
+  });
+
+  // Update chart with new data and appropriate dataZoom config
+  const series0 = fullChartOptions.series?.[0];
+  if (series0 && series0.type === 'candlestick') {
+    fullChartOptions = {
+      ...fullChartOptions,
+      dataZoom: getDataZoomConfig(currentCandleCount),
+      series: [
+        {
+          ...series0,
+          data,
+        },
+      ],
+    };
+    chart.setOption(fullChartOptions);
+  }
+
+  // Reset tick count stats
+  lastTickCount = 0;
+  ticksPerSec = 0;
+
+  // Resume streaming if it was running
+  if (wasStreaming) {
+    tickSimulator.start();
+  }
+
+  updateStats();
+}
+
 function setupControls() {
   document.getElementById('toggle-btn')!.addEventListener('click', toggleStreaming);
+  document.getElementById('autoscroll-btn')!.addEventListener('click', toggleAutoScroll);
 
   // Style toggle
   let isHollow = false;
@@ -234,14 +453,32 @@ function setupControls() {
     document.getElementById('style-btn')!.textContent = isHollow ? 'Style: Hollow' : 'Style: Classic';
   });
 
-  // Timeframe buttons (simulated - UI only)
+  // Timeframe buttons - actually switch intervals
   document.querySelectorAll('.timeframe-btn').forEach((btn) => {
     btn.addEventListener('click', (e) => {
       const tf = (e.target as HTMLElement).dataset.tf;
+      if (!tf) return;
+
+      // Update active button state
       document.querySelectorAll('.timeframe-btn').forEach((b) => b.classList.remove('active'));
       (e.target as HTMLElement).classList.add('active');
-      // In a real app, this would switch data sources
-      console.log(`Switched to ${tf} timeframe`);
+
+      // Switch to the new timeframe
+      switchTimeframe(tf);
+    });
+  });
+
+  // Candle count preset buttons
+  document.querySelectorAll('.preset-btn').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const count = parseInt((e.target as HTMLElement).dataset.count || '60', 10);
+
+      // Update active button state
+      document.querySelectorAll('.preset-btn').forEach((b) => b.classList.remove('active'));
+      (e.target as HTMLElement).classList.add('active');
+
+      // Switch to the new candle count
+      switchCandleCount(count);
     });
   });
 

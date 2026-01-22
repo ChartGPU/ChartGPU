@@ -349,6 +349,7 @@ The [`examples/`](../examples/) folder contains working demos of all ChartGPU fe
 
 - **[`basic-line/`](../examples/basic-line/)** - Multi-series line charts with filled areas, axis titles, and event handling
 - **[`interactive/`](../examples/interactive/)** - Synchronized charts with custom tooltips and click events
+- **[`candlestick-streaming/`](../examples/candlestick-streaming/)** - Live candlestick streaming with 5 million candles at 100+ FPS
 - **[`live-streaming/`](../examples/live-streaming/)** - Real-time data streaming with `appendData()`
 - **[`sampling/`](../examples/sampling/)** - Large datasets with automatic downsampling and zoom
 - **[`scatter/`](../examples/scatter/)** - Scatter plots with thousands of points
