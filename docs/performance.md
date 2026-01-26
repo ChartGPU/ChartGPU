@@ -83,7 +83,7 @@ See implementation in [`src/core/createRenderCoordinator.ts`](../src/core/create
 
 ### Zoom Configuration
 
-Enable interactive zoom with data-driven resampling by providing `dataZoom` array with `{ type: 'inside' }` (wheel zoom + shift-drag pan) or `{ type: 'slider' }` (slider UI) entries, and configuring per-series `sampling` and `samplingThreshold` as described in [`docs/API.md`](./API.md).
+Enable interactive zoom with data-driven resampling by providing `dataZoom` array with `{ type: 'inside' }` (wheel zoom + shift-drag pan) or `{ type: 'slider' }` (slider UI) entries, and configuring per-series `sampling` and `samplingThreshold` as described in [`docs/api/options.md`](./api/options.md#data-zoom-configuration).
 
 **Trade-offs:**
 - **Debounce delay (~100ms)**: Small UX lag during zoom vs. CPU/GPU efficiency
@@ -392,7 +392,7 @@ Run the benchmark on your target hardware to establish baseline performance for 
 
 ## Related Documentation
 
-- [`docs/API.md`](./API.md) — Full API reference including sampling, zoom, and lifecycle APIs
+- [`docs/api/README.md`](./api/README.md) — Full API reference including sampling, zoom, and lifecycle APIs
 - [`docs/GETTING_STARTED.md`](./GETTING_STARTED.md) — Quick start guide and basic usage
 - [`docs/INCREMENTAL_APPEND_OPTIMIZATION.md`](./INCREMENTAL_APPEND_OPTIMIZATION.md) — Deep dive into GPU buffer append optimization
 - [`docs/GPU_TIMING_IMPLEMENTATION.md`](./GPU_TIMING_IMPLEMENTATION.md) — GPU timing methodology and interpretation

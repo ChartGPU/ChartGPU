@@ -37,7 +37,7 @@ ChartGPU is a TypeScript charting library built on WebGPU for smooth, interactiv
 
 ## Architecture
 
-At a high level, `ChartGPU.create(...)` owns the canvas + WebGPU lifecycle, and delegates render orchestration (layout/scales/data upload/render passes + internal overlays) to the render coordinator. For deeper internal notes, see [`docs/API.md`](https://github.com/hunterg325/ChartGPU/blob/main/docs/API.md) (especially “Render coordinator”).
+At a high level, `ChartGPU.create(...)` owns the canvas + WebGPU lifecycle, and delegates render orchestration (layout/scales/data upload/render passes + internal overlays) to the render coordinator. For deeper internal notes, see [`docs/api/INTERNALS.md`](https://github.com/hunterg325/ChartGPU/blob/main/docs/api/INTERNALS.md) (especially “Render coordinator”).
 
 ```mermaid
 flowchart TB
@@ -180,7 +180,7 @@ See the [chartgpu-react repository](https://github.com/ChartGPU/chartgpu-react) 
 ## Documentation
 
 - Full documentation: [Getting Started](https://github.com/hunterg325/ChartGPU/blob/main/docs/GETTING_STARTED.md)
-- API reference: [`docs/API.md`](https://github.com/hunterg325/ChartGPU/blob/main/docs/API.md)
+- API reference: [`docs/api/README.md`](https://github.com/hunterg325/ChartGPU/blob/main/docs/api/README.md)
 
 ## Examples
 

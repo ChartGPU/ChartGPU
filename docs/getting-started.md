@@ -340,7 +340,7 @@ Congratulations! You've created your first ChartGPU chart. Here's what to explor
 
 ### Learn more about the API
 
-- **[API Reference](./API.md)** - Complete API documentation with all chart options
+- **[API Reference](./api/README.md)** - Complete API documentation with all chart options
 - **[API Reference (auto-generated)](./api-reference.md)** - Comprehensive type definitions and method signatures
 
 ### Explore examples
@@ -384,7 +384,7 @@ If you run into issues:
 1. **Check browser support**: Ensure you're using Chrome 113+, Edge 113+, or Safari 18+
 2. **Check the console**: Look for error messages in your browser's developer console (F12)
 3. **Review the examples**: The [`examples/`](../examples/) folder has working code for reference
-4. **Read the docs**: See [`docs/API.md`](./API.md) for detailed API documentation
+4. **Read the docs**: See [`docs/api/README.md`](./api/README.md) for detailed API documentation
 
 ---
 

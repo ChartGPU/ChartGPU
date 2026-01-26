@@ -40,7 +40,7 @@ ChartGPU's tooltip overlay uses `innerHTML` to render tooltip content. When prov
 - SAFE: Sanitized content using `escapeHtml()` or similar sanitization functions before including in HTML
 - UNSAFE: Directly embedding unsanitized user input in HTML strings
 
-See [`docs/API.md`](https://github.com/hunterg325/ChartGPU/blob/main/docs/API.md) for complete tooltip configuration details and [examples/interactive/main.ts](../examples/interactive/main.ts) for working tooltip implementations.
+See [`docs/api/options.md`](https://github.com/hunterg325/ChartGPU/blob/main/docs/api/options.md#tooltip-configuration) for complete tooltip configuration details and [examples/interactive/main.ts](../examples/interactive/main.ts) for working tooltip implementations.
 
 ### WebGPU Security Model
 

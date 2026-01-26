@@ -60,9 +60,9 @@ Now that you have a GPU context initialized, you can:
 2. **Set up rendering** - Configure render pipelines for drawing charts
 3. **Handle data** - Upload chart data to GPU buffers (internal helper: [`createDataStore.ts`](../src/data/createDataStore.ts))
 4. **Render** - Execute render passes to draw your charts
-5. **Themes (optional)** - Theme presets (`darkTheme`, `lightTheme`, `getTheme(name: ThemeName)`) and the `ThemeConfig` type are available from the public API. See [`src/themes/index.ts`](../src/themes/index.ts), [`types.ts`](../src/themes/types.ts), and [`API.md`](./API.md#themeconfig).
+5. **Themes (optional)** - Theme presets (`darkTheme`, `lightTheme`, `getTheme(name: ThemeName)`) and the `ThemeConfig` type are available from the public API. See [`src/themes/index.ts`](../src/themes/index.ts), [`types.ts`](../src/themes/types.ts), and [`api/themes.md`](./api/themes.md#themeconfig).
    - Theme colors are applied during rendering (background clear, grid lines, and axes); see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
-   - Theme typography/text color is also used for numeric axis tick value labels rendered above the canvas; see [`API.md`](./API.md#text-overlay-internal--contributor-notes).
+   - Theme typography/text color is also used for numeric axis tick value labels rendered above the canvas; see [`api/INTERNALS.md`](./api/INTERNALS.md#text-overlay-internal--contributor-notes).
 
 ## Troubleshooting
 
@@ -99,17 +99,17 @@ See the [examples directory](../examples/) for complete working examples.
 
 Chart series types include `'line' | 'area' | 'bar' | 'scatter' | 'pie'`; see [`types.ts`](../src/config/types.ts). Note: pie series are non-cartesian and do not participate in cartesian x/y bounds derivation or cartesian hit-testing; see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts), [`findNearestPoint.ts`](../src/interaction/findNearestPoint.ts), and [`findPointsAtX.ts`](../src/interaction/findPointsAtX.ts).
 
-ChartGPU also supports syncing interaction across multiple charts (crosshair x-position + tooltip x-value). See the public `connectCharts(...)` helper in [`createChartSync.ts`](../src/interaction/createChartSync.ts) and the API notes in [`API.md`](./API.md).
+ChartGPU also supports syncing interaction across multiple charts (crosshair x-position + tooltip x-value). See the public `connectCharts(...)` helper in [`createChartSync.ts`](../src/interaction/createChartSync.ts) and the API notes in [`api/chart.md`](./api/chart.md#chart-sync-interaction).
 
 Chart instances also mount an internal legend panel by default (series swatches + names) alongside the canvas. Series labels come from `series[i].name` (trimmed), falling back to `Series N`; see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) and the internal [`createLegend.ts`](../src/components/createLegend.ts).
 
-Chart instances can also show an internal HTML tooltip overlay on hover when `ChartGPUOptions.tooltip.show !== false`; see the tooltip option types in [`types.ts`](../src/config/types.ts) and tooltip behavior notes in [`API.md`](./API.md#tooltip-configuration-type-definitions).
+Chart instances can also show an internal HTML tooltip overlay on hover when `ChartGPUOptions.tooltip.show !== false`; see the tooltip option types in [`types.ts`](../src/config/types.ts) and tooltip behavior notes in [`api/options.md`](./api/options.md#tooltip-configuration).
 
-Chart instances also render a built-in hover highlight ring when the pointer is inside the plot grid and a nearest data point can be determined; this is part of the internal render pipeline in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) (see hover highlight notes in [`API.md`](./API.md#highlight-renderer-internal--contributor-notes)).
+Chart instances also render a built-in hover highlight ring when the pointer is inside the plot grid and a nearest data point can be determined; this is part of the internal render pipeline in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) (see hover highlight notes in [`api/INTERNALS.md`](./api/INTERNALS.md#highlight-renderer-internal--contributor-notes)).
 
-Chart instances enable animation by default (`ChartGPUOptions.animation` defaults to enabled when omitted). Series marks animate on first render; set `animation: false` to disable. See [`API.md`](./API.md#animation-type-definitions) for animation configuration details.
+Chart instances enable animation by default (`ChartGPUOptions.animation` defaults to enabled when omitted). Series marks animate on first render; set `animation: false` to disable. See [`api/options.md`](./api/options.md#animation-configuration) for animation configuration details.
 
-Chart instances expose event listeners via `on()` and `off()` methods for handling clicks, hover interactions, and crosshair syncing (`'click'`, `'mouseover'`, `'mouseout'`, `'crosshairMove'`). See [`API.md`](./API.md#event-handling) for event handling documentation (note that `'crosshairMove'` uses a minimal payload `{ x, source? }` and is emitted for both pointer-driven and programmatic interaction-x updates).
+Chart instances expose event listeners via `on()` and `off()` methods for handling clicks, hover interactions, and crosshair syncing (`'click'`, `'mouseover'`, `'mouseout'`, `'crosshairMove'`). See [`api/interaction.md`](./api/interaction.md#event-handling) for event handling documentation (note that `'crosshairMove'` uses a minimal payload `{ x, source? }` and is emitted for both pointer-driven and programmatic interaction-x updates).
 
 The `hello-world` example demonstrates continuous rendering by animating the clear color through the full color spectrum, proving that the render loop is working correctly. It also includes an example-only WGSL compilation smoke-check via `GPUShaderModule.getCompilationInfo()` for several shaders; see [hello-world/main.ts](../examples/hello-world/main.ts) for implementation.
 
@@ -140,13 +140,13 @@ To run examples:
 
 ## API Reference
 
-For detailed API documentation, see [API.md](./API.md).
+For detailed API documentation, see [api/README.md](./api/README.md).
 
 ## Support
 
 If you encounter issues:
 
 1. Check the [troubleshooting section](#troubleshooting) above
-2. Review the [API documentation](./API.md)
+2. Review the [API documentation](./api/README.md)
 3. Check browser console for error messages
 4. Ensure you're using a supported browser version

@@ -137,12 +137,12 @@ User: "Document the new zoom API methods"
 ## Documentation File Locations
 
 - **Internal docs**: `docs/` directory
-  - `docs/API.md` - API overview (may reference public API)
+  - `docs/api/` - Split API documentation (navigation hub, chart, options, themes, etc.)
   - `docs/GETTING_STARTED.md` - Getting started guide
   - `docs/GPU_TIMING_IMPLEMENTATION.md` - Technical implementation docs
   - `docs/INCREMENTAL_APPEND_OPTIMIZATION.md` - Technical implementation docs
   
-- **Public API**: Documented in `docs/API.md` (maintained by api-documenter)
+- **Public API**: Documented in `docs/api/` (maintained by api-documenter)
 - **Examples**: `examples/` directory (referenced from docs, not documented directly)
 - **README**: `README.md` (maintained by documentation-engineer)
 

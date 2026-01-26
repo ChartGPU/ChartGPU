@@ -7,9 +7,23 @@ alwaysApply: true
 
 Before creating a plan, proposing an API, or making implementation changes:
 
-- Read the relevant files in `docs/` (start with `docs/API.md` and `docs/GETTING_STARTED.md`).
-- If the work touches public API or examples, also skim `README.md` for behavioral expectations.
-- Base your plan on **documented contracts** (types, lifecycle, invariants, “critical” coordinate systems, safety notes like tooltip `innerHTML`, and WebGPU caveats).
-- When uncertain, prefer the documented source links in `docs/` (e.g. `src/ChartGPU.ts`, `src/core/createRenderCoordinator.ts`) as the next place to confirm behavior.
+1. **Read the Architecture diagram in `README.md`** (the mermaid flowchart under "## Architecture") — understand how ChartGPU components connect before diving into specifics.
+2. **Then go to [`docs/api/llm-context.md`](docs/api/llm-context.md)** — this is the LLM entrypoint with task→file navigation. Load only the specific API docs you need for the task.
+3. **Base your plan on documented contracts** (types, lifecycle, coordinate systems, safety notes like tooltip `innerHTML`, WebGPU caveats).
+4. **When uncertain**, follow source links in the API docs (e.g. `src/ChartGPU.ts`, `src/core/createRenderCoordinator.ts`).
 
-When presenting the plan, explicitly call out which `docs/` sections informed it (by file + section heading).
+## API docs structure (`docs/api/`)
+
+| File | Use for |
+|------|---------|
+| `llm-context.md` | **Start here** — task→file mapping |
+| `chart.md` | `ChartGPU.create`, instance methods, events, chart sync |
+| `options.md` | `ChartGPUOptions`, series/axes/tooltip/zoom/animation configs |
+| `themes.md` | `ThemeConfig`, dark/light presets |
+| `scales.md` | `createLinearScale`, `createCategoryScale` |
+| `gpu-context.md` | WebGPU context management |
+| `render-scheduler.md` | Render-on-demand loop |
+| `interaction.md` | Event handling, zoom/pan APIs |
+| `INTERNALS.md` | Internal modules (contributors only) |
+
+When presenting the plan, cite which `docs/api/*.md` files informed it.

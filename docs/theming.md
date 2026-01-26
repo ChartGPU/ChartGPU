@@ -296,6 +296,6 @@ Full type definitions: [types.ts](../src/themes/types.ts)
 
 ## Related Documentation
 
-- [API Reference](./API.md) - Complete API documentation including theme-related types
+- [API Reference](./api/README.md) - Complete API documentation including theme-related types
 - [Getting Started](./GETTING_STARTED.md) - Basic chart creation and configuration
 - [Built-in Themes](../src/themes/) - Source code for dark and light themes

@@ -216,4 +216,4 @@ See `src/index.ts` for complete public API surface. Key exports:
 
 **Internal modules not exported:**
 - `createDataStore` - GPU buffer management
-- `rendererUtils` - WebGPU rendering helpers (documented in `docs/API.md`)
+- `rendererUtils` - WebGPU rendering helpers (documented in `docs/api/INTERNALS.md`)
