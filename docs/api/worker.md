@@ -261,6 +261,180 @@ Converts OHLCDataPoint array into interleaved Float32Array for candlestick chart
 
 **Implementation Details:** [ChartGPUWorkerProxy.ts](../../src/worker/ChartGPUWorkerProxy.ts)
 
+## Interaction Support in Worker Mode
+
+### Overview
+
+Worker-based charts support full interaction capabilities including tooltips, hover highlighting, click events, and crosshairs. The implementation uses a coordinate calculation system that bridges the main thread (DOM access) and worker thread (GPU rendering and hit-testing).
+
+### Tooltip Behavior
+
+**Main-thread charts:**
+- Tooltip hit-testing performed on main thread
+- Canvas coordinates calculated using `getBoundingClientRect()`
+- Grid coordinates calculated by subtracting grid offsets
+- Hit-testing uses `interactionScales` to map grid→domain coordinates
+
+**Worker-thread charts:**
+- Tooltip hit-testing performed in worker thread
+- **Main thread computes grid coordinates** using `computePointerEventData()`
+- Grid coordinates sent to worker via `ForwardPointerEventMessage`
+- Worker uses pre-computed grid coordinates with `interactionScales` for hit-testing
+- Worker emits `TooltipUpdateMessage` with complete tooltip content and position
+- Main thread renders tooltip to DOM (RAF-batched)
+
+**Key difference:** Grid coordinate calculation happens on main thread for worker charts (OffscreenCanvas lacks `getBoundingClientRect()`), but hit-testing still happens in worker thread.
+
+### Coordinate Calculation Differences
+
+**Challenge:** OffscreenCanvas does not have DOM-specific properties:
+- No `getBoundingClientRect()` method (returns canvas position)
+- No `offsetLeft` or `offsetTop` properties
+- No access to canvas container element
+
+**Solution:** Split coordinate calculation across threads:
+
+**Main thread** ([`ChartGPUWorkerProxy.computePointerEventData()`](../../src/worker/ChartGPUWorkerProxy.ts)):
+1. Get canvas position using `canvas.getBoundingClientRect()`
+2. Calculate canvas-local coordinates: `offsetX = clientX - rect.left`
+3. Calculate grid-local coordinates: `gridX = offsetX - grid.left`
+4. Determine if pointer is in grid region: `isInGrid = gridX >= 0 && gridX <= gridWidth`
+5. Create `PointerEventData` with all coordinate systems
+6. Forward to worker via `ForwardPointerEventMessage`
+
+**Worker thread** ([`ChartGPUWorkerController`](../../src/worker/ChartGPUWorkerController.ts)):
+1. Receive `PointerEventData` with pre-computed grid coordinates
+2. Pass to `coordinator.handlePointerEvent(eventData)`
+3. Coordinator uses `eventData.gridX` and `eventData.gridY` directly
+4. `computeInteractionScalesGridCssPx()` creates scales for grid→domain mapping
+5. Hit-testing functions use `interactionScales.x.invert(gridX)` to get domain coordinates
+6. Emit `TooltipUpdateMessage` with complete tooltip content and position
+
+### OffscreenCanvas Coordinate Handling
+
+**Problem:** OffscreenCanvas dimensions are in device pixels, but tooltip coordinates must be in CSS pixels (matching DOM coordinate system).
+
+**Solution implemented in `getPlotSizeCssPx()`:**
+
+```typescript
+// OffscreenCanvas: canvas.width/height are in device pixels
+// Convert to CSS pixels by dividing by device pixel ratio
+const cssWidth = canvas.width / devicePixelRatio;
+const cssHeight = canvas.height / devicePixelRatio;
+```
+
+**Key insight:** Dividing device pixels by DPR converts to CSS pixels, which match the DOM coordinate system used by pointer events.
+
+**Updated `computeInteractionScalesGridCssPx()`:**
+- No longer checks `isHTMLCanvasElement(canvas)` (blocked worker mode)
+- Uses `getPlotSizeCssPx()` to get CSS dimensions for both canvas types
+- Creates linear scales mapping domain→grid coordinates
+- Returns valid scales for OffscreenCanvas (previously returned `null`, breaking tooltips)
+
+**Source:** [`src/core/createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts)
+
+### Common Interaction Issues
+
+**Symptom:** Tooltips don't appear in worker mode.
+
+**Diagnosis:**
+1. Check if `interactionScales` is `null` in worker (coordinate calculation failure)
+2. Verify `PointerEventData` includes valid `gridX`, `gridY` fields
+3. Confirm `isInGrid` is `true` for events over plot area
+4. Check `isInitialized` flag (events may be dropped before worker is ready)
+
+**Fix:**
+- Ensure `ForwardPointerEventMessage` uses `computePointerEventData()`
+- Wait for `ReadyMessage` before forwarding events (`isInitialized = true`)
+- Verify grid area is correctly configured (non-negative dimensions)
+
+**Symptom:** Tooltip coordinates are incorrect (positioned far from cursor).
+
+**Diagnosis:**
+- Grid coordinate calculation may be using wrong offsets
+- Device pixel ratio may not be accounted for
+- Canvas dimensions may be stale (resize not yet processed)
+
+**Fix:**
+- Verify `computePointerEventData()` uses `canvas.getBoundingClientRect()`
+- Ensure grid area matches cached options
+- Check that resize messages are RAF-batched and processed correctly
+
+### Event Forwarding Best Practices
+
+**1. Wait for initialization:**
+```typescript
+if (!this.isInitialized) {
+  return; // Drop events until worker is ready
+}
+```
+
+**2. RAF-throttle pointermove events:**
+```typescript
+// Prevents message queue overflow on rapid mouse movement
+this.pendingMoveEvent = event;
+if (!this.moveThrottleRafId) {
+  this.moveThrottleRafId = requestAnimationFrame(() => {
+    if (this.pendingMoveEvent) {
+      this.forwardEventToWorker(this.pendingMoveEvent);
+      this.pendingMoveEvent = null;
+    }
+    this.moveThrottleRafId = null;
+  });
+}
+```
+
+**3. Compute grid coordinates on main thread:**
+```typescript
+const eventData = this.computePointerEventData(event);
+worker.postMessage({ type: 'forwardPointerEvent', chartId, event: eventData });
+```
+
+**4. RAF-batch tooltip rendering:**
+```typescript
+// Prevents layout thrashing from rapid tooltip updates
+if (!this.tooltipUpdateRafId) {
+  this.tooltipUpdateRafId = requestAnimationFrame(() => {
+    if (this.pendingTooltipUpdate) {
+      this.tooltip.show(
+        this.pendingTooltipUpdate.x,
+        this.pendingTooltipUpdate.y,
+        this.pendingTooltipUpdate.content
+      );
+      this.pendingTooltipUpdate = null;
+    }
+    this.tooltipUpdateRafId = null;
+  });
+}
+```
+
+### Debugging Interaction Issues
+
+**Enable debug logging:**
+- Log `PointerEventData` in main thread before forwarding
+- Log received `PointerEventData` in worker thread
+- Log `interactionScales` in worker (should not be `null`)
+- Log hit-testing results (matches, nearest points)
+- Log emitted `TooltipUpdateMessage` content and position
+
+**Check coordinate systems:**
+- Verify client → canvas transformation uses `getBoundingClientRect()`
+- Verify canvas → grid transformation subtracts correct grid offsets
+- Verify grid → domain transformation uses `interactionScales.x.invert()`
+
+**Inspect message flow:**
+- Use browser DevTools to inspect postMessage traffic
+- Verify `ForwardPointerEventMessage` includes grid coordinates
+- Verify `TooltipUpdateMessage` is emitted with content
+- Check for message correlation errors (timeout, missing messageId)
+
+### Related Documentation
+
+- [Worker Architecture - Tooltip and Interaction Support](../internal/WORKER_ARCHITECTURE.md#tooltip-and-interaction-support) - Complete technical details
+- [Worker Protocol - forwardPointerEvent](worker-protocol.md#forwardpointerevent) - PointerEventData specification
+- [Worker Protocol - tooltipUpdate](worker-protocol.md#tooltipupdate) - TooltipUpdateMessage specification
+- [Worker Thread Integration Guide](../internal/WORKER_THREAD_INTEGRATION.md) - Implementation checklist
+
 ### When to Use Worker-Based Charts
 
 Choose worker-based rendering when:

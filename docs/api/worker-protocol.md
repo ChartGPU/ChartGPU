@@ -175,7 +175,7 @@ Update canvas dimensions when container size changes.
 
 ### `forwardPointerEvent`
 
-Forward normalized pointer events from main thread to worker for interaction.
+Forward pointer events with pre-computed grid coordinates from main thread to worker for interaction and tooltip hit-testing.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -185,7 +185,58 @@ Forward normalized pointer events from main thread to worker for interaction.
 
 **When to use:** Every pointer event (`move`, `click`, `leave`) captured on canvas.
 
-**Source:** See [`PointerEventData`](interaction.md#pointereventdata) and [`RenderCoordinator.handlePointerEvent()`](../internal/WORKER_THREAD_INTEGRATION.md#worker-thread-forward-to-coordinator)
+**Critical:** `PointerEventData` must include pre-computed grid coordinates (`gridX`, `gridY`, `isInGrid`). The worker cannot compute these coordinates because OffscreenCanvas lacks `getBoundingClientRect()` method.
+
+### PointerEventData Type
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `'pointermove' \| 'pointerdown' \| 'pointerup' \| 'pointerleave'` | Event type |
+| `clientX` | `number` | Page-global X coordinate (viewport-relative) |
+| `clientY` | `number` | Page-global Y coordinate (viewport-relative) |
+| `offsetX` | `number` | Canvas-local X coordinate (canvas.getBoundingClientRect()) |
+| `offsetY` | `number` | Canvas-local Y coordinate (canvas.getBoundingClientRect()) |
+| `gridX` | `number` | Grid-local X coordinate (offsetX - grid.left) |
+| `gridY` | `number` | Grid-local Y coordinate (offsetY - grid.top) |
+| `isInGrid` | `boolean` | True if pointer is inside plot grid region |
+| `button` | `number` | Mouse button pressed (0=left, 1=middle, 2=right) |
+| `buttons` | `number` | Bitmask of pressed buttons |
+| `ctrlKey` | `boolean` | True if Ctrl/Cmd key pressed |
+| `shiftKey` | `boolean` | True if Shift key pressed |
+| `altKey` | `boolean` | True if Alt/Option key pressed |
+| `metaKey` | `boolean` | True if Meta/Command key pressed |
+| `timestamp` | `number` | Event timestamp in milliseconds |
+
+**Coordinate Systems:**
+
+The `PointerEventData` includes coordinates in multiple systems to support different use cases:
+
+1. **Client coordinates** (`clientX`, `clientY`): Page-global position, relative to viewport top-left
+2. **Canvas coordinates** (`offsetX`, `offsetY`): Position within canvas element, relative to canvas top-left
+3. **Grid coordinates** (`gridX`, `gridY`): Position within plot grid region, relative to grid top-left (excludes axes/padding)
+
+**Coordinate transformation:**
+```
+Client (page) → Canvas (element) → Grid (plot)
+    rect.left       grid.left
+```
+
+**Why grid coordinates are pre-computed on main thread:**
+- OffscreenCanvas lacks `getBoundingClientRect()` (DOM API not available in worker)
+- OffscreenCanvas lacks `offsetLeft`/`offsetTop` properties
+- Canvas container element is only accessible on main thread
+- Main thread computes grid coordinates using `canvas.getBoundingClientRect()` and cached grid area
+- Worker receives pre-computed grid coordinates and uses them directly with `interactionScales`
+
+**Usage in worker:**
+- `coordinator.handlePointerEvent(eventData)` receives `PointerEventData`
+- Uses `eventData.gridX` and `eventData.gridY` for hit-testing
+- `computeInteractionScalesGridCssPx()` creates scales mapping grid→domain coordinates
+- Hit-testing functions (`findNearestPoint()`, `findPointsAtX()`) use `interactionScales` to find data points
+
+**Source:** See [`PointerEventData`](../../src/config/types.ts), [`ChartGPUWorkerProxy.computePointerEventData()`](../../src/worker/ChartGPUWorkerProxy.ts), and [`RenderCoordinator.handlePointerEvent()`](../internal/WORKER_THREAD_INTEGRATION.md#worker-thread-forward-to-coordinator)
 
 ### `setZoomRange`
 
@@ -199,6 +250,8 @@ Set the x-axis zoom window (normalized [0, 1]).
 | `end` | `number` | ✓ | Normalized end position [0, 1] |
 
 **When to use:** Programmatic zoom control, synchronized zoom across charts.
+
+**Zoom constraints:** The zoom window span (`end - start`) is constrained to a minimum of 0.5% (0.005 in normalized [0, 1] space). This prevents over-zooming beyond the slider's visual capabilities—at 0.5% span, a 500px slider track shows a 2.5px window, which is the practical limit for visual distinguishability. Attempts to zoom to smaller spans will be clamped to this minimum. See [`src/interaction/createZoomState.ts`](../../src/interaction/createZoomState.ts) for implementation details.
 
 **Source:** See [`ChartGPU.setZoomRange()`](chart.md#chartgpuinstance)
 
@@ -273,11 +326,16 @@ Initialization complete, worker ready to receive messages.
 | `chartId` | `string` | Chart instance identifier |
 | `messageId` | `string` | Matches `messageId` from `init` request |
 | `capabilities` | `{ adapter: string, features: string[] }` | Optional GPU capabilities info for diagnostics |
-| `performanceCapabilities` | `PerformanceCapabilities` | Optional performance capabilities (GPU timing support, timer support, etc.) |
+| `performanceCapabilities` | `PerformanceCapabilities` | Performance capabilities (GPU timing support, timer support, etc.) |
+| `initialZoomRange` | `{ start: number, end: number } \| null` | Initial zoom range if zoom is enabled, otherwise `null` |
 
 **When emitted:** After successful initialization in response to `init` message.
 
-**Note:** The `performanceCapabilities` field was added to communicate which performance features are available in the worker environment.
+**Important fields:**
+
+- **`performanceCapabilities`**: Communicates which performance features are available in the worker environment (GPU timing, high-resolution timers, etc.).
+
+- **`initialZoomRange`**: Provides the initial zoom range computed by the worker during coordinator creation. This field prevents a race condition where the zoom slider would initialize with default `[0, 100]` range before receiving the first `zoomChange` message, causing a visual flicker and incorrect initial state. The worker computes this range based on `dataZoom` configuration and includes it in the ready message for synchronous slider initialization. If zoom is not configured, this field is `null`. See [`src/worker/protocol.ts`](../../src/worker/protocol.ts) and [`src/interaction/createZoomState.ts`](../../src/interaction/createZoomState.ts).
 
 ### `rendered`
 
@@ -296,17 +354,44 @@ Frame render complete (optional diagnostic).
 
 ### `tooltipUpdate`
 
-Tooltip data changed (show, hide, or reposition).
+Tooltip data changed (show, hide, or reposition). Includes **complete tooltip content and position** computed by worker thread.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `type` | `'tooltipUpdate'` | Message type identifier |
 | `chartId` | `string` | Chart instance identifier |
-| `data` | `TooltipData \| null` | Tooltip content and position, or `null` to hide |
+| `data` | `TooltipData \| null` | Complete tooltip content (HTML) and position (x, y in CSS pixels), or `null` to hide |
 
-**When emitted:** Pointer movement over data points, pointer leave, data updates.
+**When emitted:** 
+- Pointer movement over data points (with hit-test results)
+- Pointer leave (data = `null` to hide tooltip)
+- Data updates (tooltip may need repositioning)
 
-**Source:** See [`TooltipData`](../../src/config/types.ts) and [Worker Thread Integration](../internal/WORKER_THREAD_INTEGRATION.md#tooltip-updates)
+**TooltipData structure:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `content` | `string` | Formatted HTML tooltip content (pre-rendered by worker) |
+| `params` | `TooltipParams[]` | Array of tooltip parameters for each series (for custom rendering) |
+| `x` | `number` | Tooltip X position in canvas-local CSS pixels |
+| `y` | `number` | Tooltip Y position in canvas-local CSS pixels |
+
+**Worker thread tooltip flow:**
+1. Receive `ForwardPointerEventMessage` with pre-computed `gridX`, `gridY` coordinates
+2. Use `interactionScales` to map grid coordinates to domain coordinates
+3. Perform hit-testing with `findNearestPoint()`, `findPointsAtX()`, or `findCandlestick()`
+4. Format tooltip content using `formatTooltip()` (HTML generation)
+5. Calculate tooltip position in CSS pixels
+6. Emit `TooltipUpdateMessage` with complete content and position
+
+**Main thread tooltip rendering:**
+- Receives `TooltipUpdateMessage` from worker
+- RAF-batches tooltip DOM updates (prevents layout thrashing)
+- Calls `tooltip.show(data.x, data.y, data.content)` to render
+
+**Key insight:** Worker performs all tooltip logic (hit-testing, formatting, positioning). Main thread only renders the final HTML to DOM.
+
+**Source:** See [`TooltipData`](../../src/config/types.ts), [Worker Thread Integration](../internal/WORKER_THREAD_INTEGRATION.md#tooltip-updates), and [Worker Architecture - Tooltip Support](../internal/WORKER_ARCHITECTURE.md#tooltip-and-interaction-support)
 
 ### `legendUpdate`
 

@@ -186,11 +186,18 @@ ChartGPUWorkerProxy
 - **pointerleave:** Clear hover state
 - **wheel:** Zoom interactions
 
-**Event serialization:**
+**Event serialization with grid coordinate computation:**
 - Native PointerEvent and WheelEvent objects cannot be transferred to worker
-- Proxy serializes events to plain objects (PointerEventData)
-- Extracted fields: clientX, clientY, offsetX, offsetY, button, buttons, modifiers, timestamp
-- Worker receives serialized data and processes interactions
+- Proxy serializes events to plain objects (`PointerEventData`)
+- **CRITICAL:** Main thread computes grid coordinates using `computePointerEventData()` before sending to worker
+- Extracted fields: clientX, clientY, offsetX, offsetY, gridX, gridY, isInGrid, button, buttons, modifiers, timestamp
+- Worker receives pre-computed grid coordinates and uses `interactionScales` for tooltip hit-testing
+
+**Why grid coordinates must be computed on main thread:**
+- OffscreenCanvas lacks `getBoundingClientRect()` method (DOM API)
+- Canvas dimensions must be calculated from container element on main thread
+- `getPlotSizeCssPx()` converts OffscreenCanvas dimensions to CSS pixels using device pixel ratio
+- `computeInteractionScalesGridCssPx()` creates scales for domain→grid coordinate mapping
 
 **RAF Throttling for pointermove:**
 - Throttles move events to 60fps max
@@ -199,7 +206,222 @@ ChartGPUWorkerProxy
 - RAF callback sends latest event and clears pending
 - Prevents message queue overflow on rapid mouse movement
 
-**Source:** See [`ChartGPUWorkerProxy` event forwarding methods](../../src/worker/ChartGPUWorkerProxy.ts)
+**Source:** See [`ChartGPUWorkerProxy.computePointerEventData()`](../../src/worker/ChartGPUWorkerProxy.ts) and [`ChartGPUWorkerProxy` event forwarding methods](../../src/worker/ChartGPUWorkerProxy.ts)
+
+## Tooltip and Interaction Support
+
+### Overview
+
+Worker-threaded charts support full tooltip and interaction capabilities through a coordinate calculation system that bridges the main thread (DOM access) and worker thread (GPU rendering and hit-testing).
+
+**Key challenge:** OffscreenCanvas does not have DOM-specific properties like `getBoundingClientRect()`, `offsetLeft`, or `offsetTop`, which are required for calculating grid coordinates for tooltip hit-testing.
+
+**Solution:** Split coordinate calculation across threads:
+1. **Main thread:** Compute grid coordinates using canvas container dimensions
+2. **Worker thread:** Use pre-computed grid coordinates with `interactionScales` for hit-testing
+
+### Coordinate Calculation Flow
+
+```
+User Pointer Event (DOM)
+  ↓
+Main Thread: canvas.getBoundingClientRect()
+  ↓
+computePointerEventData()
+  → Calculate canvas-local coordinates (clientX - rect.left)
+  → Calculate grid coordinates using getPlotSizeCssPx() + grid offsets
+  → Create PointerEventData with gridX, gridY, isInGrid
+  ↓
+ForwardPointerEventMessage (postMessage to worker)
+  ↓
+Worker Thread: ChartGPUWorkerController
+  ↓
+coordinator.handlePointerEvent(eventData)
+  → Uses eventData.gridX, eventData.gridY
+  → Performs hit-testing with interactionScales
+  → findNearestPoint() / findPointsAtX()
+  ↓
+TooltipUpdateMessage (postMessage to main thread)
+  → Complete tooltip content + position
+  ↓
+Main Thread: RAF-batched tooltip.show(x, y, content)
+```
+
+### OffscreenCanvas Coordinate Calculation
+
+**Problem:**
+- OffscreenCanvas has no `getBoundingClientRect()` method (DOM API)
+- OffscreenCanvas has no `offsetLeft` or `offsetTop` properties
+- Worker thread cannot access canvas container element to measure dimensions
+
+**Solution implemented in `getPlotSizeCssPx()`:**
+
+```typescript
+function getPlotSizeCssPx(
+  canvas: SupportedCanvas | null,
+  devicePixelRatio: number,
+  grid: GridArea
+): { widthCssPx: number; heightCssPx: number } {
+  if (!canvas) return { widthCssPx: 0, heightCssPx: 0 };
+  
+  if (isHTMLCanvasElement(canvas)) {
+    // HTMLCanvasElement: use clientWidth/clientHeight (CSS pixels)
+    return {
+      widthCssPx: canvas.clientWidth,
+      heightCssPx: canvas.clientHeight
+    };
+  }
+  
+  // OffscreenCanvas: canvas.width/height are in device pixels
+  // Convert to CSS pixels by dividing by device pixel ratio
+  const cssWidth = canvas.width / devicePixelRatio;
+  const cssHeight = canvas.height / devicePixelRatio;
+  
+  // Apply grid area constraints to get plot region
+  return {
+    widthCssPx: cssWidth - grid.left - grid.right,
+    heightCssPx: cssHeight - grid.top - grid.bottom
+  };
+}
+```
+
+**Key insight:** OffscreenCanvas dimensions are stored in device pixels, so dividing by DPR converts to CSS pixels (which match DOM coordinate system).
+
+### computeInteractionScalesGridCssPx()
+
+**Purpose:** Create domain→grid coordinate scales for tooltip hit-testing in worker thread.
+
+**Updated implementation** (supports OffscreenCanvas):
+- Removed `isHTMLCanvasElement(canvas)` check that blocked worker mode
+- Uses `getPlotSizeCssPx()` to get CSS pixel dimensions for both canvas types
+- Creates linear scales mapping domain coordinates to grid coordinates
+- Returns `null` if canvas is unavailable or grid region is zero-sized
+
+**Critical fix:** Previously returned `null` for OffscreenCanvas, causing `interactionScales` to be `null` and breaking all tooltip hit-testing in worker mode.
+
+**Source:** [`src/core/createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts)
+
+### Main Thread: computePointerEventData()
+
+**Purpose:** Calculate grid coordinates on main thread before forwarding to worker.
+
+**Implementation in `ChartGPUWorkerProxy`:**
+
+```typescript
+private computePointerEventData(event: PointerEvent): PointerEventData {
+  const rect = this.canvas.getBoundingClientRect();
+  const canvasX = event.clientX - rect.left;
+  const canvasY = event.clientY - rect.top;
+  
+  // Get grid area from cached options
+  const grid = this.cachedOptions?.grid || { left: 60, right: 20, top: 40, bottom: 40 };
+  
+  // Calculate grid-local coordinates
+  const gridX = canvasX - grid.left;
+  const gridY = canvasY - grid.top;
+  
+  // Check if pointer is inside grid region
+  const canvasCssWidth = this.canvas.clientWidth;
+  const canvasCssHeight = this.canvas.clientHeight;
+  const gridWidth = canvasCssWidth - grid.left - grid.right;
+  const gridHeight = canvasCssHeight - grid.top - grid.bottom;
+  const isInGrid = gridX >= 0 && gridX <= gridWidth && gridY >= 0 && gridY <= gridHeight;
+  
+  return {
+    type: event.type as 'pointermove' | 'pointerdown' | 'pointerup' | 'pointerleave',
+    clientX: event.clientX,
+    clientY: event.clientY,
+    offsetX: canvasX,
+    offsetY: canvasY,
+    gridX,
+    gridY,
+    isInGrid,
+    button: event.button,
+    buttons: event.buttons,
+    ctrlKey: event.ctrlKey,
+    shiftKey: event.shiftKey,
+    altKey: event.altKey,
+    metaKey: event.metaKey,
+    timestamp: event.timeStamp
+  };
+}
+```
+
+**Key features:**
+- Uses `getBoundingClientRect()` to get canvas position (only available on main thread)
+- Calculates canvas-local coordinates (offsetX, offsetY)
+- Calculates grid-local coordinates (gridX, gridY) by subtracting grid offsets
+- Determines if pointer is inside grid region (isInGrid flag)
+- Implements click detection with 6px/500ms tap candidate thresholds
+
+**Source:** [`src/worker/ChartGPUWorkerProxy.ts`](../../src/worker/ChartGPUWorkerProxy.ts)
+
+### Worker Thread: Hit-Testing with Pre-Computed Coordinates
+
+**Flow in `ChartGPUWorkerController`:**
+
+1. Receive `ForwardPointerEventMessage` with `PointerEventData`
+2. Pass `eventData` to `coordinator.handlePointerEvent(eventData)`
+3. Coordinator uses `eventData.gridX` and `eventData.gridY` directly
+4. `computeInteractionScalesGridCssPx()` creates scales from domain to grid coordinates
+5. Hit-testing functions use `interactionScales` to map grid→domain:
+   - `findNearestPoint()`: Find closest data point in domain space
+   - `findPointsAtX()`: Find all data points at domain x coordinate
+   - `findCandlestick()`: Find candlestick at domain x coordinate
+   - `findPieSlice()`: Find pie slice at domain angle
+6. Worker emits `TooltipUpdateMessage` with complete tooltip content and position
+7. Main thread receives message and renders tooltip to DOM (RAF-batched)
+
+**Why this works:**
+- Grid coordinates are pre-computed on main thread (has canvas position info)
+- Worker receives grid coordinates and uses `interactionScales` for domain mapping
+- `interactionScales` is now properly computed for OffscreenCanvas (no longer `null`)
+- Hit-testing functions work identically in main-thread and worker-thread charts
+
+**Source:** [`src/worker/ChartGPUWorkerController.ts`](../../src/worker/ChartGPUWorkerController.ts)
+
+### Coordinate System Summary
+
+**Four coordinate systems:**
+
+1. **Client coordinates** (page-global): `event.clientX`, `event.clientY`
+   - Absolute position on page
+   - Relative to viewport top-left
+
+2. **Canvas coordinates** (canvas-local): `offsetX = clientX - rect.left`, `offsetY = clientY - rect.top`
+   - Position within canvas element
+   - Origin at canvas top-left corner
+
+3. **Grid coordinates** (plot-local): `gridX = offsetX - grid.left`, `gridY = offsetY - grid.top`
+   - Position within plot grid region
+   - Origin at grid top-left corner (excludes axes/padding)
+   - This is the coordinate system used for hit-testing
+
+4. **Domain coordinates** (data space): Mapped via `interactionScales.x.invert(gridX)`, `interactionScales.y.invert(gridY)`
+   - Actual data values (e.g., timestamp, price)
+   - Used by hit-testing functions to find nearest data points
+
+**Transformation flow:**
+```
+Client (page) → Canvas (element) → Grid (plot) → Domain (data)
+    rect.left       grid.left       interactionScales.x.invert()
+```
+
+### Troubleshooting
+
+**Symptom:** Tooltips don't appear in worker mode.
+
+**Diagnosis:**
+- Check if `interactionScales` is `null` in worker (indicates coordinate calculation failure)
+- Verify `ForwardPointerEventMessage` includes valid `gridX`, `gridY` fields
+- Confirm `PointerEventData.isInGrid` is `true` for events over plot area
+
+**Common causes:**
+- Canvas dimensions not yet initialized (wait for `ready` message)
+- Grid area misconfigured (negative dimensions)
+- Event forwarding started before `isInitialized = true` (race condition)
+
+**Source:** See [Worker Thread Integration Guide](WORKER_THREAD_INTEGRATION.md) for implementation details
 
 ### Event Re-emission to Main Thread
 
@@ -499,11 +721,13 @@ graph TB
 12. **Worker thread:** Controller creates [`RenderCoordinator`](../../src/core/createRenderCoordinator.ts) with `domOverlays: false`
 13. **Worker thread:** Controller sets up MessageChannel for render scheduling
 14. **Worker thread:** Controller initializes performance tracking state (frame timestamps, counters)
-15. **Worker thread:** Controller emits `ReadyMessage` to main thread with matching `messageId` and `performanceCapabilities`
-16. **Main thread:** Proxy receives `ready` message, caches `performanceCapabilities`, sets `isInitialized = true`, and resolves `init()` Promise
+15. **Worker thread:** Controller emits `ReadyMessage` to main thread with matching `messageId`, `performanceCapabilities`, and `initialZoomRange`
+16. **Main thread:** Proxy receives `ready` message, caches `performanceCapabilities`, caches `initialZoomRange` for slider initialization, sets `isInitialized = true`, and resolves `init()` Promise
 17. **Main thread:** Factory function returns initialized proxy to application code
 
-**Race condition prevention:** The `isInitialized` flag prevents events from being forwarded to the worker before initialization completes. Events received before `ReadyMessage` are silently dropped, preventing worker errors.
+**Race condition prevention:**
+- **Event forwarding:** The `isInitialized` flag prevents events from being forwarded to the worker before initialization completes. Events received before `ReadyMessage` are silently dropped, preventing worker errors.
+- **Zoom slider initialization:** The `initialZoomRange` field in `ReadyMessage` ensures the zoom slider initializes with the correct zoom range synchronously. Without this field, the slider would initialize with default `[0, 100]` range before receiving the first `zoomChange` message from the worker, causing a visual flicker and incorrect initial state. The worker computes the initial zoom range based on `dataZoom` configuration during coordinator creation and includes it in the ready message. See [`src/worker/protocol.ts`](../../src/worker/protocol.ts) and [`src/worker/ChartGPUWorkerController.ts`](../../src/worker/ChartGPUWorkerController.ts).
 
 **Source:** See [`createChartInWorker()`](../../src/worker/createChartInWorker.ts), [`ChartGPUWorkerProxy.init()`](../../src/worker/ChartGPUWorkerProxy.ts), and [`ChartGPUWorkerController.initChart()`](../../src/worker/ChartGPUWorkerController.ts)
 

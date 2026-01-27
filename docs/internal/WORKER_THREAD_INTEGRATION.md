@@ -102,9 +102,16 @@ Key types for worker thread integration are defined in [`src/config/types.ts`](.
 
 ## Event Forwarding
 
-### Main Thread: Capture and Normalize Events
+### Main Thread: Capture and Compute Grid Coordinates
 
-The main thread must capture DOM pointer events and normalize them to canvas-local coordinates before posting to the worker:
+The main thread must capture DOM pointer events and compute grid coordinates before posting to the worker. Grid coordinates are required for tooltip hit-testing in worker thread.
+
+**Why grid coordinates must be computed on main thread:**
+- OffscreenCanvas lacks `getBoundingClientRect()` method (DOM API)
+- Worker thread cannot access canvas container element to measure dimensions
+- Grid coordinates require canvas position (from `getBoundingClientRect()`) and grid offsets
+
+**Implementation using `computePointerEventData()`:**
 
 ```typescript
 // Main thread
@@ -114,23 +121,60 @@ const offscreen = canvas.transferControlToOffscreen();
 // Send offscreen canvas to worker
 worker.postMessage({ type: 'init', canvas: offscreen }, [offscreen]);
 
-// Capture and forward pointer events
-canvas.addEventListener('pointermove', (e) => {
+// Helper: Compute grid coordinates on main thread
+function computePointerEventData(event: PointerEvent, cachedOptions: ChartGPUOptions): PointerEventData {
   const rect = canvas.getBoundingClientRect();
-  const normalized: NormalizedPointerEvent = {
-    type: 'pointermove',
-    x: e.clientX - rect.left, // Canvas-local CSS pixels
-    y: e.clientY - rect.top,
-    buttons: e.buttons,
-    timestamp: e.timeStamp,
+  const canvasX = event.clientX - rect.left; // Canvas-local CSS pixels
+  const canvasY = event.clientY - rect.top;
+  
+  // Get grid area from cached options
+  const grid = cachedOptions?.grid || { left: 60, right: 20, top: 40, bottom: 40 };
+  
+  // Calculate grid-local coordinates (plot region coordinates)
+  const gridX = canvasX - grid.left;
+  const gridY = canvasY - grid.top;
+  
+  // Check if pointer is inside grid region
+  const canvasCssWidth = canvas.clientWidth;
+  const canvasCssHeight = canvas.clientHeight;
+  const gridWidth = canvasCssWidth - grid.left - grid.right;
+  const gridHeight = canvasCssHeight - grid.top - grid.bottom;
+  const isInGrid = gridX >= 0 && gridX <= gridWidth && gridY >= 0 && gridY <= gridHeight;
+  
+  return {
+    type: event.type as 'pointermove' | 'pointerdown' | 'pointerup' | 'pointerleave',
+    clientX: event.clientX,
+    clientY: event.clientY,
+    offsetX: canvasX,
+    offsetY: canvasY,
+    gridX,        // Grid-local X coordinate (for hit-testing)
+    gridY,        // Grid-local Y coordinate (for hit-testing)
+    isInGrid,     // True if pointer is inside plot grid
+    button: event.button,
+    buttons: event.buttons,
+    ctrlKey: event.ctrlKey,
+    shiftKey: event.shiftKey,
+    altKey: event.altKey,
+    metaKey: event.metaKey,
+    timestamp: event.timeStamp
   };
-  worker.postMessage({ type: 'pointer', event: normalized });
+}
+
+// Capture and forward pointer events with grid coordinates
+canvas.addEventListener('pointermove', (e) => {
+  const eventData = computePointerEventData(e, cachedOptions);
+  worker.postMessage({ type: 'forwardPointerEvent', chartId: 'chart-1', event: eventData });
 });
 
 // Repeat for pointerdown, pointerup, pointerleave
 ```
 
-**Critical**: Event coordinates must be canvas-local CSS pixels, not page-global coordinates. Use `getBoundingClientRect()` to compute offsets.
+**Critical coordinate transformations:**
+1. **Client → Canvas:** `offsetX = clientX - rect.left` (requires `getBoundingClientRect()`)
+2. **Canvas → Grid:** `gridX = offsetX - grid.left` (requires cached grid area)
+3. **Grid → Domain:** Worker performs using `interactionScales.x.invert(gridX)`
+
+**Key insight:** Steps 1-2 must happen on main thread because OffscreenCanvas lacks DOM APIs. Step 3 happens in worker thread using pre-computed grid coordinates.
 
 ### Worker Thread: Forward to Coordinator
 
@@ -182,12 +226,20 @@ The `handlePointerEvent()` implementation validates coordinates to guard against
 **Parameters**:
 ```typescript
 interface TooltipData {
-  readonly content: string;          // Formatted HTML content
+  readonly content: string;          // Formatted HTML content (pre-rendered by worker)
   readonly params: TooltipParams[];  // Array for consistency (single-item or multi-item)
-  readonly x: number;                // Canvas-local CSS pixel X
-  readonly y: number;                // Canvas-local CSS pixel Y
+  readonly x: number;                // Canvas-local CSS pixel X (tooltip position)
+  readonly y: number;                // Canvas-local CSS pixel Y (tooltip position)
 }
 ```
+
+**Worker thread tooltip flow:**
+1. Receive `ForwardPointerEventMessage` with pre-computed `gridX`, `gridY` coordinates
+2. Use `interactionScales` to map grid coordinates to domain coordinates
+3. Perform hit-testing with `findNearestPoint()`, `findPointsAtX()`, or `findCandlestick()`
+4. Format tooltip content using `formatTooltip()` (HTML generation in worker)
+5. Calculate tooltip position in canvas-local CSS pixels
+6. Emit `TooltipUpdateMessage` with complete content and position
 
 **Main thread handling**:
 ```typescript
@@ -196,6 +248,7 @@ onTooltipUpdate: (data) => {
     tooltip.style.display = 'none';
     return;
   }
+  // Worker provides complete HTML content - no formatting needed
   tooltip.innerHTML = data.content;
   tooltip.style.left = `${data.x}px`;
   tooltip.style.top = `${data.y}px`;
@@ -203,7 +256,15 @@ onTooltipUpdate: (data) => {
 }
 ```
 
-**Source**: [`src/core/createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts) lines 1523-1536
+**Key insight:** Worker performs all tooltip logic (hit-testing, formatting, positioning). Main thread only renders the final HTML to DOM.
+
+**Coordinate calculation in worker:**
+- Uses `eventData.gridX` and `eventData.gridY` from `PointerEventData`
+- `computeInteractionScalesGridCssPx()` creates scales for grid→domain mapping (supports OffscreenCanvas)
+- Hit-testing functions use `interactionScales.x.invert(gridX)` to get domain coordinates
+- Returns tooltip position in canvas-local CSS pixels (matches DOM coordinate system)
+
+**Source**: [`src/core/createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts) lines 1523-1536, [Worker Architecture - Tooltip Support](WORKER_ARCHITECTURE.md#tooltip-and-interaction-support)
 
 ### Legend Updates
 
@@ -304,6 +365,290 @@ onAxisLabelsUpdate: (xLabels, yLabels) => {
 **Use case**: Synchronized crosshairs across multiple charts, external cursor tracking
 
 **Source**: [`src/core/createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts) lines 1545-1549
+
+## Implementing Tooltip Support in Custom Workers
+
+### Overview
+
+Custom worker implementations must compute grid coordinates on the main thread before forwarding events to the worker. This section provides implementation guidance and best practices.
+
+### Required Components
+
+**1. Main Thread: Grid Coordinate Computation**
+
+Implement `computePointerEventData()` helper function:
+
+```typescript
+function computePointerEventData(
+  event: PointerEvent,
+  canvas: HTMLCanvasElement,
+  gridArea: { left: number; right: number; top: number; bottom: number }
+): PointerEventData {
+  // Step 1: Get canvas position using getBoundingClientRect()
+  const rect = canvas.getBoundingClientRect();
+  const canvasX = event.clientX - rect.left;
+  const canvasY = event.clientY - rect.top;
+  
+  // Step 2: Calculate grid coordinates by subtracting grid offsets
+  const gridX = canvasX - gridArea.left;
+  const gridY = canvasY - gridArea.top;
+  
+  // Step 3: Determine if pointer is inside grid region
+  const canvasCssWidth = canvas.clientWidth;
+  const canvasCssHeight = canvas.clientHeight;
+  const gridWidth = canvasCssWidth - gridArea.left - gridArea.right;
+  const gridHeight = canvasCssHeight - gridArea.top - gridArea.bottom;
+  const isInGrid = gridX >= 0 && gridX <= gridWidth && gridY >= 0 && gridY <= gridHeight;
+  
+  return {
+    type: event.type as 'pointermove' | 'pointerdown' | 'pointerup' | 'pointerleave',
+    clientX: event.clientX,
+    clientY: event.clientY,
+    offsetX: canvasX,
+    offsetY: canvasY,
+    gridX,
+    gridY,
+    isInGrid,
+    button: event.button,
+    buttons: event.buttons,
+    ctrlKey: event.ctrlKey,
+    shiftKey: event.shiftKey,
+    altKey: event.altKey,
+    metaKey: event.metaKey,
+    timestamp: event.timeStamp
+  };
+}
+```
+
+**2. Worker Thread: Use Pre-Computed Grid Coordinates**
+
+In worker's message handler:
+
+```typescript
+self.addEventListener('message', (e) => {
+  if (e.data.type === 'forwardPointerEvent' && coordinator) {
+    // Worker receives PointerEventData with pre-computed grid coordinates
+    const eventData = e.data.event;
+    
+    // Pass to coordinator - it will use eventData.gridX and eventData.gridY
+    coordinator.handlePointerEvent(eventData);
+    
+    // Trigger render to update tooltips/highlights
+    coordinator.render();
+  }
+});
+```
+
+**3. Worker Thread: Emit Tooltip Updates**
+
+Configure coordinator with `domOverlays: false` and `onTooltipUpdate` callback:
+
+```typescript
+const coordinator = createRenderCoordinator(gpuContext, options, {
+  domOverlays: false,
+  onTooltipUpdate: (data) => {
+    // Worker computed complete tooltip content and position
+    self.postMessage({
+      type: 'tooltipUpdate',
+      chartId: 'chart-1',
+      data // includes content (HTML), x, y (CSS pixels)
+    });
+  },
+  // ... other callbacks
+});
+```
+
+**4. Main Thread: Render Tooltip to DOM**
+
+Handle `tooltipUpdate` message:
+
+```typescript
+worker.addEventListener('message', (e) => {
+  if (e.data.type === 'tooltipUpdate') {
+    const data = e.data.data;
+    if (!data) {
+      tooltip.style.display = 'none';
+      return;
+    }
+    
+    // RAF-batch tooltip updates to prevent layout thrashing
+    if (!pendingTooltipUpdate) {
+      requestAnimationFrame(() => {
+        if (pendingTooltipUpdate) {
+          tooltip.innerHTML = pendingTooltipUpdate.content;
+          tooltip.style.left = `${pendingTooltipUpdate.x}px`;
+          tooltip.style.top = `${pendingTooltipUpdate.y}px`;
+          tooltip.style.display = 'block';
+          pendingTooltipUpdate = null;
+        }
+      });
+    }
+    pendingTooltipUpdate = data;
+  }
+});
+```
+
+### OffscreenCanvas Coordinate Calculation
+
+**Challenge:** OffscreenCanvas dimensions are in device pixels, but coordinates must be in CSS pixels.
+
+**Solution in `getPlotSizeCssPx()`:**
+
+```typescript
+function getPlotSizeCssPx(
+  canvas: SupportedCanvas | null,
+  devicePixelRatio: number,
+  grid: GridArea
+): { widthCssPx: number; heightCssPx: number } {
+  if (!canvas) return { widthCssPx: 0, heightCssPx: 0 };
+  
+  if (isHTMLCanvasElement(canvas)) {
+    // HTMLCanvasElement: use clientWidth/clientHeight (CSS pixels)
+    return {
+      widthCssPx: canvas.clientWidth,
+      heightCssPx: canvas.clientHeight
+    };
+  }
+  
+  // OffscreenCanvas: canvas.width/height are in device pixels
+  // Convert to CSS pixels by dividing by device pixel ratio
+  const cssWidth = canvas.width / devicePixelRatio;
+  const cssHeight = canvas.height / devicePixelRatio;
+  
+  // Apply grid area constraints
+  return {
+    widthCssPx: cssWidth - grid.left - grid.right,
+    heightCssPx: cssHeight - grid.top - grid.bottom
+  };
+}
+```
+
+**Key insight:** Dividing device pixels by DPR converts to CSS pixels, which match the DOM coordinate system.
+
+**Reference implementation:** [`src/core/createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts) lines 65-84
+
+### Best Practices
+
+**1. Cache grid area configuration:**
+```typescript
+// Main thread: Cache grid area from options
+let cachedGridArea = { left: 60, right: 20, top: 40, bottom: 40 };
+
+worker.addEventListener('message', (e) => {
+  if (e.data.type === 'ready') {
+    // Update cached grid area from initialization
+    cachedGridArea = e.data.options?.grid || cachedGridArea;
+  }
+});
+
+// Use cached grid area for coordinate calculation
+canvas.addEventListener('pointermove', (e) => {
+  const eventData = computePointerEventData(e, canvas, cachedGridArea);
+  worker.postMessage({ type: 'forwardPointerEvent', chartId: 'chart-1', event: eventData });
+});
+```
+
+**2. RAF-throttle pointermove events:**
+```typescript
+let pendingMoveEvent: PointerEvent | null = null;
+let moveThrottleRafId: number | null = null;
+
+canvas.addEventListener('pointermove', (e) => {
+  pendingMoveEvent = e;
+  
+  if (!moveThrottleRafId) {
+    moveThrottleRafId = requestAnimationFrame(() => {
+      if (pendingMoveEvent) {
+        const eventData = computePointerEventData(pendingMoveEvent, canvas, cachedGridArea);
+        worker.postMessage({ type: 'forwardPointerEvent', chartId: 'chart-1', event: eventData });
+        pendingMoveEvent = null;
+      }
+      moveThrottleRafId = null;
+    });
+  }
+});
+```
+
+**3. RAF-batch tooltip updates:**
+```typescript
+let pendingTooltipUpdate: TooltipData | null = null;
+let tooltipUpdateRafId: number | null = null;
+
+worker.addEventListener('message', (e) => {
+  if (e.data.type === 'tooltipUpdate') {
+    pendingTooltipUpdate = e.data.data;
+    
+    if (!tooltipUpdateRafId) {
+      tooltipUpdateRafId = requestAnimationFrame(() => {
+        if (pendingTooltipUpdate) {
+          tooltip.innerHTML = pendingTooltipUpdate.content;
+          tooltip.style.left = `${pendingTooltipUpdate.x}px`;
+          tooltip.style.top = `${pendingTooltipUpdate.y}px`;
+          tooltip.style.display = 'block';
+        } else {
+          tooltip.style.display = 'none';
+        }
+        pendingTooltipUpdate = null;
+        tooltipUpdateRafId = null;
+      });
+    }
+  }
+});
+```
+
+**4. Wait for initialization before forwarding events:**
+```typescript
+let isInitialized = false;
+
+worker.addEventListener('message', (e) => {
+  if (e.data.type === 'ready') {
+    isInitialized = true;
+  }
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  // Guard against premature event forwarding
+  if (!isInitialized) {
+    return; // Silently drop events until worker is ready
+  }
+  
+  const eventData = computePointerEventData(e, canvas, cachedGridArea);
+  worker.postMessage({ type: 'forwardPointerEvent', chartId: 'chart-1', event: eventData });
+});
+```
+
+### Troubleshooting
+
+**Issue:** Tooltips don't appear in worker mode.
+
+**Diagnosis:**
+1. Check if `computePointerEventData()` is called before forwarding events
+2. Verify `PointerEventData` includes `gridX`, `gridY`, `isInGrid` fields
+3. Check that `interactionScales` is not `null` in worker (use debugger or logging)
+4. Confirm `isInitialized` flag prevents premature event forwarding
+5. Verify `onTooltipUpdate` callback is registered in worker coordinator
+
+**Issue:** Tooltip coordinates are incorrect.
+
+**Diagnosis:**
+1. Verify `canvas.getBoundingClientRect()` is called on every event (canvas may have moved)
+2. Check that cached grid area matches worker's grid configuration
+3. Ensure device pixel ratio is correctly accounted for in OffscreenCanvas calculation
+4. Verify tooltip position uses canvas-local CSS pixels, not page-global
+
+**Issue:** Tooltips lag behind cursor.
+
+**Diagnosis:**
+1. Check if RAF-throttling is working correctly (should limit to 60fps)
+2. Verify RAF-batching is implemented for tooltip updates
+3. Monitor message queue for overflow (excessive postMessage calls)
+
+### Code References
+
+- [ChartGPUWorkerProxy.computePointerEventData()](../../src/worker/ChartGPUWorkerProxy.ts) - Main thread coordinate calculation
+- [createRenderCoordinator getPlotSizeCssPx()](../../src/core/createRenderCoordinator.ts) - OffscreenCanvas CSS pixel conversion
+- [createRenderCoordinator computeInteractionScalesGridCssPx()](../../src/core/createRenderCoordinator.ts) - Grid→domain scale creation
+- [ChartGPUWorkerController handlePointerEvent()](../../src/worker/ChartGPUWorkerController.ts) - Worker event handling
 
 ## Device Loss Handling
 

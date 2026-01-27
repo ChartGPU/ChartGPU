@@ -194,7 +194,7 @@ flowchart TB
       ProxyInstance --> ProxyOverlays["DOM overlay management<br/>(tooltip, legend, text, slider)"]
       ProxyInstance --> ResizeMonitoring["ResizeObserver + DPR monitoring<br/>(RAF batched)"]
       
-      EventForwarding --> ForwardPointer["Serialize PointerEvent → PointerEventData"]
+      EventForwarding --> ForwardPointer["computePointerEventData()<br/>(calculates grid coords on main thread)"]
       ResizeMonitoring --> ResizeRAF["RAF-batched resize messages"]
     end
 
@@ -203,7 +203,7 @@ flowchart TB
       ProxyInstance -->|"postMessage: setOption"| WorkerSetOpt["SetOptionMessage"]
       ProxyInstance -->|"postMessage: appendData"| WorkerAppend["AppendDataMessage + ArrayBuffer transfer"]
       ResizeRAF -->|"postMessage: resize"| WorkerResize["ResizeMessage"]
-      ForwardPointer -->|"postMessage: forwardPointerEvent"| WorkerPointer["ForwardPointerEventMessage"]
+      ForwardPointer -->|"postMessage: forwardPointerEvent"| WorkerPointer["ForwardPointerEventMessage<br/>(includes pre-computed grid coordinates)"]
       ProxyInstance -->|"postMessage: setZoomRange"| WorkerZoom["SetZoomRangeMessage"]
       ProxyInstance -->|"postMessage: setInteractionX"| WorkerInteractionX["SetInteractionXMessage"]
       ProxyInstance -->|"postMessage: dispose"| WorkerDispose["DisposeMessage"]
@@ -211,12 +211,12 @@ flowchart TB
 
     subgraph WorkerCore["Worker Thread: ChartGPUWorkerController (src/worker/ChartGPUWorkerController.ts)"]
       WorkerInit --> WGPUInit["GPUContext.create(offscreenCanvas)"]
-      WGPUInit --> WCoordinator["createRenderCoordinator(gpuContext, options)"]
+      WGPUInit --> WCoordinator["createRenderCoordinator(gpuContext, options)<br/>computeInteractionScalesGridCssPx<br/>(supports OffscreenCanvas)"]
       WCoordinator --> WRenderLoop["MessageChannel render loop"]
       WorkerSetOpt --> WCoordinator
       WorkerAppend --> WDataStore["Worker DataStore (GPU buffer upload)"]
       WorkerResize --> WCoordinator
-      WorkerPointer --> WHitTest["Worker hit-testing"]
+      WorkerPointer --> WHitTest["Worker hit-testing<br/>(uses interactionScales with grid coords)<br/>findNearestPoint/findPointsAtX"]
       WorkerZoom --> WCoordinator
       WorkerInteractionX --> WCoordinator
       WorkerDispose --> WCleanup["Resource cleanup"]
@@ -226,7 +226,7 @@ flowchart TB
       WGPUInit -->|"ready"| ReadyMsg["ReadyMessage + GPU capabilities + PerformanceCapabilities"]
       WRenderLoop -->|"rendered"| RenderedMsg["RenderedMessage (frame stats)"]
       WRenderLoop -->|"performanceUpdate"| PerfMsg["PerformanceUpdateMessage (FPS, frame time, memory)"]
-      WHitTest -->|"tooltipUpdate"| TooltipMsg["TooltipUpdateMessage"]
+      WHitTest -->|"tooltipUpdate"| TooltipMsg["TooltipUpdateMessage<br/>(complete tooltip content + position)"]
       WCoordinator -->|"legendUpdate"| LegendMsg["LegendUpdateMessage"]
       WCoordinator -->|"axisLabelsUpdate"| AxisMsg["AxisLabelsUpdateMessage"]
       WHitTest -->|"hoverChange"| HoverMsg["HoverChangeMessage"]
@@ -242,7 +242,7 @@ flowchart TB
       ReadyMsg --> ProxyOverlays
       ReadyMsg --> PerfCache["Cache PerformanceCapabilities + set isInitialized"]
       PerfMsg --> PerfUpdate["Cache PerformanceMetrics + notify callbacks"]
-      TooltipMsg --> DOMTooltip["RAF-batched tooltip.show(x, y, content)"]
+      TooltipMsg --> DOMTooltip["RAF-batched tooltip.show(x, y, content)<br/>(receives complete tooltip data from worker)"]
       LegendMsg --> DOMLegend["RAF-batched legend.update(items, theme)"]
       AxisMsg --> DOMAxis["RAF-batched textOverlay.addLabel(...)"]
       HoverMsg --> DOMHover["Re-emit 'mouseover'/'mouseout' events"]

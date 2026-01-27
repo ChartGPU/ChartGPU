@@ -163,70 +163,52 @@ type PendingOverlayUpdates = {
 };
 
 /**
- * Serialized pointer event data for worker communication.
- * Extends PointerEventData with additional fields needed for interaction handling.
- */
-interface SerializedPointerEvent {
-  readonly type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointerleave' | 'wheel';
-  readonly clientX: number;
-  readonly clientY: number;
-  readonly offsetX: number;
-  readonly offsetY: number;
-  readonly button: number;
-  readonly buttons: number;
-  readonly ctrlKey: boolean;
-  readonly shiftKey: boolean;
-  readonly altKey: boolean;
-  readonly metaKey: boolean;
-  readonly pointerType: string;
-  readonly isPrimary: boolean;
-  readonly timestamp: number;
-}
-
-
-/**
- * Serializes a PointerEvent to a plain object for postMessage transfer.
- * Extracts only the serializable properties needed for worker-side interaction handling.
+ * Computes PointerEventData fields from a PointerEvent and canvas element.
+ * Calculates canvas-local coordinates, grid margins, plot dimensions, and isInGrid flag.
  * 
- * **Safety**: Uses explicit fallbacks for missing properties to ensure valid values.
- * Note: clientX/clientY and offsetX/offsetY can legitimately be 0, so we use ?? for null/undefined only.
+ * This function provides the same coordinate calculation logic as the main-thread
+ * createEventManager.ts to ensure parity between worker and non-worker charts.
  * 
  * @param event - Native PointerEvent from canvas
- * @param eventType - Event type to use in serialized data
- * @returns Serialized event data
- * @throws {Error} If event is null or undefined
+ * @param canvas - Canvas element for getBoundingClientRect()
+ * @param options - Chart options for grid margin defaults
+ * @returns PointerEventData without the 'type' field (caller adds type)
  */
-function serializePointerEvent(event: PointerEvent, eventType: SerializedPointerEvent['type']): SerializedPointerEvent {
-  if (!event) {
-    throw new Error('Cannot serialize null or undefined PointerEvent');
-  }
+function computePointerEventData(
+  event: PointerEvent,
+  canvas: HTMLCanvasElement,
+  options: ChartGPUOptions
+): Omit<PointerEventData, 'type'> {
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
   
-  // Validate event has required properties (defensive programming)
-  if (typeof event.clientX !== 'number' || typeof event.clientY !== 'number') {
-    throw new Error('PointerEvent missing required clientX/clientY properties');
-  }
+  // Compute grid margins from options (match defaults in createEventManager.ts)
+  const plotLeftCss = options.grid?.left ?? 60;
+  const plotTopCss = options.grid?.top ?? 40;
+  const plotRightCss = options.grid?.right ?? 20;
+  const plotBottomCss = options.grid?.bottom ?? 40;
+  
+  // Compute plot dimensions
+  const plotWidthCss = rect.width - plotLeftCss - plotRightCss;
+  const plotHeightCss = rect.height - plotTopCss - plotBottomCss;
+  
+  // Compute grid-local coordinates
+  const gridX = x - plotLeftCss;
+  const gridY = y - plotTopCss;
+  
+  // Check if pointer is inside the grid/plot area
+  const isInGrid = gridX >= 0 && gridX <= plotWidthCss && gridY >= 0 && gridY <= plotHeightCss;
   
   return {
-    type: eventType,
-    // Coordinates: Use ?? to preserve legitimate 0 values
-    clientX: event.clientX ?? 0,
-    clientY: event.clientY ?? 0,
-    offsetX: event.offsetX ?? 0,
-    offsetY: event.offsetY ?? 0,
-    // Button state: 0 is a valid value (main button), use ?? for null/undefined
-    button: event.button ?? 0,
-    buttons: event.buttons ?? 0,
-    // Modifier keys: false is a valid value, use ?? for null/undefined
-    ctrlKey: event.ctrlKey ?? false,
-    shiftKey: event.shiftKey ?? false,
-    altKey: event.altKey ?? false,
-    metaKey: event.metaKey ?? false,
-    // Pointer type: Default to 'mouse' for compatibility
-    pointerType: event.pointerType || 'mouse', // Use || to handle empty string
-    // Primary pointer: Default to true
-    isPrimary: event.isPrimary ?? true,
-    // Timestamp: Use performance.now() as fallback for consistency
-    timestamp: event.timeStamp ?? performance.now(),
+    x,
+    y,
+    gridX,
+    gridY,
+    plotWidthCss,
+    plotHeightCss,
+    isInGrid,
+    timestamp: event.timeStamp,
   };
 }
 
@@ -297,6 +279,16 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
   // RAF throttling for pointermove events
   private pendingMoveEvent: PointerEvent | null = null;
   private moveThrottleRafId: number | null = null;
+  
+  // Click detection state
+  private tapCandidate: {
+    readonly startX: number;
+    readonly startY: number;
+    readonly startTime: number;
+  } | null = null;
+  
+  private readonly TAP_MAX_DISTANCE_PX = 6;
+  private readonly TAP_MAX_TIME_MS = 500;
   
   // ResizeObserver and device pixel ratio monitoring
   private resizeObserver: ResizeObserver | null = null;
@@ -394,15 +386,19 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
   private setupEventListeners(canvas: HTMLCanvasElement): void {
     if (this.isDisposed) return;
     
-    // Pointer down handler - for click detection and pan start
+    // Pointer down handler - stores tap candidate for click detection
+    // Does NOT send message yet - waits for pointer up to determine if it's a tap/click
     this.boundEventHandlers.pointerdown = (e: PointerEvent) => {
       if (this.isDisposed || !this.isInitialized) return;
-      const serialized = serializePointerEvent(e, 'pointerdown');
-      this.sendMessage({
-        type: 'forwardPointerEvent',
-        chartId: this.chartId,
-        event: serialized as unknown as PointerEventData,
-      });
+      if (!e.isPrimary) return; // Only track primary pointer
+      if (e.button !== 0) return; // Only left mouse button
+      
+      // Store tap candidate with start position and time
+      this.tapCandidate = {
+        startX: e.clientX,
+        startY: e.clientY,
+        startTime: e.timeStamp,
+      };
     };
     
     // Pointer move handler - throttled to 60fps via RAF
@@ -432,37 +428,90 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
           this.moveThrottleRafId = null;
           if (this.isDisposed || !this.isInitialized || !this.pendingMoveEvent) return;
           
-          const serialized = serializePointerEvent(this.pendingMoveEvent, 'pointermove');
+          const canvas = this.container.querySelector('canvas');
+          if (!canvas) return;
+          
+          const computed = computePointerEventData(this.pendingMoveEvent, canvas, this.cachedOptions);
           this.pendingMoveEvent = null;
           
+          console.log('[ChartGPUWorkerProxy] Sending move event:', {
+            gridX: computed.gridX,
+            gridY: computed.gridY,
+            isInGrid: computed.isInGrid,
+          });
           this.sendMessage({
             type: 'forwardPointerEvent',
             chartId: this.chartId,
-            event: serialized as unknown as PointerEventData,
+            event: {
+              ...computed,
+              type: 'move',
+            },
           });
         });
       }
     };
     
-    // Pointer up handler - for click completion and pan end
+    // Pointer up handler - detects clicks (taps) and sends 'click' events
+    // Only sends message if tap criteria are met (distance <= 6px, time <= 500ms)
     this.boundEventHandlers.pointerup = (e: PointerEvent) => {
       if (this.isDisposed || !this.isInitialized) return;
-      const serialized = serializePointerEvent(e, 'pointerup');
-      this.sendMessage({
-        type: 'forwardPointerEvent',
-        chartId: this.chartId,
-        event: serialized as unknown as PointerEventData,
-      });
+      if (!e.isPrimary) return; // Only handle primary pointer
+      
+      // Check if we have a tap candidate
+      if (this.tapCandidate) {
+        const dt = e.timeStamp - this.tapCandidate.startTime;
+        const dx = e.clientX - this.tapCandidate.startX;
+        const dy = e.clientY - this.tapCandidate.startY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        
+        // Clear tap candidate
+        this.tapCandidate = null;
+        
+        // Check if tap criteria are met
+        if (dt <= this.TAP_MAX_TIME_MS && distance <= this.TAP_MAX_DISTANCE_PX) {
+          // It's a tap/click - compute coordinates and send message
+          const canvas = this.container.querySelector('canvas');
+          if (!canvas) return;
+          
+          const computed = computePointerEventData(e, canvas, this.cachedOptions);
+          
+          console.log('[ChartGPUWorkerProxy] Sending click event:', {
+            gridX: computed.gridX,
+            gridY: computed.gridY,
+            isInGrid: computed.isInGrid,
+          });
+          this.sendMessage({
+            type: 'forwardPointerEvent',
+            chartId: this.chartId,
+            event: {
+              ...computed,
+              type: 'click',
+            },
+          });
+        }
+        // If not a tap (drag or too long), ignore - don't send message
+      }
     };
     
-    // Pointer leave handler - for clearing hover state
+    // Pointer leave handler - clears hover state and tap candidate
     this.boundEventHandlers.pointerleave = (e: PointerEvent) => {
       if (this.isDisposed || !this.isInitialized) return;
-      const serialized = serializePointerEvent(e, 'pointerleave');
+      
+      // Clear tap candidate on leave
+      this.tapCandidate = null;
+      
+      const canvas = this.container.querySelector('canvas');
+      if (!canvas) return;
+      
+      const computed = computePointerEventData(e, canvas, this.cachedOptions);
+      
       this.sendMessage({
         type: 'forwardPointerEvent',
         chartId: this.chartId,
-        event: serialized as unknown as PointerEventData,
+        event: {
+          ...computed,
+          type: 'leave',
+        },
       });
     };
     
@@ -539,6 +588,9 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
     
     // Clear pending move event
     this.pendingMoveEvent = null;
+    
+    // Clear tap candidate state
+    this.tapCandidate = null;
     
     // Remove all event listeners
     if (this.boundEventHandlers.pointerdown) {

@@ -1124,7 +1124,7 @@ const computeCandlestickTooltipAnchor = (
   xScale: LinearScale,
   yScale: LinearScale,
   gridArea: GridArea,
-  canvas: HTMLCanvasElement
+  canvas: HTMLCanvasElement | OffscreenCanvas
 ): Readonly<{ x: number; y: number }> | null => {
   const point = match.point;
   
@@ -1152,8 +1152,9 @@ const computeCandlestickTooltipAnchor = (
   const yCanvasCss = gridArea.top + yGridCss;
 
   // Convert to container-local CSS pixels
-  const xContainerCss = canvas.offsetLeft + xCanvasCss;
-  const yContainerCss = canvas.offsetTop + yCanvasCss;
+  // In worker mode (OffscreenCanvas), offsetLeft/offsetTop don't exist - return canvas-local coordinates
+  const xContainerCss = isHTMLCanvasElement(canvas) ? canvas.offsetLeft + xCanvasCss : xCanvasCss;
+  const yContainerCss = isHTMLCanvasElement(canvas) ? canvas.offsetTop + yCanvasCss : yCanvasCss;
 
   if (!Number.isFinite(xContainerCss) || !Number.isFinite(yContainerCss)) {
     return null;
@@ -1905,14 +1906,35 @@ export function createRenderCoordinator(
   };
 
   const getPlotSizeCssPx = (
-    canvas: HTMLCanvasElement,
+    canvas: SupportedCanvas,
     gridArea: GridArea
   ): { readonly plotWidthCss: number; readonly plotHeightCss: number } | null => {
-    const rect = canvas.getBoundingClientRect();
-    if (!(rect.width > 0) || !(rect.height > 0)) return null;
+    let canvasWidthCss: number;
+    let canvasHeightCss: number;
 
-    const plotWidthCss = rect.width - gridArea.left - gridArea.right;
-    const plotHeightCss = rect.height - gridArea.top - gridArea.bottom;
+    if (isHTMLCanvasElement(canvas)) {
+      // HTMLCanvasElement: use getBoundingClientRect() for actual CSS dimensions
+      const rect = canvas.getBoundingClientRect();
+      if (!(rect.width > 0) || !(rect.height > 0)) return null;
+      canvasWidthCss = rect.width;
+      canvasHeightCss = rect.height;
+    } else {
+      // OffscreenCanvas: calculate CSS pixels from canvas dimensions divided by device pixel ratio
+      const dpr = gpuContext.devicePixelRatio ?? 1.0;
+      console.log('[getPlotSizeCssPx] OffscreenCanvas dimensions:', {
+        canvasWidth: canvas.width,
+        canvasHeight: canvas.height,
+        dpr,
+        calculatedCssWidth: canvas.width / dpr,
+        calculatedCssHeight: canvas.height / dpr
+      });
+      canvasWidthCss = canvas.width / dpr;
+      canvasHeightCss = canvas.height / dpr;
+      if (!(canvasWidthCss > 0) || !(canvasHeightCss > 0)) return null;
+    }
+
+    const plotWidthCss = canvasWidthCss - gridArea.left - gridArea.right;
+    const plotHeightCss = canvasHeightCss - gridArea.top - gridArea.bottom;
     if (!(plotWidthCss > 0) || !(plotHeightCss > 0)) return null;
 
     return { plotWidthCss, plotHeightCss };
@@ -1930,7 +1952,8 @@ export function createRenderCoordinator(
       }
     | null => {
     const canvas = gpuContext.canvas;
-    if (!canvas || !isHTMLCanvasElement(canvas)) return null;
+    // Support both HTMLCanvasElement and OffscreenCanvas for worker thread compatibility
+    if (!canvas) return null;
 
     const plotSize = getPlotSizeCssPx(canvas, gridArea);
     if (!plotSize) return null;
@@ -1939,7 +1962,18 @@ export function createRenderCoordinator(
     const xScale = createLinearScale().domain(domains.xDomain.min, domains.xDomain.max).range(0, plotSize.plotWidthCss);
     const yScale = createLinearScale().domain(domains.yDomain.min, domains.yDomain.max).range(plotSize.plotHeightCss, 0);
 
-    return { xScale, yScale, plotWidthCss: plotSize.plotWidthCss, plotHeightCss: plotSize.plotHeightCss };
+    const result = { xScale, yScale, plotWidthCss: plotSize.plotWidthCss, plotHeightCss: plotSize.plotHeightCss };
+    console.log('[computeInteractionScalesGridCssPx] Computed interaction scales:', {
+      canvasType: isHTMLCanvasElement(canvas) ? 'HTMLCanvasElement' : 'OffscreenCanvas',
+      plotWidthCss: result.plotWidthCss,
+      plotHeightCss: result.plotHeightCss,
+      xDomain: domains.xDomain,
+      yDomain: domains.yDomain,
+      xRange: [0, plotSize.plotWidthCss],
+      yRange: [plotSize.plotHeightCss, 0]
+    });
+
+    return result;
   };
 
   const buildTooltipParams = (seriesIndex: number, dataIndex: number, point: DataPoint): TooltipParams => {
@@ -2999,16 +3033,30 @@ export function createRenderCoordinator(
     }
 
     // Tooltip: on hover, find matches and render tooltip near cursor.
-    // Note: Tooltips require HTMLCanvasElement (DOM-specific positioning). OffscreenCanvas doesn't support tooltips.
-    if (tooltip && effectivePointer.hasPointer && effectivePointer.isInGrid) {
+    // Note: Tooltips require HTMLCanvasElement (DOM-specific positioning) for DOM rendering.
+    // However, in worker mode (!domOverlaysEnabled), we still need to run hit-testing and callbacks.
+    if (effectivePointer.hasPointer && effectivePointer.isInGrid && currentOptions.tooltip?.show !== false) {
       const canvas = gpuContext.canvas;
 
-      if (interactionScales && canvas && isHTMLCanvasElement(canvas) && currentOptions.tooltip?.show !== false) {
+      console.log('[Tooltip block] State check:', {
+        hasInteractionScales: !!interactionScales,
+        domOverlaysEnabled,
+        hasCanvas: !!canvas,
+        canvasType: canvas ? (isHTMLCanvasElement(canvas) ? 'HTMLCanvasElement' : 'OffscreenCanvas') : 'null',
+        interactionScales: interactionScales ? {
+          plotWidthCss: interactionScales.plotWidthCss,
+          plotHeightCss: interactionScales.plotHeightCss
+        } : null
+      });
+
+      if (interactionScales && (!domOverlaysEnabled || (canvas && isHTMLCanvasElement(canvas)))) {
         const formatter = currentOptions.tooltip?.formatter;
         const trigger = currentOptions.tooltip?.trigger ?? 'item';
 
-        const containerX = canvas.offsetLeft + effectivePointer.x;
-        const containerY = canvas.offsetTop + effectivePointer.y;
+        // In worker mode (OffscreenCanvas), offsetLeft/offsetTop don't exist
+        // Use effectivePointer coordinates directly as they're already in container-local CSS pixels
+        const containerX = isHTMLCanvasElement(canvas) ? canvas.offsetLeft + effectivePointer.x : effectivePointer.x;
+        const containerY = isHTMLCanvasElement(canvas) ? canvas.offsetTop + effectivePointer.y : effectivePointer.y;
 
         if (effectivePointer.source === 'sync') {
           // Sync semantics:

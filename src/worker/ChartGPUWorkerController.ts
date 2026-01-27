@@ -845,6 +845,12 @@ export class ChartGPUWorkerController {
     event: import('../config/types').PointerEventData
   ): void {
     try {
+      console.log('[ChartGPUWorkerController] Received pointer event:', {
+        type: event.type,
+        gridX: event.gridX,
+        gridY: event.gridY,
+        isInGrid: event.isInGrid,
+      });
       const instance = this.getChartInstance(chartId, 'forwardPointerEvent');
       instance.coordinator.handlePointerEvent(event);
     } catch (error) {

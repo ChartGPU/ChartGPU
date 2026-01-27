@@ -65,3 +65,19 @@ See [ChartGPUInstance](chart.md#chartgpuinstance) for zoom-related methods:
 - `setZoomRange(start: number, end: number): void`
 
 For data zoom configuration, see [Data Zoom Configuration](options.md#data-zoom-configuration).
+
+### Zoom Constraints
+
+**Minimum zoom span:** The zoom window span is constrained to a minimum of 0.5% of the data range. This prevents over-zooming beyond what can be reasonably visualized and prevents the slider UI from becoming unusably collapsed. At 0.5% span, a 500px slider track shows a 2.5px window, which with 10px handles is the practical limit for visual distinguishability. Below 0.5% the UI becomes meaningless. Attempts to zoom to smaller spans (via `setZoomRange`, wheel zoom, or slider interaction) will be automatically clamped to this minimum.
+
+**Implementation:** The minimum span is enforced in [`createZoomState`](../../src/interaction/createZoomState.ts) by the `DEFAULT_MIN_SPAN` constant. This constraint applies to both main-thread and worker-thread charts, ensuring consistent zoom behavior across rendering modes.
+
+### Zoom Behavior and Limitations
+
+**Minimum zoom span**: ChartGPU enforces a minimum zoom span of **0.5%** of the data range. This prevents zooming beyond what can be meaningfully visualized and ensures the slider UI remains usable.
+
+- When the minimum span is reached, further zoom-in attempts (via mouse wheel, programmatic `setZoomRange()`, or slider interaction) have no effect
+- At 0.5% span, the slider UI remains distinguishable; below this threshold the UI would become unusable
+- The minimum span applies to all zoom interactions: inside zoom (mouse wheel/pan), slider UI, and programmatic zoom APIs
+
+For implementation details, see [createZoomState.ts](../../src/interaction/createZoomState.ts). For a working example demonstrating zoom behavior, see [worker-rendering example](../../examples/worker-rendering/).
