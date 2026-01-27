@@ -92,7 +92,7 @@ const generateAxisVertices = (
     throw new Error('AxisRenderer.prepare: canvas dimensions must be positive.');
   }
 
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1;
   const plotLeft = left * dpr;
   const plotRight = canvasWidth - right * dpr;
   const plotTop = top * dpr;

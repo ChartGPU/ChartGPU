@@ -950,6 +950,68 @@ GPU devices can be lost due to:
 
 **Source:** See [`ChartGPUWorkerProxy.serializeDataPoints()`](../../src/worker/ChartGPUWorkerProxy.ts), [`getTransferables()`](../../src/worker/protocol.ts), and [worker-protocol.md - Transferable Objects](../api/worker-protocol.md#transferable-objects)
 
+### Zero-Copy Data Transfer Implementation
+
+ChartGPU implements zero-copy transfer using `postMessage` with transfer lists and intelligent buffer optimization:
+
+**Main thread** ([ChartGPUWorkerProxy](../../src/worker/ChartGPUWorkerProxy.ts)):
+
+1. **Type detection:** Detects typed arrays in `appendData()`
+2. **Precision conversion:** Converts Float64Array to Float32Array (GPU uses Float32 precision)
+3. **Zero-copy optimization:**
+   - **Optimal path:** If `typedArray.byteOffset === 0` and typed array owns entire buffer, transfer buffer directly (zero-copy)
+   - **Subarray path:** If typed array is a view into larger buffer, must `slice()` to create transferable buffer (creates copy)
+   - Dev mode warning emitted for subarray views to help developers optimize their data pipelines
+4. **Transfer:** Passes buffer in transfer list: `postMessage(msg, [buffer])`
+
+**Worker thread** ([ChartGPUWorkerController](../../src/worker/ChartGPUWorkerController.ts)):
+
+1. **Buffer reception:** Receives transferred ArrayBuffer
+2. **Validation:** Validates buffer integrity (alignment, size, detachment)
+3. **Deserialization:** Interprets buffer using stride information
+4. **GPU upload:** Buffer is ready for GPU upload without copying
+
+**Buffer Formats:**
+- **XY data:** `[x0, y0, x1, y1, ...]` as Float32Array (8-byte stride)
+- **OHLC data (storage):** `[t0, o0, h0, l0, c0, t1, ...]` as Float32Array (20-byte stride)
+  - Storage format optimized for GPU rendering (high/low adjacent for min/max operations)
+  - Deserialized to ECharts convention: `[timestamp, open, close, low, high]`
+
+**Buffer Validation:**
+
+The worker performs comprehensive validation to ensure data integrity and prevent WebGPU errors:
+
+1. **Detached buffer detection:** Checks `buffer.byteLength === 0` to detect buffers transferred multiple times
+2. **4-byte alignment:** Validates `buffer.byteLength % 4 === 0` (WebGPU requirement for all buffer operations)
+3. **Stride alignment:** Validates `stride % 4 === 0` (Float32 data requires 4-byte aligned strides)
+4. **Size validation:** Validates `buffer.byteLength === pointCount × stride` to catch serialization errors
+5. **Error context:** All validation errors include detailed context (expected vs actual, operation, chartId)
+
+**OHLC Data Reordering:**
+
+OHLC data undergoes format conversion during deserialization:
+
+- **Storage format** (GPU-optimized): `[timestamp, open, high, low, close]`
+  - High/low adjacent for efficient GPU min/max operations
+- **API format** (ECharts convention): `[timestamp, open, close, low, high]`
+  - Reordering applied during `deserializeDataPoints()` for API consistency
+  - Prevents data corruption in candlestick charts
+
+**Security Considerations:**
+
+See [protocol.ts](../../src/worker/protocol.ts) for comprehensive security documentation:
+
+- **Message validation:** All inbound messages validate chartId, buffer sizes, and numeric parameters
+- **Transfer security:** ArrayBuffers become inaccessible to sender after transfer (prevents double-transfer)
+- **Resource exhaustion:** Point count validation prevents excessive memory allocation
+- **Type safety:** Branded types (`StrideBytes`) prevent stride/offset confusion at compile time
+
+**Dev Mode Warnings:**
+- Large array detection (>10K points without typed arrays)
+- Stride mismatch validation
+- Detached buffer error detection
+- Subarray buffer copy warning (performance optimization hint)
+
 ### Batch Operations
 
 **Pattern:** `appendDataBatch` combines multiple series updates in single message

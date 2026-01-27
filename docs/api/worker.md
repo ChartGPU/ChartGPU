@@ -91,6 +91,176 @@ The optional `workerOrUrl` parameter accepts three forms:
 
 **Source:** [`createChartInWorker()` implementation](../../src/worker/createChartInWorker.ts)
 
+## Zero-Copy Data Transfer
+
+ChartGPU supports efficient zero-copy data transfer to worker threads using typed arrays with comprehensive buffer validation.
+
+### Buffer Requirements
+
+All typed array buffers must meet WebGPU alignment requirements:
+
+**Alignment Requirements:**
+- **4-byte alignment**: Buffer size must be divisible by 4 (WebGPU requirement)
+- **Stride alignment**: `XY_STRIDE = 8 bytes`, `OHLC_STRIDE = 20 bytes` (both 4-byte aligned)
+- **Size validation**: Buffer size must equal `pointCount × stride`
+
+**Throws `ChartGPUWorkerError` with `INVALID_ARGUMENT` if:**
+- Buffer size is not 4-byte aligned
+- Array length is not a multiple of floats per point (2 for xy, 5 for ohlc)
+
+**Source:** Buffer validation implemented in [ChartGPUWorkerProxy.ts](../../src/worker/ChartGPUWorkerProxy.ts)
+
+### Transfer Semantics
+
+ChartGPU optimizes buffer transfer based on typed array structure:
+
+**Zero-Copy Transfer (optimal):**
+- When: `typedArray.byteOffset === 0 && typedArray.byteLength === buffer.byteLength`
+- Behavior: Entire buffer transferred without copying
+- Performance: Fastest - no memory allocation or copy overhead
+
+**Copy-Then-Transfer (subarray views):**
+- When: Typed array is a view into a larger buffer (`byteOffset > 0` or partial view)
+- Behavior: Buffer sliced before transfer to maintain data integrity
+- Performance: Requires copy, but unavoidable for subarray safety
+- Dev warning: Suggests using full buffer views for better performance
+
+**Source:** Transfer optimization logic in [ChartGPUWorkerProxy.ts](../../src/worker/ChartGPUWorkerProxy.ts) lines 1101-1117
+
+### Validation Behavior
+
+ChartGPU validates buffers in development mode (`__DEV__`) to catch common errors:
+
+**Detached Buffer Detection:**
+- Checks: `buffer.byteLength === 0` before transfer
+- Error: Console error with context message
+- Recovery: Early return prevents worker communication failure
+
+**Alignment Validation:**
+- Checks: `byteLength % 4 === 0` (WebGPU requirement)
+- Error: Throws `ChartGPUWorkerError` with fix suggestion
+- Recovery: Fix buffer size to be 4-byte aligned
+
+**Stride Validation:**
+- Checks: `actualBytes === pointCount × stride`
+- Warning: Console warning with expected vs actual sizes
+- Recovery: Continues with warning (may cause rendering issues)
+
+**Source:** Validation logic in [ChartGPUWorkerProxy.ts](../../src/worker/ChartGPUWorkerProxy.ts) lines 1067-1095
+
+### Dev Mode Warnings
+
+In development builds, ChartGPU emits helpful warnings:
+
+**Large Tuple Array Warning:**
+- Triggers: `array.length > 10,000` points using `DataPoint[]` form
+- Suggests: Converting to `Float32Array` using `packDataPoints()`
+- Benefit: ~50% memory reduction, eliminates serialization overhead
+
+**Stride Mismatch Warning:**
+- Triggers: Buffer size doesn't match expected `pointCount × stride`
+- Message: Shows expected vs actual byte sizes
+- Recovery: Continue with warning (may cause data corruption)
+
+**Detached Buffer Warning:**
+- Triggers: Attempting to transfer already-detached buffer
+- Message: Explains buffer may have been transferred elsewhere
+- Recovery: Early return prevents worker error
+
+**Subarray Copy Warning:**
+- Triggers: Typed array uses subarray view (`byteOffset > 0`)
+- Message: Explains copy is required, suggests using full buffer
+- Performance: Minor impact, but avoidable with proper buffer management
+
+**Source:** Dev mode warnings in [ChartGPUWorkerProxy.ts](../../src/worker/ChartGPUWorkerProxy.ts)
+
+### Typed Array API
+
+```typescript
+// Pre-packed Float32Array (zero-copy)
+const packed = new Float32Array([0, 1, 1, 3, 2, 2]); // [x0,y0,x1,y1,...]
+chart.appendData(0, packed, 'xy');
+// Note: packed is now detached and unusable
+
+// Keep the original array
+chart.appendData(0, packed.slice(), 'xy');
+```
+
+### Helper Functions
+
+#### `packDataPoints(points: ReadonlyArray<DataPoint>): Float32Array`
+
+Converts DataPoint array into interleaved Float32Array for zero-copy GPU/Worker transfer.
+
+**Format:** `[x0, y0, x1, y1, ...]` (2 floats per point = 8 bytes stride)
+
+**Parameters:**
+- `points`: Array of data points (tuple `[x, y]` or object `{ x, y }` form)
+
+**Returns:** Float32Array with transferable `.buffer` property
+
+**Buffer Limits:**
+- Maximum points: 268,435,456 (2GB buffer limit)
+- Empty arrays return empty Float32Array (valid)
+
+**Throws:**
+- `TypeError`: If points is null/undefined, not an array, or contains invalid point types
+- `RangeError`: If array exceeds maximum size or contains invalid numeric values
+
+**Use cases:**
+- Direct GPU buffer uploads via `queue.writeBuffer()`
+- Zero-copy transfer to workers via `postMessage([packed.buffer])`
+
+**Source:** [packDataPoints.ts](../../src/data/packDataPoints.ts)
+
+#### `packOHLCDataPoints(points: ReadonlyArray<OHLCDataPoint>): Float32Array`
+
+Converts OHLCDataPoint array into interleaved Float32Array for candlestick chart rendering.
+
+**Format:** `[t0, o0, h0, l0, c0, t1, o1, h1, l1, c1, ...]` (5 floats per point = 20 bytes stride)
+
+**Order:** Timestamp, Open, High, Low, Close (follows ECharts convention)
+
+**Parameters:**
+- `points`: Array of OHLC data (tuple `[timestamp, open, close, low, high]` or object form)
+
+**Returns:** Float32Array with transferable `.buffer` property
+
+**Buffer Limits:**
+- Maximum points: 107,374,182 (2GB buffer limit)
+- Empty arrays return empty Float32Array (valid)
+
+**Throws:**
+- `TypeError`: If points is null/undefined, not an array, or tuple doesn't have exactly 5 elements
+- `RangeError`: If array exceeds maximum size or contains invalid numeric values
+
+**Security:** Input validation prevents buffer overflow attacks and resource exhaustion
+
+**Source:** [packDataPoints.ts](../../src/data/packDataPoints.ts)
+
+**Examples:**
+- Regular data points: [worker-streaming](../../examples/worker-streaming/main.ts)
+- Worker convenience API: [worker-convenience](../../examples/worker-convenience/main.ts)
+
+### Performance Characteristics
+
+| Data Format | Memory | Transfer | Best For |
+|-------------|--------|----------|----------|
+| `DataPoint[]` | Copied | ~8-12% overhead | Small datasets (<10K points), convenience |
+| `Float32Array` | Transferred | Zero-copy | Large datasets (>10K points), streaming |
+| `Float64Array` | Converted to Float32 | Minimal overhead | High-precision sources |
+
+### Transfer vs Copy Behavior
+
+- **ArrayBuffer**: Transferable ✓ - ownership moves to worker
+- **Float32Array**: Transfer `.buffer` ✓ - array becomes detached
+- **Array<[number, number]>**: Must be converted (copied) - use `packDataPoints`
+- **{ x: Float32Array, y: Float32Array }**: Transfer both buffers ✓ - not yet supported
+
+**Important:** After transferring a typed array, it becomes detached and unusable in the main thread. Use `.slice()` to keep a copy if needed.
+
+**Implementation Details:** [ChartGPUWorkerProxy.ts](../../src/worker/ChartGPUWorkerProxy.ts)
+
 ### When to Use Worker-Based Charts
 
 Choose worker-based rendering when:

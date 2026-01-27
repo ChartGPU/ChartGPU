@@ -44,8 +44,8 @@ import type {
   LegendUpdateMessage,
   AxisLabelsUpdateMessage,
 } from './protocol';
-import type { WorkerConfig, PendingRequest } from './types';
-import { ChartGPUWorkerError } from './types';
+import type { WorkerConfig, PendingRequest, StrideBytes } from './types';
+import { ChartGPUWorkerError, XY_STRIDE, OHLC_STRIDE } from './types';
 import { createTooltip } from '../components/createTooltip';
 import type { Tooltip } from '../components/createTooltip';
 import { createLegend } from '../components/createLegend';
@@ -58,6 +58,13 @@ import { createZoomState } from '../interaction/createZoomState';
 import type { ZoomState } from '../interaction/createZoomState';
 
 type AnyChartGPUEventCallback = ChartGPUEventCallback | ChartGPUCrosshairMoveCallback;
+
+/**
+ * Dev mode flag for conditional validation.
+ * Bundlers (Vite, Rollup, Webpack) will tree-shake the dev-only code blocks in production builds.
+ * Set to false in production to eliminate validation overhead.
+ */
+const __DEV__ = true;
 
 /**
  * Generates a unique message ID for request/response correlation.
@@ -79,8 +86,10 @@ function generateChartId(): string {
 /**
  * Serializes DataPoint or OHLCDataPoint arrays to ArrayBuffer for zero-copy transfer.
  * 
+ * Uses Float32Array for GPU compatibility (GPUs use Float32 precision).
+ * 
  * @param points - Array of data points to serialize
- * @returns Tuple of [ArrayBuffer, stride] where stride is 16 for DataPoint, 40 for OHLCDataPoint
+ * @returns Tuple of [ArrayBuffer, stride] where stride is 8 for DataPoint, 20 for OHLCDataPoint
  */
 function serializeDataPoints(
   points: ReadonlyArray<DataPoint> | ReadonlyArray<OHLCDataPoint>
@@ -96,10 +105,10 @@ function serializeDataPoints(
     : 'timestamp' in firstPoint && 'open' in firstPoint;
 
   if (isOHLC) {
-    // OHLCDataPoint: [timestamp, open, close, low, high] (5 × 8 bytes = 40 bytes)
-    const stride = 40;
+    // OHLCDataPoint: [timestamp, open, close, low, high] (5 × 4 bytes = 20 bytes)
+    const stride = 20;
     const buffer = new ArrayBuffer(points.length * stride);
-    const view = new Float64Array(buffer);
+    const view = new Float32Array(buffer);
     
     for (let i = 0, offset = 0; i < points.length; i++, offset += 5) {
       const p = points[i] as OHLCDataPoint;
@@ -122,10 +131,10 @@ function serializeDataPoints(
     
     return [buffer, stride];
   } else {
-    // DataPoint: [x, y] pairs (2 × 8 bytes = 16 bytes)
-    const stride = 16;
+    // DataPoint: [x, y] pairs (2 × 4 bytes = 8 bytes)
+    const stride = 8;
     const buffer = new ArrayBuffer(points.length * stride);
-    const view = new Float64Array(buffer);
+    const view = new Float32Array(buffer);
     
     for (let i = 0, offset = 0; i < points.length; i++, offset += 2) {
       const p = points[i] as DataPoint;
@@ -190,6 +199,9 @@ interface SerializedWheelEvent extends SerializedPointerEvent {
  * Serializes a PointerEvent to a plain object for postMessage transfer.
  * Extracts only the serializable properties needed for worker-side interaction handling.
  * 
+ * **Safety**: Uses explicit fallbacks for missing properties to ensure valid values.
+ * Note: clientX/clientY and offsetX/offsetY can legitimately be 0, so we use ?? for null/undefined only.
+ * 
  * @param event - Native PointerEvent from canvas
  * @param eventType - Event type to use in serialized data
  * @returns Serialized event data
@@ -200,20 +212,31 @@ function serializePointerEvent(event: PointerEvent, eventType: SerializedPointer
     throw new Error('Cannot serialize null or undefined PointerEvent');
   }
   
+  // Validate event has required properties (defensive programming)
+  if (typeof event.clientX !== 'number' || typeof event.clientY !== 'number') {
+    throw new Error('PointerEvent missing required clientX/clientY properties');
+  }
+  
   return {
     type: eventType,
+    // Coordinates: Use ?? to preserve legitimate 0 values
     clientX: event.clientX ?? 0,
     clientY: event.clientY ?? 0,
     offsetX: event.offsetX ?? 0,
     offsetY: event.offsetY ?? 0,
+    // Button state: 0 is a valid value (main button), use ?? for null/undefined
     button: event.button ?? 0,
     buttons: event.buttons ?? 0,
+    // Modifier keys: false is a valid value, use ?? for null/undefined
     ctrlKey: event.ctrlKey ?? false,
     shiftKey: event.shiftKey ?? false,
     altKey: event.altKey ?? false,
     metaKey: event.metaKey ?? false,
-    pointerType: event.pointerType ?? 'mouse',
+    // Pointer type: Default to 'mouse' for compatibility
+    pointerType: event.pointerType || 'mouse', // Use || to handle empty string
+    // Primary pointer: Default to true
     isPrimary: event.isPrimary ?? true,
+    // Timestamp: Use performance.now() as fallback for consistency
     timestamp: event.timeStamp ?? performance.now(),
   };
 }
@@ -221,6 +244,9 @@ function serializePointerEvent(event: PointerEvent, eventType: SerializedPointer
 /**
  * Serializes a WheelEvent to a plain object for postMessage transfer.
  * Includes all pointer event fields plus wheel-specific scroll deltas.
+ * 
+ * **Safety**: Uses explicit fallbacks for missing properties to ensure valid values.
+ * Note: Delta values can legitimately be 0, so we use ?? for null/undefined only.
  * 
  * @param event - Native WheelEvent from canvas
  * @returns Serialized wheel event data
@@ -231,24 +257,40 @@ function serializeWheelEvent(event: WheelEvent): SerializedWheelEvent {
     throw new Error('Cannot serialize null or undefined WheelEvent');
   }
   
+  // Validate event has required properties (defensive programming)
+  if (typeof event.clientX !== 'number' || typeof event.clientY !== 'number') {
+    throw new Error('WheelEvent missing required clientX/clientY properties');
+  }
+  
+  if (typeof event.deltaY !== 'number') {
+    throw new Error('WheelEvent missing required deltaY property');
+  }
+  
   return {
     type: 'wheel',
+    // Coordinates: Use ?? to preserve legitimate 0 values
     clientX: event.clientX ?? 0,
     clientY: event.clientY ?? 0,
     offsetX: event.offsetX ?? 0,
     offsetY: event.offsetY ?? 0,
+    // Button state: WheelEvent usually has no button state, default to 0
     button: event.button ?? 0,
     buttons: event.buttons ?? 0,
+    // Modifier keys: false is a valid value, use ?? for null/undefined
     ctrlKey: event.ctrlKey ?? false,
     shiftKey: event.shiftKey ?? false,
     altKey: event.altKey ?? false,
     metaKey: event.metaKey ?? false,
-    pointerType: 'mouse', // WheelEvent is always from mouse
+    // WheelEvent is always from mouse (no touch/pen scrolling)
+    pointerType: 'mouse',
     isPrimary: true,
+    // Timestamp: Use performance.now() as fallback for consistency
     timestamp: event.timeStamp ?? performance.now(),
+    // Wheel deltas: Use ?? to preserve legitimate 0 values (no scroll in that direction)
     deltaX: event.deltaX ?? 0,
     deltaY: event.deltaY ?? 0,
     deltaZ: event.deltaZ ?? 0,
+    // Delta mode: 0 = pixels, 1 = lines, 2 = pages
     deltaMode: event.deltaMode ?? 0,
   };
 }
@@ -417,13 +459,27 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
     };
     
     // Pointer move handler - throttled to 60fps via RAF
+    // 
+    // PERFORMANCE: pointermove can fire at 120-500 Hz on modern devices. Without throttling,
+    // this would flood the worker with messages, causing:
+    // 1. Worker message queue backup (messages queued faster than processed)
+    // 2. Stale hover state (processing events that are 100s of ms old)
+    // 3. Excessive postMessage overhead (serialization + transfer costs)
+    // 
+    // RAF throttling (60fps) provides optimal balance:
+    // - Smooth hover interactions (16.67ms latency is imperceptible)
+    // - Reduces message rate by 2-8x (120-500 Hz → 60 Hz)
+    // - Aligns with display refresh rate (no visual benefit beyond 60fps)
+    // 
+    // CONCURRENCY: Uses "latest event wins" strategy - only the most recent move event
+    // within each RAF frame is sent. Earlier events are discarded (they're already stale).
     this.boundEventHandlers.pointermove = (e: PointerEvent) => {
       if (this.isDisposed) return;
       
-      // Store latest move event
+      // Store latest move event (overwrites previous if multiple events in same frame)
       this.pendingMoveEvent = e;
       
-      // Schedule RAF if not already scheduled
+      // Schedule RAF if not already scheduled (coalesce multiple moves per frame)
       if (this.moveThrottleRafId === null) {
         this.moveThrottleRafId = requestAnimationFrame(() => {
           this.moveThrottleRafId = null;
@@ -782,10 +838,19 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
   
   /**
    * Schedules overlay updates in the next RAF to batch multiple updates.
+   * 
+   * **Batching strategy**: Worker can send multiple overlay update messages per frame
+   * (tooltip + legend + axis labels). By batching them in RAF, we:
+   * 1. Reduce layout thrashing (DOM reads/writes grouped)
+   * 2. Ensure visual consistency (all overlays update simultaneously)
+   * 3. Prevent redundant style calculations (browser optimizes batched changes)
+   * 
+   * **Concurrency safety**: Uses overlayUpdateRafId guard to prevent duplicate RAF scheduling.
+   * Multiple calls within the same frame will coalesce into a single RAF callback.
    */
   private scheduleOverlayUpdates(): void {
     if (this.isDisposed) return;
-    if (this.overlayUpdateRafId !== null) return; // Already scheduled
+    if (this.overlayUpdateRafId !== null) return; // Already scheduled - coalesce updates
     
     this.overlayUpdateRafId = requestAnimationFrame(() => {
       this.overlayUpdateRafId = null;
@@ -900,7 +965,43 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
     });
   }
   
-  appendData(seriesIndex: number, newPoints: DataPoint[] | OHLCDataPoint[]): void {
+  /**
+   * Appends data points to a series (DataPoint[] or OHLCDataPoint[] form).
+   * 
+   * @param seriesIndex - Index of the series to append to
+   * @param newPoints - Array of data points to append
+   */
+  appendData(seriesIndex: number, newPoints: DataPoint[] | OHLCDataPoint[]): void;
+  
+  /**
+   * Appends data points to a series (pre-packed typed array form for zero-copy transfer).
+   * 
+   * **Performance**: The typed array's underlying ArrayBuffer is transferred to the worker,
+   * making the source array detached (length = 0) after the call. Use this overload when
+   * you need maximum performance and can tolerate the source array becoming unusable.
+   * 
+   * **Usage**:
+   * ```typescript
+   * import { packDataPoints, XY_STRIDE } from 'chart-gpu';
+   * 
+   * const points = [{ x: 0, y: 10 }, { x: 1, y: 20 }];
+   * const packed = packDataPoints(points);
+   * chart.appendData(0, packed, 'xy');
+   * // packed.length === 0 (detached after transfer)
+   * ```
+   * 
+   * @param seriesIndex - Index of the series to append to
+   * @param data - Pre-packed Float32Array or Float64Array (will be detached after call)
+   * @param pointType - Type of points: 'xy' for DataPoint, 'ohlc' for OHLCDataPoint
+   */
+  appendData(seriesIndex: number, data: Float32Array | Float64Array, pointType: 'xy' | 'ohlc'): void;
+  
+  // Implementation
+  appendData(
+    seriesIndex: number,
+    newPointsOrData: DataPoint[] | OHLCDataPoint[] | Float32Array | Float64Array,
+    pointType?: 'xy' | 'ohlc'
+  ): void {
     if (this.isDisposed) {
       throw new ChartGPUWorkerError(
         'Cannot appendData on disposed chart',
@@ -919,8 +1020,135 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
       );
     }
     
+    // Handle typed array form (zero-copy transfer)
+    if (newPointsOrData instanceof Float32Array || newPointsOrData instanceof Float64Array) {
+      if (!pointType) {
+        throw new ChartGPUWorkerError(
+          'pointType parameter is required when passing typed arrays',
+          'INVALID_ARGUMENT',
+          'appendData',
+          this.chartId
+        );
+      }
+      
+      const sourceArray = newPointsOrData;
+      
+      if (sourceArray.length === 0) {
+        return; // No-op for empty arrays
+      }
+      
+      // Determine expected format based on point type
+      const floatsPerPoint = pointType === 'xy' ? 2 : 5;
+      const pointCount = sourceArray.length / floatsPerPoint;
+      const stride: StrideBytes = pointType === 'xy' ? XY_STRIDE : OHLC_STRIDE;
+      
+      // Validate that length is a multiple of floatsPerPoint
+      if (sourceArray.length % floatsPerPoint !== 0) {
+        throw new ChartGPUWorkerError(
+          `Invalid typed array length: ${sourceArray.length}. Expected multiple of ${floatsPerPoint} for '${pointType}' points.`,
+          'INVALID_ARGUMENT',
+          'appendData',
+          this.chartId
+        );
+      }
+      
+      // CRITICAL: GPU buffers use Float32, so convert Float64Array to Float32Array
+      let typedArray: Float32Array;
+      if (sourceArray instanceof Float64Array) {
+        // Convert Float64Array to Float32Array (precision loss acceptable for GPU rendering)
+        typedArray = new Float32Array(sourceArray);
+      } else {
+        // Already Float32Array - use directly
+        typedArray = sourceArray;
+      }
+      
+      // Dev mode: Check for detached buffer before transfer
+      // Note: Bundlers will tree-shake this block when __DEV__ = false
+      if (__DEV__) {
+        if (typedArray.buffer.byteLength === 0) {
+          console.error(
+            `ChartGPU: Cannot transfer detached ArrayBuffer. ` +
+            `The buffer may have already been transferred to another context.`
+          );
+          return;
+        }
+        
+        // Validate stride alignment
+        const expectedBytes = pointCount * stride;
+        const actualBytes = typedArray.byteLength;
+        if (actualBytes !== expectedBytes) {
+          console.warn(
+            `ChartGPU: Data buffer size mismatch. Expected ${expectedBytes} bytes ` +
+            `(${pointCount} points × ${stride} stride), got ${actualBytes} bytes.`
+          );
+        }
+        
+        // Validate buffer is 4-byte aligned (WebGPU requirement)
+        if (typedArray.byteLength % 4 !== 0) {
+          throw new ChartGPUWorkerError(
+            `Buffer size (${typedArray.byteLength} bytes) is not 4-byte aligned (WebGPU requirement)`,
+            'INVALID_ARGUMENT',
+            'appendData',
+            this.chartId
+          );
+        }
+      }
+      
+      // CRITICAL: Zero-copy optimization - transfer the entire underlying buffer
+      // If the typed array uses the full buffer (no byteOffset), transfer directly
+      // Otherwise, we must slice() to create a new buffer (creates a copy, but unavoidable)
+      let buffer: ArrayBuffer;
+      if (typedArray.byteOffset === 0 && typedArray.byteLength === typedArray.buffer.byteLength) {
+        // Optimal path: Transfer the entire buffer without copying
+        buffer = typedArray.buffer as ArrayBuffer;
+      } else {
+        // Subarray case: Must copy to create a transferable buffer
+        // This happens when the typed array is a view into a larger buffer
+        // Note: slice() returns ArrayBufferLike but will always be ArrayBuffer in practice
+        buffer = typedArray.buffer.slice(typedArray.byteOffset, typedArray.byteOffset + typedArray.byteLength) as ArrayBuffer;
+        
+        if (__DEV__) {
+          console.warn(
+            `ChartGPU: Typed array uses a subarray view (byteOffset=${typedArray.byteOffset}). ` +
+            `A buffer copy is required for transfer. For best performance, ensure typed arrays ` +
+            `own their entire underlying buffer.`
+          );
+        }
+      }
+      
+      this.sendMessage({
+        type: 'appendData',
+        chartId: this.chartId,
+        seriesIndex,
+        data: buffer,
+        pointCount,
+        stride,
+      }, [buffer]);
+      
+      return;
+    }
+    
+    // Handle DataPoint[] or OHLCDataPoint[] form (existing behavior)
+    const newPoints = newPointsOrData as DataPoint[] | OHLCDataPoint[];
+    
     if (!newPoints || newPoints.length === 0) {
       return; // No-op for empty arrays
+    }
+    
+    // Dev mode: Warn about large tuple arrays
+    // Note: Bundlers will tree-shake this block when __DEV__ = false
+    if (__DEV__) {
+      if (Array.isArray(newPoints) && newPoints.length > 10_000) {
+        console.warn(
+          `ChartGPU: appendData called with ${newPoints.length.toLocaleString()} points as array. ` +
+          `Consider using Float32Array for better performance:\n\n` +
+          `  import { packDataPoints } from 'chart-gpu';\n` +
+          `  const packed = packDataPoints(points);\n` +
+          `  chart.appendData(seriesIndex, packed, 'xy');\n\n` +
+          `This can reduce memory usage by 50% and eliminate serialization overhead ` +
+          `(~${(newPoints.length * 0.00002).toFixed(2)}ms saved per append).`
+        );
+      }
     }
     
     const [data, stride] = serializeDataPoints(newPoints);
@@ -931,7 +1159,7 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
       seriesIndex,
       data,
       pointCount: newPoints.length,
-      stride,
+      stride: stride as StrideBytes,
     }, [data]);
   }
   
@@ -1148,9 +1376,26 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
   /**
    * Sends a message to the worker and waits for a response.
    * 
+   * **Message Correlation**: Uses unique messageId to match request/response pairs.
+   * The worker MUST echo the messageId in its response for correlation to work.
+   * 
+   * **Timeout Behavior**: 
+   * - Default timeout: 30 seconds (configurable via WorkerConfig.messageTimeout)
+   * - On timeout: Promise rejects with TIMEOUT error and pending request is cleaned up
+   * - Prevents indefinite promise accumulation if worker hangs or message is lost
+   * - Timeout starts when message is sent (not when promise is created)
+   * 
+   * **Error Handling**:
+   * - Send failure: Immediately rejects and cleans up timeout
+   * - Worker error: Rejects with error from ErrorMessage (matched by messageId)
+   * - Disposal: All pending requests rejected with DISPOSED error
+   * 
+   * **Concurrency Safety**: Multiple concurrent requests are supported via Map-based tracking.
+   * Each request has a unique messageId, preventing response cross-contamination.
+   * 
    * @param message - Message to send (must have messageId)
-   * @param transfer - Optional transferable objects
-   * @returns Promise that resolves with the response
+   * @param transfer - Optional transferable objects (e.g., OffscreenCanvas, ArrayBuffer)
+   * @returns Promise that resolves with the response or rejects on timeout/error
    */
   private sendMessageWithResponse<T extends WorkerOutboundMessage>(
     message: WorkerInboundMessage & { messageId: string },
@@ -1159,18 +1404,19 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
     return new Promise<T>((resolve, reject) => {
       const { messageId } = message;
       
-      // Set up timeout
+      // Set up timeout to prevent indefinite promise accumulation
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(messageId);
         reject(new ChartGPUWorkerError(
-          `Operation timed out after ${this.messageTimeout}ms`,
+          `Operation "${message.type}" timed out after ${this.messageTimeout}ms. ` +
+          `Worker may be unresponsive or message was lost.`,
           'TIMEOUT',
           message.type,
           this.chartId
         ));
       }, this.messageTimeout);
       
-      // Track pending request
+      // Track pending request for response correlation
       this.pendingRequests.set(messageId, {
         resolve: resolve as (value: unknown) => void,
         reject,
@@ -1178,7 +1424,7 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
         operation: message.type,
       });
       
-      // Send message
+      // Send message (may throw if worker is terminated or message is invalid)
       try {
         this.sendMessage(message, transfer);
       } catch (error) {

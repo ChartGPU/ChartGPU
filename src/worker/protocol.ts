@@ -1,6 +1,36 @@
 /**
  * Worker communication protocol types for ChartGPU.
  * Defines message types for main thread ↔ worker thread communication.
+ * 
+ * ## Security Considerations
+ * 
+ * **Worker Message Validation**:
+ * - All inbound messages MUST validate chartId to prevent cross-chart contamination
+ * - Buffer sizes MUST be validated against expected stride × pointCount to prevent buffer overruns
+ * - Numeric parameters (dimensions, indices) MUST be validated as non-negative integers
+ * - Device pixel ratio MUST be validated as positive to prevent division by zero
+ * 
+ * **Zero-Copy Transfer Security**:
+ * - ArrayBuffers are transferred (not cloned), making them inaccessible to sender after transfer
+ * - Worker MUST validate received buffers are not detached (byteLength > 0) before access
+ * - Buffer alignment (4-byte) MUST be enforced to prevent WebGPU validation errors
+ * - Maximum buffer size (~2GB per message) is enforced by browser structured clone algorithm
+ * 
+ * **Resource Exhaustion Protection**:
+ * - Point count validation prevents excessive memory allocation
+ * - Message correlation timeouts (default 30s) prevent indefinite pending request accumulation
+ * - Chart disposal MUST cancel all pending requests to prevent memory leaks
+ * - Worker MUST track device.lost state to prevent operations on lost contexts
+ * 
+ * **Type Safety**:
+ * - Branded types (StrideBytes) prevent stride/offset confusion at compile time
+ * - Discriminated unions ensure exhaustive message type handling
+ * - Readonly modifiers prevent accidental message mutation
+ * 
+ * **Error Handling**:
+ * - All worker errors MUST include chartId and operation context
+ * - Error messages MUST NOT include sensitive data (file paths, user data)
+ * - Stack traces are optional and should be sanitized in production
  */
 
 import type {
@@ -11,6 +41,7 @@ import type {
   LegendItem,
   AxisLabel,
 } from '../config/types';
+import type { StrideBytes } from './types';
 
 // =============================================================================
 // INBOUND MESSAGES (Main → Worker)
@@ -51,16 +82,38 @@ export interface SetOptionMessage {
 /**
  * Append data points to a specific series.
  * Transfers ArrayBuffer ownership to worker for zero-copy performance.
+ * 
+ * **Data format**:
+ * - Can be created from `DataPoint[]` or `OHLCDataPoint[]` arrays
+ * - Can be created from pre-packed `Float32Array` or `Float64Array` typed arrays
+ * - Float64Array is automatically converted to Float32Array (GPU uses Float32 precision)
+ * - Typed array's `.buffer` is transferred for zero-copy performance
+ * 
+ * **Stride values**:
+ * - `XY_STRIDE` (8 bytes): For DataPoint format [x, y] (2 × Float32)
+ * - `OHLC_STRIDE` (20 bytes): For OHLCDataPoint format [t, o, h, l, c] (5 × Float32)
+ * 
+ * **Buffer format**:
+ * - XY data: `[x0, y0, x1, y1, ...]` as Float32Array
+ * - OHLC data: `[t0, o0, h0, l0, c0, t1, ...]` as Float32Array
+ * 
+ * **Transfer behavior**:
+ * - The ArrayBuffer is transferred (not cloned)
+ * - The sender's buffer becomes detached after postMessage
+ * - The worker receives full ownership of the buffer
+ * 
+ * @see {packDataPoints} For packing DataPoint arrays
+ * @see {packOHLCDataPoints} For packing OHLCDataPoint arrays
  */
 export interface AppendDataMessage {
   readonly type: 'appendData';
   readonly chartId: string;
   readonly seriesIndex: number;
-  /** Transferred ArrayBuffer containing interleaved point data (x, y, ...). */
+  /** Transferred ArrayBuffer containing interleaved Float32 point data. */
   readonly data: ArrayBuffer;
   readonly pointCount: number;
-  /** Bytes per point in the buffer (e.g., 8 for [x, y], 20 for OHLC). */
-  readonly stride: number;
+  /** Bytes per point in the buffer (XY_STRIDE=8 for [x,y], OHLC_STRIDE=20 for OHLC). */
+  readonly stride: StrideBytes;
 }
 
 /**
@@ -74,7 +127,7 @@ export interface AppendDataBatchMessage {
     readonly seriesIndex: number;
     readonly data: ArrayBuffer;
     readonly pointCount: number;
-    readonly stride: number;
+    readonly stride: StrideBytes;
   }>;
 }
 

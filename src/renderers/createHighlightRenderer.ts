@@ -118,7 +118,7 @@ export function createHighlightRenderer(device: GPUDevice, options?: HighlightRe
       throw new Error('HighlightRenderer.prepare: size must be a finite non-negative number.');
     }
 
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1;
     const baseRadiusDevicePx = sizeCssPx * dpr;
 
     // Slightly larger than the implied "normal" point size.

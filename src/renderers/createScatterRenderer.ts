@@ -137,7 +137,7 @@ const writeTransformMat4F32 = (out: Float32Array, ax: number, bx: number, ay: nu
 const computePlotScissorDevicePx = (
   gridArea: GridArea
 ): { readonly x: number; readonly y: number; readonly w: number; readonly h: number } => {
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1;
   const { canvasWidth, canvasHeight } = gridArea;
 
   const plotLeftDevice = gridArea.left * dpr;
@@ -281,7 +281,7 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     fsUniformScratchF32[3] = clamp01(a);
     writeUniformBuffer(device, fsUniformBuffer, fsUniformScratchF32);
 
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1;
     const hasValidDpr = dpr > 0 && Number.isFinite(dpr);
 
     const seriesSymbolSize = seriesConfig.symbolSize;

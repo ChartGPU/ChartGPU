@@ -72,7 +72,7 @@ const generateGridVertices = (gridArea: GridArea, horizontal: number, vertical: 
 
   // Get device pixel ratio (assumed to be encoded in canvasWidth/canvasHeight)
   // Calculate plot area in device pixels
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1;
   const plotLeft = left * dpr;
   const plotRight = canvasWidth - right * dpr;
   const plotTop = top * dpr;

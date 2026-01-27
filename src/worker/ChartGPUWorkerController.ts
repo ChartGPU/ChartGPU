@@ -284,10 +284,11 @@ export class ChartGPUWorkerController {
 
           // Request render via MessageChannel for efficient scheduling
           // PERFORMANCE: Use closure-captured state instead of Map lookup (critical for 60fps)
+          // CRITICAL: Post to port2, listen on port1 (MessageChannel requires opposite ends)
           onRequestRender: () => {
             if (!state.renderPending && !state.disposed && renderChannel) {
               state.renderPending = true;
-              renderChannel.port1.postMessage(null);
+              renderChannel.port2.postMessage(null);
             }
           },
 
@@ -529,9 +530,9 @@ export class ChartGPUWorkerController {
    * 
    * @param chartId - Chart instance identifier
    * @param seriesIndex - Index of the series to append to
-   * @param data - ArrayBuffer containing interleaved point data
+   * @param data - ArrayBuffer containing interleaved Float32 point data
    * @param pointCount - Number of points in the buffer
-   * @param stride - Bytes per point (16 for DataPoint, 40 for OHLCDataPoint)
+   * @param stride - Bytes per point (8 for DataPoint, 20 for OHLCDataPoint)
    */
   private handleAppendData(
     chartId: string,
@@ -944,9 +945,9 @@ export class ChartGPUWorkerController {
  * 2. API contract: Tuples are the documented format
  * 3. Minimal overhead: Modern engines optimize small tuple creation
  * 
- * @param buffer - ArrayBuffer containing interleaved point data
+ * @param buffer - ArrayBuffer containing interleaved Float32 point data
  * @param pointCount - Number of points in the buffer
- * @param stride - Bytes per point (16 for DataPoint, 40 for OHLCDataPoint)
+ * @param stride - Bytes per point (8 for DataPoint, 20 for OHLCDataPoint)
  * @returns Array of data points
  * @throws {Error} If stride is invalid or buffer size doesn't match
  */
@@ -955,19 +956,67 @@ function deserializeDataPoints(
   pointCount: number,
   stride: number
 ): ReadonlyArray<DataPoint> | ReadonlyArray<OHLCDataPoint> {
-  // Validate buffer size early (fail fast)
+  // Validate inputs early (fail fast)
+  if (!buffer) {
+    throw new Error('Buffer is null or undefined');
+  }
+  
+  if (!Number.isInteger(pointCount) || pointCount < 0) {
+    throw new Error(`Invalid pointCount: ${pointCount}. Must be a non-negative integer.`);
+  }
+  
+  if (!Number.isInteger(stride) || stride <= 0) {
+    throw new Error(`Invalid stride: ${stride}. Must be a positive integer.`);
+  }
+  
+  // Validate buffer is detached (hasn't been transferred twice)
+  if (buffer.byteLength === 0 && pointCount > 0) {
+    throw new Error(
+      'Buffer is detached (byteLength = 0). The ArrayBuffer may have been transferred multiple times. ' +
+      'Each ArrayBuffer can only be transferred once via postMessage.'
+    );
+  }
+  
+  // Validate 4-byte alignment (WebGPU requirement)
+  if (buffer.byteLength % 4 !== 0) {
+    throw new Error(
+      `Buffer size (${buffer.byteLength} bytes) is not 4-byte aligned. ` +
+      `WebGPU requires all buffer sizes to be multiples of 4 bytes.`
+    );
+  }
+  
+  // Validate stride alignment (must be multiple of 4 for Float32 data)
+  if (stride % 4 !== 0) {
+    throw new Error(
+      `Stride (${stride} bytes) is not 4-byte aligned. ` +
+      `Float32 data requires stride to be a multiple of 4 bytes.`
+    );
+  }
+  
+  // Validate buffer size matches expected size
   const expectedSize = pointCount * stride;
   if (buffer.byteLength !== expectedSize) {
     throw new Error(
-      `Buffer size mismatch: expected ${expectedSize} bytes (${pointCount} points × ${stride} bytes), got ${buffer.byteLength} bytes`
+      `Buffer size mismatch: expected ${expectedSize} bytes (${pointCount} points × ${stride} bytes), ` +
+      `got ${buffer.byteLength} bytes. Difference: ${buffer.byteLength - expectedSize} bytes.`
     );
   }
 
-  // Create Float64Array view once (reused for all points)
-  const view = new Float64Array(buffer);
+  // Create Float32Array view once (reused for all points)
+  // GPU buffers use Float32 precision, so we deserialize as Float32
+  const view = new Float32Array(buffer);
+  
+  // Validate view length matches expected element count
+  const floatsPerPoint = stride / 4;
+  const expectedLength = pointCount * floatsPerPoint;
+  if (view.length !== expectedLength) {
+    throw new Error(
+      `Float32Array length mismatch: expected ${expectedLength} elements, got ${view.length} elements`
+    );
+  }
 
-  if (stride === 16) {
-    // DataPoint: [x, y] pairs (2 × 8 bytes = 16 bytes)
+  if (stride === 8) {
+    // DataPoint: [x, y] pairs (2 × 4 bytes = 8 bytes)
     // PERFORMANCE: Pre-allocate to exact size, use indexed assignment
     const points = new Array<DataPoint>(pointCount);
     for (let i = 0, offset = 0; i < pointCount; i++, offset += 2) {
@@ -975,24 +1024,33 @@ function deserializeDataPoints(
       points[i] = [view[offset], view[offset + 1]];
     }
     return points;
-  } else if (stride === 40) {
-    // OHLCDataPoint: [timestamp, open, close, low, high] (5 × 8 bytes = 40 bytes)
+  } else if (stride === 20) {
+    // OHLCDataPoint: [timestamp, open, close, low, high] (5 × 4 bytes = 20 bytes)
     // PERFORMANCE: Pre-allocate to exact size, use indexed assignment
     const points = new Array<OHLCDataPoint>(pointCount);
     for (let i = 0, offset = 0; i < pointCount; i++, offset += 5) {
       // Unrolled offset calculation in loop increment for slight perf gain
+      
+      // CRITICAL: OHLC data reordering
+      // Storage format (Float32Array): [t, o, h, l, c]
+      // ECharts tuple format: [t, o, c, l, h]
+      // 
+      // packOHLCDataPoints stores data as [t, o, h, l, c] for GPU rendering efficiency
+      // (high/low are adjacent for min/max operations). We must reorder back to ECharts
+      // convention [t, o, c, l, h] for API consistency.
       points[i] = [
-        view[offset],     // timestamp
-        view[offset + 1], // open
-        view[offset + 2], // close
-        view[offset + 3], // low
-        view[offset + 4], // high
+        view[offset],     // timestamp (index 0 → 0)
+        view[offset + 1], // open     (index 1 → 1)
+        view[offset + 4], // close    (index 4 → 2) ← reordered
+        view[offset + 3], // low      (index 3 → 3)
+        view[offset + 2], // high     (index 2 → 4) ← reordered
       ];
     }
     return points;
   } else {
     throw new Error(
-      `Invalid stride: ${stride}. Expected 16 (DataPoint) or 40 (OHLCDataPoint)`
+      `Invalid stride: ${stride} bytes. Expected 8 (DataPoint) or 20 (OHLCDataPoint). ` +
+      `Received stride corresponds to ${stride / 4} floats per point.`
     );
   }
 }

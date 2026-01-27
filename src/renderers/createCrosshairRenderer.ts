@@ -159,7 +159,7 @@ const generateCrosshairVertices = (
   }
 
   const { canvasWidth, canvasHeight } = gridArea;
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1;
 
   const plotLeftDevice = gridArea.left * dpr;
   const plotRightDevice = canvasWidth - gridArea.right * dpr;

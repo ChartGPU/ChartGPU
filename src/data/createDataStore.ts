@@ -1,4 +1,5 @@
-import type { DataPoint, DataPointTuple } from '../config/types';
+import type { DataPoint } from '../config/types';
+import { packDataPoints } from './packDataPoints';
 
 export interface DataStore {
   setSeries(index: number, data: ReadonlyArray<DataPoint>): void;
@@ -60,30 +61,6 @@ function computeGrownCapacityBytes(currentCapacityBytes: number, requiredBytes: 
   return Math.max(currentCapacityBytes, grown);
 }
 
-function isTupleDataPoint(point: DataPoint): point is DataPointTuple {
-  // `DataPoint` uses a readonly tuple; `Array.isArray` doesn't narrow it well without a predicate.
-  return Array.isArray(point);
-}
-
-function packDataPoints(
-  data: ReadonlyArray<DataPoint>
-): { readonly buffer: ArrayBuffer; readonly f32: Float32Array } {
-  // Allocate with an explicit ArrayBuffer so we can upload that buffer directly
-  // (typed as `ArrayBuffer`) to satisfy `@webgpu/types` without unsafe casts.
-  const buffer = new ArrayBuffer(data.length * 2 * 4);
-  const f32 = new Float32Array(buffer);
-
-  for (let i = 0; i < data.length; i++) {
-    const point = data[i];
-    const x = isTupleDataPoint(point) ? point[0] : point.x;
-    const y = isTupleDataPoint(point) ? point[1] : point.y;
-    f32[i * 2 + 0] = x;
-    f32[i * 2 + 1] = y;
-  }
-
-  return { buffer, f32 };
-}
-
 function fnv1aUpdate(hash: number, words: Uint32Array): number {
   let h = hash >>> 0;
   for (let i = 0; i < words.length; i++) {
@@ -126,9 +103,9 @@ export function createDataStore(device: GPUDevice): DataStore {
 
     const packed = packDataPoints(data);
     const pointCount = data.length;
-    const hash32 = hashFloat32ArrayBits(packed.f32);
+    const hash32 = hashFloat32ArrayBits(packed);
 
-    const requiredBytes = roundUpToMultipleOf4(packed.f32.byteLength);
+    const requiredBytes = roundUpToMultipleOf4(packed.byteLength);
     const targetBytes = Math.max(MIN_BUFFER_BYTES, requiredBytes);
 
     const existing = series.get(index);
@@ -171,7 +148,7 @@ export function createDataStore(device: GPUDevice): DataStore {
     }
 
     // Avoid 0-byte writes (empty series). The buffer is still valid for binding.
-    if (packed.f32.byteLength > 0) {
+    if (packed.byteLength > 0) {
       device.queue.writeBuffer(buffer, 0, packed.buffer);
     }
 
@@ -193,7 +170,7 @@ export function createDataStore(device: GPUDevice): DataStore {
     const nextPointCount = prevPointCount + newPoints.length;
 
     const appendPacked = packDataPoints(newPoints);
-    const appendBytes = appendPacked.f32.byteLength;
+    const appendBytes = appendPacked.byteLength;
 
     // Each point is 2 floats (x, y) = 8 bytes.
     const requiredBytes = roundUpToMultipleOf4(nextPointCount * 2 * 4);
@@ -231,7 +208,7 @@ export function createDataStore(device: GPUDevice): DataStore {
       });
 
       const fullPacked = packDataPoints(nextData);
-      if (fullPacked.f32.byteLength > 0) {
+      if (fullPacked.byteLength > 0) {
         device.queue.writeBuffer(buffer, 0, fullPacked.buffer);
       }
 
@@ -239,7 +216,7 @@ export function createDataStore(device: GPUDevice): DataStore {
         buffer,
         capacityBytes,
         pointCount: nextPointCount,
-        hash32: hashFloat32ArrayBits(fullPacked.f32),
+        hash32: hashFloat32ArrayBits(fullPacked),
         data: nextData,
       });
       return;
@@ -252,7 +229,7 @@ export function createDataStore(device: GPUDevice): DataStore {
     }
 
     // Incremental FNV-1a update over the appended IEEE-754 bit patterns.
-    const appendWords = new Uint32Array(appendPacked.f32.buffer, appendPacked.f32.byteOffset, appendPacked.f32.byteLength / 4);
+    const appendWords = new Uint32Array(appendPacked.buffer, appendPacked.byteOffset, appendPacked.byteLength / 4);
     const nextHash32 = fnv1aUpdate(existing.hash32, appendWords);
 
     series.set(index, {

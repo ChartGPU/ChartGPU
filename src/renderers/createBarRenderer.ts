@@ -80,7 +80,7 @@ const getPointXY = (p: DataPoint): { readonly x: number; readonly y: number } =>
 };
 
 const computePlotSizeCssPx = (gridArea: GridArea): { readonly plotWidthCss: number; readonly plotHeightCss: number } | null => {
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1;
   if (!(dpr > 0)) return null;
   const canvasCssWidth = gridArea.canvasWidth / dpr;
   const canvasCssHeight = gridArea.canvasHeight / dpr;
@@ -94,7 +94,7 @@ const computePlotClipRect = (
   gridArea: GridArea
 ): { readonly left: number; readonly right: number; readonly top: number; readonly bottom: number } => {
   const { left, right, top, bottom, canvasWidth, canvasHeight } = gridArea;
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1;
 
   const plotLeft = left * dpr;
   const plotRight = canvasWidth - right * dpr;

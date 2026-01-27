@@ -479,7 +479,7 @@ const computePlotClipRect = (
   gridArea: GridArea
 ): { readonly left: number; readonly right: number; readonly top: number; readonly bottom: number } => {
   const { left, right, top, bottom, canvasWidth, canvasHeight } = gridArea;
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1;
 
   const plotLeft = left * dpr;
   const plotRight = canvasWidth - right * dpr;
@@ -515,7 +515,7 @@ const lerpDomain = (
 const computePlotScissorDevicePx = (
   gridArea: GridArea
 ): { readonly x: number; readonly y: number; readonly w: number; readonly h: number } => {
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1;
   const { canvasWidth, canvasHeight } = gridArea;
 
   const plotLeftDevice = gridArea.left * dpr;
@@ -1873,7 +1873,7 @@ export function createRenderCoordinator(
     });
 
     // Fallback: ensure we flush even if rAF is delayed (high-frequency streams > 60Hz).
-    flushTimeoutId = window.setTimeout(() => {
+    flushTimeoutId = (typeof self !== 'undefined' ? self : window).setTimeout(() => {
       if (disposed) {
         cancelScheduledFlush();
         return;
@@ -1896,7 +1896,7 @@ export function createRenderCoordinator(
     cancelZoomResampleDebounce();
     zoomResampleDue = false;
 
-    zoomResampleDebounceTimer = window.setTimeout(() => {
+    zoomResampleDebounceTimer = (typeof self !== 'undefined' ? self : window).setTimeout(() => {
       zoomResampleDebounceTimer = null;
       if (disposed) return;
       zoomResampleDue = true;
@@ -2969,7 +2969,7 @@ export function createRenderCoordinator(
           const yGridCss = interactionScales.yScale.scale(y);
 
           if (Number.isFinite(xGridCss) && Number.isFinite(yGridCss)) {
-            const dpr = window.devicePixelRatio || 1;
+            const dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1;
             const centerCssX = gridArea.left + xGridCss;
             const centerCssY = gridArea.top + yGridCss;
 

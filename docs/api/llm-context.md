@@ -34,6 +34,7 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 ### Utilities
 - **Linear scales**: [scales.md](scales.md#createlinearscale-linearscale)
 - **Category scales**: [scales.md](scales.md#createcategoryscale-categoryscale)
+- **Data packing for zero-copy transfer**: [worker.md](worker.md#helper-functions) (`packDataPoints`, `packOHLCDataPoints`)
 
 ### Low-Level GPU/WebGPU
 - **GPU context** (functional API): [gpu-context.md](gpu-context.md#functional-api-preferred)

@@ -84,6 +84,9 @@ export type { ThemeName } from './themes';
 export { createLinearScale, createCategoryScale } from './utils/scales';
 export type { LinearScale, CategoryScale } from './utils/scales';
 
+// Data utilities - Zero-copy transfer helpers
+export { packDataPoints, packOHLCDataPoints } from './data/packDataPoints';
+
 // Chart sync (interaction)
 export { connectCharts } from './interaction/createChartSync';
 
@@ -124,8 +127,8 @@ export { RenderScheduler } from './core/RenderScheduler';
 
 // Worker API - Main thread proxy and types
 export { ChartGPUWorkerProxy } from './worker/ChartGPUWorkerProxy';
-export { ChartGPUWorkerError } from './worker/types';
-export type { WorkerConfig, PendingRequest } from './worker/types';
+export { ChartGPUWorkerError, XY_STRIDE, OHLC_STRIDE } from './worker/types';
+export type { WorkerConfig, PendingRequest, StrideBytes } from './worker/types';
 
 // Worker protocol types (Main ↔ Worker communication)
 export type {

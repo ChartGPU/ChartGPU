@@ -112,15 +112,29 @@ Append new data points to a single series (streaming).
 | `type` | `'appendData'` | ✓ | Message type identifier |
 | `chartId` | `string` | ✓ | Chart instance identifier |
 | `seriesIndex` | `number` | ✓ | Zero-based series index |
-| `data` | `ArrayBuffer` | ✓ | Transferred ArrayBuffer containing interleaved point data |
+| `data` | `ArrayBuffer` | ✓ | Transferred ArrayBuffer containing interleaved Float32 point data |
 | `pointCount` | `number` | ✓ | Number of data points in the buffer |
-| `stride` | `number` | ✓ | Bytes per point (e.g., 8 for [x, y], 20 for OHLC) |
+| `stride` | `StrideBytes` | ✓ | Bytes per point (8 for xy, 20 for ohlc) |
 
 **When to use:** Real-time data streaming for a single series. Use `appendDataBatch` for multiple series.
 
+**Data format:**
+- Can be created from `DataPoint[]` or `OHLCDataPoint[]` arrays
+- Can be created from pre-packed `Float32Array` or `Float64Array` typed arrays
+- Typed array's `.buffer` is transferred for zero-copy performance
+
+**Buffer format:**
+- XY data: `[x0, y0, x1, y1, ...]` as Float32Array (8 byte stride)
+- OHLC data: `[t0, o0, h0, l0, c0, t1, ...]` as Float32Array (20 byte stride)
+
+**Transfer behavior:**
+- The `data` ArrayBuffer is transferred (not cloned)
+- The sender's buffer becomes detached after postMessage
+- The worker receives full ownership of the buffer
+
 **Transferables:** `data` ArrayBuffer is transferred for zero-copy performance
 
-**Source:** See [`ChartGPU.appendData()`](chart.md#chartgpuinstance) and [`DataPoint`](../../src/config/types.ts)
+**Source:** See [`ChartGPU.appendData()`](chart.md#chartgpuinstance), [`protocol.ts`](../../src/worker/protocol.ts), and [packDataPoints helper functions](worker.md#helper-functions)
 
 ### `appendDataBatch`
 
