@@ -353,6 +353,7 @@ The [`examples/`](../examples/) folder contains working demos of all ChartGPU fe
 - **[`live-streaming/`](../examples/live-streaming/)** - Real-time data streaming with `appendData()`
 - **[`sampling/`](../examples/sampling/)** - Large datasets with automatic downsampling and zoom
 - **[`scatter/`](../examples/scatter/)** - Scatter plots with thousands of points
+- **[`scatter-density-1m/`](../examples/scatter-density-1m/)** - Scatter density/heatmap rendering for large point clouds (`mode: 'density'`). See [`ScatterSeriesConfig`](./api/options.md#scatterseriesconfig) and the example entrypoint [`examples/scatter-density-1m/main.ts`](../examples/scatter-density-1m/main.ts).
 - **[`grouped-bar/`](../examples/grouped-bar/)** - Bar charts with clustering and stacking
 - **[`pie/`](../examples/pie/)** - Pie and donut charts
 

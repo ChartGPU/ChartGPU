@@ -18,6 +18,7 @@ import { createAreaRenderer } from '../renderers/createAreaRenderer';
 import { createLineRenderer } from '../renderers/createLineRenderer';
 import { createBarRenderer } from '../renderers/createBarRenderer';
 import { createScatterRenderer } from '../renderers/createScatterRenderer';
+import { createScatterDensityRenderer } from '../renderers/createScatterDensityRenderer';
 import { createPieRenderer } from '../renderers/createPieRenderer';
 import { createCandlestickRenderer } from '../renderers/createCandlestickRenderer';
 import { createCrosshairRenderer } from '../renderers/createCrosshairRenderer';
@@ -740,6 +741,35 @@ const sliceVisibleRangeByX = (data: ReadonlyArray<DataPoint>, xMin: number, xMax
     if (x >= xMin && x <= xMax) out.push(p);
   }
   return out;
+};
+
+const findVisibleRangeIndicesByX = (
+  data: ReadonlyArray<DataPoint>,
+  xMin: number,
+  xMax: number
+): { readonly start: number; readonly end: number } => {
+  const n = data.length;
+  if (n === 0) return { start: 0, end: 0 };
+  if (!Number.isFinite(xMin) || !Number.isFinite(xMax)) return { start: 0, end: n };
+
+  const isTuple = isTupleDataArray(data);
+  const canBinarySearch = isMonotonicNonDecreasingFiniteX(data, isTuple);
+  if (!canBinarySearch) {
+    // Data is not monotonic by x; we can't represent the visible set as a contiguous index range.
+    // Fall back to processing the full series for correctness.
+    return { start: 0, end: n };
+  }
+
+  const start = isTuple
+    ? lowerBoundXTuple(data as ReadonlyArray<TuplePoint>, xMin)
+    : lowerBoundXObject(data as ReadonlyArray<ObjectPoint>, xMin);
+  const end = isTuple
+    ? upperBoundXTuple(data as ReadonlyArray<TuplePoint>, xMax)
+    : upperBoundXObject(data as ReadonlyArray<ObjectPoint>, xMax);
+
+  const s = clampInt(start, 0, n);
+  const e = clampInt(end, 0, n);
+  return e <= s ? { start: s, end: s } : { start: s, end: e };
 };
 
 function isTupleOHLCDataPoint(p: OHLCDataPoint): p is OHLCDataPointTuple {
@@ -2604,6 +2634,7 @@ export function createRenderCoordinator(
   const areaRenderers: Array<ReturnType<typeof createAreaRenderer>> = [];
   const lineRenderers: Array<ReturnType<typeof createLineRenderer>> = [];
   const scatterRenderers: Array<ReturnType<typeof createScatterRenderer>> = [];
+  const scatterDensityRenderers: Array<ReturnType<typeof createScatterDensityRenderer>> = [];
   const pieRenderers: Array<ReturnType<typeof createPieRenderer>> = [];
   const candlestickRenderers: Array<ReturnType<typeof createCandlestickRenderer>> = [];
   const barRenderer = createBarRenderer(device, { targetFormat });
@@ -2638,6 +2669,16 @@ export function createRenderCoordinator(
     }
   };
 
+  const ensureScatterDensityRendererCount = (count: number): void => {
+    while (scatterDensityRenderers.length > count) {
+      const r = scatterDensityRenderers.pop();
+      r?.dispose();
+    }
+    while (scatterDensityRenderers.length < count) {
+      scatterDensityRenderers.push(createScatterDensityRenderer(device, { targetFormat }));
+    }
+  };
+
   const ensurePieRendererCount = (count: number): void => {
     while (pieRenderers.length > count) {
       const r = pieRenderers.pop();
@@ -2661,6 +2702,7 @@ export function createRenderCoordinator(
   ensureAreaRendererCount(currentOptions.series.length);
   ensureLineRendererCount(currentOptions.series.length);
   ensureScatterRendererCount(currentOptions.series.length);
+  ensureScatterDensityRendererCount(currentOptions.series.length);
   ensurePieRendererCount(currentOptions.series.length);
   ensureCandlestickRendererCount(currentOptions.series.length);
 
@@ -2778,6 +2820,7 @@ export function createRenderCoordinator(
     ensureAreaRendererCount(nextCount);
     ensureLineRendererCount(nextCount);
     ensureScatterRendererCount(nextCount);
+    ensureScatterDensityRendererCount(nextCount);
     ensurePieRendererCount(nextCount);
     ensureCandlestickRendererCount(nextCount);
 
@@ -3524,8 +3567,36 @@ export function createRenderCoordinator(
         }
         case 'scatter': {
           // Scatter renderer sets/resets its own scissor. Animate intro via alpha fade.
-          const animated = introP < 1 ? ({ ...s, color: withAlpha(s.color, introP) } as const) : s;
-          scatterRenderers[i].prepare(animated, s.data, xScale, yScale, gridArea);
+          if (s.mode === 'density') {
+            // Density mode bins raw (unsampled) data for correctness, but limits compute to the visible
+            // range when x is monotonic.
+            const rawData = s.rawData ?? s.data;
+            const visible = findVisibleRangeIndicesByX(rawData, visibleXDomain.min, visibleXDomain.max);
+
+            // Upload full raw data for compute. DataStore hashing makes this a cheap no-op when unchanged.
+            if (!appendedGpuThisFrame.has(i)) {
+              dataStore.setSeries(i, rawData);
+            }
+            const buffer = dataStore.getSeriesBuffer(i);
+            const pointCount = dataStore.getSeriesPointCount(i);
+
+            scatterDensityRenderers[i].prepare(
+              s,
+              buffer,
+              pointCount,
+              visible.start,
+              visible.end,
+              xScale,
+              yScale,
+              gridArea,
+              s.rawBounds
+            );
+            // Density mode keeps its own compute path; treat as non-fast-path for append heuristics.
+            gpuSeriesKindByIndex[i] = 'other';
+          } else {
+            const animated = introP < 1 ? ({ ...s, color: withAlpha(s.color, introP) } as const) : s;
+            scatterRenderers[i].prepare(animated, s.data, xScale, yScale, gridArea);
+          }
           break;
         }
         case 'pie': {
@@ -3569,6 +3640,14 @@ export function createRenderCoordinator(
     const textureView = gpuContext.canvasContext.getCurrentTexture().createView();
     const encoder = device.createCommandEncoder({ label: 'renderCoordinator/commandEncoder' });
     const clearValue = parseCssColorToGPUColor(currentOptions.theme.backgroundColor, { r: 0, g: 0, b: 0, a: 1 });
+
+    // Encode compute passes (scatter density) before the render pass.
+    for (let i = 0; i < seriesForRender.length; i++) {
+      const s = seriesForRender[i];
+      if (s.type === 'scatter' && s.mode === 'density') {
+        scatterDensityRenderers[i].encodeCompute(encoder);
+      }
+    }
 
     const pass = encoder.beginRenderPass({
       label: 'renderCoordinator/renderPass',
@@ -3628,7 +3707,11 @@ export function createRenderCoordinator(
       }
     }
     for (let i = 0; i < seriesForRender.length; i++) {
-      if (seriesForRender[i].type === 'scatter') {
+      const s = seriesForRender[i];
+      if (s.type !== 'scatter') continue;
+      if (s.mode === 'density') {
+        scatterDensityRenderers[i].render(pass);
+      } else {
         scatterRenderers[i].render(pass);
       }
     }

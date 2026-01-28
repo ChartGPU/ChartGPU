@@ -31,6 +31,7 @@ ChartGPU is a TypeScript charting library built on WebGPU for smooth, interactiv
 - 🚀 WebGPU-accelerated rendering for high FPS with large datasets
 - ⚡ Worker-based rendering with OffscreenCanvas (optional - for maximum performance)
 - 📈 Multiple series types: line, area, bar, scatter, pie, candlestick
+- 🌡️ Scatter density/heatmap mode (`mode: 'density'`) for large point clouds — see [`docs/api/options.md#scatterseriesconfig`](docs/api/options.md#scatterseriesconfig) and [`examples/scatter-density-1m/`](examples/scatter-density-1m/)
 - 🧭 Built-in interaction: hover highlight, tooltip, crosshair
 - 🔁 Streaming updates via `appendData(...)` (cartesian series)
 - 🔍 X-axis zoom (inside gestures + optional slider UI)
@@ -81,7 +82,8 @@ flowchart TB
       Coordinator --> Layout["GridArea layout"]
       Coordinator --> Scales["xScale/yScale (clip space for render)"]
       Coordinator --> DataUpload["createDataStore(device) (GPU buffer upload/caching)"]
-      Coordinator --> RenderPass["Encode + submit render pass"]
+      Coordinator --> DensityCompute["Encode + submit compute pass<br/>(scatter density mode)"]
+      DensityCompute --> RenderPass["Encode + submit render pass"]
 
       subgraph InternalOverlays["Internal interaction overlays (coordinator)"]
         Coordinator --> Events["createEventManager(canvas, gridArea)"]
@@ -175,6 +177,7 @@ flowchart TB
     RenderPass --> AreaR["Area"]
     RenderPass --> BarR["Bar"]
     RenderPass --> ScatterR["Scatter"]
+    RenderPass --> ScatterDensityR["Scatter density/heatmap"]
     RenderPass --> LineR["Line"]
     RenderPass --> PieR["Pie"]
     RenderPass --> CandlestickR["Candlestick"]
@@ -190,6 +193,8 @@ flowchart TB
     AreaR --> areaWGSL["area.wgsl"]
     BarR --> barWGSL["bar.wgsl"]
     ScatterR --> scatterWGSL["scatter.wgsl"]
+    ScatterDensityR --> scatterDensityBinningWGSL["scatterDensityBinning.wgsl"]
+    ScatterDensityR --> scatterDensityColormapWGSL["scatterDensityColormap.wgsl"]
     LineR --> lineWGSL["line.wgsl"]
     PieR --> pieWGSL["pie.wgsl"]
     CandlestickR --> candlestickWGSL["candlestick.wgsl"]

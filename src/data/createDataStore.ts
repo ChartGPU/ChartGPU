@@ -143,7 +143,7 @@ export function createDataStore(device: GPUDevice): DataStore {
 
       buffer = device.createBuffer({
         size: capacityBytes,
-        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
     }
 
@@ -204,7 +204,7 @@ export function createDataStore(device: GPUDevice): DataStore {
 
       buffer = device.createBuffer({
         size: capacityBytes,
-        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
 
       const fullPacked = packDataPoints(nextData);

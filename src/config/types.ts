@@ -154,6 +154,31 @@ export interface BarSeriesConfig extends SeriesConfigBase {
 export interface ScatterSeriesConfig extends SeriesConfigBase {
   readonly type: 'scatter';
   /**
+   * Scatter rendering mode.
+   *
+   * - `'points'` (default): draw point markers (current behavior).
+   * - `'density'`: render a binned density heatmap in screen space.
+   */
+  readonly mode?: 'points' | 'density';
+  /**
+   * Density bin size in CSS pixels (used only when `mode === 'density'`).
+   *
+   * Smaller bins increase detail but can reduce performance.
+   */
+  readonly binSize?: number;
+  /**
+   * Colormap used for density rendering (used only when `mode === 'density'`).
+   *
+   * - Named: `'viridis' | 'plasma' | 'inferno'`
+   * - Custom: a low→high `string[]` of CSS colors
+   */
+  readonly densityColormap?: 'viridis' | 'plasma' | 'inferno' | readonly string[];
+  /**
+   * Normalization curve applied to per-bin counts before mapping to the colormap
+   * (used only when `mode === 'density'`).
+   */
+  readonly densityNormalization?: 'linear' | 'sqrt' | 'log';
+  /**
    * Scatter symbol size in CSS pixels. When a function is provided, it receives
    * the point tuple `[x, y, size?]`.
    */

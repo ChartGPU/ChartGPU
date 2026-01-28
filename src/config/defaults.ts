@@ -51,6 +51,14 @@ export const candlestickDefaults = {
   samplingThreshold: 5000,
 } as const;
 
+export const scatterDefaults = {
+  mode: 'points' as const,
+  // Bin size in CSS pixels for density mode. Must be > 0.
+  binSize: 2,
+  densityColormap: 'viridis' as const,
+  densityNormalization: 'log' as const,
+} as const;
+
 export const defaultOptions = {
   grid: defaultGrid,
   xAxis: { type: 'value' },

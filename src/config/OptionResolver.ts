@@ -20,7 +20,14 @@ import type {
   ScatterSeriesConfig,
   SeriesSampling,
 } from './types';
-import { candlestickDefaults, defaultAreaStyle, defaultLineStyle, defaultOptions, defaultPalette } from './defaults';
+import {
+  candlestickDefaults,
+  defaultAreaStyle,
+  defaultLineStyle,
+  defaultOptions,
+  defaultPalette,
+  scatterDefaults,
+} from './defaults';
 import { getTheme } from '../themes';
 import type { ThemeConfig } from '../themes/types';
 import { sampleSeriesDataPoints } from '../data/sampleSeries';
@@ -89,10 +96,17 @@ export type ResolvedBarSeriesConfig = Readonly<
 >;
 
 export type ResolvedScatterSeriesConfig = Readonly<
-  Omit<ScatterSeriesConfig, 'color' | 'sampling' | 'samplingThreshold' | 'data'> & {
+  Omit<
+    ScatterSeriesConfig,
+    'color' | 'sampling' | 'samplingThreshold' | 'data' | 'mode' | 'binSize' | 'densityColormap' | 'densityNormalization'
+  > & {
     readonly color: string;
     readonly sampling: SeriesSampling;
     readonly samplingThreshold: number;
+    readonly mode: NonNullable<ScatterSeriesConfig['mode']>;
+    readonly binSize: number;
+    readonly densityColormap: NonNullable<ScatterSeriesConfig['densityColormap']>;
+    readonly densityNormalization: NonNullable<ScatterSeriesConfig['densityNormalization']>;
     /** Original (unsampled) series data (see `ResolvedLineSeriesConfig.rawData`). */
     readonly rawData: Readonly<ScatterSeriesConfig['data']>;
     readonly data: Readonly<ScatterSeriesConfig['data']>;
@@ -246,6 +260,59 @@ const normalizeSampling = (value: unknown): SeriesSampling | undefined => {
   return v === 'none' || v === 'lttb' || v === 'average' || v === 'max' || v === 'min' || v === 'ohlc'
     ? (v as SeriesSampling)
     : undefined;
+};
+
+const normalizeScatterMode = (value: unknown): NonNullable<ScatterSeriesConfig['mode']> | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const v = value.trim().toLowerCase();
+  return v === 'points' || v === 'density' ? (v as NonNullable<ScatterSeriesConfig['mode']>) : undefined;
+};
+
+const normalizeDensityNormalization = (
+  value: unknown
+): NonNullable<ScatterSeriesConfig['densityNormalization']> | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const v = value.trim().toLowerCase();
+  return v === 'linear' || v === 'sqrt' || v === 'log'
+    ? (v as NonNullable<ScatterSeriesConfig['densityNormalization']>)
+    : undefined;
+};
+
+const normalizeDensityBinSize = (value: unknown): number | undefined => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  const v = Math.floor(value);
+  return v > 0 ? Math.max(1, v) : undefined;
+};
+
+const normalizeDensityColormap = (
+  value: unknown
+): NonNullable<ScatterSeriesConfig['densityColormap']> | undefined => {
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase();
+    return v === 'viridis' || v === 'plasma' || v === 'inferno'
+      ? (v as NonNullable<ScatterSeriesConfig['densityColormap']>)
+      : undefined;
+  }
+
+  if (!Array.isArray(value)) return undefined;
+
+  const isAlreadyCleanStringArray =
+    value.length > 0 && value.every((c) => typeof c === 'string' && c.length > 0 && c === c.trim());
+
+  if (isAlreadyCleanStringArray) {
+    const arr = value as string[];
+    if (!Object.isFrozen(arr)) Object.freeze(arr);
+    return arr as readonly string[];
+  }
+
+  const sanitized = value
+    .filter((c): c is string => typeof c === 'string')
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0);
+
+  if (sanitized.length === 0) return undefined;
+  Object.freeze(sanitized);
+  return sanitized as readonly string[];
 };
 
 const normalizeCandlestickSampling = (value: unknown): 'none' | 'ohlc' | undefined => {
@@ -517,11 +584,26 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
       }
       case 'scatter': {
         const rawBounds = computeRawBoundsFromData(s.data);
+        const mode =
+          normalizeScatterMode((s as unknown as { readonly mode?: unknown }).mode) ?? scatterDefaults.mode;
+        const binSize =
+          normalizeDensityBinSize((s as unknown as { readonly binSize?: unknown }).binSize) ?? scatterDefaults.binSize;
+        const densityColormap =
+          normalizeDensityColormap((s as unknown as { readonly densityColormap?: unknown }).densityColormap) ??
+          scatterDefaults.densityColormap;
+        const densityNormalization =
+          normalizeDensityNormalization(
+            (s as unknown as { readonly densityNormalization?: unknown }).densityNormalization
+          ) ?? scatterDefaults.densityNormalization;
         return {
           ...s,
           rawData: s.data,
           data: sampleSeriesDataPoints(s.data, sampling, samplingThreshold),
           color,
+          mode,
+          binSize,
+          densityColormap,
+          densityNormalization,
           sampling,
           samplingThreshold,
           rawBounds,

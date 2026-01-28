@@ -22,6 +22,7 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 ### Configuration
 - **Options overview**: [options.md](options.md#chartgpuoptions)
 - **Series configuration** (line, area, bar, scatter, pie, candlestick): [options.md](options.md#series-configuration)
+- **Scatter density/heatmap mode** (scatter series `mode: 'density'`): [src/config/types.ts](../../src/config/types.ts), [src/config/defaults.ts](../../src/config/defaults.ts), [src/config/OptionResolver.ts](../../src/config/OptionResolver.ts), [src/core/createRenderCoordinator.ts](../../src/core/createRenderCoordinator.ts), [src/renderers/createScatterDensityRenderer.ts](../../src/renderers/createScatterDensityRenderer.ts), [src/shaders/scatterDensityBinning.wgsl](../../src/shaders/scatterDensityBinning.wgsl), [src/shaders/scatterDensityColormap.wgsl](../../src/shaders/scatterDensityColormap.wgsl), [`examples/scatter-density-1m/`](../../examples/scatter-density-1m/)
 - **Axis configuration**: [options.md](options.md#axis-configuration)
 - **Data zoom (pan/zoom)**: [options.md](options.md#data-zoom-configuration)
 - **Tooltip configuration**: [options.md](options.md#tooltip-configuration)
@@ -168,7 +169,8 @@ flowchart TB
       Coordinator --> Layout["GridArea layout"]
       Coordinator --> Scales["xScale/yScale (clip space for render)"]
       Coordinator --> DataUpload["createDataStore(device) (GPU buffer upload/caching)"]
-      Coordinator --> RenderPass["Encode + submit render pass"]
+      Coordinator --> DensityCompute["Encode + submit compute pass<br/>(scatter density mode)"]
+      DensityCompute --> RenderPass["Encode + submit render pass"]
 
       subgraph InternalOverlays["Internal interaction overlays (coordinator)"]
         Coordinator --> Events["createEventManager(canvas, gridArea)"]
@@ -262,6 +264,7 @@ flowchart TB
     RenderPass --> AreaR["Area"]
     RenderPass --> BarR["Bar"]
     RenderPass --> ScatterR["Scatter"]
+    RenderPass --> ScatterDensityR["Scatter density/heatmap"]
     RenderPass --> LineR["Line"]
     RenderPass --> PieR["Pie"]
     RenderPass --> CandlestickR["Candlestick"]
@@ -277,6 +280,8 @@ flowchart TB
     AreaR --> areaWGSL["area.wgsl"]
     BarR --> barWGSL["bar.wgsl"]
     ScatterR --> scatterWGSL["scatter.wgsl"]
+    ScatterDensityR --> scatterDensityBinningWGSL["scatterDensityBinning.wgsl"]
+    ScatterDensityR --> scatterDensityColormapWGSL["scatterDensityColormap.wgsl"]
     LineR --> lineWGSL["line.wgsl"]
     PieR --> pieWGSL["pie.wgsl"]
     CandlestickR --> candlestickWGSL["candlestick.wgsl"]

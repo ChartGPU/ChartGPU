@@ -77,6 +77,23 @@ Extends the shared series fields with `type: 'scatter'`, optional `symbol?: Scat
 
 - Scatter point tuples may include an optional third `size` value (`readonly [x, y, size?]`).
 - **Rendering (current)**: scatter series render as instanced circles (SDF + alpha blending). Size is treated as a **radius in CSS pixels** from either the per-point `size` (when provided) or `series.symbolSize` as a fallback. See the internal renderer [`createScatterRenderer.ts`](../../src/renderers/createScatterRenderer.ts) and shader [`scatter.wgsl`](../../src/shaders/scatter.wgsl).
+- **`mode?: 'points' | 'density'`**: scatter rendering mode. Default: `'points'`.
+  - When `mode === 'points'`, ChartGPU draws individual point markers (current behavior).
+  - When `mode === 'density'`, ChartGPU renders a binned density heatmap in screen space (useful for very large point clouds where markers overplot).
+- **`binSize?: number`**: density bin size in **CSS pixels** (used only when `mode === 'density'`). Default: `2`.
+  - **DPR behavior**: `binSize` is specified in CSS px, but bins are computed in device pixels using `round(binSize * devicePixelRatio)` (minimum 1 device pixel). This keeps the visual bin size roughly consistent across displays. See [`createScatterDensityRenderer.ts`](../../src/renderers/createScatterDensityRenderer.ts).
+- **`densityColormap?: 'viridis' | 'plasma' | 'inferno' | readonly string[]`**: colormap used for density rendering (used only when `mode === 'density'`). Default: `'viridis'`.
+  - **Named presets**: `'viridis' | 'plasma' | 'inferno'` use built-in “anchor” color stops that are interpolated into a 256-entry lookup table. See [`createScatterDensityRenderer.ts`](../../src/renderers/createScatterDensityRenderer.ts).
+  - **Custom gradient**: a `readonly string[]` is interpreted as a low→high gradient of CSS color strings (interpolated into a 256-entry lookup table). Invalid color strings fall back to black. Note: the current density shader renders output as fully opaque (`alpha = 1.0`) regardless of any alpha in your color stops. See [`createScatterDensityRenderer.ts`](../../src/renderers/createScatterDensityRenderer.ts) and [`scatterDensityColormap.wgsl`](../../src/shaders/scatterDensityColormap.wgsl).
+- **`densityNormalization?: 'linear' | 'sqrt' | 'log'`**: normalization curve used to map per-bin counts to color intensity (used only when `mode === 'density'`). Default: `'log'`.
+  - Normalization is applied **relative to the maximum bin count in the current view**: linear uses `count / max`, sqrt uses `sqrt(count / max)`, and log uses `log1p(count) / log1p(max)`. This means color intensity can rescale as you zoom/pan (because the per-view max changes). See [`scatterDensityColormap.wgsl`](../../src/shaders/scatterDensityColormap.wgsl).
+
+Notes (density mode):
+
+- **Correctness (important)**: density mode uses raw (unsampled) points for binning, even when `sampling` is configured, to avoid undercounting.
+- **Zoom/pan behavior**: density is recomputed as the view changes. When x-values are monotonic, ChartGPU limits compute to the current visible x-range; otherwise it may process the full series. See the coordinator wiring in [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts) and compute shader [`scatterDensityBinning.wgsl`](../../src/shaders/scatterDensityBinning.wgsl).
+- **Performance vs resolution**: `binSize` trades resolution for performance. Smaller bins increase detail but increase both bin count and compute cost per recompute.
+- **Example**: for a working 1M-point density scatter demo (including controls for colormap, normalization, and bin size), see [`examples/scatter-density-1m/`](../../examples/scatter-density-1m/).
 
 ### PieSeriesConfig
 

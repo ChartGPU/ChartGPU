@@ -10,7 +10,7 @@ The API documentation has been split into smaller, task-focused files to reduce 
 ## Public API
 
 - [Chart API](./chart.md): `ChartGPU.create(...)`, `ChartGPUInstance`, chart sync
-- [Options](./options.md): `ChartGPUOptions`, series/axes/tooltip/dataZoom/animation, `defaultOptions`, `resolveOptions(...)`
+- [Options](./options.md): `ChartGPUOptions`, series/axes/tooltip/dataZoom/animation, `defaultOptions`, `resolveOptions(...)` (includes scatter density/heatmap mode via [`ScatterSeriesConfig`](./options.md#scatterseriesconfig); see [`examples/scatter-density-1m/`](../../examples/scatter-density-1m/))
 - [Themes](./themes.md): `ThemeConfig`, presets (`dark` / `light`)
 - [Scales](./scales.md): `createLinearScale`, `createCategoryScale`
 
