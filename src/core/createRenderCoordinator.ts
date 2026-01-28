@@ -472,14 +472,47 @@ const computeGridArea = (gpuContext: GPUContextLike, options: ResolvedChartGPUOp
   const dpr = gpuContext.devicePixelRatio ?? 1;
   const devicePixelRatio = (Number.isFinite(dpr) && dpr > 0) ? dpr : 1;
 
+  // Validate and sanitize canvas dimensions (device pixels)
+  // Canvas dimensions should be set by GPUContext initialization/resize, but guard against edge cases:
+  // - Race conditions during initialization
+  // - Invalid dimensions from OffscreenCanvas in worker mode
+  // - Canvas not yet sized (0 dimensions)
+  const rawCanvasWidth = canvas.width;
+  const rawCanvasHeight = canvas.height;
+  
+  if (!Number.isFinite(rawCanvasWidth) || !Number.isFinite(rawCanvasHeight)) {
+    throw new Error(
+      `RenderCoordinator: Invalid canvas dimensions: width=${rawCanvasWidth}, height=${rawCanvasHeight}. ` +
+      `Canvas must be initialized with finite dimensions before rendering.`
+    );
+  }
+  
+  // Be resilient: charts may be mounted into 0-sized containers (e.g. display:none during init).
+  // Renderers guard internally; clamping avoids hard crashes and allows future resize to recover.
+  const canvasWidth = Math.max(1, Math.floor(rawCanvasWidth));
+  const canvasHeight = Math.max(1, Math.floor(rawCanvasHeight));
+
+  // Validate and sanitize grid margins (CSS pixels)
+  // Grid margins come from resolved options and should be finite, but guard against edge cases
+  const left = Number.isFinite(options.grid.left) ? options.grid.left : 0;
+  const right = Number.isFinite(options.grid.right) ? options.grid.right : 0;
+  const top = Number.isFinite(options.grid.top) ? options.grid.top : 0;
+  const bottom = Number.isFinite(options.grid.bottom) ? options.grid.bottom : 0;
+
+  // Ensure margins are non-negative (negative margins could cause rendering issues)
+  const sanitizedLeft = Math.max(0, left);
+  const sanitizedRight = Math.max(0, right);
+  const sanitizedTop = Math.max(0, top);
+  const sanitizedBottom = Math.max(0, bottom);
+
   return {
-    left: options.grid.left,
-    right: options.grid.right,
-    top: options.grid.top,
-    bottom: options.grid.bottom,
-    canvasWidth: canvas.width,      // Device pixels
-    canvasHeight: canvas.height,    // Device pixels
-    devicePixelRatio,               // Explicit DPR for worker compatibility
+    left: sanitizedLeft,
+    right: sanitizedRight,
+    top: sanitizedTop,
+    bottom: sanitizedBottom,
+    canvasWidth,                      // Device pixels (clamped above)
+    canvasHeight,                     // Device pixels (clamped above)
+    devicePixelRatio,                 // Explicit DPR for worker compatibility (validated above)
   };
 };
 
@@ -1814,12 +1847,30 @@ export function createRenderCoordinator(
     pendingAppendByIndex.clear();
     if (!didAppendAny) return false;
 
+    // Dataset-aware zoom span constraints depend on raw point density.
+    // When streaming appends add points, recompute and apply constraints so wheel+slider remain consistent.
+    if (zoomState) {
+      const constraints = computeEffectiveZoomSpanConstraints();
+      const withConstraints = zoomState as unknown as {
+        setSpanConstraints?: (minSpan: number, maxSpan: number) => void;
+      };
+      withConstraints.setSpanConstraints?.(constraints.minSpan, constraints.maxSpan);
+    }
+
     // Auto-scroll is applied only on append (not on `setOptions`).
     if (canAutoScroll && zoomRangeBefore && prevVisibleXDomain) {
       const r = zoomRangeBefore;
       if (r.end >= 99.5) {
         const span = r.end - r.start;
-        zoomState!.setRange(100 - span, 100);
+        const anchored = zoomState! as unknown as {
+          setRangeAnchored?: (start: number, end: number, anchor: 'start' | 'end' | 'center') => void;
+        };
+        // Keep end pinned when constraints clamp the span.
+        if (anchored.setRangeAnchored) {
+          anchored.setRangeAnchored(100 - span, 100, 'end');
+        } else {
+          zoomState!.setRange(100 - span, 100);
+        }
       } else {
         const nextBaseXDomain = computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
         const span = nextBaseXDomain.max - nextBaseXDomain.min;
@@ -2186,6 +2237,75 @@ export function createRenderCoordinator(
     return { start, end, hasInside: !!insideCfg };
   };
 
+  const clampPercent = (v: number): number => Math.min(100, Math.max(0, v));
+
+  const getZoomSpanConstraintsFromOptions = (
+    opts: ResolvedChartGPUOptions
+  ): { readonly minSpan?: number; readonly maxSpan?: number } => {
+    let minSpan: number | null = null;
+    let maxSpan: number | null = null;
+
+    const list = opts.dataZoom ?? [];
+    for (const z of list) {
+      if (!z) continue;
+      if (z.type !== 'inside' && z.type !== 'slider') continue;
+
+      if (Number.isFinite(z.minSpan as number)) {
+        const v = clampPercent(z.minSpan as number);
+        minSpan = minSpan == null ? v : Math.max(minSpan, v);
+      }
+      if (Number.isFinite(z.maxSpan as number)) {
+        const v = clampPercent(z.maxSpan as number);
+        maxSpan = maxSpan == null ? v : Math.min(maxSpan, v);
+      }
+    }
+
+    return { minSpan: minSpan ?? undefined, maxSpan: maxSpan ?? undefined };
+  };
+
+  const computeDatasetAwareDefaultMinSpan = (): number | null => {
+    // Dataset-aware defaults only apply to numeric/time x domains (category is discrete UI-driven).
+    if (currentOptions.xAxis.type === 'category') return null;
+
+    let maxPoints = 0;
+    for (let i = 0; i < currentOptions.series.length; i++) {
+      const s = currentOptions.series[i]!;
+      if (s.type === 'pie') continue;
+      if (s.type === 'candlestick') {
+        const raw =
+          (runtimeRawDataByIndex[i] as ReadonlyArray<OHLCDataPoint> | null) ??
+          ((s.rawData ?? s.data) as ReadonlyArray<OHLCDataPoint>);
+        maxPoints = Math.max(maxPoints, raw.length);
+        continue;
+      }
+
+      const raw =
+        (runtimeRawDataByIndex[i] as ReadonlyArray<DataPoint> | null) ??
+        ((s.rawData ?? s.data) as ReadonlyArray<DataPoint>);
+      maxPoints = Math.max(maxPoints, raw.length);
+    }
+
+    if (maxPoints < 2) return null;
+    const v = 100 / (maxPoints - 1);
+    return Number.isFinite(v) ? clampPercent(v) : null;
+  };
+
+  const computeEffectiveZoomSpanConstraints = (): { readonly minSpan: number; readonly maxSpan: number } => {
+    const fromOptions = getZoomSpanConstraintsFromOptions(currentOptions);
+    const datasetMin = computeDatasetAwareDefaultMinSpan();
+
+    // Preserve legacy behavior when no constraints (and no dataset signal) are available.
+    // The coordinator will typically override this with datasetMin when the data supports it.
+    const minSpan = Number.isFinite(fromOptions.minSpan as number)
+      ? clampPercent(fromOptions.minSpan as number)
+      : datasetMin ?? 0.5;
+    const maxSpan = Number.isFinite(fromOptions.maxSpan as number)
+      ? clampPercent(fromOptions.maxSpan as number)
+      : 100;
+
+    return { minSpan, maxSpan };
+  };
+
   const updateZoom = (): void => {
     const cfg = getZoomOptionsConfig(currentOptions);
 
@@ -2200,7 +2320,8 @@ export function createRenderCoordinator(
     }
 
     if (!zoomState) {
-      zoomState = createZoomState(cfg.start, cfg.end);
+      const constraints = computeEffectiveZoomSpanConstraints();
+      zoomState = createZoomState(cfg.start, cfg.end, constraints);
       lastOptionsZoomRange = { start: cfg.start, end: cfg.end };
       unsubscribeZoom = zoomState.onChange((range) => {
         // Slice cached data immediately for smooth panning
@@ -2212,16 +2333,24 @@ export function createRenderCoordinator(
         // Ensure listeners get a stable readonly object.
         emitZoomRange({ start: range.start, end: range.end });
       });
-    } else if (
-      lastOptionsZoomRange == null ||
-      lastOptionsZoomRange.start !== cfg.start ||
-      lastOptionsZoomRange.end !== cfg.end
-    ) {
-      // Only apply option-provided start/end when:
-      // - zoom is first created, or
-      // - start/end actually changed in options
-      zoomState.setRange(cfg.start, cfg.end);
-      lastOptionsZoomRange = { start: cfg.start, end: cfg.end };
+    } else {
+      const constraints = computeEffectiveZoomSpanConstraints();
+      const withConstraints = zoomState as unknown as {
+        setSpanConstraints?: (minSpan: number, maxSpan: number) => void;
+      };
+      withConstraints.setSpanConstraints?.(constraints.minSpan, constraints.maxSpan);
+
+      if (
+        lastOptionsZoomRange == null ||
+        lastOptionsZoomRange.start !== cfg.start ||
+        lastOptionsZoomRange.end !== cfg.end
+      ) {
+        // Only apply option-provided start/end when:
+        // - zoom is first created, or
+        // - start/end actually changed in options
+        zoomState.setRange(cfg.start, cfg.end);
+        lastOptionsZoomRange = { start: cfg.start, end: cfg.end };
+      }
     }
 
     // Only enable inside zoom handler when `{ type: 'inside' }` exists.
@@ -2466,9 +2595,9 @@ export function createRenderCoordinator(
     renderSeries = next;
   }
 
-  updateZoom();
   initRuntimeSeriesFromOptions();
   recomputeRuntimeBaseSeries();
+  updateZoom();
   recomputeRenderSeries();
   lastSampledData = new Array(currentOptions.series.length).fill(null);
 
@@ -2621,12 +2750,12 @@ export function createRenderCoordinator(
     gpuSeriesKindByIndex = new Array(resolvedOptions.series.length).fill('unknown');
     lastSampledData = new Array(resolvedOptions.series.length).fill(null);
     legend?.update(resolvedOptions.series, resolvedOptions.theme);
-    updateZoom();
     cancelZoomResampleDebounce();
     zoomResampleDue = false;
     cancelScheduledFlush();
     initRuntimeSeriesFromOptions();
     recomputeRuntimeBaseSeries();
+    updateZoom();
     recomputeRenderSeries();
 
     // Tooltip enablement may change at runtime.

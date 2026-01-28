@@ -184,13 +184,29 @@ export function createDataZoomSlider(
         case 'left-handle': {
           // UX: don't allow handle crossing; clamp left <= current end.
           const nextStart = Math.min(startRange.end, startRange.start + dxPercent);
-          zoomState.setRange(nextStart, startRange.end);
+          const anchored = zoomState as unknown as Partial<{
+            setRangeAnchored: (start: number, end: number, anchor: 'start' | 'end' | 'center') => void;
+          }>;
+          if (anchored.setRangeAnchored) {
+            // When clamped by minSpan/maxSpan, keep the right edge anchored (prevents jumpiness).
+            anchored.setRangeAnchored(nextStart, startRange.end, 'end');
+          } else {
+            zoomState.setRange(nextStart, startRange.end);
+          }
           return;
         }
         case 'right-handle': {
           // UX: don't allow handle crossing; clamp right >= current start.
           const nextEnd = Math.max(startRange.start, startRange.end + dxPercent);
-          zoomState.setRange(startRange.start, nextEnd);
+          const anchored = zoomState as unknown as Partial<{
+            setRangeAnchored: (start: number, end: number, anchor: 'start' | 'end' | 'center') => void;
+          }>;
+          if (anchored.setRangeAnchored) {
+            // When clamped by minSpan/maxSpan, keep the left edge anchored (prevents jumpiness).
+            anchored.setRangeAnchored(startRange.start, nextEnd, 'start');
+          } else {
+            zoomState.setRange(startRange.start, nextEnd);
+          }
           return;
         }
         case 'pan-window': {

@@ -69,7 +69,10 @@ const createIdentityMat4Buffer = (): ArrayBuffer => {
 };
 
 const generateGridVertices = (gridArea: GridArea, horizontal: number, vertical: number): Float32Array => {
-  const { left, right, top, bottom, canvasWidth, canvasHeight, devicePixelRatio } = gridArea;
+  const { left, right, top, bottom, canvasWidth, canvasHeight } = gridArea;
+  // Be resilient: older call sites may omit/incorrectly pass DPR. Defaulting avoids hard crashes.
+  const devicePixelRatio =
+    Number.isFinite(gridArea.devicePixelRatio) && gridArea.devicePixelRatio > 0 ? gridArea.devicePixelRatio : 1;
 
   // Calculate plot area in device pixels using explicit DPR
   const plotLeft = left * devicePixelRatio;

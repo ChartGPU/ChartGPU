@@ -53,6 +53,7 @@ async function main() {
     gridRenderer = createGridRenderer(gpuDevice, { targetFormat: gpuContext.preferredFormat ?? 'bgra8unorm' });
 
     // Calculate grid area (margins in CSS pixels)
+    // Note: devicePixelRatio is required by GridArea interface and is used for CSS-to-device pixel conversion
     const gridArea: GridArea = {
       left: 60,
       right: 20,
@@ -60,11 +61,12 @@ async function main() {
       bottom: 40,
       canvasWidth: canvas.width,
       canvasHeight: canvas.height,
+      devicePixelRatio: gpuContext.devicePixelRatio,
     };
 
     // Create clip-space scales for axis ticks.
     // Note: scale.range() is clip-space [-1, 1] in this project.
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = gridArea.devicePixelRatio;
     const plotLeft = gridArea.left * dpr;
     const plotRight = gridArea.canvasWidth - gridArea.right * dpr;
     const plotTop = gridArea.top * dpr;

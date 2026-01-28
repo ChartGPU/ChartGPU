@@ -20,7 +20,7 @@ See [GPUContext.ts](../../src/core/GPUContext.ts) for type definition.
 
 Configuration options for GPU context initialization:
 
-- `devicePixelRatio?: number` - Device pixel ratio for high-DPI displays. Auto-detects on main thread (`window.devicePixelRatio`), defaults to `1.0` in Web Workers.
+- `devicePixelRatio?: number` - Device pixel ratio (DPR) used for high-DPI sizing. Auto-detects on main thread (`window.devicePixelRatio`), defaults to `1.0` in Web Workers. **Invalid values** (non-finite or \(\le 0\), e.g. `0`, `NaN`, `Infinity`) are **sanitized to `1.0`**.
 - `alphaMode?: 'opaque' | 'premultiplied'` - Canvas alpha transparency mode. Default: `'opaque'` (faster, no transparency).
 - `powerPreference?: 'low-power' | 'high-performance'` - GPU power preference for adapter selection. Default: `'high-performance'`.
 
@@ -145,10 +145,12 @@ OffscreenCanvas is **rendering-only**. Interactive features that require DOM acc
 
 ### Device Pixel Ratio Handling
 
-**Critical:** Main thread must pre-scale canvas before transferring to worker:
+**Note:** `GPUContext` is resilient to invalid or missing DPR values and will fall back to `1.0`.
 
-1. **Main thread:** Create canvas, multiply dimensions by `window.devicePixelRatio`, call `canvas.transferControlToOffscreen()`
-2. **Worker:** Receive OffscreenCanvas, pass `devicePixelRatio: 1.0` to avoid double-scaling
+**Critical (OffscreenCanvas):** avoid double-scaling. Choose one of these approaches:
+
+1. **Send CSS-sized dimensions + DPR**: set `offscreenCanvas.width/height` to **CSS pixel** dimensions and pass the **real** DPR via `devicePixelRatio` so `GPUContext` scales to device pixels.
+2. **Send device-sized dimensions**: set `offscreenCanvas.width/height` to **device pixel** dimensions (already multiplied by DPR) and pass `devicePixelRatio: 1.0`.
 
 **Note:** `transferControlToOffscreen()` is **irreversible** - canvas becomes permanently offscreen.
 
@@ -159,14 +161,14 @@ See [examples/worker-rendering/](../../examples/) for complete working example (
 Main thread flow:
 
 1. Create HTMLCanvasElement
-2. Scale by `window.devicePixelRatio`
+2. Size the canvas and decide DPR strategy (see above)
 3. Call `transferControlToOffscreen()`
 4. Post OffscreenCanvas to worker via `postMessage()`
 
 Worker thread flow:
 
 1. Receive OffscreenCanvas via message event
-2. Create GPUContext with `devicePixelRatio: 1.0`
+2. Create GPUContext with `devicePixelRatio` matching your sizing strategy (often the main thread DPR, or `1.0` if the OffscreenCanvas was already device-scaled)
 3. Initialize and render
 
 ## Browser Compatibility
@@ -180,7 +182,7 @@ Check `navigator.gpu` availability before initialization. See [checkWebGPU.ts](.
 
 ## Error Handling
 
-All initialization functions throw descriptive errors if WebGPU is unavailable, adapter/device requests fail, or the context is already initialized. Wrap initialization in try-catch blocks.
+Initialization functions throw descriptive errors if WebGPU is unavailable, adapter/device requests fail, or the context is already initialized. Invalid `devicePixelRatio` values are **sanitized to `1.0`** (not thrown). If canvas dimensions are temporarily 0, the configured size is clamped to at least 1×1 device pixels.
 
 ## Best Practices
 

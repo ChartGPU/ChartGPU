@@ -251,6 +251,11 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
   private isInitialized = false;
   private cachedInteractionX: number | null = null;
   private cachedZoomRange: Readonly<{ start: number; end: number }> | null = null;
+  /**
+   * Best-effort local series point counts used to keep dataset-aware zoom constraints
+   * in sync with worker zoom behavior (especially for streaming appendData()).
+   */
+  private cachedSeriesPointCountsForZoom: number[] = [];
   
   // Performance metrics cache
   private cachedPerformanceMetrics: Readonly<PerformanceMetrics> | null = null;
@@ -335,6 +340,7 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
     this.chartId = config.chartId ?? generateChartId();
     this.messageTimeout = config.messageTimeout ?? 30000;
     this.cachedOptions = options;
+    this.recomputeCachedSeriesPointCountsForZoom(options);
     
     // Initialize event listener maps
     this.listeners.set('click', new Set());
@@ -345,6 +351,33 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
     // Bind message handler once (avoid creating new function on every message)
     this.boundMessageHandler = this.handleWorkerMessage.bind(this);
     this.worker.addEventListener('message', this.boundMessageHandler);
+  }
+
+  private recomputeCachedSeriesPointCountsForZoom(options: ChartGPUOptions): void {
+    const series = options.series ?? [];
+    const next = new Array(series.length);
+    for (let i = 0; i < series.length; i++) {
+      const s: any = series[i];
+      if (!s || s.type === 'pie') {
+        next[i] = 0;
+        continue;
+      }
+      const raw = (s.rawData ?? s.data) as unknown;
+      next[i] = Array.isArray(raw) ? raw.length : 0;
+    }
+    this.cachedSeriesPointCountsForZoom = next;
+  }
+
+  private incrementCachedSeriesPointCountForZoom(seriesIndex: number, deltaPoints: number): void {
+    if (!Number.isFinite(deltaPoints) || deltaPoints <= 0) return;
+    const next = Math.floor(deltaPoints);
+    if (next <= 0) return;
+
+    const counts = this.cachedSeriesPointCountsForZoom;
+    if (seriesIndex >= counts.length) {
+      for (let i = counts.length; i <= seriesIndex; i++) counts[i] = 0;
+    }
+    counts[seriesIndex] = (counts[seriesIndex] ?? 0) + next;
   }
   
   /**
@@ -822,7 +855,8 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
       // Create zoom state that delegates to worker via setZoomRange
       const initialStart = this.cachedZoomRange?.start ?? 0;
       const initialEnd = this.cachedZoomRange?.end ?? 100;
-      this.zoomState = createZoomState(initialStart, initialEnd);
+      const constraints = this.computeZoomSpanConstraints(this.cachedOptions);
+      this.zoomState = createZoomState(initialStart, initialEnd, constraints);
       
       // Sync zoom state changes to worker
       // CRITICAL: Echo suppression - only send changes to worker if they originated from UI
@@ -889,6 +923,59 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
     this.container.appendChild(host);
     
     return host;
+  }
+
+  /**
+   * Computes effective zoom span constraints for the local slider zoomState.
+   *
+   * This must match the worker coordinator's clamping behavior so that:
+   * - slider drags clamp identically to wheel zoom in the worker
+   * - UI stays perfectly in sync with worker zoomChange messages
+   */
+  private computeZoomSpanConstraints(
+    options: ChartGPUOptions
+  ): { readonly minSpan?: number; readonly maxSpan?: number } {
+    const clampPercent = (v: number): number => Math.min(100, Math.max(0, v));
+
+    // Aggregate constraints across all dataZoom configs (inside + slider share the same zoom window).
+    let minSpan: number | null = null;
+    let maxSpan: number | null = null;
+    for (const z of options.dataZoom ?? []) {
+      if (!z) continue;
+      if (z.type !== 'inside' && z.type !== 'slider') continue;
+
+      if (Number.isFinite(z.minSpan as number)) {
+        const v = clampPercent(z.minSpan as number);
+        minSpan = minSpan == null ? v : Math.max(minSpan, v);
+      }
+      if (Number.isFinite(z.maxSpan as number)) {
+        const v = clampPercent(z.maxSpan as number);
+        maxSpan = maxSpan == null ? v : Math.min(maxSpan, v);
+      }
+    }
+
+    // Dataset-aware default: for numeric/time x axes, allow zooming to roughly one interval
+    // by using 100/(N-1) where N is the densest (max-length) raw series.
+    const xAxisType = options.xAxis?.type ?? 'value';
+    let datasetMin: number | null = null;
+    if (xAxisType !== 'category') {
+      let maxPoints = 0;
+      const series = options.series ?? [];
+      for (let i = 0; i < series.length; i++) {
+        const s: any = series[i];
+        if (!s || s.type === 'pie') continue;
+        const len = this.cachedSeriesPointCountsForZoom[i] ?? 0;
+        maxPoints = Math.max(maxPoints, len);
+      }
+      if (maxPoints >= 2) {
+        const v = 100 / (maxPoints - 1);
+        datasetMin = Number.isFinite(v) ? clampPercent(v) : null;
+      }
+    }
+
+    const effectiveMin = minSpan != null ? minSpan : datasetMin ?? 0.5;
+    const effectiveMax = maxSpan != null ? maxSpan : 100;
+    return { minSpan: effectiveMin, maxSpan: effectiveMax };
   }
   
   /**
@@ -1060,6 +1147,7 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
     const hasSliderZoom = options.dataZoom?.some(z => z?.type === 'slider') ?? false;
     
     this.cachedOptions = options;
+    this.recomputeCachedSeriesPointCountsForZoom(options);
     
     // Recreate overlays if dataZoom slider presence changed
     if (hadSliderZoom !== hasSliderZoom) {
@@ -1067,6 +1155,16 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
       this.disposeOverlays();
       // Recreate with new configuration
       this.createOverlays();
+    } else if (hasSliderZoom && this.zoomState) {
+      // Update span constraints at runtime (matches worker coordinator behavior).
+      const constraints = this.computeZoomSpanConstraints(options);
+      const withConstraints = this.zoomState as unknown as {
+        setSpanConstraints?: (minSpan: number, maxSpan: number) => void;
+      };
+      withConstraints.setSpanConstraints?.(
+        (constraints.minSpan as number) ?? 0.5,
+        (constraints.maxSpan as number) ?? 100
+      );
     }
     
     this.sendMessage({
@@ -1222,6 +1320,19 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
         );
       }
       
+      // Keep dataset-aware slider constraints in sync with streaming appends.
+      this.incrementCachedSeriesPointCountForZoom(seriesIndex, pointCount);
+      if (this.zoomState) {
+        const constraints = this.computeZoomSpanConstraints(this.cachedOptions);
+        const withConstraints = this.zoomState as unknown as {
+          setSpanConstraints?: (minSpan: number, maxSpan: number) => void;
+        };
+        withConstraints.setSpanConstraints?.(
+          (constraints.minSpan as number) ?? 0.5,
+          (constraints.maxSpan as number) ?? 100
+        );
+      }
+
       this.sendMessage({
         type: 'appendData',
         chartId: this.chartId,
@@ -1256,6 +1367,19 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
     
     const [data, stride] = serializeDataPoints(newPoints);
     
+    // Keep dataset-aware slider constraints in sync with streaming appends.
+    this.incrementCachedSeriesPointCountForZoom(seriesIndex, newPoints.length);
+    if (this.zoomState) {
+      const constraints = this.computeZoomSpanConstraints(this.cachedOptions);
+      const withConstraints = this.zoomState as unknown as {
+        setSpanConstraints?: (minSpan: number, maxSpan: number) => void;
+      };
+      withConstraints.setSpanConstraints?.(
+        (constraints.minSpan as number) ?? 0.5,
+        (constraints.maxSpan as number) ?? 100
+      );
+    }
+
     this.sendMessage({
       type: 'appendData',
       chartId: this.chartId,

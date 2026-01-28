@@ -26,6 +26,14 @@ Canvas configuration issues typically occur when:
 - Canvas dimensions exceed `device.limits.maxTextureDimension2D`
 - Format mismatch between canvas context and render pipeline
 
+### Chart Initializes at 0×0 (Hidden or 0-Sized Container)
+
+Charts can be created while their container is temporarily 0-sized (for example, `display: none` during initial layout, a collapsed panel, or a container without an explicit height). Internally, the render coordinator **clamps canvas dimensions to at least 1×1 device pixels** to avoid hard crashes and will render normally once a valid size is available.
+
+If you see a blank chart or incorrect sizing after the container becomes visible:
+- Ensure the container has a real size (e.g. set an explicit height, or use a parent with a defined height).
+- After revealing the container / after layout settles, call `chart.resize()` (or recreate the chart) so the canvas and layout can be recomputed.
+
 ### Resource Cleanup
 
 Always clean up WebGPU resources to prevent leaks:

@@ -382,7 +382,7 @@ Implement `computePointerEventData()` helper function:
 function computePointerEventData(
   event: PointerEvent,
   canvas: HTMLCanvasElement,
-  gridArea: { left: number; right: number; top: number; bottom: number }
+  gridArea: { left: number; right: number; top: number; bottom: number; devicePixelRatio?: number }
 ): PointerEventData {
   // Step 1: Get canvas position using getBoundingClientRect()
   const rect = canvas.getBoundingClientRect();
@@ -511,9 +511,11 @@ function getPlotSizeCssPx(
   }
   
   // OffscreenCanvas: canvas.width/height are in device pixels
-  // Convert to CSS pixels by dividing by device pixel ratio
-  const cssWidth = canvas.width / devicePixelRatio;
-  const cssHeight = canvas.height / devicePixelRatio;
+  // Convert to CSS pixels by dividing by device pixel ratio.
+  // Robustness: treat missing/invalid DPR as 1.0 (renderers do the same).
+  const dpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
+  const cssWidth = canvas.width / dpr;
+  const cssHeight = canvas.height / dpr;
   
   // Apply grid area constraints
   return {
@@ -532,12 +534,24 @@ function getPlotSizeCssPx(
 **1. Cache grid area configuration:**
 ```typescript
 // Main thread: Cache grid area from options
-let cachedGridArea = { left: 60, right: 20, top: 40, bottom: 40 };
+let cachedGridArea = {
+  left: 60,
+  right: 20,
+  top: 40,
+  bottom: 40,
+  // Optional but recommended: used for OffscreenCanvas CSS px conversions in worker mode.
+  // Robustness: downstream renderers default missing/invalid DPR to 1.0.
+  devicePixelRatio: Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1
+};
 
 worker.addEventListener('message', (e) => {
   if (e.data.type === 'ready') {
     // Update cached grid area from initialization
-    cachedGridArea = e.data.options?.grid || cachedGridArea;
+    cachedGridArea = {
+      ...cachedGridArea,
+      ...(e.data.options?.grid || {}),
+      devicePixelRatio: Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1
+    };
   }
 });
 
@@ -637,7 +651,7 @@ canvas.addEventListener('pointermove', (e) => {
 **Diagnosis:**
 1. Verify `canvas.getBoundingClientRect()` is called on every event (canvas may have moved)
 2. Check that cached grid area matches worker's grid configuration
-3. Ensure device pixel ratio is correctly accounted for in OffscreenCanvas calculation
+3. Ensure device pixel ratio is correctly accounted for in OffscreenCanvas calculation (missing/invalid DPR falls back to 1.0, but layout may drift)
 4. Verify tooltip position uses canvas-local CSS pixels, not page-global
 
 **Issue:** Tooltips lag behind cursor.
@@ -805,6 +819,7 @@ class ChartGPUWorkerProxy {
 - `getCanvasCssWidth()` divides OffscreenCanvas width by DPR
 - `getCanvasCssHeight()` does the same for height
 - All coordinates passed to callbacks are CSS pixels
+ - **Robustness**: `GPUContext` sanitizes invalid `devicePixelRatio` to `1`, and renderers treat missing/invalid DPR as `1` (so bad DPR inputs no longer crash rendering).
 
 **No changes needed** - internal implementation handles this correctly.
 

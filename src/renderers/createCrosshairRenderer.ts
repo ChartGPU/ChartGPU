@@ -158,7 +158,10 @@ const generateCrosshairVertices = (
     throw new Error('CrosshairRenderer.prepare: gridArea margins must be non-negative.');
   }
 
-  const { canvasWidth, canvasHeight, devicePixelRatio } = gridArea;
+  const { canvasWidth, canvasHeight } = gridArea;
+  // Be resilient: older call sites may omit/incorrectly pass DPR. Defaulting avoids hard crashes.
+  const devicePixelRatio =
+    Number.isFinite(gridArea.devicePixelRatio) && gridArea.devicePixelRatio > 0 ? gridArea.devicePixelRatio : 1;
 
   const plotLeftDevice = gridArea.left * devicePixelRatio;
   const plotRightDevice = canvasWidth - gridArea.right * devicePixelRatio;

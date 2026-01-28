@@ -52,8 +52,7 @@ const isFiniteGridArea = (gridArea: GridArea): boolean =>
   Number.isFinite(gridArea.top) &&
   Number.isFinite(gridArea.bottom) &&
   Number.isFinite(gridArea.canvasWidth) &&
-  Number.isFinite(gridArea.canvasHeight) &&
-  Number.isFinite(gridArea.devicePixelRatio);
+  Number.isFinite(gridArea.canvasHeight);
 
 const finiteOrUndefined = (v: number | undefined): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 
@@ -84,13 +83,19 @@ const generateAxisVertices = (
   gridArea: GridArea,
   tickCountOverride?: number
 ): Float32Array => {
-  const { left, right, top, bottom, canvasWidth, canvasHeight, devicePixelRatio } = gridArea;
+  const { left, right, top, bottom, canvasWidth, canvasHeight } = gridArea;
+  // Be resilient: older call sites may omit/incorrectly pass DPR. Defaulting avoids hard crashes.
+  const devicePixelRatio =
+    Number.isFinite(gridArea.devicePixelRatio) && gridArea.devicePixelRatio > 0 ? gridArea.devicePixelRatio : 1;
 
   if (!isFiniteGridArea(gridArea)) {
     throw new Error('AxisRenderer.prepare: gridArea dimensions must be finite numbers.');
   }
   if (canvasWidth <= 0 || canvasHeight <= 0) {
     throw new Error('AxisRenderer.prepare: canvas dimensions must be positive.');
+  }
+  if (left < 0 || right < 0 || top < 0 || bottom < 0) {
+    throw new Error('AxisRenderer.prepare: gridArea margins must be non-negative.');
   }
 
   const plotLeft = left * devicePixelRatio;

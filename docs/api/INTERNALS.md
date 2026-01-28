@@ -186,6 +186,8 @@ See [render-coordinator-summary.md](render-coordinator-summary.md) for the essen
 **Responsibilities (essential):**
 
 - **Layout**: computes `GridArea` from resolved grid margins and canvas size.
+  - **Robustness**: `GridArea.canvasWidth` / `GridArea.canvasHeight` (device pixels) are clamped to at least `1` to tolerate temporarily 0-sized canvases (e.g. during layout).
+  - **DPR handling**: `GridArea.devicePixelRatio` is part of the type (for CSS→device conversion). The coordinator validates it (fallback `1`), and several renderers defensively treat missing/invalid DPR as `1`.
 - **Scales**: derives `xScale`/`yScale` in clip space; respects explicit axis `min`/`max` overrides and otherwise falls back to global series bounds.
 - **Orchestration order**: clear → grid → area fills → bars → scatter → line strokes → hover highlight → axes → crosshair.
 - **Interaction overlays (internal)**: the render coordinator creates an internal [event manager](#event-manager-internal), an internal [crosshair renderer](#crosshair-renderer-internal--contributor-notes), and an internal [highlight renderer](#highlight-renderer-internal--contributor-notes). Pointer `mousemove`/`mouseleave` updates interaction state and toggles overlay visibility; when provided, `callbacks.onRequestRender?.()` is used so pointer movement schedules renders in render-on-demand systems (e.g. `ChartGPU`).
@@ -463,7 +465,7 @@ An instanced scatter circle renderer factory lives in [`createScatterRenderer.ts
   - **Size semantics (important)**:
     - Per-point `size` (tuple third value or object `size`) takes precedence when present and finite.
     - Otherwise, `series.symbolSize` is used (number or function) as a fallback.
-    - Sizes are interpreted as a **radius in CSS pixels** and are multiplied by `window.devicePixelRatio` before being written as `radiusPx` (device pixels) for the shader.
+    - Sizes are interpreted as a **radius in CSS pixels** and are scaled to device pixels using DPR (typically `gridArea.devicePixelRatio`). Robustness: missing/invalid DPR is treated as `1`.
   - **Clipping**: when `gridArea` is provided, the renderer applies a plot-area scissor rect (device pixels) for the draw and resets scissor afterward.
 - **Current symbol**: the WGSL implementation renders circles; `ScatterSeriesConfig.symbol` is currently not used by the renderer.
 

@@ -33,6 +33,36 @@ export interface ZoomState {
   onChange(callback: ZoomRangeChangeCallback): () => void;
 }
 
+export type ZoomSpanConstraints = Readonly<{
+  /**
+   * Minimum allowed span (percent points in [0, 100]).
+   */
+  readonly minSpan?: number;
+  /**
+   * Maximum allowed span (percent points in [0, 100]).
+   */
+  readonly maxSpan?: number;
+}>;
+
+export type ZoomRangeAnchor =
+  | 'start'
+  | 'end'
+  | 'center'
+  | Readonly<{ center: number; ratio: number }>;
+
+export interface ZoomStateWithConstraints extends ZoomState {
+  /**
+   * Updates span constraints at runtime (used by coordinator on setOption/appendData).
+   *
+   * Passing `undefined` leaves that constraint unchanged.
+   */
+  setSpanConstraints(minSpan?: number, maxSpan?: number): void;
+  /**
+   * Sets a range with an explicit anchor for clamping (used by slider handles).
+   */
+  setRangeAnchored(start: number, end: number, anchor: ZoomRangeAnchor): void;
+}
+
 // Minimum span of 0.5% prevents zooming beyond what can be reasonably visualized
 // and prevents the slider UI from becoming unusably collapsed.
 // At 0.5% span, a 500px track shows a 2.5px window, which with 10px handles
@@ -47,25 +77,29 @@ const normalizeZero = (v: number): number => (Object.is(v, -0) ? 0 : v);
 
 const copyRange = (r: ZoomRange): ZoomRange => ({ start: r.start, end: r.end });
 
-export function createZoomState(initialStart: number, initialEnd: number): ZoomState {
+export function createZoomState(
+  initialStart: number,
+  initialEnd: number,
+  constraints?: ZoomSpanConstraints,
+): ZoomStateWithConstraints {
   let start = 0;
   let end = 100;
   let lastEmitted: ZoomRange | null = null;
 
   const listeners = new Set<ZoomRangeChangeCallback>();
 
-  const minSpan = (() => {
-    const v = Number.isFinite(DEFAULT_MIN_SPAN) ? DEFAULT_MIN_SPAN : 0;
-    return clamp(v, 0, 100);
+  let minSpan = (() => {
+    const v = Number.isFinite(constraints?.minSpan) ? (constraints!.minSpan as number) : DEFAULT_MIN_SPAN;
+    return clamp(Number.isFinite(v) ? v : 0, 0, 100);
   })();
 
-  const maxSpan = (() => {
-    const v = Number.isFinite(DEFAULT_MAX_SPAN) ? DEFAULT_MAX_SPAN : 100;
-    return clamp(v, 0, 100);
+  let maxSpan = (() => {
+    const v = Number.isFinite(constraints?.maxSpan) ? (constraints!.maxSpan as number) : DEFAULT_MAX_SPAN;
+    return clamp(Number.isFinite(v) ? v : 100, 0, 100);
   })();
 
-  const normalizedMinSpan = Math.min(minSpan, maxSpan);
-  const normalizedMaxSpan = Math.max(minSpan, maxSpan);
+  let normalizedMinSpan = Math.min(minSpan, maxSpan);
+  let normalizedMaxSpan = Math.max(minSpan, maxSpan);
 
   const emit = (): void => {
     const next: ZoomRange = { start, end };
@@ -82,6 +116,24 @@ export function createZoomState(initialStart: number, initialEnd: number): ZoomS
     // Emit to a snapshot so additions/removals during emit don't affect this flush.
     const snapshot = Array.from(listeners);
     for (const cb of snapshot) cb({ start, end });
+  };
+
+  const toAnchor = (nextStart: number, nextEnd: number, spec?: ZoomRangeAnchor): { readonly center: number; readonly ratio: number } | undefined => {
+    if (!spec) return undefined;
+    if (typeof spec === 'string') {
+      switch (spec) {
+        case 'start':
+          return { center: nextStart, ratio: 0 };
+        case 'end':
+          return { center: nextEnd, ratio: 1 };
+        case 'center':
+          return { center: (nextStart + nextEnd) * 0.5, ratio: 0.5 };
+      }
+    }
+    if (spec && Number.isFinite(spec.center) && Number.isFinite(spec.ratio)) {
+      return { center: spec.center, ratio: spec.ratio };
+    }
+    return undefined;
   };
 
   const applyNextRange = (
@@ -164,6 +216,34 @@ export function createZoomState(initialStart: number, initialEnd: number): ZoomS
     applyNextRange(nextStart, nextEnd);
   };
 
+  const setRangeAnchored: ZoomStateWithConstraints['setRangeAnchored'] = (nextStart, nextEnd, anchor) => {
+    applyNextRange(nextStart, nextEnd, { anchor: toAnchor(nextStart, nextEnd, anchor) });
+  };
+
+  const setSpanConstraints: ZoomStateWithConstraints['setSpanConstraints'] = (nextMinSpan, nextMaxSpan) => {
+    // Undefined => leave unchanged (lets coordinator reapply dynamically computed values explicitly).
+    const nextMin =
+      typeof nextMinSpan === 'number' && Number.isFinite(nextMinSpan) ? clamp(nextMinSpan, 0, 100) : minSpan;
+    const nextMax =
+      typeof nextMaxSpan === 'number' && Number.isFinite(nextMaxSpan) ? clamp(nextMaxSpan, 0, 100) : maxSpan;
+
+    if (nextMin === minSpan && nextMax === maxSpan) return;
+
+    minSpan = nextMin;
+    maxSpan = nextMax;
+    normalizedMinSpan = Math.min(minSpan, maxSpan);
+    normalizedMaxSpan = Math.max(minSpan, maxSpan);
+
+    // If the current range violates the new constraints, clamp it.
+    // Heuristic anchors keep "pinned to start/end" views stable (auto-scroll and common UX).
+    const s = start;
+    const e = end;
+    const eps = 1e-6;
+    const anchor: ZoomRangeAnchor =
+      e >= 100 - eps ? 'end' : s <= 0 + eps ? 'start' : 'center';
+    applyNextRange(s, e, { anchor: toAnchor(s, e, anchor) });
+  };
+
   const zoomIn: ZoomState['zoomIn'] = (center, factor) => {
     if (!Number.isFinite(center) || !Number.isFinite(factor)) return;
     if (factor <= 1) return;
@@ -202,6 +282,6 @@ export function createZoomState(initialStart: number, initialEnd: number): ZoomS
     };
   };
 
-  return { getRange, setRange, zoomIn, zoomOut, pan, onChange };
+  return { getRange, setRange, setRangeAnchored, setSpanConstraints, zoomIn, zoomOut, pan, onChange };
 }
 

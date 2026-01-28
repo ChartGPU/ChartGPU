@@ -273,9 +273,11 @@ function getPlotSizeCssPx(
   }
   
   // OffscreenCanvas: canvas.width/height are in device pixels
-  // Convert to CSS pixels by dividing by device pixel ratio
-  const cssWidth = canvas.width / devicePixelRatio;
-  const cssHeight = canvas.height / devicePixelRatio;
+  // Convert to CSS pixels by dividing by device pixel ratio.
+  // Robustness: treat missing/invalid DPR as 1.0 (renderers do the same).
+  const dpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
+  const cssWidth = canvas.width / dpr;
+  const cssHeight = canvas.height / dpr;
   
   // Apply grid area constraints to get plot region
   return {
@@ -295,7 +297,7 @@ function getPlotSizeCssPx(
 - Removed `isHTMLCanvasElement(canvas)` check that blocked worker mode
 - Uses `getPlotSizeCssPx()` to get CSS pixel dimensions for both canvas types
 - Creates linear scales mapping domain coordinates to grid coordinates
-- Returns `null` if canvas is unavailable or grid region is zero-sized
+- Returns `null` if canvas is unavailable or the plot (grid) region resolves to a non-positive size. Note: canvas device-pixel dimensions are clamped to at least 1px (so 0-size canvases no longer throw), but grid margins can still produce a degenerate plot area.
 
 **Critical fix:** Previously returned `null` for OffscreenCanvas, causing `interactionScales` to be `null` and breaking all tooltip hit-testing in worker mode.
 

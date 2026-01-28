@@ -20,6 +20,12 @@ const assertRange = (
   }
 };
 
+const assertApprox = (label: string, actual: number, expected: number, eps: number): void => {
+  if (!Number.isFinite(actual) || Math.abs(actual - expected) > eps) {
+    throw new Error(`${label}: expected ~${expected} (±${eps}) but got ${actual}`);
+  }
+};
+
 // setRange clamp + ordering
 {
   const z = createZoomState(0, 100);
@@ -84,6 +90,42 @@ const assertRange = (
   z.zoomOut(30, 10); // proposed span 200 -> should clamp to full extent 0..100
   assertRange('zoomOut clamps to max span', z.getRange(), 0, 100);
   assert(calls === 1, `Expected 1 emission after zoomOut clamp, got ${calls}.`);
+}
+
+// configurable minSpan/maxSpan are honored at creation time (init clamps if needed)
+{
+  const z = createZoomState(0, 100, { minSpan: 10, maxSpan: 50 });
+  // Initial span (100) exceeds maxSpan (50) → should clamp around midpoint to 25..75
+  assertRange('init clamps to maxSpan=50', z.getRange(), 25, 75);
+}
+
+// setSpanConstraints updates constraints at runtime and clamps existing range
+{
+  const z = createZoomState(40, 41, { minSpan: 0.5, maxSpan: 100 });
+  assertRange('init range (40..41)', z.getRange(), 40, 41);
+
+  // Increase minSpan: current span (1) violates → expand around center (40.5) to span 10
+  z.setSpanConstraints(10, undefined);
+  assertRange('setSpanConstraints(min=10) clamps current range', z.getRange(), 35.5, 45.5);
+}
+
+// setRangeAnchored preserves the requested anchor edge when constraints clamp the span
+{
+  const z = createZoomState(0, 100, { minSpan: 40, maxSpan: 100 });
+  // Attempt a too-small span but anchored at end: end should remain fixed at 50.
+  z.setRangeAnchored(30, 50, 'end'); // requested span 20 -> clamped to 40 => 10..50
+  assertRange('setRangeAnchored(..., end) keeps end fixed', z.getRange(), 10, 50);
+}
+
+// enabling ~single-interval zoom: minSpan can be far below the legacy 0.5% floor
+{
+  const minSpan = 100 / 1000; // ~one interval for 1001 points
+  const z = createZoomState(0, 100, { minSpan, maxSpan: 100 });
+  z.zoomIn(50, 1e9); // try to zoom far past the minimum span
+  const r = z.getRange();
+  const span = r.end - r.start;
+  assertApprox('zoomIn clamps to configured minSpan', span, minSpan, 1e-6);
+  assertApprox('zoomIn stays centered', (r.start + r.end) * 0.5, 50, 1e-6);
 }
 
 // pan preserves span, clamps at 0-100

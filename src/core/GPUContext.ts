@@ -44,13 +44,36 @@ export function isHTMLCanvasElement(canvas: SupportedCanvas): canvas is HTMLCanv
 /** Gets display dimensions - clientWidth/Height for HTMLCanvasElement, width/height for OffscreenCanvas. */
 function getCanvasDimensions(canvas: SupportedCanvas): { width: number; height: number } {
   if (isHTMLCanvasElement(canvas)) {
-    return {
-      width: canvas.clientWidth || canvas.width,
-      height: canvas.clientHeight || canvas.height,
-    };
+    // Prefer clientWidth/clientHeight (CSS pixels) for HTMLCanvasElement as they reflect actual display size
+    // Fall back to canvas.width/height (device pixels) if client dimensions are 0 or invalid
+    const width = canvas.clientWidth || canvas.width || 0;
+    const height = canvas.clientHeight || canvas.height || 0;
+    
+    // Validate dimensions are finite and non-negative
+    // Note: 0 dimensions are allowed here - they'll be clamped to 1 during GPUContext initialization
+    if (!Number.isFinite(width) || !Number.isFinite(height)) {
+      throw new Error(
+        `GPUContext: Invalid canvas dimensions detected: width=${canvas.clientWidth || canvas.width}, ` +
+        `height=${canvas.clientHeight || canvas.height}. ` +
+        `Canvas must have finite dimensions. Ensure canvas is properly sized before initialization.`
+      );
+    }
+    
+    return { width, height };
   }
-  // OffscreenCanvas: dimensions already set by main thread
-  return { width: canvas.width, height: canvas.height };
+  // OffscreenCanvas: dimensions already set by main thread (device pixels)
+  const width = canvas.width;
+  const height = canvas.height;
+  
+  // Validate OffscreenCanvas dimensions
+  if (!Number.isFinite(width) || !Number.isFinite(height)) {
+    throw new Error(
+      `GPUContext: Invalid OffscreenCanvas dimensions: width=${width}, height=${height}. ` +
+      `OffscreenCanvas must be initialized with finite dimensions before GPUContext creation.`
+    );
+  }
+  
+  return { width, height };
 }
 
 /**
@@ -65,8 +88,10 @@ export function createGPUContext(
   options?: GPUContextOptions
 ): GPUContextState {
   // Auto-detect DPR on main thread, default to 1.0 in workers
-  const dpr = options?.devicePixelRatio ?? 
-    (typeof window !== 'undefined' ? window.devicePixelRatio : 1.0);
+  const dprRaw =
+    options?.devicePixelRatio ?? (typeof window !== 'undefined' ? window.devicePixelRatio : 1.0);
+  // Be resilient: callers may pass 0/NaN/Infinity. Fall back to 1 instead of throwing.
+  const dpr = Number.isFinite(dprRaw) && dprRaw > 0 ? dprRaw : 1.0;
   const alphaMode = options?.alphaMode ?? 'opaque';
   const powerPreference = options?.powerPreference ?? 'high-performance';
   
@@ -100,6 +125,10 @@ export async function initializeGPUContext(
   if (context.initialized) {
     throw new Error('GPUContext is already initialized. Call destroyGPUContext() before reinitializing.');
   }
+
+  // Be resilient: callers may construct GPUContextState manually.
+  const sanitizedDevicePixelRatio =
+    Number.isFinite(context.devicePixelRatio) && context.devicePixelRatio > 0 ? context.devicePixelRatio : 1.0;
 
   // Check for WebGPU support
   if (!navigator.gpu) {
@@ -156,14 +185,21 @@ export async function initializeGPUContext(
 
       // Use DPR from context state (set at context creation)
       const { width, height } = getCanvasDimensions(context.canvas);
-      const dpr = context.devicePixelRatio;
+      const dpr = sanitizedDevicePixelRatio;
+      
+      // Calculate target dimensions in device pixels
+      // Note: width/height from getCanvasDimensions are in CSS pixels for HTMLCanvasElement,
+      // or device pixels for OffscreenCanvas (already set by main thread)
       const targetWidth = Math.floor(width * dpr);
       const targetHeight = Math.floor(height * dpr);
 
       // Clamp to device limits (must happen after device creation)
       const maxDim = device.limits.maxTextureDimension2D;
-      context.canvas.width = Math.max(1, Math.min(targetWidth, maxDim));
-      context.canvas.height = Math.max(1, Math.min(targetHeight, maxDim));
+      const finalWidth = Math.max(1, Math.min(targetWidth, maxDim));
+      const finalHeight = Math.max(1, Math.min(targetHeight, maxDim));
+      
+      context.canvas.width = finalWidth;
+      context.canvas.height = finalHeight;
 
       // Get preferred format from navigator.gpu, fallback to bgra8unorm
       preferredFormat = navigator.gpu.getPreferredCanvasFormat?.() || 'bgra8unorm';
@@ -185,7 +221,7 @@ export async function initializeGPUContext(
       canvas: context.canvas,
       canvasContext,
       preferredFormat,
-      devicePixelRatio: context.devicePixelRatio,
+      devicePixelRatio: sanitizedDevicePixelRatio,
       alphaMode: context.alphaMode,
       powerPreference: context.powerPreference,
     };
