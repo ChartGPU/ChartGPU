@@ -27,6 +27,7 @@ ChartGPU is a TypeScript charting library built on WebGPU for smooth, interactiv
 - ⚡ Worker-based rendering with OffscreenCanvas (optional - for maximum performance)
 - 📈 Multiple series types: line, area, bar, scatter, pie, candlestick
 - 🌡️ Scatter density/heatmap mode (`mode: 'density'`) for large point clouds — see [`docs/api/options.md#scatterseriesconfig`](docs/api/options.md#scatterseriesconfig) and [`examples/scatter-density-1m/`](examples/scatter-density-1m/)
+- 📍 Annotation overlays: reference lines (horizontal/vertical), point markers, and text labels — see [`docs/api/options.md#annotations`](docs/api/options.md#annotations) and [`examples/annotations/`](examples/annotations/)
 - 🧭 Built-in interaction: hover highlight, tooltip, crosshair
 - 🔁 Streaming updates via `appendData(...)` (cartesian series)
 - 🔍 X-axis zoom (inside gestures + optional slider UI)
@@ -266,6 +267,39 @@ await ChartGPU.createInWorker(container, {
 - Mobile/low-power devices
 
 See [Worker API Documentation](https://github.com/hunterg325/ChartGPU/blob/main/docs/api/worker.md) for details.
+
+### Annotations
+
+Add reference lines, point markers, and text overlays to highlight important data features:
+
+```ts
+await ChartGPU.create(container, {
+  series: [{ type: 'line', data: [[0, 1], [1, 3], [2, 2]] }],
+  annotations: [
+    // Horizontal reference line
+    {
+      id: 'ref-y',
+      type: 'lineY',
+      y: 2.5,
+      layer: 'belowSeries',
+      style: { color: '#ffd166', lineWidth: 2, lineDash: [8, 6], opacity: 0.95 },
+      label: { text: 'threshold' },
+    },
+    // Point marker at peak
+    {
+      id: 'peak',
+      type: 'point',
+      x: 1,
+      y: 3,
+      layer: 'aboveSeries',
+      marker: { symbol: 'circle', size: 8, style: { color: '#ff4ab0' } },
+      label: { template: 'peak={y}', decimals: 2 },
+    },
+  ],
+});
+```
+
+See [Annotations Documentation](https://github.com/hunterg325/ChartGPU/blob/main/docs/api/options.md#annotations) and the [annotations example](https://github.com/hunterg325/ChartGPU/tree/main/examples/annotations).
 
 ## Installation
 
