@@ -6,7 +6,13 @@ import { parseCssColorToRgba01 } from '../utils/colors';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
 
 export interface LineRenderer {
-  prepare(seriesConfig: ResolvedLineSeriesConfig, dataBuffer: GPUBuffer, xScale: LinearScale, yScale: LinearScale): void;
+  prepare(
+    seriesConfig: ResolvedLineSeriesConfig,
+    dataBuffer: GPUBuffer,
+    xScale: LinearScale,
+    yScale: LinearScale,
+    xOffset?: number
+  ): void;
   render(passEncoder: GPURenderPassEncoder): void;
   dispose(): void;
 }
@@ -167,7 +173,7 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     if (disposed) throw new Error('LineRenderer is disposed.');
   };
 
-  const prepare: LineRenderer['prepare'] = (seriesConfig, dataBuffer, xScale, yScale) => {
+  const prepare: LineRenderer['prepare'] = (seriesConfig, dataBuffer, xScale, yScale, xOffset = 0) => {
     assertNotDisposed();
 
     currentVertexBuffer = dataBuffer;
@@ -177,7 +183,11 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     const { a: ax, b: bx } = computeClipAffineFromScale(xScale, xMin, xMax);
     const { a: ay, b: by } = computeClipAffineFromScale(yScale, yMin, yMax);
 
-    writeTransformMat4F32(vsUniformScratchF32, ax, bx, ay, by);
+    // When the vertex buffer packs x as (x - xOffset) (to preserve Float32 precision for large
+    // domains like epoch-ms), fold the offset back into the affine's intercept in f64 on CPU:
+    // clipX = ax * (x - xOffset) + (bx + ax * xOffset)
+    const bxAdjusted = bx + ax * xOffset;
+    writeTransformMat4F32(vsUniformScratchF32, ax, bxAdjusted, ay, by);
     writeUniformBuffer(device, vsUniformBuffer, vsUniformScratchBuffer);
 
     const [r, g, b, a] = parseSeriesColorToRgba01(seriesConfig.color);

@@ -14,8 +14,9 @@
 // - Up to 8 dash entries are supported per line (truncated on CPU).
 //
 // Performance:
-// - Vertex stage expands each instance into a quad (2 triangles, 6 vertices) and snaps edges
-//   to integer device pixels for stable, crisp strokes on integer DPR.
+// - Vertex stage expands each instance into a quad (2 triangles, 6 vertices).
+// - We intentionally avoid snapping to integer device pixels to prevent visible stepping/jiggle
+//   while zooming; edge AA is handled in the fragment stage.
 
 struct VSUniforms {
   canvasSize : vec2<f32>,     // device pixels (canvas.width, canvas.height)
@@ -61,11 +62,12 @@ struct VSOut {
   @location(2) @interpolate(flat) dash0_3 : vec4<f32>,
   @location(3) @interpolate(flat) dash4_7 : vec4<f32>,
   @location(4) @interpolate(flat) color : vec4<f32>,
-};
 
-fn roundToInt(x : f32) -> f32 {
-  return floor(x + 0.5);
-}
+  // Axis-aligned quad anti-aliasing (device pixels).
+  // acrossDevice ranges [0..widthDevice] across the stroke thickness.
+  @location(5) acrossDevice : f32,
+  @location(6) @interpolate(flat) widthDevice : f32,
+};
 
 fn quadUv(vid : u32) -> vec2<f32> {
   // Two triangles covering [0,1]x[0,1].
@@ -84,35 +86,38 @@ fn quadUv(vid : u32) -> vec2<f32> {
 fn vsMain(in : VSIn, @builtin(vertex_index) vid : u32) -> VSOut {
   let uv = quadUv(vid);
   let dpr = max(1e-6, u.devicePixelRatio);
-  let dprRounded = roundToInt(dpr);
-  // Snap to integer device pixels only when DPR is ~integer.
-  // On fractional DPR (e.g. 1.25 / 1.5), hard snapping causes visible "jiggle" while zooming
-  // because continuous motion gets quantized to adjacent device pixels.
-  let snapToDevicePx = abs(dpr - dprRounded) < 1e-3;
+  // IMPORTANT: Do NOT snap reference lines to integer device pixels.
+  // Snapping looks crisp at rest but causes visible "jiggle" / stepping while zooming because
+  // the line position is continuously changing (data-space → screen-space), and rounding
+  // quantizes that motion to adjacent pixels. We rely on analytic AA in the fragment stage
+  // to keep strokes stable and reasonably crisp across DPRs.
 
   let axis = in.axisPos.x;
   let posCss = in.axisPos.y;
   let widthCss = max(0.0, in.widthDashCount.x);
-  let widthDevice = max(1.0, select(widthCss * dpr, roundToInt(widthCss * dpr), snapToDevicePx));
+  let widthDevice = max(1.0, widthCss * dpr);
 
   var xDevice : f32;
   var yDevice : f32;
   var alongCss : f32;
+  var acrossDevice : f32;
 
   if (axis < 0.5) {
     // Vertical line at x = posCss (canvas-local CSS px), spanning plot height.
     let centerX = posCss * dpr;
-    let startX = select(centerX - 0.5 * widthDevice, roundToInt(centerX - 0.5 * widthDevice), snapToDevicePx);
+    let startX = centerX - 0.5 * widthDevice;
     xDevice = startX + uv.x * widthDevice;
     yDevice = u.plotOrigin.y + uv.y * u.plotSize.y;
     alongCss = (uv.y * u.plotSize.y) / dpr;
+    acrossDevice = uv.x * widthDevice;
   } else {
     // Horizontal line at y = posCss (canvas-local CSS px), spanning plot width.
     let centerY = posCss * dpr;
-    let startY = select(centerY - 0.5 * widthDevice, roundToInt(centerY - 0.5 * widthDevice), snapToDevicePx);
+    let startY = centerY - 0.5 * widthDevice;
     xDevice = u.plotOrigin.x + uv.x * u.plotSize.x;
     yDevice = startY + uv.y * widthDevice;
     alongCss = (uv.x * u.plotSize.x) / dpr;
+    acrossDevice = uv.y * widthDevice;
   }
 
   let clipX = (xDevice / u.canvasSize.x) * 2.0 - 1.0;
@@ -125,6 +130,8 @@ fn vsMain(in : VSIn, @builtin(vertex_index) vid : u32) -> VSOut {
   out.dash0_3 = in.dash0_3;
   out.dash4_7 = in.dash4_7;
   out.color = in.color;
+  out.acrossDevice = acrossDevice;
+  out.widthDevice = widthDevice;
   return out;
 }
 
@@ -143,16 +150,31 @@ fn dashValue(i : u32, d0 : vec4<f32>, d1 : vec4<f32>) -> f32 {
 
 @fragment
 fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
+  // Analytic edge anti-aliasing for axis-aligned quads (reduces shimmering during zoom).
+  // This is a lightweight alternative to full MSAA for thin strokes.
+  let edgeDist = min(in.acrossDevice, in.widthDevice - in.acrossDevice);
+  // Slightly widen AA to reduce temporal shimmer on moving 1-2px strokes.
+  // Keep conservative so lines remain reasonably crisp.
+  let aa = max(fwidth(in.acrossDevice), 1e-3) * 1.25;
+  let edgeCoverage = smoothstep(0.0, aa, edgeDist);
+  var color = in.color;
+  color.a = color.a * edgeCoverage;
+
   let dashCount = u32(round(in.dashInfo.x));
   let dashTotal = in.dashInfo.y;
 
+  // IMPORTANT: derivative ops (fwidth) must execute in uniform control flow.
+  // So compute the dash parameterization unconditionally (using a safe total) BEFORE any early-return.
+  let dashTotalSafe = max(dashTotal, 1.0);
+  let t = in.alongCss - floor(in.alongCss / dashTotalSafe) * dashTotalSafe;
+  // Anti-alias dash edges along the line axis (CSS pixels).
+  // This reduces shimmer during zoom for dashed reference lines without requiring MSAA.
+  let dashAa = max(fwidth(t), 1e-3);
+
   // Solid line (no dash pattern).
   if (dashCount == 0u || dashTotal <= 0.0) {
-    return in.color;
+    return color;
   }
-
-  // Repeat pattern along the line axis.
-  let t = in.alongCss - floor(in.alongCss / dashTotal) * dashTotal;
 
   var acc = 0.0;
   var on = true;
@@ -163,8 +185,19 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
     if (seg <= 0.0) { continue; }
 
     if (t < acc + seg) {
-      if (!on) { discard; }
-      return in.color;
+      // IMPORTANT: Avoid `discard` for off segments.
+      // Discard can cause temporal popping on moving dashed edges; prefer a smooth alpha mask.
+      //
+      // Fade in/out near dash boundaries for smooth edges. This produces coverage in [0..1]
+      // within the current segment, going to 0 at segment boundaries.
+      let inFromStart = smoothstep(0.0, dashAa, t - acc);
+      let inFromEnd = smoothstep(0.0, dashAa, (acc + seg) - t);
+      let segCoverage = min(inFromStart, inFromEnd);
+
+      // On segments contribute alpha; off segments contribute 0 alpha (no discard).
+      let dashMask = select(0.0, segCoverage, on);
+      color.a = color.a * dashMask;
+      return color;
     }
 
     acc = acc + seg;
@@ -172,5 +205,7 @@ fn fsMain(in : VSOut) -> @location(0) vec4<f32> {
   }
 
   // Defensive fallback if the dash list is degenerate.
-  return in.color;
+  // If we didn't find a segment (shouldn't happen), default to transparent (safer than solid).
+  color.a = 0.0;
+  return color;
 }

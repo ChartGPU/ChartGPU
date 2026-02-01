@@ -19,6 +19,16 @@ If you encounter errors about WebGPU not being available, check:
 - Firefox is not yet supported
 - Hardware compatibility (WebGPU requires modern GPU support)
 
+### Line Series Shimmer During Zoom (Time Axis / Epoch-ms Timestamps)
+
+If you previously noticed **line stroke shimmer/jitter while zooming** on time-based charts (especially when x-values are large **epoch-milliseconds** around \(10^{12}\)), this was caused by **Float32 precision loss** when large absolute x-values were packed into GPU vertex buffers.
+
+ChartGPU now avoids this automatically by **rebasing** time x-values internally before upload:
+- It stores \(x' = x - xOffset\) in the GPU buffer (where `xOffset` is a per-series origin), which keeps values near zero and preserves precision.
+- It compensates for the origin shift when preparing the line renderer transform, so the visual result is unchanged—just more stable during zoom/pan.
+
+**User guidance:** You can provide epoch-ms timestamps directly as documented for `xAxis.type: 'time'`. You no longer need to pre-normalize timestamps (for example, converting to seconds) purely to avoid zoom shimmer.
+
 ### Canvas Configuration Errors
 
 Canvas configuration issues typically occur when:

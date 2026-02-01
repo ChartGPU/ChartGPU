@@ -6,6 +6,7 @@
   High-performance charts powered by WebGPU
 </p>
 
+
 <p align="center">
   <a href="https://github.com/hunterg325/ChartGPU/blob/main/docs/GETTING_STARTED.md">Documentation</a> |
   <a href="https://chartgpu.github.io/ChartGPU/">Live Demo</a> |

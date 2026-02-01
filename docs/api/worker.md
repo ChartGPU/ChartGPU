@@ -152,7 +152,7 @@ In development builds, ChartGPU emits helpful warnings:
 
 **Large Tuple Array Warning:**
 - Triggers: `array.length > 10,000` points using `DataPoint[]` form
-- Suggests: Converting to `Float32Array` using `packDataPoints()`
+- Suggests: Converting to `Float32Array` using `packDataPoints()` (except when your x-values are large **epoch-ms timestamps** and you require millisecond-level resolution—see note under `packDataPoints`)
 - Benefit: ~50% memory reduction, eliminates serialization overhead
 
 **Stride Mismatch Warning:**
@@ -183,6 +183,8 @@ For typed-array usage patterns (including zero-copy transfers and buffer detachm
 Converts DataPoint array into interleaved Float32Array for zero-copy GPU/Worker transfer.
 
 **Format:** `[x0, y0, x1, y1, ...]` (2 floats per point = 8 bytes stride)
+
+**Timestamp precision note:** If your x-values are **epoch-millisecond** timestamps (\(~10^{12}\)) and you need millisecond-level resolution, pre-converting x-values to Float32 can quantize away fine-grained differences before ChartGPU’s internal GPU-precision rebasing can help. In that case, prefer sending `DataPoint[]` (numbers) or higher-precision sources so rebasing can be applied before Float32 conversion.
 
 **Parameters:**
 - `points`: Array of data points (tuple `[x, y]` or object `{ x, y }` form)

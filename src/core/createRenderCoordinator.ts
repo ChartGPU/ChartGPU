@@ -39,6 +39,7 @@ import { createCrosshairRenderer } from '../renderers/createCrosshairRenderer';
 import type { CrosshairRenderOptions } from '../renderers/createCrosshairRenderer';
 import { createHighlightRenderer } from '../renderers/createHighlightRenderer';
 import type { HighlightPoint } from '../renderers/createHighlightRenderer';
+import { createRenderPipeline } from '../renderers/rendererUtils';
 import { createReferenceLineRenderer } from '../renderers/createReferenceLineRenderer';
 import type { ReferenceLineInstance } from '../renderers/createReferenceLineRenderer';
 import { createAnnotationMarkerRenderer } from '../renderers/createAnnotationMarkerRenderer';
@@ -106,6 +107,28 @@ function getCanvasCssHeight(canvas: SupportedCanvas | null, devicePixelRatio: nu
   }
   // OffscreenCanvas: height property is in device pixels. Convert to CSS pixels by dividing by DPR.
   return canvas.height / devicePixelRatio;
+}
+
+/**
+ * Gets canvas CSS size derived strictly from device-pixel dimensions and DPR.
+ *
+ * This is intentionally different from `getCanvasCssWidth/Height(...)`:
+ * - HTMLCanvasElement: `clientWidth/clientHeight` reflect DOM layout and can diverge (rounding, zoom, async resize)
+ *   from the WebGPU render target size (`canvas.width/height` in device pixels).
+ * - For GPU overlays that round-trip CSS↔device pixels in-shader, we must derive CSS size from
+ *   `canvas.width/height` + DPR to keep transforms consistent with the render target.
+ *
+ * NOTE: Use this for GPU overlay coordinate conversion only (reference lines, markers).
+ * Keep DOM overlays (labels/tooltips) using `clientWidth/clientHeight` for layout correctness.
+ */
+function getCanvasCssSizeFromDevicePixels(
+  canvas: SupportedCanvas | null,
+  devicePixelRatio: number
+): Readonly<{ width: number; height: number }> {
+  if (!canvas) return { width: 0, height: 0 };
+  const dpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
+  // Both HTMLCanvasElement and OffscreenCanvas expose `.width/.height` in device pixels.
+  return { width: canvas.width / dpr, height: canvas.height / dpr };
 }
 
 export interface RenderCoordinator {
@@ -1733,8 +1756,121 @@ export function createRenderCoordinator(
   crosshairRenderer.setVisible(false);
   const highlightRenderer = createHighlightRenderer(device, { targetFormat });
   highlightRenderer.setVisible(false);
+
+  // MSAA for the *annotation overlay* (above-series) pass to reduce shimmer during zoom.
+  // NOTE: In WebGPU, pipeline sampleCount must match the render pass attachment sampleCount.
+  // To keep MSAA scoped, we render the main scene to an offscreen single-sample texture, then:
+  // - MSAA overlay pass: blit main scene into an MSAA target + draw above-series annotations, resolve to swapchain
+  // - Top overlay pass: draw crosshair/axes/highlight (single-sample) on top of the resolved swapchain
+  const ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT = 4;
+
   const referenceLineRenderer = createReferenceLineRenderer(device, { targetFormat });
   const annotationMarkerRenderer = createAnnotationMarkerRenderer(device, { targetFormat });
+  const referenceLineRendererMsaa = createReferenceLineRenderer(device, {
+    targetFormat,
+    sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
+  });
+  const annotationMarkerRendererMsaa = createAnnotationMarkerRenderer(device, {
+    targetFormat,
+    sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
+  });
+
+  // Offscreen main color + MSAA overlay targets (recreated on resize/DPR changes).
+  let mainColorTexture: GPUTexture | null = null;
+  let mainColorView: GPUTextureView | null = null;
+  let overlayMsaaTexture: GPUTexture | null = null;
+  let overlayMsaaView: GPUTextureView | null = null;
+  let overlayTargetsWidth = 0;
+  let overlayTargetsHeight = 0;
+  let overlayTargetsFormat: GPUTextureFormat | null = null;
+
+  const OVERLAY_BLIT_WGSL = `
+struct VSOut { @builtin(position) pos: vec4f };
+
+@vertex
+fn vsMain(@builtin(vertex_index) i: u32) -> VSOut {
+  var positions = array<vec2f, 3>(
+    vec2f(-1.0, -1.0),
+    vec2f( 3.0, -1.0),
+    vec2f(-1.0,  3.0)
+  );
+  var o: VSOut;
+  o.pos = vec4f(positions[i], 0.0, 1.0);
+  return o;
+}
+
+// Using textureLoad (no filtering) for pixel-exact blit into the MSAA overlay pass.
+@group(0) @binding(0) var srcTex: texture_2d<f32>;
+
+@fragment
+fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+  let xy = vec2<i32>(pos.xy);
+  return textureLoad(srcTex, xy, 0);
+}
+`;
+
+  const overlayBlitBindGroupLayout = device.createBindGroupLayout({
+    entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } }],
+  });
+
+  const overlayBlitPipeline = createRenderPipeline(device, {
+    label: 'renderCoordinator/overlayBlitPipeline',
+    bindGroupLayouts: [overlayBlitBindGroupLayout],
+    vertex: { code: OVERLAY_BLIT_WGSL, label: 'renderCoordinator/overlayBlit.wgsl' },
+    fragment: { code: OVERLAY_BLIT_WGSL, label: 'renderCoordinator/overlayBlit.wgsl', formats: targetFormat },
+    primitive: { topology: 'triangle-list', cullMode: 'none' },
+    multisample: { count: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT },
+  });
+
+  let overlayBlitBindGroup: GPUBindGroup | null = null;
+
+  const destroyTexture = (tex: GPUTexture | null): void => {
+    if (!tex) return;
+    try {
+      tex.destroy();
+    } catch {
+      // best-effort
+    }
+  };
+
+  const ensureOverlayTargets = (canvasWidthDevicePx: number, canvasHeightDevicePx: number): void => {
+    const w = Number.isFinite(canvasWidthDevicePx) ? Math.max(1, Math.floor(canvasWidthDevicePx)) : 1;
+    const h = Number.isFinite(canvasHeightDevicePx) ? Math.max(1, Math.floor(canvasHeightDevicePx)) : 1;
+
+    if (mainColorTexture && overlayMsaaTexture && overlayBlitBindGroup && overlayTargetsWidth === w && overlayTargetsHeight === h && overlayTargetsFormat === targetFormat) {
+      return;
+    }
+
+    destroyTexture(mainColorTexture);
+    destroyTexture(overlayMsaaTexture);
+
+    mainColorTexture = device.createTexture({
+      label: 'renderCoordinator/mainColorTexture',
+      size: { width: w, height: h },
+      format: targetFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    mainColorView = mainColorTexture.createView();
+
+    overlayMsaaTexture = device.createTexture({
+      label: 'renderCoordinator/annotationOverlayMsaaTexture',
+      size: { width: w, height: h },
+      sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
+      format: targetFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    overlayMsaaView = overlayMsaaTexture.createView();
+
+    overlayBlitBindGroup = device.createBindGroup({
+      label: 'renderCoordinator/overlayBlitBindGroup',
+      layout: overlayBlitBindGroupLayout,
+      entries: [{ binding: 0, resource: mainColorView }],
+    });
+
+    overlayTargetsWidth = w;
+    overlayTargetsHeight = h;
+    overlayTargetsFormat = targetFormat;
+  };
 
   const initialGridArea = computeGridArea(gpuContext, currentOptions);
   
@@ -3114,8 +3250,11 @@ export function createRenderCoordinator(
     const canvas = gpuContext.canvas;
     // IMPORTANT: use the same DPR as the GPU render path (gridArea) to keep CSS↔device conversions stable.
     const canvasDprForAnnotations = gridArea.devicePixelRatio;
-    const canvasCssWidthForAnnotations = canvas ? getCanvasCssWidth(canvas, canvasDprForAnnotations) : 0;
-    const canvasCssHeightForAnnotations = canvas ? getCanvasCssHeight(canvas, canvasDprForAnnotations) : 0;
+    // IMPORTANT: For GPU overlay annotations only, derive CSS size from device pixels to avoid
+    // DOM `clientWidth/clientHeight` mismatch with the WebGPU render target size.
+    const canvasCssForAnnotations = getCanvasCssSizeFromDevicePixels(canvas, canvasDprForAnnotations);
+    const canvasCssWidthForAnnotations = canvasCssForAnnotations.width;
+    const canvasCssHeightForAnnotations = canvasCssForAnnotations.height;
 
     const plotLeftCss = canvasCssWidthForAnnotations > 0 ? clipXToCanvasCssPx(plotClipRect.left, canvasCssWidthForAnnotations) : 0;
     const plotRightCss = canvasCssWidthForAnnotations > 0 ? clipXToCanvasCssPx(plotClipRect.right, canvasCssWidthForAnnotations) : 0;
@@ -3671,11 +3810,23 @@ export function createRenderCoordinator(
         case 'line': {
           // Always prepare the line stroke.
           // If we already appended into the DataStore this frame (fast-path), avoid a full re-upload.
+          // For time axes (epoch-ms), subtract an x-origin before packing to Float32 to avoid precision loss
+          // (Float32 ulp at ~1e12 is ~2e5), which can manifest as stroke shimmer during zoom.
+          const xOffset = (() => {
+            if (currentOptions.xAxis.type !== 'time') return 0;
+            const d = s.data;
+            for (let k = 0; k < d.length; k++) {
+              const p = d[k]!;
+              const x = isTupleDataPoint(p) ? p[0] : p.x;
+              if (Number.isFinite(x)) return x;
+            }
+            return 0;
+          })();
           if (!appendedGpuThisFrame.has(i)) {
-            dataStore.setSeries(i, s.data);
+            dataStore.setSeries(i, s.data, { xOffset });
           }
           const buffer = dataStore.getSeriesBuffer(i);
-          lineRenderers[i].prepare(s, buffer, xScale, yScale);
+          lineRenderers[i].prepare(s, buffer, xScale, yScale, xOffset);
 
           // Track the GPU buffer kind for future append fast-path decisions.
           const zoomRange = zoomState?.getRange() ?? null;
@@ -3790,7 +3941,14 @@ export function createRenderCoordinator(
     // data-space → canvas-space conversion and plot scissor state.
     if (hasCartesianSeries) {
       referenceLineRenderer.prepare(gridArea, combinedReferenceLines);
+      referenceLineRendererMsaa.prepare(gridArea, combinedReferenceLines);
       annotationMarkerRenderer.prepare({
+        canvasWidth: gridArea.canvasWidth,
+        canvasHeight: gridArea.canvasHeight,
+        devicePixelRatio: gridArea.devicePixelRatio,
+        instances: combinedMarkers,
+      });
+      annotationMarkerRendererMsaa.prepare({
         canvasWidth: gridArea.canvasWidth,
         canvasHeight: gridArea.canvasHeight,
         devicePixelRatio: gridArea.devicePixelRatio,
@@ -3799,7 +3957,14 @@ export function createRenderCoordinator(
     } else {
       // Ensure prior frame instances don't persist visually if series mode changes.
       referenceLineRenderer.prepare(gridArea, []);
+      referenceLineRendererMsaa.prepare(gridArea, []);
       annotationMarkerRenderer.prepare({
+        canvasWidth: gridArea.canvasWidth,
+        canvasHeight: gridArea.canvasHeight,
+        devicePixelRatio: gridArea.devicePixelRatio,
+        instances: [],
+      });
+      annotationMarkerRendererMsaa.prepare({
         canvasWidth: gridArea.canvasWidth,
         canvasHeight: gridArea.canvasHeight,
         devicePixelRatio: gridArea.devicePixelRatio,
@@ -3807,7 +3972,11 @@ export function createRenderCoordinator(
       });
     }
 
-    const textureView = gpuContext.canvasContext.getCurrentTexture().createView();
+    // Ensure offscreen + MSAA overlay targets match current device-pixel canvas size.
+    ensureOverlayTargets(gridArea.canvasWidth, gridArea.canvasHeight);
+
+    // Swapchain view for the resolved MSAA overlay pass and for the final (load) overlay pass.
+    const swapchainView = gpuContext.canvasContext.getCurrentTexture().createView();
     const encoder = device.createCommandEncoder({ label: 'renderCoordinator/commandEncoder' });
     const clearValue = parseCssColorToGPUColor(currentOptions.theme.backgroundColor, { r: 0, g: 0, b: 0, a: 1 });
 
@@ -3819,11 +3988,13 @@ export function createRenderCoordinator(
       }
     }
 
-    const pass = encoder.beginRenderPass({
-      label: 'renderCoordinator/renderPass',
+    const mainPass = encoder.beginRenderPass({
+      label: 'renderCoordinator/mainPass',
       colorAttachments: [
         {
-          view: textureView,
+          // Render main scene to an offscreen single-sampled texture so the annotation overlay can
+          // be MSAA'd and resolved into the swapchain without losing the already-rendered content.
+          view: mainColorView!,
           clearValue,
           loadOp: 'clear',
           storeOp: 'store',
@@ -3840,11 +4011,11 @@ export function createRenderCoordinator(
     // - line strokes next
     // - highlight next (on top of strokes)
     // - axes last (on top)
-    gridRenderer.render(pass);
+    gridRenderer.render(mainPass);
 
     for (let i = 0; i < seriesForRender.length; i++) {
       if (seriesForRender[i].type === 'pie') {
-        pieRenderers[i].render(pass);
+        pieRenderers[i].render(mainPass);
       }
     }
 
@@ -3852,14 +4023,14 @@ export function createRenderCoordinator(
     if (hasCartesianSeries && plotScissor.w > 0 && plotScissor.h > 0) {
       const hasBelow = referenceLineBelowCount > 0 || markerBelowCount > 0;
       if (hasBelow) {
-        pass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+        mainPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
         if (referenceLineBelowCount > 0) {
-          referenceLineRenderer.render(pass, 0, referenceLineBelowCount);
+          referenceLineRenderer.render(mainPass, 0, referenceLineBelowCount);
         }
         if (markerBelowCount > 0) {
-          annotationMarkerRenderer.render(pass, 0, markerBelowCount);
+          annotationMarkerRenderer.render(mainPass, 0, markerBelowCount);
         }
-        pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+        mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
       }
     }
 
@@ -3869,35 +4040,35 @@ export function createRenderCoordinator(
         if (introP < 1) {
           const w = clampInt(Math.floor(plotScissor.w * introP), 0, plotScissor.w);
           if (w > 0 && plotScissor.h > 0) {
-            pass.setScissorRect(plotScissor.x, plotScissor.y, w, plotScissor.h);
-            areaRenderers[i].render(pass);
-            pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+            mainPass.setScissorRect(plotScissor.x, plotScissor.y, w, plotScissor.h);
+            areaRenderers[i].render(mainPass);
+            mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
           }
         } else {
-          pass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
-          areaRenderers[i].render(pass);
-          pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+          mainPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+          areaRenderers[i].render(mainPass);
+          mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
         }
       }
     }
     // Clip bars to the plot grid (mirrors area/line scissor usage).
     if (plotScissor.w > 0 && plotScissor.h > 0) {
-      pass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
-      barRenderer.render(pass);
-      pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+      mainPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+      barRenderer.render(mainPass);
+      mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
     }
     for (let i = 0; i < seriesForRender.length; i++) {
       if (seriesForRender[i].type === 'candlestick') {
-        candlestickRenderers[i].render(pass);
+        candlestickRenderers[i].render(mainPass);
       }
     }
     for (let i = 0; i < seriesForRender.length; i++) {
       const s = seriesForRender[i];
       if (s.type !== 'scatter') continue;
       if (s.mode === 'density') {
-        scatterDensityRenderers[i].render(pass);
+        scatterDensityRenderers[i].render(mainPass);
       } else {
-        scatterRenderers[i].render(pass);
+        scatterRenderers[i].render(mainPass);
       }
     }
     for (let i = 0; i < seriesForRender.length; i++) {
@@ -3906,17 +4077,37 @@ export function createRenderCoordinator(
         if (introP < 1) {
           const w = clampInt(Math.floor(plotScissor.w * introP), 0, plotScissor.w);
           if (w > 0 && plotScissor.h > 0) {
-            pass.setScissorRect(plotScissor.x, plotScissor.y, w, plotScissor.h);
-            lineRenderers[i].render(pass);
-            pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+            mainPass.setScissorRect(plotScissor.x, plotScissor.y, w, plotScissor.h);
+            lineRenderers[i].render(mainPass);
+            mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
           }
         } else {
-          pass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
-          lineRenderers[i].render(pass);
-          pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+          mainPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+          lineRenderers[i].render(mainPass);
+          mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
         }
       }
     }
+
+    mainPass.end();
+
+    // MSAA annotation overlay pass: blit main color → MSAA target, then draw above-series annotations.
+    const overlayPass = encoder.beginRenderPass({
+      label: 'renderCoordinator/annotationOverlayMsaaPass',
+      colorAttachments: [
+        {
+          view: overlayMsaaView!,
+          resolveTarget: swapchainView,
+          clearValue,
+          loadOp: 'clear',
+          storeOp: 'discard',
+        },
+      ],
+    });
+
+    overlayPass.setPipeline(overlayBlitPipeline);
+    overlayPass.setBindGroup(0, overlayBlitBindGroup!);
+    overlayPass.draw(3);
 
     // Annotations (above series): reference lines then markers, clipped to plot scissor.
     if (hasCartesianSeries && plotScissor.w > 0 && plotScissor.h > 0) {
@@ -3924,25 +4115,39 @@ export function createRenderCoordinator(
       if (hasAbove) {
         const firstLine = referenceLineBelowCount;
         const firstMarker = markerBelowCount;
-        pass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+        overlayPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
         if (referenceLineAboveCount > 0) {
-          referenceLineRenderer.render(pass, firstLine, referenceLineAboveCount);
+          referenceLineRendererMsaa.render(overlayPass, firstLine, referenceLineAboveCount);
         }
         if (markerAboveCount > 0) {
-          annotationMarkerRenderer.render(pass, firstMarker, markerAboveCount);
+          annotationMarkerRendererMsaa.render(overlayPass, firstMarker, markerAboveCount);
         }
-        pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+        overlayPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
       }
     }
 
-    highlightRenderer.render(pass);
-    if (hasCartesianSeries) {
-      xAxisRenderer.render(pass);
-      yAxisRenderer.render(pass);
-    }
-    crosshairRenderer.render(pass);
+    overlayPass.end();
 
-    pass.end();
+    // Top overlays (single-sample): axes, highlights, crosshair.
+    const topOverlayPass = encoder.beginRenderPass({
+      label: 'renderCoordinator/topOverlayPass',
+      colorAttachments: [
+        {
+          view: swapchainView,
+          loadOp: 'load',
+          storeOp: 'store',
+        },
+      ],
+    });
+
+    highlightRenderer.render(topOverlayPass);
+    if (hasCartesianSeries) {
+      xAxisRenderer.render(topOverlayPass);
+      yAxisRenderer.render(topOverlayPass);
+    }
+    crosshairRenderer.render(topOverlayPass);
+
+    topOverlayPass.end();
     device.queue.submit([encoder.finish()]);
 
     hasRenderedOnce = true;
@@ -4629,6 +4834,16 @@ export function createRenderCoordinator(
     yAxisRenderer.dispose();
     referenceLineRenderer.dispose();
     annotationMarkerRenderer.dispose();
+    referenceLineRendererMsaa.dispose();
+    annotationMarkerRendererMsaa.dispose();
+
+    destroyTexture(mainColorTexture);
+    destroyTexture(overlayMsaaTexture);
+    mainColorTexture = null;
+    mainColorView = null;
+    overlayMsaaTexture = null;
+    overlayMsaaView = null;
+    overlayBlitBindGroup = null;
 
     dataStore.dispose();
 

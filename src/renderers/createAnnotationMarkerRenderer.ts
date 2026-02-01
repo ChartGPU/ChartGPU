@@ -57,6 +57,14 @@ export interface AnnotationMarkerRendererOptions {
    * Defaults to `'bgra8unorm'` for backward compatibility.
    */
   readonly targetFormat?: GPUTextureFormat;
+
+  /**
+   * Multisample count for the render pipeline.
+   *
+   * Must match the render pass color attachment sampleCount.
+   * Defaults to 1 (no MSAA).
+   */
+  readonly sampleCount?: number;
 }
 
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
@@ -77,6 +85,9 @@ const nextPow2 = (v: number): number => {
 export function createAnnotationMarkerRenderer(device: GPUDevice, options?: AnnotationMarkerRendererOptions): AnnotationMarkerRenderer {
   let disposed = false;
   const targetFormat = options?.targetFormat ?? DEFAULT_TARGET_FORMAT;
+  // Be resilient: coerce invalid values to 1 (no MSAA).
+  const sampleCountRaw = options?.sampleCount ?? 1;
+  const sampleCount = Number.isFinite(sampleCountRaw) ? Math.max(1, Math.floor(sampleCountRaw)) : 1;
 
   const bindGroupLayout = device.createBindGroupLayout({
     entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }],
@@ -122,7 +133,7 @@ export function createAnnotationMarkerRenderer(device: GPUDevice, options?: Anno
       },
     },
     primitive: { topology: 'triangle-list', cullMode: 'none' },
-    multisample: { count: 1 },
+    multisample: { count: sampleCount },
   });
 
   let instanceBuffer: GPUBuffer | null = null;

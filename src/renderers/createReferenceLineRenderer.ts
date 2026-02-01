@@ -29,8 +29,8 @@ export interface ReferenceLineInstance {
    * - For vertical lines: canvas-local X in CSS px
    * - For horizontal lines: canvas-local Y in CSS px
    *
-   * The shader converts CSS px → device px using DPR, then snaps edges to integer
-   * device pixels for crisp, stable strokes.
+   * The shader converts CSS px → device px using DPR and relies on analytic AA for stable
+   * strokes during zoom (no integer device-pixel snapping).
    */
   readonly positionCssPx: number;
 
@@ -69,6 +69,14 @@ export interface ReferenceLineRendererOptions {
    * Defaults to `'bgra8unorm'` for backward compatibility.
    */
   readonly targetFormat?: GPUTextureFormat;
+
+  /**
+   * Multisample count for the render pipeline.
+   *
+   * Must match the render pass color attachment sampleCount.
+   * Defaults to 1 (no MSAA).
+   */
+  readonly sampleCount?: number;
 }
 
 export interface ReferenceLineRenderer {
@@ -141,6 +149,9 @@ const normalizeDash = (lineDash?: ReadonlyArray<number>): PackedDash => {
 export function createReferenceLineRenderer(device: GPUDevice, options?: ReferenceLineRendererOptions): ReferenceLineRenderer {
   let disposed = false;
   const targetFormat = options?.targetFormat ?? DEFAULT_TARGET_FORMAT;
+  // Be resilient: coerce invalid values to 1 (no MSAA).
+  const sampleCountRaw = options?.sampleCount ?? 1;
+  const sampleCount = Number.isFinite(sampleCountRaw) ? Math.max(1, Math.floor(sampleCountRaw)) : 1;
 
   const bindGroupLayout = device.createBindGroupLayout({
     entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }],
@@ -193,7 +204,7 @@ export function createReferenceLineRenderer(device: GPUDevice, options?: Referen
       },
     },
     primitive: { topology: 'triangle-list', cullMode: 'none' },
-    multisample: { count: 1 },
+    multisample: { count: sampleCount },
   });
 
   let instanceBuffer: GPUBuffer | null = null;

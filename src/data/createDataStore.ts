@@ -1,8 +1,12 @@
-import type { DataPoint } from '../config/types';
+import type { DataPoint, DataPointTuple } from '../config/types';
 import { packDataPoints } from './packDataPoints';
 
 export interface DataStore {
-  setSeries(index: number, data: ReadonlyArray<DataPoint>): void;
+  setSeries(
+    index: number,
+    data: ReadonlyArray<DataPoint>,
+    options?: Readonly<{ xOffset?: number }>
+  ): void;
   /**
    * Appends new points to an existing series without re-uploading the entire buffer when possible.
    *
@@ -37,6 +41,11 @@ type SeriesEntry = {
   readonly capacityBytes: number;
   readonly pointCount: number;
   readonly hash32: number;
+  /**
+   * X-origin subtracted during packing to preserve Float32 precision for large-magnitude domains
+   * (e.g. epoch-ms time axes). Stored so appendSeries can pack consistently.
+   */
+  readonly xOffset: number;
   // Store a mutable array so streaming append can update in-place.
   readonly data: DataPoint[];
 };
@@ -83,6 +92,29 @@ export function createDataStore(device: GPUDevice): DataStore {
   const series = new Map<number, SeriesEntry>();
   let disposed = false;
 
+  // Type guard (avoid relying on Array.isArray narrowing for readonly tuples in strict TS configs).
+  const isTupleDataPoint = (p: DataPoint): p is DataPointTuple => Array.isArray(p);
+
+  const packDataPointsWithXOffset = (points: ReadonlyArray<DataPoint>, xOffset: number): Float32Array => {
+    if (!points || points.length === 0) return new Float32Array(0);
+
+    const buffer = new ArrayBuffer(points.length * 2 * 4);
+    const f32 = new Float32Array(buffer);
+
+    // Hot path: keep logic minimal (validation happens elsewhere in option resolution).
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i]!;
+      const x = isTupleDataPoint(p) ? p[0] : p.x;
+      const y = isTupleDataPoint(p) ? p[1] : p.y;
+
+      // Subtracting before the Float32 cast preserves sub-ULP deltas for large x magnitudes.
+      f32[i * 2 + 0] = x - xOffset;
+      f32[i * 2 + 1] = y;
+    }
+
+    return f32;
+  };
+
   const assertNotDisposed = (): void => {
     if (disposed) {
       throw new Error('DataStore is disposed.');
@@ -98,10 +130,11 @@ export function createDataStore(device: GPUDevice): DataStore {
     return entry;
   };
 
-  const setSeries = (index: number, data: ReadonlyArray<DataPoint>): void => {
+  const setSeries = (index: number, data: ReadonlyArray<DataPoint>, options?: Readonly<{ xOffset?: number }>): void => {
     assertNotDisposed();
 
-    const packed = packDataPoints(data);
+    const xOffset = options?.xOffset ?? 0;
+    const packed = xOffset === 0 ? packDataPoints(data) : packDataPointsWithXOffset(data, xOffset);
     const pointCount = data.length;
     const hash32 = hashFloat32ArrayBits(packed);
 
@@ -157,6 +190,7 @@ export function createDataStore(device: GPUDevice): DataStore {
       capacityBytes,
       pointCount,
       hash32,
+      xOffset,
       data: data.length === 0 ? [] : data.slice(),
     });
   };
@@ -169,7 +203,8 @@ export function createDataStore(device: GPUDevice): DataStore {
     const prevPointCount = existing.pointCount;
     const nextPointCount = prevPointCount + newPoints.length;
 
-    const appendPacked = packDataPoints(newPoints);
+    const appendPacked =
+      existing.xOffset === 0 ? packDataPoints(newPoints) : packDataPointsWithXOffset(newPoints, existing.xOffset);
     const appendBytes = appendPacked.byteLength;
 
     // Each point is 2 floats (x, y) = 8 bytes.
@@ -207,7 +242,8 @@ export function createDataStore(device: GPUDevice): DataStore {
         usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
 
-      const fullPacked = packDataPoints(nextData);
+      const fullPacked =
+        existing.xOffset === 0 ? packDataPoints(nextData) : packDataPointsWithXOffset(nextData, existing.xOffset);
       if (fullPacked.byteLength > 0) {
         device.queue.writeBuffer(buffer, 0, fullPacked.buffer);
       }
@@ -217,6 +253,7 @@ export function createDataStore(device: GPUDevice): DataStore {
         capacityBytes,
         pointCount: nextPointCount,
         hash32: hashFloat32ArrayBits(fullPacked),
+        xOffset: existing.xOffset,
         data: nextData,
       });
       return;
@@ -237,6 +274,7 @@ export function createDataStore(device: GPUDevice): DataStore {
       capacityBytes,
       pointCount: nextPointCount,
       hash32: nextHash32,
+      xOffset: existing.xOffset,
       data: nextData,
     });
   };

@@ -238,6 +238,14 @@ See [`ChartGPU.ts`](../src/ChartGPU.ts) for disposal implementation.
 
 **Minimum buffer size:** 4 bytes (WebGPU requirement)
 
+### Time Axis Precision (Epoch-ms)
+
+WebGPU vertex buffers use **Float32**. Very large absolute x-values (notably **epoch-millisecond timestamps** around \(10^{12}\)) can lose precision when stored directly, which can manifest as visual instability (e.g. shimmer/jitter) during zoom.
+
+ChartGPU mitigates this internally by **rebasing** time-axis x-values per series before uploading to the GPU (store \(x' = x - xOffset\) and fold `xOffset` back into the CPU-side transform). This behavior is automatic and does not change your data units: you should continue to provide milliseconds for `xAxis.type: 'time'`.
+
+If you manually pre-pack timestamps into a `Float32Array` before handing data to ChartGPU (e.g. via worker helpers), be aware that converting epoch-ms to Float32 **before** rebasing can still quantize away sub-minute resolution. Prefer passing `DataPoint[]` (numbers) or higher-precision sources so ChartGPU can apply rebasing before Float32 conversion.
+
 ### Device Loss Handling
 
 **GPU device can be lost due to:**

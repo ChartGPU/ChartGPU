@@ -397,7 +397,7 @@ export interface AxisConfig {
 }
 ```
 
-- **`type: 'time'` expects ms timestamps**: when `xAxis.type === 'time'`, x-values are interpreted as **milliseconds since Unix epoch**.
+- **`type: 'time'` expects ms timestamps**: when `xAxis.type === 'time'`, x-values are interpreted as **milliseconds since Unix epoch**. ChartGPU may internally **rebase** large time x-values (e.g. epoch-ms domains) before uploading to Float32 GPU buffers to preserve precision during zoom; this is automatic and does not change your units.
 - **Time-axis label tiers + adaptive tick count**: time x-axis labels use tiered formatting based on the visible range, and the tick count may vary to avoid overlap; GPU tick marks and labels stay matched. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) and [`createAxisRenderer.ts`](../src/renderers/createAxisRenderer.ts).
 
 ### `ThemeConfig`
