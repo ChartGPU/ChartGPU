@@ -41,6 +41,28 @@ const EXPECTED_FRAME_TIME_MS = 1000 / 60;
  */
 const FRAME_DROP_THRESHOLD_MULTIPLIER = 1.5;
 
+/**
+ * Hit-test match for a chart element.
+ */
+export type ChartGPUHitTestMatch = Readonly<{
+  readonly kind: 'cartesian' | 'candlestick' | 'pie';
+  readonly seriesIndex: number;
+  readonly dataIndex: number;
+  readonly value: readonly [number, number];
+}>;
+
+/**
+ * Result of a hit-test operation on a chart.
+ */
+export type ChartGPUHitTestResult = Readonly<{
+  readonly isInGrid: boolean;
+  readonly canvasX: number;
+  readonly canvasY: number;
+  readonly gridX: number;
+  readonly gridY: number;
+  readonly match: ChartGPUHitTestMatch | null;
+}>;
+
 export interface ChartGPUInstance {
   readonly options: Readonly<ChartGPUOptions>;
   readonly disposed: boolean;
@@ -114,6 +136,16 @@ export interface ChartGPUInstance {
    * @returns Unsubscribe function to remove the callback
    */
   onPerformanceUpdate(callback: (metrics: Readonly<PerformanceMetrics>) => void): () => void;
+  /**
+   * Performs hit-testing on a pointer or mouse event.
+   *
+   * Returns coordinates and matched chart element (if any).
+   * Accepts both `PointerEvent` (for hover/click) and `MouseEvent` (for contextmenu/right-click).
+   *
+   * @param e - Pointer or mouse event to test
+   * @returns Hit-test result with coordinates and optional match
+   */
+  hitTest(e: PointerEvent | MouseEvent): ChartGPUHitTestResult;
 }
 
 // Type-only alias so callsites can write `ChartGPU[]` for chart instances (while `ChartGPU` the value
@@ -1422,6 +1454,217 @@ export async function createChartGPU(
       performanceUpdateCallbacks.add(callback);
       return () => {
         performanceUpdateCallbacks.delete(callback);
+      };
+    },
+    hitTest(e) {
+      const rect = canvas.getBoundingClientRect();
+      const canvasX = e.clientX - rect.left;
+      const canvasY = e.clientY - rect.top;
+
+      // Default result for cases where rect is invalid or disposed
+      if (disposed || !(rect.width > 0) || !(rect.height > 0)) {
+        return {
+          isInGrid: false,
+          canvasX,
+          canvasY,
+          gridX: 0,
+          gridY: 0,
+          match: null,
+        };
+      }
+
+      const plotLeftCss = resolvedOptions.grid.left;
+      const plotTopCss = resolvedOptions.grid.top;
+      const plotWidthCss = rect.width - resolvedOptions.grid.left - resolvedOptions.grid.right;
+      const plotHeightCss = rect.height - resolvedOptions.grid.top - resolvedOptions.grid.bottom;
+
+      const gridX = canvasX - plotLeftCss;
+      const gridY = canvasY - plotTopCss;
+
+      // If plot dimensions are invalid, return coords but no match
+      if (!(plotWidthCss > 0) || !(plotHeightCss > 0)) {
+        return {
+          isInGrid: false,
+          canvasX,
+          canvasY,
+          gridX,
+          gridY,
+          match: null,
+        };
+      }
+
+      const isInGrid =
+        gridX >= 0 &&
+        gridX <= plotWidthCss &&
+        gridY >= 0 &&
+        gridY <= plotHeightCss;
+
+      // If outside grid, return early
+      if (!isInGrid) {
+        return {
+          isInGrid: false,
+          canvasX,
+          canvasY,
+          gridX,
+          gridY,
+          match: null,
+        };
+      }
+
+      // Compute domain and scales for hit-testing
+      const xMin = resolvedOptions.xAxis.min ?? cachedGlobalBounds.xMin;
+      const xMax = resolvedOptions.xAxis.max ?? cachedGlobalBounds.xMax;
+      const yMin = resolvedOptions.yAxis.min ?? cachedGlobalBounds.yMin;
+      const yMax = resolvedOptions.yAxis.max ?? cachedGlobalBounds.yMax;
+
+      const baseXDomain = normalizeDomain(xMin, xMax);
+      const zoomRange = coordinator?.getZoomRange() ?? null;
+      const xDomain = (() => {
+        if (!zoomRange) return baseXDomain;
+        const span = baseXDomain.max - baseXDomain.min;
+        if (!Number.isFinite(span) || span === 0) return baseXDomain;
+        const start = zoomRange.start;
+        const end = zoomRange.end;
+        const zMin = baseXDomain.min + (start / 100) * span;
+        const zMax = baseXDomain.min + (end / 100) * span;
+        return normalizeDomain(zMin, zMax);
+      })();
+      const yDomain = normalizeDomain(yMin, yMax);
+
+      // Reuse or rebuild interaction scales cache
+      const canReuseScales =
+        interactionScalesCache !== null &&
+        interactionScalesCache.rectWidthCss === rect.width &&
+        interactionScalesCache.rectHeightCss === rect.height &&
+        interactionScalesCache.plotWidthCss === plotWidthCss &&
+        interactionScalesCache.plotHeightCss === plotHeightCss &&
+        interactionScalesCache.xDomainMin === xDomain.min &&
+        interactionScalesCache.xDomainMax === xDomain.max &&
+        interactionScalesCache.yDomainMin === yDomain.min &&
+        interactionScalesCache.yDomainMax === yDomain.max;
+
+      if (!canReuseScales) {
+        const xScale = createLinearScale().domain(xDomain.min, xDomain.max).range(0, plotWidthCss);
+        const yScale = createLinearScale().domain(yDomain.min, yDomain.max).range(plotHeightCss, 0);
+        interactionScalesCache = {
+          rectWidthCss: rect.width,
+          rectHeightCss: rect.height,
+          plotWidthCss,
+          plotHeightCss,
+          xDomainMin: xDomain.min,
+          xDomainMax: xDomain.max,
+          yDomainMin: yDomain.min,
+          yDomainMax: yDomain.max,
+          xScale,
+          yScale,
+        };
+      }
+
+      const scales = interactionScalesCache!;
+
+      // Pie slice hit-testing
+      const pieMatch = (() => {
+        const maxRadiusCss = 0.5 * Math.min(plotWidthCss, plotHeightCss);
+        if (!(maxRadiusCss > 0)) return null;
+
+        for (let i = resolvedOptions.series.length - 1; i >= 0; i--) {
+          const s = resolvedOptions.series[i];
+          if (s.type !== 'pie') continue;
+          const pieSeries = s as ResolvedPieSeriesConfig;
+          const center = resolvePieCenterPlotCss(pieSeries.center, plotWidthCss, plotHeightCss);
+          const radii = resolvePieRadiiCss(pieSeries.radius, maxRadiusCss);
+          const m = findPieSlice(gridX, gridY, { seriesIndex: i, series: pieSeries }, center, radii);
+          if (!m) continue;
+
+          const v = m.slice.value;
+          return {
+            kind: 'pie' as const,
+            seriesIndex: m.seriesIndex,
+            dataIndex: m.dataIndex,
+            sliceValue: typeof v === 'number' && Number.isFinite(v) ? v : 0,
+          };
+        }
+        return null;
+      })();
+
+      if (pieMatch) {
+        return {
+          isInGrid: true,
+          canvasX,
+          canvasY,
+          gridX,
+          gridY,
+          match: {
+            kind: 'pie',
+            seriesIndex: pieMatch.seriesIndex,
+            dataIndex: pieMatch.dataIndex,
+            value: [0, pieMatch.sliceValue],
+          },
+        };
+      }
+
+      // Candlestick body hit-testing
+      for (let i = resolvedOptions.series.length - 1; i >= 0; i--) {
+        const s = resolvedOptions.series[i];
+        if (s?.type !== 'candlestick') continue;
+
+        const seriesCfg = s as ResolvedCandlestickSeriesConfig;
+        const barWidthRange = computeCandlestickBodyWidthRange(seriesCfg, seriesCfg.data, scales.xScale, plotWidthCss);
+        const m = findCandlestick([seriesCfg], gridX, gridY, scales.xScale, scales.yScale, barWidthRange);
+        if (!m) continue;
+
+        const timestamp = getOHLCTimestamp(m.point);
+        const close = getOHLCClose(m.point);
+
+        return {
+          isInGrid: true,
+          canvasX,
+          canvasY,
+          gridX,
+          gridY,
+          match: {
+            kind: 'candlestick',
+            seriesIndex: i,
+            dataIndex: m.dataIndex,
+            value: [timestamp, close],
+          },
+        };
+      }
+
+      // Cartesian nearest-point hit-testing
+      const cartesianMatch = findNearestPoint(
+        getRuntimeHitTestSeries(),
+        gridX,
+        gridY,
+        scales.xScale,
+        scales.yScale
+      );
+
+      if (cartesianMatch) {
+        const { x, y } = getPointXY(cartesianMatch.point);
+        return {
+          isInGrid: true,
+          canvasX,
+          canvasY,
+          gridX,
+          gridY,
+          match: {
+            kind: 'cartesian',
+            seriesIndex: cartesianMatch.seriesIndex,
+            dataIndex: cartesianMatch.dataIndex,
+            value: [x, y],
+          },
+        };
+      }
+
+      // Inside grid but no match
+      return {
+        isInGrid: true,
+        canvasX,
+        canvasY,
+        gridX,
+        gridY,
+        match: null,
       };
     },
   };

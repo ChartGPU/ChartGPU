@@ -67,10 +67,8 @@ export interface RenderCoordinator {
    */
   onZoomRangeChange(cb: (range: Readonly<{ start: number; end: number }>) => void): () => void;
   /**
-   * Accepts a pointer event with pre-computed grid coordinates for worker thread event forwarding.
-   * Only available when domOverlays is false.
+   * Renders a full frame.
    */
-  handlePointerEvent(event: PointerEventData): void;
   render(): void;
   dispose(): void;
 }
@@ -85,49 +83,6 @@ export type RenderCoordinatorCallbacks = Readonly<{
    * interaction state changes (e.g. crosshair on pointer move).
    */
   readonly onRequestRender?: () => void;
-  /**
-   * When false, DOM overlays (tooltip, legend, text overlay, event manager) are disabled.
-   * Instead, callbacks are used to emit data for external rendering.
-   * Default: true (DOM overlays enabled).
-   */
-  readonly domOverlays?: boolean;
-  /**
-   * Called when tooltip data changes (only when domOverlays is false).
-   * Receives tooltip data including content, params array, and position, or null when hidden.
-   */
-  readonly onTooltipUpdate?: (data: TooltipData | null) => void;
-  /**
-   * Called when legend items change (only when domOverlays is false).
-   */
-  readonly onLegendUpdate?: (items: ReadonlyArray<LegendItem>) => void;
-  /**
-   * Called when axis labels change (only when domOverlays is false).
-   */
-  readonly onAxisLabelsUpdate?: (xLabels: ReadonlyArray<AxisLabel>, yLabels: ReadonlyArray<AxisLabel>) => void;
-  /**
-   * Called when hover state changes (only when domOverlays is false).
-   */
-  readonly onHoverChange?: (payload: ChartGPUEventPayload | null) => void;
-  /**
-   * Called when crosshair moves (only when domOverlays is false).
-   * Receives canvas-local CSS pixel x coordinate, or null when crosshair is hidden.
-   */
-  readonly onCrosshairMove?: (x: number | null) => void;
-  /**
-   * Called when user taps/clicks (only when domOverlays is false).
-   * Includes hit test result with seriesIndex, dataIndex, and value.
-   * Main thread is responsible for tap detection; worker thread performs hit testing.
-   */
-  readonly onClickData?: (payload: {
-    readonly x: number;
-    readonly y: number;
-    readonly gridX: number;
-    readonly gridY: number;
-    readonly isInGrid: boolean;
-    readonly nearest: NearestPointMatch | null;
-    readonly pieSlice: PieSliceMatch | null;
-    readonly candlestick: CandlestickMatch | null;
-  }) => void;
   /**
    * Called when GPU device is lost.
    */
@@ -149,11 +104,9 @@ export function createRenderCoordinator(
 
 - `ResolvedChartGPUOptions`: See [`types.ts`](../../src/config/types.ts)
 - `DataPoint`, `OHLCDataPoint`: See [`types.ts`](../../src/config/types.ts)
-- `PointerEventData`: See [`types.ts`](../../src/config/types.ts)
-- `TooltipData`, `LegendItem`, `AxisLabel`: See [`types.ts`](../../src/config/types.ts)
 - `ChartGPUEventPayload`: See [`types.ts`](../../src/config/types.ts)
 - `NearestPointMatch`, `PieSliceMatch`, `CandlestickMatch`: See [`types.ts`](../../src/config/types.ts)
 
 ## Documentation
 
-For detailed documentation on RenderCoordinator usage, responsibilities, and worker thread support, see [INTERNALS.md](INTERNALS.md#render-coordinator-internal--contributor-notes).
+For detailed documentation on RenderCoordinator usage and responsibilities, see [INTERNALS.md](INTERNALS.md#render-coordinator-internal--contributor-notes).

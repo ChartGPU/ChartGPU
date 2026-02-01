@@ -36,26 +36,25 @@ For `'crosshairMove'`, callbacks receive a `ChartGPUCrosshairMovePayload` object
 - Crosshair move events (`crosshairMove`) fire on interaction-x changes. When the pointer leaves the plot area, the chart clears interaction-x to `null` so synced charts do not "stick".
 - All event listeners are automatically cleaned up when `dispose()` is called. No manual cleanup required.
 
-## PointerEventData
+## Right-click / context menu interactions
 
-`PointerEventData` is a high-level pointer event data type for worker thread communication. It pre-computes grid coordinates to eliminate redundant computation when forwarding events to worker threads.
+ChartGPU does not emit a built-in `'contextmenu'` event. Consumers implement right-click interactions directly using DOM events and `ChartGPUInstance.hitTest(...)`.
 
-See [types.ts](../../src/config/types.ts) for the full type definition.
+- Use the DOM `contextmenu` event on the chart canvas (or container).
+- Call `chart.hitTest(e)` (accepts a `MouseEvent`) to get plot coordinates (`gridX` / `gridY`) and an optional `match` for snap-to-data behavior.
 
-### Properties
+Example:
 
-- **`type`**: `'move' | 'click' | 'leave'` — event type
-- **`x`, `y`**: canvas-local CSS pixels
-- **`gridX`, `gridY`**: plot-area-local CSS pixels (relative to plot area origin)
-- **`plotWidthCss`, `plotHeightCss`**: plot area dimensions in CSS pixels
-- **`isInGrid`**: whether the pointer is inside the plot area
-- **`timestamp`**: event timestamp in milliseconds for gesture detection
+```ts
+const canvas = container.querySelector('canvas')!;
+canvas.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  const hit = chart.hitTest(e);
+  // hit.isInGrid, hit.gridX/hit.gridY (CSS px), and hit.match (optional)
+});
+```
 
-### Use case
-
-`PointerEventData` is designed for worker thread event forwarding. When rendering is offloaded to a worker thread, the main thread can normalize pointer events into this format and post them to the worker, avoiding redundant coordinate transformations.
-
-**Note**: `NormalizedPointerEvent` is deprecated in favor of `PointerEventData` for worker thread communication.
+For a ready-made main-thread helper that wires `contextmenu` + `hitTest(...)` into an annotation authoring UI (with undo/redo + JSON export), see `createAnnotationAuthoring(...)` and [`examples/annotation-authoring/`](../../examples/annotation-authoring/).
 
 ## Zoom and Pan APIs
 

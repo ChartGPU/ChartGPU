@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ChartGPU Performance Benchmark</title>
+  <title>ChartGPU Ultimate Benchmark</title>
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
@@ -15,8 +15,8 @@
       </svg>
       <span>GitHub</span>
     </a>
-    <h1 class="title">ChartGPU Performance Benchmark</h1>
-    <p class="subtitle">Hardcore benchmark with exact FPS measurement and unlimited configurability</p>
+    <h1 class="title">ChartGPU Ultimate Benchmark</h1>
+    <p class="subtitle">Hardcore benchmark with exact FPS measurement and unlimited configurability (main thread)</p>
   </header>
 
   <!-- Main Container -->
@@ -27,7 +27,7 @@
         <h2 class="section-title">Configuration</h2>
         
         <div class="form-group">
-          <label for="pointCount">Point Count</label>
+          <label for="pointCount">Point Count (per series)</label>
           <input type="number" id="pointCount" value="1000000" step="1000" min="100">
           <span class="hint">No limit - enter billions if you dare</span>
         </div>
@@ -55,21 +55,13 @@
             <option value="candlestick">Candlestick</option>
           </select>
         </div>
-
-        <div class="form-group">
-          <label for="renderMode">Render Mode</label>
-          <select id="renderMode">
-            <option value="worker">Worker Thread (recommended)</option>
-            <option value="main">Main Thread</option>
-          </select>
-        </div>
       </div>
 
       <div class="panel-section">
         <h2 class="section-title">Streaming</h2>
         
         <div class="form-group">
-          <label for="streamRate">Points per Frame</label>
+          <label for="streamRate">Points per Frame (series 0)</label>
           <input type="number" id="streamRate" value="10000" min="100" step="100">
         </div>
 
@@ -162,3 +154,4 @@
   <script type="module" src="./main.ts"></script>
 </body>
 </html>
+

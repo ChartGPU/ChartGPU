@@ -27,10 +27,6 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
-    },
-    "./worker": {
-      "import": "./dist/worker/index.js",
-      "types": "./dist/worker/index.d.ts"
     }
   },
   "files": [
@@ -49,7 +45,7 @@
     "acceptance:area-style-color": "tsx examples/acceptance/area-style-color.ts",
     "acceptance:ohlc-sample": "tsx examples/acceptance/ohlc-sample.ts",
     "benchmark:transfer": "tsx benchmarks/data-transfer-benchmark.ts",
-    "build": "tsc && vite build",
+    "build": "node --input-type=module -e \"import { rmSync, readdirSync } from 'node:fs'; import { join } from 'node:path'; const rmDir = (p) => rmSync(p, { recursive: true, force: true }); rmDir('dist/worker'); rmDir('dist/esm/worker'); rmDir('dist/types/worker'); try { for (const f of readdirSync('dist/assets')) { if (f.startsWith('worker-entry')) rmSync(join('dist/assets', f), { force: true }); } } catch {}\" && tsc && vite build",
     "build:examples": "vite build --config examples/vite.config.ts",
     "prepublishOnly": "npm run build"
   },

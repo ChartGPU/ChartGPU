@@ -174,13 +174,13 @@ See [render-coordinator-summary.md](render-coordinator-summary.md) for the essen
 
 - **Factory**: `createRenderCoordinator(gpuContext: GPUContextLike, options: ResolvedChartGPUOptions, callbacks?: RenderCoordinatorCallbacks): RenderCoordinator`
 
-- **Callbacks (optional)**: `RenderCoordinatorCallbacks` supports render-on-demand integration and worker thread support via DOM overlay separation. See [Worker Thread Support](#worker-thread-support--dom-overlay-separation) below and [render-coordinator-summary.md](render-coordinator-summary.md#rendercoordinatorcallbacks) for the type definition.
+- **Callbacks (optional)**: `RenderCoordinatorCallbacks` supports render-on-demand integration and an optional no-DOM mode via DOM overlay separation. See [DOM Overlay Separation (No-DOM mode)](#dom-overlay-separation-no-dom-mode) below and [render-coordinator-summary.md](render-coordinator-summary.md#rendercoordinatorcallbacks) for the type definition.
 
 **`RenderCoordinator` methods (essential):**
 
 - **`setOptions(resolvedOptions: ResolvedChartGPUOptions): void`**: updates the current resolved chart options; adjusts per-series renderer/buffer allocations when series count changes.
 - **`render(): void`**: performs a full frame by computing layout (`GridArea`), deriving clip-space scales (`xScale`, `yScale`), preparing renderers, uploading series data via the internal data store, and recording/submitting a render pass.
-- **`handlePointerEvent(event: PointerEventData): void`**: processes pointer events when `domOverlays: false` (worker thread mode). See [`handlePointerEvent()`](#rendercoordinatorhandlepointerevent) below.
+- **`handlePointerEvent(event: PointerEventData): void`**: processes pointer events when `domOverlays: false` (no-DOM mode). See [`handlePointerEvent()`](#rendercoordinatorhandlepointerevent) below.
 - **`dispose(): void`**: destroys renderer resources and the internal data store; safe to call multiple times.
 
 **Responsibilities (essential):**
@@ -201,14 +201,14 @@ See [render-coordinator-summary.md](render-coordinator-summary.md) for the essen
   - Axes use `resolvedOptions.theme.axisLineColor` (baseline) and `resolvedOptions.theme.axisTickColor` (ticks).
   - Axis tick value labels are rendered as DOM text (via the internal [text overlay](#text-overlay-internal--contributor-notes)) and styled using `resolvedOptions.theme.textColor`, `resolvedOptions.theme.fontSize`, and `resolvedOptions.theme.fontFamily` (see [`ThemeConfig`](../../src/themes/types.ts)).
 
-## Worker Thread Support / DOM Overlay Separation
+## DOM Overlay Separation (No-DOM mode)
 
-RenderCoordinator supports running without DOM access for worker thread compatibility (OffscreenCanvas). When `domOverlays: false` is set in [`RenderCoordinatorCallbacks`](#rendercoordinatorcallbacks), all DOM-dependent features (tooltip, legend, axis labels, event listeners) are disabled, and data is emitted via callbacks for external rendering on the main thread.
+RenderCoordinator can run without DOM access. When `domOverlays: false` is set in [`RenderCoordinatorCallbacks`](#rendercoordinatorcallbacks), all DOM-dependent features (tooltip, legend, axis labels, event listeners) are disabled, and data is emitted via callbacks for external rendering.
 
 **Key capabilities:**
 
-- GPU rendering on worker thread via OffscreenCanvas
-- DOM overlay rendering on main thread via callbacks
+- Rendering without DOM access (no tooltip/legend/text overlay/event manager)
+- External overlay rendering via callbacks
 - Pre-computed pointer event forwarding via [`handlePointerEvent()`](#rendercoordinatorhandlepointerevent)
 - Full interaction support (hover, tooltip, click, crosshair)
 
@@ -222,9 +222,9 @@ Type definition: [`RenderCoordinatorCallbacks`](render-coordinator-summary.md#re
 
 - **`onRequestRender?: () => void`**: Called when interaction state changes require a render (e.g., pointer movement triggers crosshair update). Used by render-on-demand systems like `ChartGPU`.
 
-- **`domOverlays?: boolean`**: Default: `true`. When `false`, disables all DOM overlays (tooltip, legend, text overlay, event manager) and enables callback-based data emission for external rendering. Required for worker thread support.
+- **`domOverlays?: boolean`**: Default: `true`. When `false`, disables all DOM overlays (tooltip, legend, text overlay, event manager) and enables callback-based data emission for external rendering.
 
-**Worker thread callbacks (only when `domOverlays: false`):**
+**No-DOM callbacks (only when `domOverlays: false`):**
 
 - **`onTooltipUpdate?: (data: TooltipData | null) => void`**: Emitted when tooltip data changes. Receives tooltip content, params array, and canvas-local position, or `null` when tooltip should be hidden.
 
@@ -236,13 +236,13 @@ Type definition: [`RenderCoordinatorCallbacks`](render-coordinator-summary.md#re
 
 - **`onCrosshairMove?: (x: number | null) => void`**: Emitted when crosshair moves. Receives canvas-local CSS pixel x coordinate, or `null` when crosshair is hidden.
 
-- **`onClickData?: (payload: ClickDataPayload) => void`**: Emitted when user taps/clicks (only when `domOverlays: false`). Includes hit test results for nearest point, pie slice, and candlestick. Main thread is responsible for tap detection; worker thread performs hit testing. See [ClickDataPayload](#clickdatapayload) below for payload structure.
+- **`onClickData?: (payload: ClickDataPayload) => void`**: Emitted when user taps/clicks (only when `domOverlays: false`). Includes hit test results for nearest point, pie slice, and candlestick. The host app is responsible for click/tap detection; RenderCoordinator performs hit testing. See [ClickDataPayload](#clickdatapayload) below for payload structure.
 
 - **`onDeviceLost?: (reason: string) => void`**: Called when GPU device is lost. RenderCoordinator becomes non-functional after device loss and must be re-created.
 
 **Key behaviors:**
 
-- All worker thread callbacks are only emitted when `domOverlays: false`
+- All no-DOM callbacks are only emitted when `domOverlays: false`
 - Callbacks fire during `render()` when relevant state changes
 - Coordinates are always canvas-local CSS pixels
 - Tooltip params is always an array (single-item trigger = array with 1 element)
@@ -287,7 +287,7 @@ Tooltip data structure emitted via `onTooltipUpdate` callback when `domOverlays:
 **Usage notes:**
 
 - Coordinate origin is top-left of canvas
-- HTML content should be rendered with appropriate sanitization on main thread
+- HTML content should be rendered with appropriate sanitization by the host app
 - Position accounts for padding but not tooltip dimensions (caller responsible for viewport bounds checking)
 
 ### LegendItem
@@ -333,7 +333,7 @@ Axis label data structure emitted via `onAxisLabelsUpdate` callback when `domOve
 
 Type definition: [`PointerEventData`](../../src/config/types.ts)
 
-High-level pointer event data for worker thread event forwarding when `domOverlays: false`. Pre-computed grid coordinates eliminate redundant computation in worker.
+High-level pointer event data for programmatic event forwarding when `domOverlays: false`. Pre-computed grid coordinates eliminate redundant computation.
 
 **Properties:**
 
@@ -349,23 +349,23 @@ High-level pointer event data for worker thread event forwarding when `domOverla
 
 **Usage notes:**
 
-- Used exclusively when `domOverlays: false` (worker thread mode)
-- Main thread computes grid coordinates and forwards to worker via `handlePointerEvent()`
+- Used exclusively when `domOverlays: false` (no-DOM mode)
+- The host app computes grid coordinates and forwards to `handlePointerEvent()`
 - Coordinates must be relative to canvas top-left (use `getBoundingClientRect()`)
 - Invalid coordinates (NaN/Infinity) are silently ignored by RenderCoordinator
-- Main thread is responsible for tap/click detection
+- The host app is responsible for tap/click detection
 
 ### NormalizedPointerEvent (Deprecated)
 
 Type definition: [`NormalizedPointerEvent`](../../src/config/types.ts)
 
-**DEPRECATED**: Use [`PointerEventData`](#pointereventdata) for worker thread communication. This type is retained for backward compatibility only.
+**DEPRECATED**: Use [`PointerEventData`](#pointereventdata) for no-DOM event forwarding. This type is retained for backward compatibility only.
 
 **Migration note:**
 
-- `PointerEventData` provides pre-computed grid coordinates (eliminates redundant computation in worker)
+- `PointerEventData` provides pre-computed grid coordinates (eliminates redundant computation)
 - `PointerEventData` uses simplified event types (`'move' | 'click' | 'leave'` instead of pointer event types)
-- Click detection handled on main thread (worker receives `'click'` events instead of `'pointerdown'/'pointerup'`)
+- Click detection handled by the host app (`'click'` events instead of `'pointerdown'/'pointerup'`)
 
 **Properties:**
 
@@ -392,7 +392,7 @@ Processes pointer events with pre-computed grid coordinates for interaction when
 - **`type: 'leave'`**: Clears hover/crosshair/tooltip; emits `onHoverChange(null)`, `onCrosshairMove(null)`; triggers `onRequestRender()` callback
 - **`type: 'click'`**: Performs hit testing (nearest point, pie slice, candlestick); emits `onClickData()` callback with results
 - Validates event coordinates (silently ignores NaN/Infinity)
-- Uses pre-computed grid coordinates from event (no redundant computation in worker)
+- Uses pre-computed grid coordinates from event (no redundant computation)
 
 **Click handling:**
 
@@ -408,22 +408,13 @@ Processes pointer events with pre-computed grid coordinates for interaction when
 - Safe to call when disposed (no-op)
 - Not thread-safe (call from same thread as `render()`)
 
-**Worker thread pattern:**
+**No-DOM usage pattern:**
 
-Main thread:
-1. Attach DOM pointer event listeners to canvas
-2. Compute grid coordinates using `getBoundingClientRect()` and `GridArea` margins
-3. Detect taps/clicks (main thread responsibility)
-4. Normalize events to `PointerEventData` structure
-5. Post events to worker thread via `postMessage()`
-
-Worker thread:
-1. Receive events from main thread message handler
-2. Forward to `coordinator.handlePointerEvent(event)`
-3. Render updates triggered automatically via `onRequestRender()` callback
-4. Click hit test results emitted via `onClickData()` callback
-5. Hover state changes emitted via `onHoverChange()` callback
-6. Crosshair position emitted via `onCrosshairMove()` callback
+1. Attach pointer event listeners to a canvas (or other input surface).
+2. Compute grid coordinates using `getBoundingClientRect()` and `GridArea` margins.
+3. Detect taps/clicks (host app responsibility).
+4. Normalize events to the `PointerEventData` structure.
+5. Call `coordinator.handlePointerEvent(event)` and schedule `render()` using `onRequestRender()` when needed.
 
 ## Renderer utilities (Contributor notes)
 

@@ -993,7 +993,7 @@ const hasSliderDataZoom = (options: ChartGPUOptions): boolean =>
  * and ticks are visible above the slider overlay.
  * 
  * **Usage**: Use this function instead of `resolveOptions()` when creating charts
- * (both main-thread and worker-based) to ensure consistent slider layout.
+ * to ensure consistent slider layout.
  * 
  * @param userOptions - User-provided chart options
  * @returns Resolved options with slider bottom-space applied if needed

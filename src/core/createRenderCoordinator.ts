@@ -8,17 +8,12 @@ import type {
 import type {
   AnimationConfig,
   AnnotationConfig,
-  AnnotationLabelData,
-  AxisLabel,
   DataPoint,
   DataPointTuple,
-  LegendItem,
-  PointerEventData,
   OHLCDataPoint,
   OHLCDataPointTuple,
   PieCenter,
   PieRadius,
-  TooltipData,
 } from '../config/types';
 import type { SupportedCanvas } from './GPUContext';
 import { isHTMLCanvasElement as isHTMLCanvasElementGPU } from './GPUContext';
@@ -50,12 +45,9 @@ import { createInsideZoom } from '../interaction/createInsideZoom';
 import { createZoomState } from '../interaction/createZoomState';
 import type { ZoomRange, ZoomState } from '../interaction/createZoomState';
 import { findNearestPoint } from '../interaction/findNearestPoint';
-import type { NearestPointMatch } from '../interaction/findNearestPoint';
 import { findPointsAtX } from '../interaction/findPointsAtX';
 import { computeCandlestickBodyWidthRange, findCandlestick } from '../interaction/findCandlestick';
-import type { CandlestickMatch } from '../interaction/findCandlestick';
 import { findPieSlice } from '../interaction/findPieSlice';
-import type { PieSliceMatch } from '../interaction/findPieSlice';
 import { createLinearScale } from '../utils/scales';
 import type { LinearScale } from '../utils/scales';
 import { parseCssColorToGPUColor, parseCssColorToRgba01 } from '../utils/colors';
@@ -72,6 +64,23 @@ import { createAnimationController } from './createAnimationController';
 import type { AnimationId } from './createAnimationController';
 import { getEasing } from '../utils/easing';
 import type { EasingFunction } from '../utils/easing';
+
+/**
+ * Internal type for annotation label data.
+ */
+interface AnnotationLabelData {
+  readonly text: string;
+  readonly x: number;
+  readonly y: number;
+  readonly anchor?: 'start' | 'middle' | 'end';
+  readonly color?: string;
+  readonly fontSize?: number;
+  readonly background?: Readonly<{
+    readonly backgroundColor: string;
+    readonly padding?: readonly [number, number, number, number];
+    readonly borderRadius?: number;
+  }>;
+}
 
 export interface GPUContextLike {
   readonly device: GPUDevice | null;
@@ -175,11 +184,6 @@ export interface RenderCoordinator {
    * Returns an unsubscribe function.
    */
   onZoomRangeChange(cb: (range: Readonly<{ start: number; end: number }>) => void): () => void;
-  /**
-   * Accepts a pointer event with pre-computed grid coordinates for worker thread event forwarding.
-   * Only available when domOverlays is false.
-   */
-  handlePointerEvent(event: PointerEventData): void;
   render(): void;
   dispose(): void;
 }
@@ -190,55 +194,6 @@ export type RenderCoordinatorCallbacks = Readonly<{
    * interaction state changes (e.g. crosshair on pointer move).
    */
   readonly onRequestRender?: () => void;
-  /**
-   * When false, DOM overlays (tooltip, legend, text overlay, event manager) are disabled.
-   * Instead, callbacks are used to emit data for external rendering.
-   * Default: true (DOM overlays enabled).
-   */
-  readonly domOverlays?: boolean;
-  /**
-   * Called when tooltip data changes (only when domOverlays is false).
-   * Receives tooltip data including content, params array, and position, or null when hidden.
-   */
-  readonly onTooltipUpdate?: (data: TooltipData | null) => void;
-  /**
-   * Called when legend items change (only when domOverlays is false).
-   */
-  readonly onLegendUpdate?: (items: ReadonlyArray<LegendItem>) => void;
-  /**
-   * Called when axis labels change (only when domOverlays is false).
-   */
-  readonly onAxisLabelsUpdate?: (xLabels: ReadonlyArray<AxisLabel>, yLabels: ReadonlyArray<AxisLabel>) => void;
-  /**
-   * Called when annotation labels change (only when domOverlays is false).
-   *
-   * Payload coordinates are canvas-local CSS pixels.
-   */
-  readonly onAnnotationsUpdate?: (labels: ReadonlyArray<AnnotationLabelData>) => void;
-  /**
-   * Called when hover state changes (only when domOverlays is false).
-   */
-  readonly onHoverChange?: (payload: ChartGPUEventPayload | null) => void;
-  /**
-   * Called when crosshair moves (only when domOverlays is false).
-   * Receives canvas-local CSS pixel x coordinate, or null when crosshair is hidden.
-   */
-  readonly onCrosshairMove?: (x: number | null) => void;
-  /**
-   * Called when user taps/clicks (only when domOverlays is false).
-   * Includes hit test result with seriesIndex, dataIndex, and value.
-   * Main thread is responsible for tap detection; worker thread performs hit testing.
-   */
-  readonly onClickData?: (payload: {
-    readonly x: number;
-    readonly y: number;
-    readonly gridX: number;
-    readonly gridY: number;
-    readonly isInGrid: boolean;
-    readonly nearest: NearestPointMatch | null;
-    readonly pieSlice: PieSliceMatch | null;
-    readonly candlestick: CandlestickMatch | null;
-  }) => void;
   /**
    * Called when GPU device is lost.
    */
@@ -523,7 +478,7 @@ const computeGridArea = (gpuContext: GPUContextLike, options: ResolvedChartGPUOp
   // Validate and sanitize canvas dimensions (device pixels)
   // Canvas dimensions should be set by GPUContext initialization/resize, but guard against edge cases:
   // - Race conditions during initialization
-  // - Invalid dimensions from OffscreenCanvas in worker mode
+  // - Invalid dimensions from OffscreenCanvas
   // - Canvas not yet sized (0 dimensions)
   const rawCanvasWidth = canvas.width;
   const rawCanvasHeight = canvas.height;
@@ -579,26 +534,6 @@ const withAlpha = (cssColor: string, alphaMultiplier: number): string => {
   return rgba01ToCssRgba([parsed[0], parsed[1], parsed[2], a]);
 };
 
-/**
- * Estimates the maximum width of Y-axis tick labels in CSS pixels.
- * Used in worker mode where DOM measurement is not available.
- *
- * Uses a heuristic: ~0.6 * fontSize per character for typical numeric labels.
- * This is conservative and should prevent overlap in most cases.
- */
-const estimateMaxYTickLabelWidth = (
-  yLabels: ReadonlyArray<{ readonly text: string }>,
-  fontSize: number
-): number => {
-  if (yLabels.length === 0) return 0;
-
-  // Find the longest label text
-  const maxChars = yLabels.reduce((max, label) => Math.max(max, label.text.length), 0);
-
-  // Estimate width: ~0.6 * fontSize per character for typical monospace-ish numeric text
-  // This is conservative to prevent overlap
-  return Math.ceil(maxChars * fontSize * 0.6);
-};
 
 const computePlotClipRect = (
   gridArea: GridArea
@@ -1382,7 +1317,7 @@ const computeCandlestickTooltipAnchor = (
   const yCanvasCss = gridArea.top + yGridCss;
 
   // Convert to container-local CSS pixels
-  // In worker mode (OffscreenCanvas), offsetLeft/offsetTop don't exist - return canvas-local coordinates
+  // OffscreenCanvas doesn't have offsetLeft/offsetTop - return canvas-local coordinates
   const xContainerCss = isHTMLCanvasElement(canvas) ? canvas.offsetLeft + xCanvasCss : xCanvasCss;
   const yContainerCss = isHTMLCanvasElement(canvas) ? canvas.offsetTop + yCanvasCss : yCanvasCss;
 
@@ -1496,10 +1431,9 @@ export function createRenderCoordinator(
 
   const targetFormat = gpuContext.preferredFormat ?? DEFAULT_TARGET_FORMAT;
   
-  // DOM-dependent features (overlays, legends) require HTMLCanvasElement and domOverlays !== false.
-  // OffscreenCanvas is for rendering only.
-  const domOverlaysEnabled = callbacks?.domOverlays !== false;
-  const overlayContainer = domOverlaysEnabled && isHTMLCanvasElement(gpuContext.canvas) ? gpuContext.canvas.parentElement : null;
+  // DOM-dependent features (overlays, legends) require HTMLCanvasElement.
+  // OffscreenCanvas is not supported for chart creation.
+  const overlayContainer = isHTMLCanvasElement(gpuContext.canvas) ? gpuContext.canvas.parentElement : null;
   const axisLabelOverlay: TextOverlay | null = overlayContainer ? createTextOverlay(overlayContainer) : null;
   // Dedicated overlay for annotations (do not reuse axis label overlay).
   const annotationOverlay: TextOverlay | null = overlayContainer ? createTextOverlay(overlayContainer) : null;
@@ -1801,20 +1735,13 @@ export function createRenderCoordinator(
   let lastTooltipX: number | null = null;
   let lastTooltipY: number | null = null;
 
-  // Helper functions for tooltip/legend/crosshair callbacks
-  const showTooltipInternal = (x: number, y: number, content: string, params: TooltipParams | TooltipParams[]) => {
+  // Helper functions for tooltip/legend management
+  const showTooltipInternal = (x: number, y: number, content: string, _params: TooltipParams | TooltipParams[]) => {
     tooltip?.show(x, y, content);
-    if (!domOverlaysEnabled && callbacks?.onTooltipUpdate) {
-      const paramsArray = Array.isArray(params) ? params : [params];
-      callbacks.onTooltipUpdate({ content, params: paramsArray, x, y });
-    }
   };
 
   const hideTooltipInternal = () => {
     tooltip?.hide();
-    if (!domOverlaysEnabled && callbacks?.onTooltipUpdate) {
-      callbacks.onTooltipUpdate(null);
-    }
   };
 
   const hideTooltip = () => {
@@ -1824,28 +1751,8 @@ export function createRenderCoordinator(
     hideTooltipInternal();
   };
 
-  const emitCrosshairCallback = (x: number | null) => {
-    if (!domOverlaysEnabled && callbacks?.onCrosshairMove) {
-      callbacks.onCrosshairMove(x);
-    }
-  };
-
-  const emitHoverCallback = (payload: ChartGPUEventPayload | null) => {
-    if (!domOverlaysEnabled && callbacks?.onHoverChange) {
-      callbacks.onHoverChange(payload);
-    }
-  };
-
   const updateLegend = (series: ResolvedChartGPUOptions['series'], theme: ResolvedChartGPUOptions['theme']) => {
     legend?.update(series, theme);
-    if (!domOverlaysEnabled && callbacks?.onLegendUpdate) {
-      const items: LegendItem[] = series.map((s, idx) => ({
-        name: s.name ?? '',
-        color: s.color ?? '#888',
-        seriesIndex: idx,
-      }));
-      callbacks.onLegendUpdate(items);
-    }
   };
 
   updateLegend(currentOptions.series, currentOptions.theme);
@@ -1977,9 +1884,9 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
 
   const initialGridArea = computeGridArea(gpuContext, currentOptions);
   
-  // Event manager requires HTMLCanvasElement (DOM events) and domOverlays enabled.
-  // OffscreenCanvas doesn't support interactive features.
-  const eventManager = domOverlaysEnabled && isHTMLCanvasElement(gpuContext.canvas) 
+  // Event manager requires HTMLCanvasElement (DOM events).
+  // OffscreenCanvas is not supported for chart creation.
+  const eventManager = isHTMLCanvasElement(gpuContext.canvas) 
     ? createEventManager(gpuContext.canvas, initialGridArea)
     : null;
 
@@ -2321,13 +2228,6 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     } else {
       // OffscreenCanvas: calculate CSS pixels from canvas dimensions divided by device pixel ratio
       const dpr = gpuContext.devicePixelRatio ?? 1.0;
-      console.log('[getPlotSizeCssPx] OffscreenCanvas dimensions:', {
-        canvasWidth: canvas.width,
-        canvasHeight: canvas.height,
-        dpr,
-        calculatedCssWidth: canvas.width / dpr,
-        calculatedCssHeight: canvas.height / dpr
-      });
       canvasWidthCss = canvas.width / dpr;
       canvasHeightCss = canvas.height / dpr;
       if (!(canvasWidthCss > 0) || !(canvasHeightCss > 0)) return null;
@@ -2352,7 +2252,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       }
     | null => {
     const canvas = gpuContext.canvas;
-    // Support both HTMLCanvasElement and OffscreenCanvas for worker thread compatibility
+    // Support both HTMLCanvasElement and OffscreenCanvas
     if (!canvas) return null;
 
     const plotSize = getPlotSizeCssPx(canvas, gridArea);
@@ -2363,15 +2263,6 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     const yScale = createLinearScale().domain(domains.yDomain.min, domains.yDomain.max).range(plotSize.plotHeightCss, 0);
 
     const result = { xScale, yScale, plotWidthCss: plotSize.plotWidthCss, plotHeightCss: plotSize.plotHeightCss };
-    console.log('[computeInteractionScalesGridCssPx] Computed interaction scales:', {
-      canvasType: isHTMLCanvasElement(canvas) ? 'HTMLCanvasElement' : 'OffscreenCanvas',
-      plotWidthCss: result.plotWidthCss,
-      plotHeightCss: result.plotHeightCss,
-      xDomain: domains.xDomain,
-      yDomain: domains.yDomain,
-      xRange: [0, plotSize.plotWidthCss],
-      yRange: [plotSize.plotHeightCss, 0]
-    });
 
     return result;
   };
@@ -2493,8 +2384,6 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     }
 
     crosshairRenderer.setVisible(payload.isInGrid);
-    emitCrosshairCallback(payload.isInGrid ? payload.x : null);
-    emitHoverCallback(payload.isInGrid ? payload : null);
     requestRender();
   };
 
@@ -2506,8 +2395,6 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     pointerState = { ...pointerState, isInGrid: false, hasPointer: false };
     crosshairRenderer.setVisible(false);
     hideTooltip();
-    emitCrosshairCallback(null);
-    emitHoverCallback(null);
     setInteractionXInternal(null, 'mouse');
     requestRender();
   };
@@ -3607,10 +3494,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       };
       crosshairRenderer.prepare(effectivePointer.x, effectivePointer.y, gridArea, crosshairOptions);
       crosshairRenderer.setVisible(true);
-      emitCrosshairCallback(effectivePointer.x);
     } else {
       crosshairRenderer.setVisible(false);
-      emitCrosshairCallback(null);
     }
 
     // Highlight: on hover, find nearest point and draw a ring highlight clipped to plot rect.
@@ -3660,30 +3545,16 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     }
 
     // Tooltip: on hover, find matches and render tooltip near cursor.
-    // Note: Tooltips require HTMLCanvasElement (DOM-specific positioning) for DOM rendering.
-    // However, in worker mode (!domOverlaysEnabled), we still need to run hit-testing and callbacks.
+    // Note: Tooltips require HTMLCanvasElement (DOM-specific positioning).
     if (effectivePointer.hasPointer && effectivePointer.isInGrid && currentOptions.tooltip?.show !== false) {
       const canvas = gpuContext.canvas;
 
-      console.log('[Tooltip block] State check:', {
-        hasInteractionScales: !!interactionScales,
-        domOverlaysEnabled,
-        hasCanvas: !!canvas,
-        canvasType: canvas ? (isHTMLCanvasElement(canvas) ? 'HTMLCanvasElement' : 'OffscreenCanvas') : 'null',
-        interactionScales: interactionScales ? {
-          plotWidthCss: interactionScales.plotWidthCss,
-          plotHeightCss: interactionScales.plotHeightCss
-        } : null
-      });
-
-      if (interactionScales && (!domOverlaysEnabled || (canvas && isHTMLCanvasElement(canvas)))) {
+      if (interactionScales && canvas && isHTMLCanvasElement(canvas)) {
         const formatter = currentOptions.tooltip?.formatter;
         const trigger = currentOptions.tooltip?.trigger ?? 'item';
 
-        // In worker mode (OffscreenCanvas), offsetLeft/offsetTop don't exist
-        // Use effectivePointer coordinates directly as they're already in container-local CSS pixels
-        const containerX = isHTMLCanvasElement(canvas) ? canvas.offsetLeft + effectivePointer.x : effectivePointer.x;
-        const containerY = isHTMLCanvasElement(canvas) ? canvas.offsetTop + effectivePointer.y : effectivePointer.y;
+        const containerX = canvas.offsetLeft + effectivePointer.x;
+        const containerY = canvas.offsetTop + effectivePointer.y;
 
         if (effectivePointer.source === 'sync') {
           // Sync semantics:
@@ -4278,11 +4149,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
 
     hasRenderedOnce = true;
 
-    // Generate axis labels for DOM overlay (main thread) or callback (worker mode)
-    const shouldGenerateAxisLabels = hasCartesianSeries && (
-      (axisLabelOverlay && overlayContainer) ||  // DOM mode with overlay
-      (!domOverlaysEnabled && callbacks?.onAxisLabelsUpdate)  // Worker mode with callback
-    );
+    // Generate axis labels for DOM overlay
+    const shouldGenerateAxisLabels = hasCartesianSeries && (axisLabelOverlay && overlayContainer);
 
     if (shouldGenerateAxisLabels) {
       const canvas = gpuContext.canvas;
@@ -4292,8 +4160,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       const canvasCssHeight = getCanvasCssHeight(canvas, gpuContext.devicePixelRatio ?? 1);
       if (canvasCssWidth <= 0 || canvasCssHeight <= 0) return;
 
-      // Calculate offsets (only for DOM mode with HTMLCanvasElement)
-      // In worker mode (OffscreenCanvas), offsets are 0 since there's no offsetLeft/offsetTop
+      // Calculate offsets (only for HTMLCanvasElement with DOM)
+      // OffscreenCanvas has no offsetLeft/offsetTop, so offsets are 0
       const offsetX = isHTMLCanvasElement(canvas) ? canvas.offsetLeft : 0;
       const offsetY = isHTMLCanvasElement(canvas) ? canvas.offsetTop : 0;
 
@@ -4304,10 +4172,6 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
 
       // Clear axis label overlay if it exists
       axisLabelOverlay?.clear();
-
-      // Collect axis labels for callback emission
-      const collectedXLabels: AxisLabel[] = [];
-      const collectedYLabels: AxisLabel[] = [];
 
       const xTickLengthCssPx = currentOptions.xAxis.tickLength ?? DEFAULT_TICK_LENGTH_CSS_PX;
       const xLabelY = plotBottomCss + xTickLengthCssPx + LABEL_PADDING_CSS_PX + currentOptions.theme.fontSize * 0.5;
@@ -4330,18 +4194,14 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         const label = isTimeXAxis ? formatTimeTickValue(v, visibleXRangeMs) : formatTickValue(xFormatter!, v);
         if (label == null) continue;
 
-        // Collect label data for callback (worker mode)
-        const axisLabel: AxisLabel = { axis: 'x', text: label, x: offsetX + xCss, y: offsetY + xLabelY, anchor, isTitle: false };
-        collectedXLabels.push(axisLabel);
-
-        // Add to DOM overlay if it exists (main thread mode)
+        // Add to DOM overlay
         if (axisLabelOverlay) {
           const span = axisLabelOverlay.addLabel(label, offsetX + xCss, offsetY + xLabelY, {
             fontSize: currentOptions.theme.fontSize,
             color: currentOptions.theme.textColor,
             anchor,
           });
-          styleAxisLabelSpan(span, axisLabel, currentOptions.theme);
+          styleAxisLabelSpan(span, false, currentOptions.theme);
         }
       }
 
@@ -4363,18 +4223,14 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         const label = formatTickValue(yFormatter, v);
         if (label == null) continue;
 
-        // Collect label data for callback (worker mode)
-        const axisLabel: AxisLabel = { axis: 'y', text: label, x: offsetX + yLabelX, y: offsetY + yCss, anchor: 'end', isTitle: false };
-        collectedYLabels.push(axisLabel);
-
-        // Add to DOM overlay if it exists (main thread mode)
+        // Add to DOM overlay
         if (axisLabelOverlay) {
           const span = axisLabelOverlay.addLabel(label, offsetX + yLabelX, offsetY + yCss, {
             fontSize: currentOptions.theme.fontSize,
             color: currentOptions.theme.textColor,
             anchor: 'end',
           });
-          styleAxisLabelSpan(span, axisLabel, currentOptions.theme);
+          styleAxisLabelSpan(span, false, currentOptions.theme);
           ySpans.push(span);
         }
       }
@@ -4396,39 +4252,29 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         const bottomLimitCss = hasSliderZoom ? canvasCssHeight - sliderTrackHeightCssPx : canvasCssHeight;
         const xTitleY = (xTickLabelsBottom + bottomLimitCss) / 2;
 
-        // Collect label data for callback (worker mode)
-        const axisLabel: AxisLabel = { axis: 'x', text: xAxisName, x: offsetX + xCenter, y: offsetY + xTitleY, anchor: 'middle', isTitle: true };
-        collectedXLabels.push(axisLabel);
-
-        // Add to DOM overlay if it exists (main thread mode)
+        // Add to DOM overlay
         if (axisLabelOverlay) {
           const span = axisLabelOverlay.addLabel(xAxisName, offsetX + xCenter, offsetY + xTitleY, {
             fontSize: axisNameFontSize,
             color: currentOptions.theme.textColor,
             anchor: 'middle',
           });
-          styleAxisLabelSpan(span, axisLabel, currentOptions.theme);
+          styleAxisLabelSpan(span, true, currentOptions.theme);
         }
       }
 
       const yAxisName = currentOptions.yAxis.name?.trim() ?? '';
       if (yAxisName.length > 0) {
-        // In DOM mode: measure actual rendered label widths
-        // In worker mode: estimate based on character count and font size
-        const maxTickLabelWidth =
-          ySpans.length === 0
-            ? estimateMaxYTickLabelWidth(collectedYLabels, currentOptions.theme.fontSize)
-            : ySpans.reduce((max, s) => Math.max(max, s.getBoundingClientRect().width), 0);
+        // Measure actual rendered label widths from DOM
+        const maxTickLabelWidth = ySpans.length === 0
+          ? 0
+          : ySpans.reduce((max, s) => Math.max(max, s.getBoundingClientRect().width), 0);
 
         const yCenter = (plotTopCss + plotBottomCss) / 2;
         const yTickLabelLeft = yLabelX - maxTickLabelWidth;
         const yTitleX = yTickLabelLeft - LABEL_PADDING_CSS_PX - axisNameFontSize * 0.5;
 
-        // Collect label data for callback (worker mode)
-        const axisLabel: AxisLabel = { axis: 'y', text: yAxisName, x: offsetX + yTitleX, y: offsetY + yCenter, anchor: 'middle', rotation: -90, isTitle: true };
-        collectedYLabels.push(axisLabel);
-
-        // Add to DOM overlay if it exists (main thread mode)
+        // Add to DOM overlay
         if (axisLabelOverlay) {
           const span = axisLabelOverlay.addLabel(yAxisName, offsetX + yTitleX, offsetY + yCenter, {
             fontSize: axisNameFontSize,
@@ -4436,22 +4282,14 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
             anchor: 'middle',
             rotation: -90,
           });
-          styleAxisLabelSpan(span, axisLabel, currentOptions.theme);
+          styleAxisLabelSpan(span, true, currentOptions.theme);
         }
-      }
-
-      // Emit axis labels callback when DOM overlays are disabled (worker mode)
-      if (!domOverlaysEnabled && callbacks?.onAxisLabelsUpdate) {
-        callbacks.onAxisLabelsUpdate(collectedXLabels, collectedYLabels);
       }
     }
 
-    // Generate annotation labels (DOM overlay in main-thread mode, callback in worker mode).
+    // Generate annotation labels (DOM overlay).
     // PERFORMANCE: Reuse cached canvas dimensions from GPU overlay processing above
-    const shouldUpdateAnnotationLabels = hasCartesianSeries && (
-      (annotationOverlay && overlayContainer) ||
-      (!domOverlaysEnabled && callbacks?.onAnnotationsUpdate)
-    );
+    const shouldUpdateAnnotationLabels = hasCartesianSeries && (annotationOverlay && overlayContainer);
 
     if (shouldUpdateAnnotationLabels) {
       // PERFORMANCE: Reuse canvasCssWidthForAnnotations and canvasCssHeightForAnnotations computed above
@@ -4514,9 +4352,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         // PERFORMANCE: Skip label processing if no annotations
         const annotations = currentOptions.annotations ?? [];
         if (annotations.length === 0) {
-          if (!domOverlaysEnabled && callbacks?.onAnnotationsUpdate) {
-            callbacks.onAnnotationsUpdate([]);
-          }
+          // No annotations to process
         } else {
           const labelsOut: AnnotationLabelData[] = [];
 
@@ -4676,213 +4512,13 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
               }
             }
           }
-
-          if (!domOverlaysEnabled && callbacks?.onAnnotationsUpdate) {
-            callbacks.onAnnotationsUpdate(labelsOut);
-          }
         }
       } else {
         annotationOverlay?.clear();
-        if (!domOverlaysEnabled && callbacks?.onAnnotationsUpdate) {
-          callbacks.onAnnotationsUpdate([]);
-        }
       }
     }
   };
 
-  const handlePointerEvent: RenderCoordinator['handlePointerEvent'] = (event) => {
-    assertNotDisposed();
-    if (domOverlaysEnabled) {
-      // When DOM overlays are enabled, ignore handlePointerEvent (use native DOM events instead)
-      return;
-    }
-
-    const canvas = gpuContext.canvas;
-    if (!canvas) return;
-
-    // Validate event coordinates (guard against NaN/Infinity from worker thread serialization issues)
-    if (
-      !Number.isFinite(event.x) ||
-      !Number.isFinite(event.y) ||
-      !Number.isFinite(event.gridX) ||
-      !Number.isFinite(event.gridY) ||
-      !Number.isFinite(event.plotWidthCss) ||
-      !Number.isFinite(event.plotHeightCss)
-    ) {
-      return;
-    }
-
-    // Use pre-computed grid coordinates from event
-    const { type, x, y, gridX, gridY, plotWidthCss, plotHeightCss, isInGrid } = event;
-
-    if (type === 'leave') {
-      pointerState = { ...pointerState, isInGrid: false, hasPointer: false };
-      crosshairRenderer.setVisible(false);
-      lastTooltipContent = null;
-      lastTooltipX = null;
-      lastTooltipY = null;
-      
-      hideTooltipInternal();
-      emitCrosshairCallback(null);
-      emitHoverCallback(null);
-      
-      setInteractionXInternal(null, 'mouse');
-      requestRender();
-      return;
-    }
-
-    if (type === 'move') {
-      // Update pointer state for hover/crosshair
-      pointerState = {
-        source: 'mouse',
-        x,
-        y,
-        gridX,
-        gridY,
-        isInGrid,
-        hasPointer: true,
-      };
-
-      requestRender();
-      return;
-    }
-
-    if (type === 'click') {
-      // Perform hit testing for click events
-      if (!callbacks?.onClickData) return;
-
-      let nearest: NearestPointMatch | null = null;
-      let pieSlice: PieSliceMatch | null = null;
-      let candlestick: CandlestickMatch | null = null;
-
-      // Use cached interaction scales and render series from last render
-      if (isInGrid && lastInteractionScales) {
-        // Pie slice hit testing
-        pieSlice = findPieSliceAtPointer(
-          renderSeries,
-          gridX,
-          gridY,
-          plotWidthCss,
-          plotHeightCss
-        );
-
-        // Candlestick hit testing
-        if (!pieSlice) {
-          const candlestickResult = findCandlestickAtPointer(
-            renderSeries,
-            gridX,
-            gridY,
-            lastInteractionScales
-          );
-          if (candlestickResult) {
-            candlestick = {
-              seriesIndex: candlestickResult.seriesIndex,
-              dataIndex: candlestickResult.params.dataIndex,
-              point: candlestickResult.match.point,
-            };
-          }
-        }
-
-        // Nearest point hit testing
-        if (!pieSlice && !candlestick) {
-          nearest = findNearestPoint(
-            renderSeries,
-            gridX,
-            gridY,
-            lastInteractionScales.xScale,
-            lastInteractionScales.yScale,
-            20 // maxDistance in CSS pixels
-          );
-        }
-      }
-
-      callbacks.onClickData({
-        x,
-        y,
-        gridX,
-        gridY,
-        isInGrid,
-        nearest,
-        pieSlice,
-        candlestick,
-      });
-      return;
-    }
-
-    if (type === 'wheel') {
-      // Handle mouse wheel zoom (only when inside grid and zoom is enabled)
-      if (!isInGrid || !zoomState) return;
-      
-      const deltaX = event.deltaX ?? 0;
-      const deltaY = event.deltaY ?? 0;
-      const deltaMode = event.deltaMode ?? 0;
-      
-      // Normalize delta to CSS pixels
-      const normalizeWheelDelta = (delta: number, basis: number): number => {
-        if (!Number.isFinite(delta) || delta === 0) return 0;
-        
-        switch (deltaMode) {
-          case 1: // DOM_DELTA_LINE
-            return delta * 16;
-          case 2: // DOM_DELTA_PAGE
-            return delta * (Number.isFinite(basis) && basis > 0 ? basis : 800);
-          default: // DOM_DELTA_PIXEL
-            return delta;
-        }
-      };
-      
-      const deltaYCss = normalizeWheelDelta(deltaY, plotHeightCss);
-      const deltaXCss = normalizeWheelDelta(deltaX, plotWidthCss);
-      
-      // Check if horizontal scroll is dominant (pan operation)
-      if (Math.abs(deltaXCss) > Math.abs(deltaYCss) && deltaXCss !== 0) {
-        const { start, end } = zoomState.getRange();
-        const span = end - start;
-        if (!Number.isFinite(span) || span === 0) return;
-        
-        // Convert horizontal scroll delta to percent pan
-        // Positive deltaX = scroll right = pan right (show earlier data)
-        const deltaPct = (deltaXCss / plotWidthCss) * span;
-        if (!Number.isFinite(deltaPct) || deltaPct === 0) return;
-        
-        zoomState.pan(deltaPct);
-        return;
-      }
-      
-      // Vertical scroll zoom logic
-      if (deltaYCss === 0) return;
-      
-      // Calculate zoom factor from wheel delta
-      // Positive delta = scroll down = zoom out; negative = zoom in
-      const abs = Math.abs(deltaYCss);
-      if (!Number.isFinite(abs) || abs === 0) return;
-      
-      // Cap extreme deltas (some devices can emit huge values)
-      const capped = Math.min(abs, 200);
-      const sensitivity = 0.002;
-      const factor = Math.exp(capped * sensitivity);
-      
-      if (!(factor > 1)) return;
-      
-      const { start, end } = zoomState.getRange();
-      const span = end - start;
-      if (!Number.isFinite(span) || span === 0) return;
-      
-      // Calculate zoom center based on pointer position in plot
-      const r = Math.min(1, Math.max(0, gridX / plotWidthCss));
-      const centerPct = Math.min(100, Math.max(0, start + r * span));
-      
-      // Apply zoom
-      if (deltaYCss < 0) {
-        zoomState.zoomIn(centerPct, factor);
-      } else {
-        zoomState.zoomOut(centerPct, factor);
-      }
-      
-      requestRender();
-      return;
-    }
-  };
 
   const dispose: RenderCoordinator['dispose'] = () => {
     if (disposed) return;
@@ -4996,7 +4632,6 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       crosshairRenderer.setVisible(false);
       highlightRenderer.setVisible(false);
       hideTooltipInternal();
-      emitCrosshairCallback(null);
     }
     requestRender();
   };
@@ -5037,7 +4672,6 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     getZoomRange,
     setZoomRange,
     onZoomRangeChange,
-    handlePointerEvent,
     render,
     dispose,
   };

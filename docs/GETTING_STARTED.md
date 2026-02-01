@@ -370,7 +370,6 @@ Then open `http://localhost:5176/examples/` in your browser.
 
 ### Advanced topics
 
-- **Worker-based rendering**: Use `ChartGPU.createInWorker()` for maximum performance with large datasets (keeps main thread responsive) - see [Worker API](./api/worker.md)
 - **Performance monitoring**: Track FPS, frame time, memory usage, and frame drops in real-time - see [Performance Monitoring](#performance-monitoring) below
 - **Themes**: Use built-in themes (`theme: 'dark' | 'light'`) or create custom themes
 - **Streaming data**: Use `chart.appendData(seriesIndex, newPoints)` for real-time updates
@@ -505,30 +504,11 @@ chart.onPerformanceUpdate((metrics: PerformanceMetrics) => {
 });
 ```
 
-### Worker Mode Support
-
-Performance monitoring works identically in worker mode:
-
-```ts
-// Create worker-based chart
-const chart = await ChartGPU.createInWorker(container, {
-  series: [{ type: 'line', data: largeDataset }]
-});
-
-// Subscribe to performance updates (metrics forwarded from worker)
-chart.onPerformanceUpdate((metrics) => {
-  console.log('Worker FPS:', metrics.fps);
-});
-```
-
-For a complete working example with a performance dashboard, see [`examples/worker-rendering/main.ts`](../examples/worker-rendering/main.ts).
-
 ### API Reference
 
 For detailed type definitions and method signatures, see:
 - [Performance Monitoring](./api/chart.md#performance-monitoring) - Chart instance methods
 - [Performance Metrics Types](./api/options.md#performance-metrics-types) - Type definitions
-- [Worker Performance](./api/worker.md#performance-monitoring-in-worker-mode) - Worker-specific details
 
 ---
 

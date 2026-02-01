@@ -23,8 +23,6 @@ The API documentation has been split into smaller, task-focused files to reduce 
 
 - [Interaction](./interaction.md): events, interaction-x, zoom range APIs
 - [Animation](./animation.md): animation controller notes (internal)
-- [Worker API](./worker.md): `ChartGPUWorkerController`, worker module API, utilities
-- [Worker Protocol](./worker-protocol.md): worker thread communication protocol (messages, types, patterns)
 - [Internals (contributors)](./INTERNALS.md): internal modules and renderer notes
 - [Troubleshooting](./troubleshooting.md): common errors and best practices
 

@@ -6,8 +6,6 @@ See [ChartGPU.ts](../../src/ChartGPU.ts) for the chart instance implementation.
 
 Creates a chart instance bound to a container element.
 
-**Worker mode note (important)**: when using `ChartGPU.createInWorker(...)`, the `options` object must be **structured-cloneable** (no functions; avoid `Date`). For annotation labels, prefer `AnnotationLabel.template` (template strings) over formatter callbacks.
-
 ## `ChartGPUInstance`
 
 Returned by `ChartGPU.create(...)`.
@@ -33,9 +31,17 @@ See [ChartGPU.ts](../../src/ChartGPU.ts) for the full interface and lifecycle be
 - `onInteractionXChange(callback: (x: number | null, source?: unknown) => void): () => void`: subscribes to interaction x updates and returns an unsubscribe function. See [`ChartGPU.ts`](../../src/ChartGPU.ts).
 - `getZoomRange(): { start: number; end: number } | null`: returns the current percent-space zoom window in \([0, 100]\), or `null` when data zoom is disabled. See [`ChartGPU.ts`](../../src/ChartGPU.ts) and percent-space semantics in [`createZoomState.ts`](../../src/interaction/createZoomState.ts).
 - `setZoomRange(start: number, end: number): void`: sets the percent-space zoom window (ordered/clamped to \([0, 100]\)); no-op when data zoom is disabled. See [`ChartGPU.ts`](../../src/ChartGPU.ts) and percent-space semantics in [`createZoomState.ts`](../../src/interaction/createZoomState.ts).
-- `getPerformanceMetrics(): Readonly<PerformanceMetrics> | null`: returns a snapshot of current performance metrics including FPS, frame time statistics, memory usage, and frame drops; returns `null` if metrics are not available. Works for both main thread and worker-based charts. See [`PerformanceMetrics`](options.md#performancemetrics) for type details.
+- `getPerformanceMetrics(): Readonly<PerformanceMetrics> | null`: returns a snapshot of current performance metrics including FPS, frame time statistics, memory usage, and frame drops; returns `null` if metrics are not available. See [`PerformanceMetrics`](options.md#performancemetrics) for type details.
 - `getPerformanceCapabilities(): Readonly<PerformanceCapabilities> | null`: returns which performance features are supported (e.g., GPU timing, high-resolution timers); returns `null` if capabilities information is not available. Useful for determining what metrics are available before subscribing to updates. See [`PerformanceCapabilities`](options.md#performancecapabilities) for type details.
-- `onPerformanceUpdate(callback: (metrics: Readonly<PerformanceMetrics>) => void): () => void`: subscribes to real-time performance updates that fire on every render frame; returns an unsubscribe function to clean up the subscription. Works for both main thread and worker-based charts. For worker charts, metrics are forwarded from the worker thread to the main thread automatically. For usage example, see [`examples/worker-rendering/main.ts`](../../examples/worker-rendering/main.ts).
+- `onPerformanceUpdate(callback: (metrics: Readonly<PerformanceMetrics>) => void): () => void`: subscribes to real-time performance updates that fire on every render frame; returns an unsubscribe function to clean up the subscription.
+- `hitTest(e: PointerEvent | MouseEvent): ChartGPUHitTestResult`: performs a synchronous hit-test for a pointer/mouse event and returns coordinates + an optional match. Accepts `MouseEvent` for right-click/context menu handlers (DOM `contextmenu`).
+  - `canvasX` / `canvasY`: canvas-local coordinates in **CSS pixels**.
+  - `gridX` / `gridY`: plot-area-local coordinates in **CSS pixels**, relative to the plot origin \((grid.left, grid.top)\).
+  - `isInGrid`: `true` when the pointer is inside the plot area.
+  - `match`: `null` when no chart element is hit; otherwise `{ kind, seriesIndex, dataIndex, value }`.
+    - `kind: 'cartesian'`: `value` is `[x, y]` (domain units).
+    - `kind: 'candlestick'`: `value` is `[timestamp, close]` (domain units).
+    - `kind: 'pie'`: `value` is `[0, sliceValue]` (pie is non-cartesian; the x-slot is `0`).
 
 Data upload and scale/bounds derivation occur during [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts) `RenderCoordinator.render()` (not during `setOption(...)` itself).
 
@@ -73,13 +79,9 @@ Subscribes to real-time performance updates that fire on every render frame (up 
 
 **Behavior:**
 - Callback fires synchronously after each frame render completes
-- Works for both main thread and worker-based charts
-- For worker charts, metrics are automatically forwarded from worker to main thread
 - Unsubscribe by calling the returned function
 
 For type definitions, see [`PerformanceMetrics`](options.md#performancemetrics) and [`PerformanceCapabilities`](options.md#performancecapabilities).
-
-For a complete usage example, see [`examples/worker-rendering/main.ts`](../../examples/worker-rendering/main.ts).
 
 ## Legend (automatic)
 

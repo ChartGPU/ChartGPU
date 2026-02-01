@@ -11,25 +11,9 @@ ChartGPU is a GPU-accelerated charting library built with WebGPU for high-perfor
 **NPM package**: `chartgpu`
 **License**: MIT
 
-## Recent Work (Current Branch: worker-thread-offscreen-canvas-support)
+## Recent Work (Current Branch)
 
-Recent enhancements have focused on worker-based rendering with OffscreenCanvas support:
-
-- **Worker thread rendering**: Full OffscreenCanvas support with transferControlToOffscreen()
-- **Pointer event handling**: Pre-computed grid coordinates on main thread, forwarded to worker
-- **Resize optimization**: RAF-batched resize handling with contentBoxSize from ResizeObserver
-- **Tooltip enhancement**: Complete tooltip content and positioning calculated in worker, RAF-batched updates on main thread
-- **Zoom state management**: Echo suppression for zoom changes to prevent feedback loops
-- **Performance monitoring**: Enhanced FPS, frame time, and memory metrics
-- **Zero-copy data transfer**: Optimized ArrayBuffer transfer for large datasets
-- **Documentation**: Comprehensive worker API guides and architecture documentation
-
-See recent commits for implementation details:
-- Fix worker thread ResizeObserver to use contentBoxSize
-- Enhance tooltip and interaction support in worker mode
-- Update zoom state handling and initialization in worker
-- Implement zoom change handling with echo suppression
-- Enhance pointer event handling with wheel support
+Recent enhancements have focused on interaction and authoring features, performance/ergonomics improvements, and documentation cleanup.
 
 ## Development Commands
 
@@ -62,7 +46,6 @@ WebGPU support required:
 React bindings available via [`chartgpu-react`](https://github.com/ChartGPU/chartgpu-react):
 - `npm install chartgpu-react`
 - Provides `<ChartGPUChart>` component with React-friendly API
-- Supports both main thread and worker-based rendering
 
 ## Architecture
 
@@ -93,7 +76,7 @@ Manages WebGPU adapter and device initialization. Provides both functional API (
 - Canvas configuration with device pixel ratio handling
 - Texture format detection and configuration
 - Device lifecycle management and cleanup
-- Supports both `HTMLCanvasElement` and `OffscreenCanvas` for worker mode
+- Supports `HTMLCanvasElement`
 
 **RenderScheduler** ([src/core/RenderScheduler.ts](src/core/RenderScheduler.ts))
 Manages requestAnimationFrame-based render loop at 60fps with delta time tracking and performance metrics.
@@ -136,29 +119,6 @@ Main chart API - `ChartGPU.create(container, options)` creates chart instances.
 - Supports event system (click, mouseover, mouseout, crosshairMove)
 - Performance metrics API (FPS, frame times, drops)
 
-**Worker Mode** ([src/worker/](src/worker/))
-Offloads rendering to a Web Worker for main thread performance with OffscreenCanvas.
-
-**Key components:**
-- `ChartGPU.createInWorker()` / `createChartInWorker()` - creates chart in worker thread
-- `ChartGPUWorkerProxy` - main thread proxy implementing ChartGPUInstance API
-- `ChartGPUWorkerController` - worker thread chart controller
-- Message-based protocol for all chart operations (see protocol.ts)
-- Zero-copy data transfer with ArrayBuffer transfer
-- OffscreenCanvas with `transferControlToOffscreen()` support
-
-**Worker architecture features:**
-- **Main thread proxy**: Manages DOM overlays (tooltip, legend, text, slider), event forwarding (pointer events with pre-computed grid coordinates), RAF-batched resize handling, and ResizeObserver with DPR monitoring
-- **Worker thread controller**: Full WebGPU rendering, hit-testing, data management, and MessageChannel-based render loop
-- **Bidirectional messaging**: Main→Worker (init, setOption, appendData, resize, forwardPointerEvent, setZoomRange, setInteractionX, dispose) and Worker→Main (ready, rendered, tooltipUpdate, legendUpdate, axisLabelsUpdate, hoverChange, click, crosshairMove, zoomChange, deviceLost, disposed, error)
-- **Performance benefits**: Main thread remains responsive during heavy rendering, optimal for large datasets (>10K points), real-time streaming, and mobile/low-power devices
-
-**Documentation:**
-- [Worker API Guide](docs/api/worker.md) - Public API usage and examples
-- [Worker Protocol](docs/api/worker-protocol.md) - Message protocol specification
-- [Worker Architecture](docs/internal/WORKER_ARCHITECTURE.md) - Internal architecture details
-- [Worker Integration](docs/internal/WORKER_THREAD_INTEGRATION.md) - Implementation notes
-
 #### Data Management
 
 **DataStore** ([src/data/createDataStore.ts](src/data/createDataStore.ts))
@@ -173,14 +133,13 @@ Offloads rendering to a Web Worker for main thread performance with OffscreenCan
 - Supports streaming data append operations
 
 **Data Utilities** ([src/data/](src/data/))
-- `packDataPoints()` / `packOHLCDataPoints()` - zero-copy transfer helpers for worker mode
+- `packDataPoints()` / `packOHLCDataPoints()` - data packing utilities that produce tightly-packed `ArrayBuffer` payloads (useful for efficient uploads and structured interop)
 - `lttbSample()` - Largest-Triangle-Three-Buckets downsampling algorithm
 - `ohlcSample()` - OHLC-specific downsampling for candlestick charts
 - `sampleSeries()` - Unified series sampling coordination
 - `createStreamBuffer()` - streaming buffer management for real-time data
 
 **Performance optimizations:**
-- Zero-copy data transfer using ArrayBuffer transfer (not SharedArrayBuffer)
 - Incremental append operations for streaming data (see docs/internal/INCREMENTAL_APPEND_OPTIMIZATION.md)
 - Automatic downsampling for large datasets to maintain 60 FPS
 - GPU buffer reuse when data size fits existing capacity
@@ -297,7 +256,7 @@ src/
 │   └── OptionResolver.ts          # Option resolution logic
 ├── data/              # Data management (internal, not exported)
 │   ├── createDataStore.ts         # GPU buffer caching
-│   ├── packDataPoints.ts          # Zero-copy data transfer helpers
+│   ├── packDataPoints.ts          # Data packing utilities
 │   ├── lttbSample.ts              # Largest-Triangle-Three-Buckets sampling
 │   ├── ohlcSample.ts              # OHLC downsampling
 │   ├── sampleSeries.ts            # Series sampling coordination
@@ -335,14 +294,6 @@ src/
 │   ├── darkTheme.ts               # Dark theme preset
 │   ├── lightTheme.ts              # Light theme preset
 │   └── index.ts                   # Theme exports
-├── worker/            # Worker mode support
-│   ├── index.ts                   # Worker API exports
-│   ├── createChartInWorker.ts     # Worker chart factory
-│   ├── ChartGPUWorkerProxy.ts     # Main thread proxy
-│   ├── ChartGPUWorkerController.ts # Worker thread controller
-│   ├── worker-entry.ts            # Worker entry point
-│   ├── protocol.ts                # Message protocol types
-│   └── types.ts                   # Worker-specific types
 ├── utils/             # Utilities
 │   ├── scales.ts                  # Scale mapping (linear, category)
 │   ├── colors.ts                  # Color parsing and conversion
@@ -379,8 +330,6 @@ Comprehensive documentation is available in the `docs/` directory:
 - `gpu-context.md` - WebGPU context management
 - `render-scheduler.md` - Render loop and scheduling
 - `render-coordinator-summary.md` - Render coordinator overview
-- `worker.md` - Worker-based rendering API
-- `worker-protocol.md` - Worker message protocol specification
 - `animation.md` - Animation system
 - `interaction.md` - Interaction and events
 - `options.md` - Configuration options
@@ -395,8 +344,6 @@ Comprehensive documentation is available in the `docs/` directory:
 
 **Internal Documentation** (`docs/internal/`):
 - `README.md` - Internal architecture overview
-- `WORKER_ARCHITECTURE.md` - Worker mode architecture
-- `WORKER_THREAD_INTEGRATION.md` - Worker integration notes
 - `GPU_TIMING_IMPLEMENTATION.md` - GPU timing and performance
 - `INCREMENTAL_APPEND_OPTIMIZATION.md` - Streaming data optimizations
 
@@ -474,11 +421,6 @@ Examples located in `examples/` directory demonstrating various features and use
 - `live-streaming` - Real-time streaming line data with appendData()
 - `million-points` - High-performance rendering with 1M+ data points
 
-**Worker mode examples:**
-- `worker-rendering` - Basic worker-based rendering setup
-- `worker-convenience` - Using ChartGPU.createInWorker() convenience API
-- `worker-streaming` - Real-time streaming data in worker mode
-
 **Advanced features:**
 - `chart-sync` - Synchronized crosshair across multiple charts
 
@@ -500,15 +442,10 @@ See `src/index.ts` for complete public API surface. Key exports:
 - Types: `RenderSchedulerState`, `RenderCallback`, `RenderCoordinatorCallbacks`
 
 **Chart:**
-- Main API: `ChartGPU.create(container, options)`, `ChartGPU.createInWorker(container, options)`
+- Main API: `ChartGPU.create(container, options)`
 - Factory function: `createChart(container, options)` (alias for createChartGPU)
 - Types: `ChartGPUInstance`, `ChartGPUOptions`, `SeriesConfig`, `AxisConfig`, `DataPoint`, `OHLCDataPoint`, `TooltipConfig`, `AnimationConfig`, etc.
 - Events: `ChartGPUEventName`, `ChartGPUEventPayload`, `ChartGPUCrosshairMovePayload`, event callback types
-
-**Worker Mode:**
-- Main thread: `ChartGPUWorkerProxy`, `createChartInWorker()`
-- Types: `WorkerConfig`, `PendingRequest`, `StrideBytes`, `ChartGPUWorkerError`, `XY_STRIDE`, `OHLC_STRIDE`
-- Protocol types: `WorkerInboundMessage`, `WorkerOutboundMessage`, `InitMessage`, `SetOptionMessage`, `AppendDataMessage`, `ResizeMessage`, `ForwardPointerEventMessage`, and many more (see protocol.ts)
 
 **Configuration:**
 - `defaultOptions`, `candlestickDefaults`, `resolveOptions()`, `OptionResolver`
@@ -520,7 +457,7 @@ See `src/index.ts` for complete public API surface. Key exports:
 
 **Utilities:**
 - Scales: `createLinearScale()`, `createCategoryScale()` - pure scale utilities
-- Data transfer: `packDataPoints()`, `packOHLCDataPoints()` - zero-copy transfer helpers
+- Data utilities: `packDataPoints()`, `packOHLCDataPoints()` - pack point data into `ArrayBuffer` payloads
 - Chart sync: `connectCharts(charts)` - synchronize crosshair across charts
 
 **Internal modules not exported:**
