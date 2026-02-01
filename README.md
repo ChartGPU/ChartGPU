@@ -24,7 +24,6 @@ ChartGPU is a TypeScript charting library built on WebGPU for smooth, interactiv
 ## Highlights
 
 - 🚀 WebGPU-accelerated rendering for high FPS with large datasets
-- ⚡ Worker-based rendering with OffscreenCanvas (optional - for maximum performance)
 - 📈 Multiple series types: line, area, bar, scatter, pie, candlestick
 - 🌡️ Scatter density/heatmap mode (`mode: 'density'`) for large point clouds — see [`docs/api/options.md#scatterseriesconfig`](docs/api/options.md#scatterseriesconfig) and [`examples/scatter-density-1m/`](examples/scatter-density-1m/)
 - 📍 Annotation overlays: reference lines (horizontal/vertical), point markers, and text labels — see [`docs/api/options.md#annotations`](docs/api/options.md#annotations) and [`examples/annotations/`](examples/annotations/)
@@ -90,87 +89,6 @@ flowchart TB
     end
   end
 
-  subgraph WorkerThread["⚡ WORKER THREAD RENDERING (Optional - src/worker/)"]
-    subgraph WorkerProxyAPI["Worker Proxy API (src/worker/)"]
-      CreateInWorker["createChartInWorker(container, options)<br/>ChartGPU.createInWorker(container, options)"]
-      CreateInWorker --> ProxyInit["ChartGPUWorkerProxy initialization"]
-      ProxyInit --> CanvasTransfer["canvas.transferControlToOffscreen()"]
-      ProxyInit --> WorkerCreate["Create Worker (built-in or custom)"]
-    end
-
-    subgraph MainThreadProxy["Main Thread: ChartGPUWorkerProxy (src/worker/ChartGPUWorkerProxy.ts)"]
-      ProxyInit --> ProxyInstance["ChartGPUWorkerProxy implements ChartGPUInstance"]
-      ProxyInstance --> ProxyState["Local state cache<br/>(options, interactionX, zoomRange)"]
-      ProxyInstance --> EventForwarding["Event forwarding to worker<br/>(pointerdown/move/up/leave/wheel)"]
-      ProxyInstance --> ProxyOverlays["DOM overlay management<br/>(tooltip, legend, text, annotation, slider)"]
-      ProxyInstance --> ResizeMonitoring["ResizeObserver + DPR monitoring<br/>(RAF batched)"]
-      
-      EventForwarding --> ForwardPointer["computePointerEventData()<br/>(calculates grid coords on main thread)"]
-      ResizeMonitoring --> ResizeRAF["RAF-batched resize messages"]
-    end
-
-    subgraph WorkerInbound["Main → Worker (src/worker/protocol.ts)"]
-      CanvasTransfer -->|"postMessage: init"| WorkerInit["InitMessage + OffscreenCanvas transfer<br/>(includes devicePixelRatio from main thread)"]
-      ProxyInstance -->|"postMessage: setOption"| WorkerSetOpt["SetOptionMessage"]
-      ProxyInstance -->|"postMessage: appendData"| WorkerAppend["AppendDataMessage + ArrayBuffer transfer"]
-      ResizeRAF -->|"postMessage: resize"| WorkerResize["ResizeMessage<br/>(includes devicePixelRatio)"]
-      ForwardPointer -->|"postMessage: forwardPointerEvent"| WorkerPointer["ForwardPointerEventMessage<br/>(includes pre-computed grid coordinates)"]
-      ProxyInstance -->|"postMessage: setZoomRange"| WorkerZoom["SetZoomRangeMessage"]
-      ProxyInstance -->|"postMessage: setInteractionX"| WorkerInteractionX["SetInteractionXMessage"]
-      ProxyInstance -->|"postMessage: dispose"| WorkerDispose["DisposeMessage"]
-    end
-
-    subgraph WorkerCore["Worker Thread: ChartGPUWorkerController (src/worker/ChartGPUWorkerController.ts)"]
-      WorkerInit --> WGPUInit["GPUContext.create(offscreenCanvas)"]
-      WGPUInit --> WOptions["resolveOptionsForChart(msg.options)<br/>(adds bottom reserve when slider present)"]
-      WOptions --> WCoordinator["createRenderCoordinator(gpuContext, resolvedOptions)<br/>computeInteractionScalesGridCssPx<br/>(supports OffscreenCanvas)"]
-      WCoordinator --> WRenderLoop["MessageChannel render loop"]
-      WorkerSetOpt --> WOptions
-      WorkerAppend --> WDataStore["Worker DataStore (GPU buffer upload)"]
-      WorkerResize --> WCoordinator
-      WorkerPointer --> WHitTest["Worker hit-testing<br/>(uses interactionScales with grid coords)<br/>findNearestPoint/findPointsAtX"]
-      WorkerZoom --> WCoordinator
-      WorkerInteractionX --> WCoordinator
-      WorkerDispose --> WCleanup["Resource cleanup"]
-    end
-
-    subgraph WorkerOutbound["Worker → Main (postMessage)"]
-      WGPUInit -->|"ready"| ReadyMsg["ReadyMessage + GPU capabilities + PerformanceCapabilities"]
-      WRenderLoop -->|"rendered"| RenderedMsg["RenderedMessage (frame stats)"]
-      WRenderLoop -->|"performanceUpdate"| PerfMsg["PerformanceUpdateMessage (FPS, frame time, memory)"]
-      WHitTest -->|"tooltipUpdate"| TooltipMsg["TooltipUpdateMessage<br/>(complete tooltip content + position)"]
-      WCoordinator -->|"legendUpdate"| LegendMsg["LegendUpdateMessage"]
-      WCoordinator -->|"axisLabelsUpdate"| AxisMsg["AxisLabelsUpdateMessage"]
-      WCoordinator -->|"annotationsUpdate"| AnnotationsMsg["AnnotationsUpdateMessage<br/>(annotation label positions + styles)"]
-      WHitTest -->|"hoverChange"| HoverMsg["HoverChangeMessage"]
-      WHitTest -->|"click"| ClickMsg["ClickMessage"]
-      WHitTest -->|"crosshairMove"| CrosshairMsg["CrosshairMoveMessage"]
-      WCoordinator -->|"zoomChange"| ZoomMsg["ZoomChangeMessage"]
-      WGPUInit -->|"deviceLost"| DeviceLostMsg["DeviceLostMessage"]
-      WCleanup -->|"disposed"| DisposedMsg["DisposedMessage"]
-      WCoordinator -->|"error"| ErrorMsg["ErrorMessage"]
-    end
-
-    subgraph MainThreadDOM["Main Thread: DOM Overlay Rendering (ChartGPUWorkerProxy)"]
-      ReadyMsg --> ProxyOverlays
-      ReadyMsg --> PerfCache["Cache PerformanceCapabilities + set isInitialized"]
-      PerfMsg --> PerfUpdate["Cache PerformanceMetrics + notify callbacks"]
-      TooltipMsg --> DOMTooltip["RAF-batched tooltip.show(x, y, content)<br/>(receives complete tooltip data from worker)"]
-      LegendMsg --> DOMLegend["RAF-batched legend.update(items, theme)"]
-      AxisMsg --> DOMAxis["RAF-batched textOverlay.addLabel(...)<br/>(auto-handles container overflow)"]
-      AnnotationsMsg --> DOMAnnotations["RAF-batched annotationTextOverlay.addLabel(...)<br/>(dedicated annotation overlay)"]
-      HoverMsg --> DOMHover["Re-emit 'mouseover'/'mouseout' events"]
-      ClickMsg --> DOMClick["Re-emit 'click' event"]
-      CrosshairMsg --> DOMCrosshair["Update cached interactionX + emit"]
-      ZoomMsg --> DOMZoom["Update cached zoomRange + zoomState"]
-      
-      ProxyOverlays --> DOMTooltip
-      ProxyOverlays --> DOMLegend
-      ProxyOverlays --> DOMAxis
-      ProxyOverlays --> DOMAnnotations
-    end
-  end
-
   subgraph Renderers["GPU renderers (src/renderers/*)"]
     RenderPass --> GridR["Grid"]
     RenderPass --> AreaR["Area"]
@@ -185,8 +103,6 @@ flowchart TB
     RenderPass --> CrosshairR["Crosshair overlay"]
     RenderPass --> HighlightR["Hover highlight overlay"]
     RenderPass --> AxisR["Axes/ticks"]
-
-    WRenderLoop --> GridR
   end
 
   subgraph Shaders["WGSL shaders (src/shaders/*)"]
@@ -212,7 +128,6 @@ flowchart TB
 
   InteractionX --> ListenX
   DriveX --> InstanceAPI
-  CrosshairMsg --> ListenX
 ```
 
 ## Demo
@@ -246,27 +161,6 @@ await ChartGPU.create(container, {
   series: [{ type: 'line', data: [[0, 1], [1, 3], [2, 2]] }],
 });
 ```
-
-### Worker-based rendering (optional)
-
-For maximum performance with large datasets, use worker-based rendering to keep the main thread responsive:
-
-```ts
-import { ChartGPU } from 'chartgpu';
-const container = document.getElementById('chart')!;
-// Identical API, but rendering happens in a Web Worker
-await ChartGPU.createInWorker(container, {
-  series: [{ type: 'line', data: [[0, 1], [1, 3], [2, 2]] }],
-});
-```
-
-**When to use workers:**
-- Large datasets (>10K points) with frequent updates
-- Real-time streaming data
-- Complex multi-series charts
-- Mobile/low-power devices
-
-See [Worker API Documentation](https://github.com/hunterg325/ChartGPU/blob/main/docs/api/worker.md) for details.
 
 ### Annotations
 

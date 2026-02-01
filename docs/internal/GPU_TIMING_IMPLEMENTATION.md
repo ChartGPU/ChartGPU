@@ -101,17 +101,8 @@ GPU timing is integrated into the broader performance metrics system:
 - Exposed via `chartInstance.getPerformanceMetrics()`
 - Updates streamed via `chartInstance.onPerformanceUpdate(callback)`
 
-**In worker thread mode:**
-- GPU timing tracked in `ChartGPUWorkerController` per chart instance
-- Worker emits `PerformanceUpdateMessage` with complete metrics
-- Proxy caches metrics for synchronous getter access
-- Proxy forwards updates to registered `onPerformanceUpdate()` callbacks
-
 **Enabling GPU timing:**
-- Main thread: Enabled automatically when supported (checks `timestamp-query` feature)
-- Worker thread: Can be toggled via `SetGPUTimingMessage` protocol message
-
-See [`WORKER_ARCHITECTURE.md`](./WORKER_ARCHITECTURE.md) for worker performance tracking details.
+- Enabled automatically when supported (checks `timestamp-query` feature)
 
 ## Future Enhancements
 

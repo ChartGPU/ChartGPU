@@ -1,10 +1,8 @@
 /**
- * Annotation authoring helper for main-thread charts.
+ * Annotation authoring helper for ChartGPU instances.
  * 
  * Provides right-click context menu for adding vertical lines and text annotations,
  * with undo/redo and JSON export capabilities.
- * 
- * Main-thread only (no worker mode support).
  */
 
 import type { ChartGPUInstance, ChartGPUHitTestResult } from '../ChartGPU';
@@ -98,10 +96,7 @@ interface HistoryEntry {
 }
 
 /**
- * Creates an annotation authoring helper for a main-thread chart.
- * 
- * **Main-thread only** - worker charts are not supported. Use `ChartGPU.create(...)` instead of
- * `ChartGPU.createInWorker(...)` when annotation authoring is needed.
+ * Creates an annotation authoring helper for a chart instance.
  * 
  * Features:
  * - Right-click context menu for adding vertical lines and text annotations
@@ -115,10 +110,10 @@ interface HistoryEntry {
  * so they integrate seamlessly with the chart's option system.
  * 
  * @param container - The chart container element (must contain the chart canvas)
- * @param chart - The ChartGPU instance (must be main-thread, not worker-based)
+ * @param chart - The ChartGPU instance
  * @param options - Optional configuration for menu/toolbar z-index and visibility
  * @returns Annotation authoring instance with programmatic API and dispose method
- * @throws Error if chart is worker-based or canvas is not found
+ * @throws Error if canvas is not found
  * 
  * @example
  * ```ts
@@ -151,13 +146,6 @@ export function createAnnotationAuthoring(
     showToolbar = true,
     enableContextMenu = true,
   } = options;
-
-  // Main-thread only: explicitly reject worker proxy charts.
-  // Worker proxy charts expose setGPUTiming (worker-specific method not on main-thread charts).
-  // This provides a reliable runtime detection without accessing private state.
-  if ('setGPUTiming' in chart && typeof (chart as { setGPUTiming?: unknown }).setGPUTiming === 'function') {
-    throw new Error('createAnnotationAuthoring: worker charts are not supported. Use ChartGPU.create(...) on the main thread.');
-  }
 
   // Find the canvas element
   const canvas = container.querySelector('canvas');

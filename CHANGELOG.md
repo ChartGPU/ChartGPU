@@ -9,17 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Horizontal scroll panning** - Touchpad users can now pan the chart view by scrolling left/right. The zoom handler now detects horizontal scroll dominance and performs pan operations accordingly.
-- **Worker thread event support** - New `PointerEventData` type for high-level pointer event data with pre-computed grid coordinates, enabling event forwarding to worker threads.
-- **Click event callback** - New `onClickData` callback in `RenderCoordinatorCallbacks` for handling click events in worker mode with hit test results.
 
 ### Changed
 - **Render-on-demand performance** - Charts no longer re-render continuously at 60fps when idle. Rendering now only occurs when `requestRender()` is called (triggered automatically by chart interactions and data changes), significantly reducing CPU and GPU usage to near 0% when idle. The Million Points example now includes a "Benchmark mode" toggle to switch between continuous rendering (for performance measurement) and render-on-demand (for idle efficiency).
-- **Pointer event handling** - `handlePointerEvent()` now accepts `PointerEventData` with pre-computed grid coordinates and handles 'click' events.
 
 ### Deprecated
-- **NormalizedPointerEvent** - Use `PointerEventData` instead for worker thread compatibility.
 
 ### Removed
+- **Worker mode support** - Removed worker mode rendering support, including `ChartGPU.createInWorker`, the `chartgpu/worker` subpath entrypoint, and the worker protocol/types.
 
 ### Fixed
 - **Scissor rect clipping during zoom** - Fixed visual bug where chart data extended past axis boundaries during zoom interactions. Scissor rects are now applied consistently to line and area renderers during all rendering operations, not just intro animations.

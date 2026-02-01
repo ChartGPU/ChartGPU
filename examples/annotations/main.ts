@@ -38,55 +38,6 @@ const attachCoalescedResizeObserver = (container: HTMLElement, chart: ChartGPUIn
   };
 };
 
-const createModeToggle = (): {
-  readonly host: HTMLDivElement;
-  readonly checkbox: HTMLInputElement;
-  readonly setEnabled: (enabled: boolean) => void;
-  readonly setChecked: (checked: boolean) => void;
-} => {
-  const host = document.createElement('div');
-  host.style.display = 'flex';
-  host.style.alignItems = 'center';
-  host.style.gap = '10px';
-  host.style.marginTop = '10px';
-  host.style.color = '#cfcfcf';
-  host.style.fontSize = '0.9rem';
-
-  const label = document.createElement('label');
-  label.style.display = 'inline-flex';
-  label.style.alignItems = 'center';
-  label.style.gap = '8px';
-  label.style.cursor = 'pointer';
-  label.style.userSelect = 'none';
-
-  const checkbox = document.createElement('input');
-  checkbox.type = 'checkbox';
-  checkbox.id = 'worker-mode-toggle';
-
-  const labelText = document.createElement('span');
-  labelText.textContent = 'Worker mode (OffscreenCanvas)';
-
-  const note = document.createElement('span');
-  note.textContent = 'Recreates the chart to demonstrate annotations work in both modes.';
-  note.style.color = '#9a9a9a';
-
-  label.appendChild(checkbox);
-  label.appendChild(labelText);
-  host.appendChild(label);
-  host.appendChild(note);
-
-  const setEnabled = (enabled: boolean): void => {
-    checkbox.disabled = !enabled;
-    label.style.opacity = enabled ? '1' : '0.6';
-    label.style.cursor = enabled ? 'pointer' : 'default';
-  };
-
-  const setChecked = (checked: boolean): void => {
-    checkbox.checked = checked;
-  };
-
-  return { host, checkbox, setEnabled, setChecked };
-};
 
 type Extrema = Readonly<{
   maxIndex: number;
@@ -146,10 +97,6 @@ async function main(): Promise<void> {
   if (!(container instanceof HTMLElement)) {
     throw new Error('Chart container not found');
   }
-
-  const header = document.querySelector('header');
-  const modeToggle = createModeToggle();
-  if (header) header.appendChild(modeToggle.host);
 
   const data = createTimeSeries(900);
   const { maxIndex, maxY, minIndex, minY } = findExtrema(data);
@@ -264,44 +211,16 @@ async function main(): Promise<void> {
     chart = null;
   };
 
-  const createChart = async (useWorker: boolean): Promise<void> => {
-    // Prevent re-entrancy + accidental double-clicks during async init.
-    modeToggle.setEnabled(false);
-    try {
-      disposeChart();
-
-      chart = useWorker
-        ? await ChartGPU.createInWorker(container, options)
-        : await ChartGPU.create(container, options);
-
-      ro = attachCoalescedResizeObserver(container, chart);
-      chart.resize();
-    } finally {
-      modeToggle.setEnabled(true);
-    }
-  };
-
-  // Default to main-thread mode.
-  modeToggle.setChecked(false);
-  await createChart(false);
-
-  const onToggleChange = (): void => {
-    // Fire-and-forget; errors are surfaced to the error panel.
-    createChart(modeToggle.checkbox.checked).catch((err) => {
-      console.error(err);
-      showError(err instanceof Error ? err.message : String(err));
-    });
-  };
-
-  modeToggle.checkbox.addEventListener('change', onToggleChange);
+  // Create chart in main-thread mode
+  chart = await ChartGPU.create(container, options);
+  ro = attachCoalescedResizeObserver(container, chart);
+  chart.resize();
 
   let cleanedUp = false;
   const cleanup = (): void => {
     if (cleanedUp) return;
     cleanedUp = true;
     window.removeEventListener('beforeunload', cleanup);
-    modeToggle.checkbox.removeEventListener('change', onToggleChange);
-    modeToggle.host.remove();
     disposeChart();
   };
 

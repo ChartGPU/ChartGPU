@@ -56,27 +56,6 @@ canvas.addEventListener('contextmenu', (e) => {
 
 For a ready-made main-thread helper that wires `contextmenu` + `hitTest(...)` into an annotation authoring UI (with undo/redo + JSON export), see `createAnnotationAuthoring(...)` and [`examples/annotation-authoring/`](../../examples/annotation-authoring/).
 
-## PointerEventData
-
-`PointerEventData` is a high-level pointer event data type for worker thread communication. It pre-computes grid coordinates to eliminate redundant computation when forwarding events to worker threads.
-
-See [types.ts](../../src/config/types.ts) for the full type definition.
-
-### Properties
-
-- **`type`**: `'move' | 'click' | 'leave'` — event type
-- **`x`, `y`**: canvas-local CSS pixels
-- **`gridX`, `gridY`**: plot-area-local CSS pixels (relative to plot area origin)
-- **`plotWidthCss`, `plotHeightCss`**: plot area dimensions in CSS pixels
-- **`isInGrid`**: whether the pointer is inside the plot area
-- **`timestamp`**: event timestamp in milliseconds for gesture detection
-
-### Use case
-
-`PointerEventData` is designed for worker thread event forwarding. When rendering is offloaded to a worker thread, the main thread can normalize pointer events into this format and post them to the worker, avoiding redundant coordinate transformations.
-
-**Note**: `NormalizedPointerEvent` is deprecated in favor of `PointerEventData` for worker thread communication.
-
 ## Zoom and Pan APIs
 
 See [ChartGPUInstance](chart.md#chartgpuinstance) for zoom-related methods:
