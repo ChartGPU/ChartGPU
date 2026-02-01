@@ -9,21 +9,14 @@
 
 <p align="center">
   <a href="https://github.com/hunterg325/ChartGPU/blob/main/docs/GETTING_STARTED.md">Documentation</a> |
-  <a href="https://chartgpu.github.io/ChartGPU/">Live Demo</a> |
   <a href="https://github.com/hunterg325/ChartGPU/tree/main/examples">Examples</a>
 </p>
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/chartgpu" style="text-decoration: none;">
-    <img src="https://img.shields.io/npm/v/chartgpu" alt="npm">
-  </a>
-  <a href="https://github.com/hunterg325/ChartGPU/blob/main/LICENSE" style="text-decoration: none;">
-    <img src="https://img.shields.io/npm/l/chartgpu" alt="license">
-  </a>
-  <a href="https://chartgpu.github.io/ChartGPU/" style="text-decoration: none;">
-    <img src="https://img.shields.io/badge/demo-live-brightgreen" alt="Live Demo">
-  </a>
-</p>
+[![npm version](https://img.shields.io/npm/v/chartgpu?style=for-the-badge&color=blue)](https://www.npmjs.com/package/chartgpu)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://github.com/hunterg325/ChartGPU/blob/main/LICENSE)
+[![Live Demo](https://img.shields.io/badge/demo-live-brightgreen?style=for-the-badge)](https://chartgpu.github.io/ChartGPU/)
+
+
 
 ChartGPU is a TypeScript charting library built on WebGPU for smooth, interactive rendering—especially when you have lots of data.
 
