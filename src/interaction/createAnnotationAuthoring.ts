@@ -17,6 +17,7 @@ const isTupleDataPoint = (p: DataPoint): p is DataPointTuple => Array.isArray(p)
 const isTupleOHLCDataPoint = (p: OHLCDataPoint): p is OHLCDataPointTuple => Array.isArray(p);
 
 const getPointX = (p: DataPoint): number => (isTupleDataPoint(p) ? p[0] : p.x);
+const getPointY = (p: DataPoint): number => (isTupleDataPoint(p) ? p[1] : p.y);
 const getOHLCTimestamp = (p: OHLCDataPoint): number => (isTupleOHLCDataPoint(p) ? p[0] : p.timestamp);
 
 /**
@@ -163,9 +164,9 @@ export function createAnnotationAuthoring(
 
   // Create hit tester, drag handler, and config dialog
   const hitTester = createAnnotationHitTester(chart, canvas, {
-    lineTolerance: 8,
-    textTolerance: 4,
-    pointTolerance: 12,
+    lineTolerance: 20,
+    textTolerance: 8,
+    pointTolerance: 16,
   });
 
   const configDialog = createAnnotationConfigDialog(container, {
@@ -220,6 +221,8 @@ export function createAnnotationAuthoring(
       ...chart.options,
       annotations: [...annotations],
     });
+    // Invalidate hit tester cache so it picks up the new/modified annotations
+    hitTester.invalidateCache();
   };
 
   // Context menu DOM
@@ -470,6 +473,50 @@ export function createAnnotationAuthoring(
     return { min: xMin, max: xMax };
   };
 
+  // Compute visible y-domain for horizontal lines
+  const computeVisibleYDomain = (): { min: number; max: number } => {
+    const opts = chart.options;
+
+    // Get base domain
+    let yMin = opts.yAxis?.min;
+    let yMax = opts.yAxis?.max;
+
+    // If not explicitly set, derive from series data
+    if (yMin === undefined || yMax === undefined) {
+      const series = opts.series ?? [];
+      let dataYMin = Number.POSITIVE_INFINITY;
+      let dataYMax = Number.NEGATIVE_INFINITY;
+
+      for (const s of series) {
+        if (s.type === 'pie') continue;
+
+        if (s.type === 'candlestick') {
+          // Candlestick uses low/high
+          const data = s.data;
+          for (const p of data) {
+            const low = isTupleOHLCDataPoint(p) ? p[3] : p.low;
+            const high = isTupleOHLCDataPoint(p) ? p[4] : p.high;
+            if (low < dataYMin) dataYMin = low;
+            if (high > dataYMax) dataYMax = high;
+          }
+        } else {
+          // Cartesian series
+          const data = s.data;
+          for (const p of data) {
+            const y = getPointY(p);
+            if (y < dataYMin) dataYMin = y;
+            if (y > dataYMax) dataYMax = y;
+          }
+        }
+      }
+
+      if (yMin === undefined) yMin = Number.isFinite(dataYMin) ? dataYMin : 0;
+      if (yMax === undefined) yMax = Number.isFinite(dataYMax) ? dataYMax : 100;
+    }
+
+    return { min: yMin, max: yMax };
+  };
+
   // Convert grid-space coordinates to data-space x
   const gridXToDataX = (gridX: number): number => {
     const rect = canvas.getBoundingClientRect();
@@ -545,19 +592,17 @@ export function createAnnotationAuthoring(
       // Use matched data point y
       y = match.value[1];
     } else if (isInGrid) {
-      // Compute y from grid position (need to implement gridYToDataY)
+      // Compute y from grid position using actual visible Y domain
       const rect = canvas.getBoundingClientRect();
       const grid = chart.options.grid ?? defaultGrid;
       const plotHeightCss = rect.height - (grid.top ?? defaultGrid.top) - (grid.bottom ?? defaultGrid.bottom);
 
-      // Get Y domain from yAxis
-      const yAxis = chart.options.yAxis;
-      const yMin = yAxis?.min ?? 0;
-      const yMax = yAxis?.max ?? 100;
+      // Get actual visible Y domain (not hardcoded defaults!)
+      const yDomain = computeVisibleYDomain();
 
       // Invert Y (canvas top = max Y value)
       const t = plotHeightCss > 0 ? 1 - gridY / plotHeightCss : 0.5;
-      y = yMin + t * (yMax - yMin);
+      y = yDomain.min + t * (yDomain.max - yDomain.min);
     } else {
       return; // Outside grid, do nothing
     }
@@ -777,11 +822,16 @@ export function createAnnotationAuthoring(
     const rect = canvas.getBoundingClientRect();
     const canvasX = e.clientX - rect.left;
     const canvasY = e.clientY - rect.top;
+
+    console.log('[AnnotationAuthoring] onPointerDown', { canvasX, canvasY, annotations: getCurrentAnnotations().length });
+
     const annotationHit = hitTester.hitTest(canvasX, canvasY);
+    console.log('[AnnotationAuthoring] hitTest result:', annotationHit);
 
     if (annotationHit) {
+      console.log('[AnnotationAuthoring] Starting drag for annotation', annotationHit.annotationIndex);
       e.preventDefault();
-      canvas.setPointerCapture(e.pointerId);
+      // Don't set pointer capture here - let drag handler manage window-level events
 
       dragHandler.startDrag(
         annotationHit.annotationIndex,
@@ -789,6 +839,8 @@ export function createAnnotationAuthoring(
         e.clientX,
         e.clientY
       );
+    } else {
+      console.log('[AnnotationAuthoring] No annotation hit');
     }
   };
 

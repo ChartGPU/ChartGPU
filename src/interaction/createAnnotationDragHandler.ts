@@ -48,21 +48,119 @@ export function createAnnotationDragHandler(
 ): AnnotationDragHandler {
   let dragState: DragState | null = null;
 
+  // Type guards for data points
+  const isTupleDataPoint = (p: any): p is [number, number] => Array.isArray(p);
+  const isTupleOHLCDataPoint = (p: any): p is [number, number, number, number, number] => Array.isArray(p);
+  const getPointX = (p: any): number => (isTupleDataPoint(p) ? p[0] : p.x);
+  const getPointY = (p: any): number => (isTupleDataPoint(p) ? p[1] : p.y);
+  const getOHLCTimestamp = (p: any): number => (isTupleOHLCDataPoint(p) ? p[0] : p.timestamp);
+  const getOHLCHigh = (p: any): number => (isTupleOHLCDataPoint(p) ? p[2] : p.high);
+  const getOHLCLow = (p: any): number => (isTupleOHLCDataPoint(p) ? p[3] : p.low);
+
+  /**
+   * Compute the actual X domain from series data (with zoom applied)
+   */
+  function computeXDomain(): { min: number; max: number } {
+    const opts = chart.options;
+    let xMin = opts.xAxis?.min;
+    let xMax = opts.xAxis?.max;
+
+    if (xMin === undefined || xMax === undefined) {
+      const series = opts.series ?? [];
+      let dataXMin = Number.POSITIVE_INFINITY;
+      let dataXMax = Number.NEGATIVE_INFINITY;
+
+      for (const s of series) {
+        if (s.type === 'pie') continue;
+
+        if (s.type === 'candlestick') {
+          const data = s.data;
+          for (const p of data) {
+            const timestamp = getOHLCTimestamp(p);
+            if (timestamp < dataXMin) dataXMin = timestamp;
+            if (timestamp > dataXMax) dataXMax = timestamp;
+          }
+        } else {
+          const data = s.data;
+          for (const p of data) {
+            const x = getPointX(p);
+            if (x < dataXMin) dataXMin = x;
+            if (x > dataXMax) dataXMax = x;
+          }
+        }
+      }
+
+      if (xMin === undefined) xMin = Number.isFinite(dataXMin) ? dataXMin : 0;
+      if (xMax === undefined) xMax = Number.isFinite(dataXMax) ? dataXMax : 100;
+    }
+
+    const zoomRange = chart.getZoomRange();
+    if (zoomRange) {
+      const span = xMax - xMin;
+      const zoomMin = xMin + (zoomRange.start / 100) * span;
+      const zoomMax = xMin + (zoomRange.end / 100) * span;
+      return { min: zoomMin, max: zoomMax };
+    }
+
+    return { min: xMin, max: xMax };
+  }
+
+  /**
+   * Compute the actual Y domain from series data
+   */
+  function computeYDomain(): { min: number; max: number } {
+    const opts = chart.options;
+    let yMin = opts.yAxis?.min;
+    let yMax = opts.yAxis?.max;
+
+    if (yMin === undefined || yMax === undefined) {
+      const series = opts.series ?? [];
+      let dataYMin = Number.POSITIVE_INFINITY;
+      let dataYMax = Number.NEGATIVE_INFINITY;
+
+      for (const s of series) {
+        if (s.type === 'pie') continue;
+
+        if (s.type === 'candlestick') {
+          const data = s.data;
+          for (const p of data) {
+            const high = getOHLCHigh(p);
+            const low = getOHLCLow(p);
+            if (high > dataYMax) dataYMax = high;
+            if (low < dataYMin) dataYMin = low;
+          }
+        } else {
+          const data = s.data;
+          for (const p of data) {
+            const y = getPointY(p);
+            if (y < dataYMin) dataYMin = y;
+            if (y > dataYMax) dataYMax = y;
+          }
+        }
+      }
+
+      if (yMin === undefined) yMin = Number.isFinite(dataYMin) ? dataYMin : 0;
+      if (yMax === undefined) yMax = Number.isFinite(dataYMax) ? dataYMax : 100;
+    }
+
+    return { min: yMin, max: yMax };
+  }
+
   /**
    * Convert canvas-space CSS pixels to data-space coordinates
    */
   function canvasToData(canvasX: number, canvasY: number): { x: number; y: number } {
     const chartOptions = chart.options;
-    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
 
     const grid = chartOptions.grid ?? { left: 60, right: 20, top: 40, bottom: 40 };
-    const canvasWidth = canvas.width / dpr;
-    const canvasHeight = canvas.height / dpr;
+    const canvasWidth = rect.width;
+    const canvasHeight = rect.height;
 
-    const plotLeft = grid.left;
-    const plotRight = canvasWidth - grid.right;
-    const plotTop = grid.top;
-    const plotBottom = canvasHeight - grid.bottom;
+    const plotLeft = grid.left ?? 60;
+    const plotRight = canvasWidth - (grid.right ?? 20);
+    const plotTop = grid.top ?? 40;
+    const plotBottom = canvasHeight - (grid.bottom ?? 40);
     const plotWidth = plotRight - plotLeft;
     const plotHeight = plotBottom - plotTop;
 
@@ -75,24 +173,24 @@ export function createAnnotationDragHandler(
     // Convert X coordinate
     if (xAxis) {
       const xFraction = (canvasX - plotLeft) / plotWidth;
-      if (xAxis.type === 'category' && Array.isArray(xAxis.data)) {
+      if (xAxis.type === 'category' && Array.isArray((xAxis as any).data)) {
         // Category scale: map fraction to category index
-        const index = Math.round(xFraction * (xAxis.data.length - 1 || 1));
-        dataX = xAxis.data[Math.max(0, Math.min(index, xAxis.data.length - 1))] as number;
+        const data = (xAxis as any).data as any[];
+        const index = Math.round(xFraction * (data.length - 1 || 1));
+        dataX = data[Math.max(0, Math.min(index, data.length - 1))] as number;
       } else {
-        // Linear scale
-        const min = xAxis.min ?? 0;
-        const max = xAxis.max ?? 100;
-        dataX = min + xFraction * (max - min);
+        // Linear scale - compute actual domain from data
+        const domain = computeXDomain();
+        dataX = domain.min + xFraction * (domain.max - domain.min);
       }
     }
 
     // Convert Y coordinate (inverted: canvas top = max Y value)
     if (yAxis) {
       const yFraction = (plotBottom - canvasY) / plotHeight;
-      const min = yAxis.min ?? 0;
-      const max = yAxis.max ?? 100;
-      dataY = min + yFraction * (max - min);
+      // Compute actual domain from data
+      const domain = computeYDomain();
+      dataY = domain.min + yFraction * (domain.max - domain.min);
     }
 
     return { x: dataX, y: dataY };
@@ -103,16 +201,16 @@ export function createAnnotationDragHandler(
    */
   function canvasToPlot(canvasX: number, canvasY: number): { x: number; y: number } {
     const chartOptions = chart.options;
-    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
 
     const grid = chartOptions.grid ?? { left: 60, right: 20, top: 40, bottom: 40 };
-    const canvasWidth = canvas.width / dpr;
-    const canvasHeight = canvas.height / dpr;
+    const canvasWidth = rect.width;
+    const canvasHeight = rect.height;
 
-    const plotLeft = grid.left;
-    const plotRight = canvasWidth - grid.right;
-    const plotTop = grid.top;
-    const plotBottom = canvasHeight - grid.bottom;
+    const plotLeft = grid.left ?? 60;
+    const plotRight = canvasWidth - (grid.right ?? 20);
+    const plotTop = grid.top ?? 40;
+    const plotBottom = canvasHeight - (grid.bottom ?? 40);
     const plotWidth = plotRight - plotLeft;
     const plotHeight = plotBottom - plotTop;
 
@@ -130,7 +228,12 @@ export function createAnnotationDragHandler(
    * Handle pointer move during drag
    */
   function onPointerMove(e: PointerEvent): void {
-    if (!dragState) return;
+    if (!dragState) {
+      console.log('[DragHandler] onPointerMove called but no dragState');
+      return;
+    }
+
+    console.log('[DragHandler] onPointerMove', { clientX: e.clientX, clientY: e.clientY });
 
     e.preventDefault();
 
@@ -267,6 +370,8 @@ export function createAnnotationDragHandler(
     startPointerX: number,
     startPointerY: number
   ): void {
+    console.log('[DragHandler] startDrag called', { annotationIndex, annotationType: annotation.type });
+
     // Cancel any existing drag
     if (dragState) {
       cleanup();
@@ -289,16 +394,22 @@ export function createAnnotationDragHandler(
       document.body.style.cursor = 'grabbing';
     }
 
+    console.log('[DragHandler] Attaching window-level event listeners');
+
     // Attach window-level listeners for smooth dragging outside canvas
     window.addEventListener('pointermove', onPointerMove, { passive: false });
     window.addEventListener('pointerup', onPointerUp, { passive: true });
     window.addEventListener('pointercancel', onPointerCancel, { passive: true });
     document.addEventListener('keydown', onKeyDown, { passive: false });
 
+    console.log('[DragHandler] Event listeners attached, applying visual feedback');
+
     // Visual feedback: reduce opacity
     callbacks.onDragMove(annotationIndex, {
       style: { ...annotation.style, opacity: 0.7 },
     });
+
+    console.log('[DragHandler] startDrag complete');
   }
 
   /**

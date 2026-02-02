@@ -17,10 +17,10 @@
       </a>
       <h1>Annotations - Comprehensive Demo</h1>
       <p>
-        Comprehensive annotation showcase with pre-populated examples and interactive authoring.
-        Demonstrates reference lines (horizontal/vertical), point markers, text annotations (plot-space + data-space tracking),
-        label templates with decimals, and various styling options.
-        Right-click to add more annotations, use the toolbar for undo/redo/export.
+        Interactive annotation system with full editing capabilities.
+        Create, edit, drag, and delete annotations with a rich configuration dialog.
+        Demonstrates all annotation types: reference lines (horizontal/vertical), point markers,
+        text annotations (plot-space + data-space tracking), labels, and styling options.
       </p>
       <a class="back" href="../index.html">← Back to examples</a>
     </header>
@@ -29,12 +29,27 @@
       <div class="chart-shell">
         <div id="chart" class="chart"></div>
         <div id="error" class="error" style="display:none;"></div>
-        <div class="hint">Right-click to add annotations · Scroll/pinch to zoom · Drag to pan</div>
       </div>
 
-      <div class="sidebar">
-        <h3>Current Annotations JSON</h3>
-        <pre id="json-output" class="json-output">[]</pre>
+      <div class="hint-sidebar">
+        <div class="hint-title">✨ Try the new features:</div>
+        <div class="hint-items">
+          <div class="hint-item">
+            <strong>Right-click empty space</strong> → Add vertical/horizontal line or text note with custom color, style & label
+          </div>
+          <div class="hint-item">
+            <strong>Click & drag annotations</strong> → Reposition them (lines constrained to their axis)
+          </div>
+          <div class="hint-item">
+            <strong>Right-click on annotation</strong> → Edit properties or delete
+          </div>
+          <div class="hint-item">
+            <strong>Use Undo/Redo buttons</strong> → All operations are reversible
+          </div>
+          <div class="hint-item">
+            <strong>Scroll/pinch to zoom</strong> · <strong>Drag to pan</strong>
+          </div>
+        </div>
       </div>
     </div>
   </div>

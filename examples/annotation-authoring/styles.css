@@ -40,7 +40,7 @@ header p {
 
 .content {
   display: grid;
-  grid-template-columns: 1fr 400px;
+  grid-template-columns: 1fr 280px;
   gap: 20px;
   align-items: start;
 }
@@ -129,8 +129,8 @@ header {
   user-select: none;
 }
 
-.sidebar {
-  border: 1px solid #333;
+.hint-sidebar {
+  border: 1px solid rgba(79, 172, 254, 0.3);
   border-radius: 12px;
   background: #0f0f14;
   padding: 20px;
@@ -138,23 +138,35 @@ header {
   overflow: auto;
 }
 
-.sidebar h3 {
-  margin: 0 0 12px;
-  font-size: 1rem;
-  color: #fff;
+.hint-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: #4facfe;
+  margin-bottom: 8px;
+  letter-spacing: 0.3px;
 }
 
-.json-output {
-  background: #0a0a0a;
-  border: 1px solid #333;
-  border-radius: 8px;
-  padding: 12px;
-  font-size: 12px;
-  font-family: 'Courier New', Courier, monospace;
-  color: #00d4ff;
-  white-space: pre-wrap;
-  word-wrap: break-word;
-  overflow-x: auto;
-  margin: 0;
-  line-height: 1.5;
+.hint-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
+
+.hint-item {
+  display: flex;
+  align-items: flex-start;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.hint-item strong {
+  color: #ffd166;
+  font-weight: 600;
+}
+
+@media (max-width: 1200px) {
+  .hint-sidebar {
+    margin-top: 12px;
+  }
+}
+

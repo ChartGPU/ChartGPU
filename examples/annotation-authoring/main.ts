@@ -99,11 +99,6 @@ async function main(): Promise<void> {
     throw new Error('Chart container not found');
   }
 
-  const jsonOutput = document.getElementById('json-output');
-  if (!jsonOutput) {
-    throw new Error('JSON output element not found');
-  }
-
   const data = createTimeSeries(900);
   const { maxIndex, maxY, minIndex, minY } = findExtrema(data);
 
@@ -211,12 +206,6 @@ async function main(): Promise<void> {
   let ro: DisposableResizeObserver | null = null;
   let authoring: AnnotationAuthoringInstance | null = null;
 
-  const updateJSONOutput = (): void => {
-    if (!authoring) return;
-    const annotations = authoring.getAnnotations();
-    jsonOutput.textContent = JSON.stringify(annotations, null, 2);
-  };
-
   const disposeAll = (): void => {
     authoring?.dispose();
     authoring = null;
@@ -237,23 +226,10 @@ async function main(): Promise<void> {
     enableContextMenu: true,
   });
 
-  // Update JSON output initially
-  updateJSONOutput();
-
-  // Poll for annotation changes (simple approach for demo)
-  const pollInterval = setInterval(() => {
-    if (!authoring) {
-      clearInterval(pollInterval);
-      return;
-    }
-    updateJSONOutput();
-  }, 500);
-
   let cleanedUp = false;
   const cleanup = (): void => {
     if (cleanedUp) return;
     cleanedUp = true;
-    clearInterval(pollInterval);
     window.removeEventListener('beforeunload', cleanup);
     disposeAll();
   };

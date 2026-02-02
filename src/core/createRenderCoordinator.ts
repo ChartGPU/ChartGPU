@@ -4381,7 +4381,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
               const yClip = yScale.scale(a.y);
               const yCss = clipYToCanvasCssPx(yClip, canvasCssHeightForAnnotations);
               anchorXCss = plotLeftCss;
-              anchorYCss = yCss;
+              // Offset label 8px above the horizontal line (negative Y = upward)
+              anchorYCss = yCss - 8;
               values = { ...values, y: a.y, value: a.y };
               break;
             }
