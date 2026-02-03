@@ -28,6 +28,7 @@ See [`types.ts`](../../src/config/types.ts) for the full type definition.
 - **Styling**: `style?: { color?, lineWidth?, lineDash?, opacity? }` (and `marker.style` for points) accepts CSS color strings and basic line styling.
 - **Labels**: annotations support `label?: { text?, template?, decimals?, offset?, anchor?, background? }`.
 - **Interactive authoring (main thread)**: for a helper that adds right-click annotation authoring (context menu + toolbar) and updates `options.annotations` via `setOption(...)`, see `createAnnotationAuthoring(...)` and [`examples/annotation-authoring/`](../../examples/annotation-authoring/).
+- **Full documentation**: see [Annotations API](./annotations.md) for comprehensive guide including annotation types, interactive authoring, drag-to-reposition, and advanced usage examples.
 
 ## Series Configuration
 

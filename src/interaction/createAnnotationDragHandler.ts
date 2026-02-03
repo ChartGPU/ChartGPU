@@ -229,11 +229,8 @@ export function createAnnotationDragHandler(
    */
   function onPointerMove(e: PointerEvent): void {
     if (!dragState) {
-      console.log('[DragHandler] onPointerMove called but no dragState');
       return;
     }
-
-    console.log('[DragHandler] onPointerMove', { clientX: e.clientX, clientY: e.clientY });
 
     e.preventDefault();
 
@@ -370,8 +367,6 @@ export function createAnnotationDragHandler(
     startPointerX: number,
     startPointerY: number
   ): void {
-    console.log('[DragHandler] startDrag called', { annotationIndex, annotationType: annotation.type });
-
     // Cancel any existing drag
     if (dragState) {
       cleanup();
@@ -394,22 +389,16 @@ export function createAnnotationDragHandler(
       document.body.style.cursor = 'grabbing';
     }
 
-    console.log('[DragHandler] Attaching window-level event listeners');
-
     // Attach window-level listeners for smooth dragging outside canvas
     window.addEventListener('pointermove', onPointerMove, { passive: false });
     window.addEventListener('pointerup', onPointerUp, { passive: true });
     window.addEventListener('pointercancel', onPointerCancel, { passive: true });
     document.addEventListener('keydown', onKeyDown, { passive: false });
 
-    console.log('[DragHandler] Event listeners attached, applying visual feedback');
-
     // Visual feedback: reduce opacity
     callbacks.onDragMove(annotationIndex, {
       style: { ...annotation.style, opacity: 0.7 },
     });
-
-    console.log('[DragHandler] startDrag complete');
   }
 
   /**

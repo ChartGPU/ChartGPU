@@ -54,7 +54,7 @@ canvas.addEventListener('contextmenu', (e) => {
 });
 ```
 
-For a ready-made main-thread helper that wires `contextmenu` + `hitTest(...)` into an annotation authoring UI (with undo/redo + JSON export), see `createAnnotationAuthoring(...)` and [`examples/annotation-authoring/`](../../examples/annotation-authoring/).
+For a ready-made main-thread helper that wires `contextmenu` + `hitTest(...)` into an annotation authoring UI (with undo/redo + JSON export), see `createAnnotationAuthoring(...)` and [`examples/annotation-authoring/`](../../examples/annotation-authoring/). Full documentation available in the [Annotations API](./annotations.md).
 
 ## Zoom and Pan APIs
 

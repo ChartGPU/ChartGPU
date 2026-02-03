@@ -164,9 +164,6 @@ export function createAnnotationHitTester(
     const chartOptions = chart.options;
     const rect = canvas.getBoundingClientRect();
 
-    console.log('[HitTester] dataToCanvas input:', { x, y });
-    console.log('[HitTester] canvas rect:', rect);
-
     const grid = chartOptions.grid ?? { left: 60, right: 20, top: 40, bottom: 40 };
     const canvasWidth = rect.width;
     const canvasHeight = rect.height;
@@ -178,30 +175,22 @@ export function createAnnotationHitTester(
     const plotWidth = plotRight - plotLeft;
     const plotHeight = plotBottom - plotTop;
 
-    console.log('[HitTester] plotWidth:', plotWidth, 'plotHeight:', plotHeight);
-
     // Get scales from chart
     const xAxis = chartOptions.xAxis;
     const yAxis = chartOptions.yAxis;
-
-    console.log('[HitTester] xAxis:', xAxis);
-    console.log('[HitTester] yAxis:', yAxis);
 
     let canvasX = 0;
     let canvasY = 0;
 
     // Convert X coordinate
     if (x !== undefined && xAxis) {
-      console.log('[HitTester] Converting X coordinate:', x);
       if (xAxis.type === 'category' && Array.isArray((xAxis as any).data)) {
         // Category scale: find index and map to plot space
         const data = (xAxis as any).data as string[];
         const index = data.indexOf(String(x));
-        console.log('[HitTester] Category scale, index:', index);
         if (index >= 0) {
           const fraction = index / (data.length - 1 || 1);
           canvasX = plotLeft + fraction * plotWidth;
-          console.log('[HitTester] Category canvasX:', canvasX);
         }
       } else {
         // Linear scale - compute actual domain from data
@@ -210,24 +199,17 @@ export function createAnnotationHitTester(
         const max = domain.max;
         const fraction = (x - min) / (max - min || 1);
         canvasX = plotLeft + fraction * plotWidth;
-        console.log('[HitTester] Linear scale X - min:', min, 'max:', max, 'fraction:', fraction, 'canvasX:', canvasX);
       }
-    } else {
-      console.log('[HitTester] X conversion skipped - x:', x, 'xAxis:', xAxis);
     }
 
     // Convert Y coordinate (inverted: canvas top = max Y value)
     if (y !== undefined && yAxis) {
-      console.log('[HitTester] Converting Y coordinate:', y);
       // Compute actual domain from data
       const domain = computeYDomain();
       const min = domain.min;
       const max = domain.max;
       const fraction = (y - min) / (max - min || 1);
       canvasY = plotBottom - fraction * plotHeight; // Inverted Y
-      console.log('[HitTester] Y scale - min:', min, 'max:', max, 'fraction:', fraction, 'canvasY:', canvasY);
-    } else {
-      console.log('[HitTester] Y conversion skipped - y:', y, 'yAxis:', yAxis);
     }
 
     return { x: canvasX, y: canvasY };
@@ -261,52 +243,38 @@ export function createAnnotationHitTester(
    * Update cached bounds for all annotations
    */
   function updateCache(annotations: readonly AnnotationConfig[]): void {
-    console.log('[HitTester] updateCache called with', annotations.length, 'annotations');
     boundsCache.clear();
 
     annotations.forEach((annotation, index) => {
       const bounds: CachedAnnotationBounds = {};
 
-      console.log(`[HitTester] Processing annotation ${index}:`, annotation);
-
       if (annotation.type === 'lineX' && annotation.x !== undefined) {
-        console.log(`[HitTester] lineX annotation ${index}, x=${annotation.x}`);
         const { x } = dataToCanvas(annotation.x, undefined);
-        console.log(`[HitTester] Converted to canvasX=${x}`);
         bounds.canvasX = x;
       } else if (annotation.type === 'lineY' && annotation.y !== undefined) {
-        console.log(`[HitTester] lineY annotation ${index}, y=${annotation.y}`);
         const { y } = dataToCanvas(undefined, annotation.y);
-        console.log(`[HitTester] Converted to canvasY=${y}`);
         bounds.canvasY = y;
       } else if (annotation.type === 'point' && annotation.x !== undefined && annotation.y !== undefined) {
-        console.log(`[HitTester] point annotation ${index}, x=${annotation.x}, y=${annotation.y}`);
         const { x, y } = dataToCanvas(annotation.x, annotation.y);
-        console.log(`[HitTester] Converted to canvas x=${x}, y=${y}`);
         bounds.canvasX = x;
         bounds.canvasY = y;
       } else if (annotation.type === 'text') {
         const pos = annotation.position;
-        console.log(`[HitTester] text annotation ${index}, position:`, pos);
         if (pos.space === 'plot') {
           const { x, y } = plotToCanvas(pos.x, pos.y);
-          console.log(`[HitTester] Plot-space converted to canvas x=${x}, y=${y}`);
           bounds.canvasX = x;
           bounds.canvasY = y;
         } else if (pos.space === 'data') {
           const { x, y } = dataToCanvas(pos.x, pos.y);
-          console.log(`[HitTester] Data-space converted to canvas x=${x}, y=${y}`);
           bounds.canvasX = x;
           bounds.canvasY = y;
         }
       }
 
-      console.log(`[HitTester] Final bounds for annotation ${index}:`, bounds);
       boundsCache.set(index, bounds);
     });
 
     cacheValid = true;
-    console.log('[HitTester] Cache update complete');
   }
 
   /**
@@ -365,18 +333,13 @@ export function createAnnotationHitTester(
   function hitTest(canvasX: number, canvasY: number): AnnotationHitTestResult | null {
     const annotations = chart.options.annotations ?? [];
 
-    console.log('[HitTester] hitTest called', { canvasX, canvasY, annotationCount: annotations.length, cacheValid });
-
     if (annotations.length === 0) {
-      console.log('[HitTester] No annotations to test');
       return null;
     }
 
     // Update cache if invalid
     if (!cacheValid) {
-      console.log('[HitTester] Cache invalid, rebuilding...');
       updateCache(annotations);
-      console.log('[HitTester] Cache rebuilt:', boundsCache);
     }
 
     let closestHit: AnnotationHitTestResult | null = null;
@@ -390,16 +353,12 @@ export function createAnnotationHitTester(
       const annotation = annotations[i];
       const bounds = boundsCache.get(i);
 
-      console.log(`[HitTester] Testing annotation ${i}:`, { type: annotation.type, bounds });
-
       if (!bounds) {
-        console.log(`[HitTester] No bounds for annotation ${i}`);
         continue;
       }
 
       if (annotation.type === 'lineX' && bounds.canvasX !== undefined) {
         const distance = distanceToLine(canvasX, canvasY, bounds.canvasX, undefined);
-        console.log(`[HitTester] lineX distance: ${distance}, tolerance: ${lineTolerance}`);
         if (distance <= lineTolerance && distance < closestDistance) {
           closestDistance = distance;
           closestHit = {
@@ -408,11 +367,9 @@ export function createAnnotationHitTester(
             hitType: 'line',
             distanceCssPx: distance,
           };
-          console.log(`[HitTester] lineX HIT! Index ${i}`);
         }
       } else if (annotation.type === 'lineY' && bounds.canvasY !== undefined) {
         const distance = distanceToLine(canvasX, canvasY, undefined, bounds.canvasY);
-        console.log(`[HitTester] lineY distance: ${distance}, tolerance: ${lineTolerance}`);
         if (distance <= lineTolerance && distance < closestDistance) {
           closestDistance = distance;
           closestHit = {
@@ -421,7 +378,6 @@ export function createAnnotationHitTester(
             hitType: 'line',
             distanceCssPx: distance,
           };
-          console.log(`[HitTester] lineY HIT! Index ${i}`);
         }
       }
     }

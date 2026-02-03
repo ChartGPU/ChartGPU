@@ -52,3 +52,4 @@ lerna-debug.log*
 
 # Optional: pnpm store (uncomment if using pnpm workspaces)
 # .pnpm-store/
+.grepai/

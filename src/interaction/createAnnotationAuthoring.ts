@@ -715,8 +715,7 @@ export function createAnnotationAuthoring(
           // eslint-disable-next-line no-alert
           alert('Annotations JSON copied to clipboard!');
         })
-        .catch((err) => {
-          console.warn('Failed to copy to clipboard:', err);
+        .catch(() => {
           // Fallback: show in a textarea
           showJSONModal(json);
         });
@@ -823,13 +822,9 @@ export function createAnnotationAuthoring(
     const canvasX = e.clientX - rect.left;
     const canvasY = e.clientY - rect.top;
 
-    console.log('[AnnotationAuthoring] onPointerDown', { canvasX, canvasY, annotations: getCurrentAnnotations().length });
-
     const annotationHit = hitTester.hitTest(canvasX, canvasY);
-    console.log('[AnnotationAuthoring] hitTest result:', annotationHit);
 
     if (annotationHit) {
-      console.log('[AnnotationAuthoring] Starting drag for annotation', annotationHit.annotationIndex);
       e.preventDefault();
       // Don't set pointer capture here - let drag handler manage window-level events
 
@@ -839,8 +834,6 @@ export function createAnnotationAuthoring(
         e.clientX,
         e.clientY
       );
-    } else {
-      console.log('[AnnotationAuthoring] No annotation hit');
     }
   };
 
