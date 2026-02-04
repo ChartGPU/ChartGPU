@@ -57,6 +57,12 @@ export interface GridConfig {
 
 export interface AxisConfig {
   readonly type: AxisType;
+  /**
+   * Category labels for `type: 'category'` axes.
+   *
+   * When provided, category indices (0..N-1) map to these labels for axis ticks/labels.
+   */
+  readonly data?: ReadonlyArray<string>;
   readonly min?: number;
   readonly max?: number;
   /** Tick length in CSS pixels (default: 6). */

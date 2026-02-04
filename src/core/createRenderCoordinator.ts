@@ -3384,7 +3384,14 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
 
     let xTickCount = DEFAULT_TICK_COUNT;
     let xTickValues: readonly number[] = [];
-    if (currentOptions.xAxis.type === 'time') {
+    let xCategoryLabels: readonly string[] = [];
+    if (currentOptions.xAxis.type === 'category') {
+      // For category axes, generate tick values at each category index
+      const categories = currentOptions.xAxis.data ?? [];
+      xCategoryLabels = categories;
+      xTickCount = categories.length;
+      xTickValues = categories.map((_, i) => i);
+    } else if (currentOptions.xAxis.type === 'time') {
       const computed = computeAdaptiveTimeXAxisTicks({
         axisMin: finiteOrNull(currentOptions.xAxis.min),
         axisMax: finiteOrNull(currentOptions.xAxis.max),
@@ -4176,8 +4183,9 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       const xTickLengthCssPx = currentOptions.xAxis.tickLength ?? DEFAULT_TICK_LENGTH_CSS_PX;
       const xLabelY = plotBottomCss + xTickLengthCssPx + LABEL_PADDING_CSS_PX + currentOptions.theme.fontSize * 0.5;
       const isTimeXAxis = currentOptions.xAxis.type === 'time';
+      const isCategoryXAxis = currentOptions.xAxis.type === 'category';
       const xFormatter = (() => {
-        if (isTimeXAxis) return null;
+        if (isTimeXAxis || isCategoryXAxis) return null;
         const xDomainMin = finiteOrUndefined(currentOptions.xAxis.min) ?? xScale.invert(plotClipRect.left);
         const xDomainMax = finiteOrUndefined(currentOptions.xAxis.max) ?? xScale.invert(plotClipRect.right);
         const xTickStep = xTickCount === 1 ? 0 : (xDomainMax - xDomainMin) / (xTickCount - 1);
@@ -4191,7 +4199,11 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
 
         const anchor: TextOverlayAnchor =
           xTickValues.length === 1 ? 'middle' : i === 0 ? 'start' : i === xTickValues.length - 1 ? 'end' : 'middle';
-        const label = isTimeXAxis ? formatTimeTickValue(v, visibleXRangeMs) : formatTickValue(xFormatter!, v);
+        const label = isCategoryXAxis
+          ? (xCategoryLabels[i] ?? String(v))
+          : isTimeXAxis
+            ? formatTimeTickValue(v, visibleXRangeMs)
+            : formatTickValue(xFormatter!, v);
         if (label == null) continue;
 
         // Add to DOM overlay
