@@ -249,7 +249,9 @@ See the [chartgpu-react repository](https://github.com/ChartGPU/chartgpu-react) 
 
 - Chrome 113+ or Edge 113+ (WebGPU enabled by default)
 - Safari 18+ (WebGPU enabled by default)
-- Firefox: not supported (WebGPU support in development)
+- Firefox: Windows 114+, Mac 145+, Linux nightly
+
+See the [gpuweb repository](https://github.com/gpuweb/gpuweb/wiki/Implementation-Status) for full Implementation Status
 
 ## Documentation
 
