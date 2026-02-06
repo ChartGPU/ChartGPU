@@ -36,6 +36,7 @@ ChartGPU is a TypeScript charting library built on WebGPU for smooth, interactiv
 - 🔍 X-axis zoom (inside gestures + optional slider UI)
 - 🎛️ Theme presets (`'dark' | 'light'`) and custom theme support
 
+
 ## Architecture
 
 At a high level, `ChartGPU.create(...)` owns the canvas + WebGPU lifecycle, and delegates render orchestration (layout/scales/data upload/render passes + internal overlays) to the render coordinator. For deeper internal notes, see [`docs/api/INTERNALS.md`](https://github.com/hunterg325/ChartGPU/blob/main/docs/api/INTERNALS.md) (especially "Render coordinator").
@@ -150,6 +151,12 @@ flowchart TB
   DriveX --> InstanceAPI
 ```
 
+### 35M points (benchmark)
+
+35,000,000 points rendered at ~72 FPS (benchmark mode).
+
+![35 million point benchmark at 72 FPS](docs/assets/35-million-ultimate-benchmark-example.png)
+
 ## Demo
 
 ![ChartGPU demo](https://raw.githubusercontent.com/hunterg325/ChartGPU/main/docs/assets/chart-gpu-demo.gif)
@@ -166,11 +173,6 @@ GPU-binned density/heatmap mode for scatter plots (`mode: 'density'`) to reveal 
 
 ![Scatter density chart example (1M points)](docs/assets/scatter-plot-density-chart-1million-points-example.png)
 
-### 10M points (benchmark)
-
-10,000,000 points rendered at ~80 FPS (benchmark mode).
-
-![10 million point benchmark at 120 FPS](docs/assets/ulimate-benchmark-example.png)
 
 ### Interactive Annotation Authoring
 
