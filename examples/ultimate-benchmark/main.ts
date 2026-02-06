@@ -353,7 +353,7 @@ async function createChart(dataType: DataType, seriesData: Array<DataPoint[] | O
   });
 
   const options: ChartGPUOptions = {
-    theme: 'light',
+    theme: 'dark',
     palette,
     animation: false,
     xAxis: { type: 'value' },
