@@ -5,7 +5,7 @@
  * Uses canvas-space coordinates and configurable hit tolerances.
  */
 
-import type { AnnotationConfig } from '../config/types.js';
+import type { AnnotationConfig, DataPoint } from '../config/types.js';
 import type { ChartGPUInstance } from '../ChartGPU.js';
 
 export interface AnnotationHitTestResult {
@@ -90,7 +90,8 @@ export function createAnnotationHitTester(
             if (timestamp > dataXMax) dataXMax = timestamp;
           }
         } else {
-          const data = s.data;
+          // TODO(step 2): normalize CartesianSeriesData to ReadonlyArray<DataPoint>
+          const data = s.data as ReadonlyArray<DataPoint>;
           for (const p of data) {
             const x = getPointX(p);
             if (x < dataXMin) dataXMin = x;
@@ -141,7 +142,8 @@ export function createAnnotationHitTester(
             if (low < dataYMin) dataYMin = low;
           }
         } else {
-          const data = s.data;
+          // TODO(step 2): normalize CartesianSeriesData to ReadonlyArray<DataPoint>
+          const data = s.data as ReadonlyArray<DataPoint>;
           for (const p of data) {
             const y = getPointY(p);
             if (y < dataYMin) dataYMin = y;

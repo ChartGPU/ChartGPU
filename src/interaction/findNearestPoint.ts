@@ -1,19 +1,33 @@
-import type { DataPoint, DataPointTuple, ScatterPointTuple } from '../config/types';
+import type { DataPoint, CartesianSeriesData, DataPointTuple, ScatterPointTuple } from '../config/types';
 import type {
   ResolvedBarSeriesConfig,
   ResolvedScatterSeriesConfig,
   ResolvedSeriesConfig,
 } from '../config/OptionResolver';
 import type { LinearScale } from '../utils/scales';
+import { getPointCount, getX, getY, getSize } from '../data/cartesianData';
+import { isMonotonicNonDecreasingFiniteX } from '../core/renderCoordinator/data/computeVisibleSlice';
 
 const DEFAULT_MAX_DISTANCE_PX = 20;
 const DEFAULT_BAR_GAP = 0.01; // Minimal gap between bars within a group (was 0.1)
 const DEFAULT_BAR_CATEGORY_GAP = 0.2;
 const DEFAULT_SCATTER_RADIUS_CSS_PX = 4;
 
-// Cache (Story 4.10): used only for scatter-series pruning so we don't degrade to O(n)
-// scans per pointer move when no candidate has been found yet.
-const scatterMaxRadiusCache = new WeakMap<ResolvedScatterSeriesConfig, number>();
+/**
+ * Binary search: finds the lower bound index (first element >= target) in monotonic cartesian data.
+ * Returns index in range [0, n] where n = point count.
+ */
+function lowerBoundX(data: CartesianSeriesData, xTarget: number): number {
+  let lo = 0;
+  let hi = getPointCount(data);
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    const x = getX(data, mid);
+    if (x < xTarget) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
 
 export type NearestPointMatch = Readonly<{
   seriesIndex: number;
@@ -22,9 +36,6 @@ export type NearestPointMatch = Readonly<{
   /** Euclidean distance in range units. */
   distance: number;
 }>;
-
-type TuplePoint = DataPointTuple;
-type ObjectPoint = Readonly<{ x: number; y: number; size?: number }>;
 
 export type BarBounds = { left: number; right: number; top: number; bottom: number };
 
@@ -55,11 +66,6 @@ const normalizeStackId = (stack: unknown): string => {
 };
 
 const isTupleDataPoint = (p: DataPoint): p is DataPointTuple => Array.isArray(p);
-
-const getPointXY = (p: DataPoint): { readonly x: number; readonly y: number } => {
-  if (isTupleDataPoint(p)) return { x: p[0], y: p[1] };
-  return { x: p.x, y: p.y };
-};
 
 const getPointSizeCssPx = (p: DataPoint): number | null => {
   if (isTupleDataPoint(p)) {
@@ -107,46 +113,6 @@ const getScatterRadiusCssPx = (seriesCfg: ResolvedScatterSeriesConfig, p: DataPo
   return DEFAULT_SCATTER_RADIUS_CSS_PX;
 };
 
-const getMaxScatterRadiusCssPx = (seriesCfg: ResolvedScatterSeriesConfig): number => {
-  const cached = scatterMaxRadiusCache.get(seriesCfg);
-  if (cached !== undefined) return cached;
-
-  const data = seriesCfg.data;
-  const seriesSymbolSize = seriesCfg.symbolSize;
-
-  let maxRadius = 0;
-
-  // Fast path: numeric (or missing) series size means max is just max(point.size, series/default).
-  if (typeof seriesSymbolSize !== 'function') {
-    const seriesFallback =
-      typeof seriesSymbolSize === 'number' && Number.isFinite(seriesSymbolSize)
-        ? Math.max(0, seriesSymbolSize)
-        : DEFAULT_SCATTER_RADIUS_CSS_PX;
-
-    let maxPerPoint = 0;
-    let anyPointWithoutSize = false;
-    for (let i = 0; i < data.length; i++) {
-      const pSize = getPointSizeCssPx(data[i]);
-      if (pSize == null) {
-        anyPointWithoutSize = true;
-      } else {
-        const r = Math.max(0, pSize);
-        if (r > maxPerPoint) maxPerPoint = r;
-      }
-    }
-    maxRadius = anyPointWithoutSize ? Math.max(maxPerPoint, seriesFallback) : maxPerPoint;
-  } else {
-    // Slow path: symbolSize function can vary per point, so compute true max once and cache it.
-    for (let i = 0; i < data.length; i++) {
-      const r = getScatterRadiusCssPx(seriesCfg, data[i]);
-      if (r > maxRadius) maxRadius = r;
-    }
-  }
-
-  maxRadius = Number.isFinite(maxRadius) ? Math.max(0, maxRadius) : DEFAULT_SCATTER_RADIUS_CSS_PX;
-  scatterMaxRadiusCache.set(seriesCfg, maxRadius);
-  return maxRadius;
-};
 
 // Note: we intentionally do NOT compute “nearest bar by distance”.
 // Bars are only considered a match when the cursor is inside their rect bounds.
@@ -196,9 +162,10 @@ export function computeBarClusterSlots(
 export function computeBarCategoryStep(seriesConfigs: ReadonlyArray<ResolvedBarSeriesConfig>): number {
   const xs: number[] = [];
   for (let s = 0; s < seriesConfigs.length; s++) {
-    const data = seriesConfigs[s].data;
-    for (let i = 0; i < data.length; i++) {
-      const { x } = getPointXY(data[i]);
+    const data = seriesConfigs[s].data as CartesianSeriesData;
+    const n = getPointCount(data);
+    for (let i = 0; i < n; i++) {
+      const x = getX(data, i);
       if (Number.isFinite(x)) xs.push(x);
     }
   }
@@ -231,9 +198,10 @@ export function computeCategoryWidthPx(
   // Fallback: compute min positive delta in *scaled* x positions.
   const sx: number[] = [];
   for (let s = 0; s < seriesConfigs.length; s++) {
-    const data = seriesConfigs[s].data;
-    for (let i = 0; i < data.length; i++) {
-      const { x } = getPointXY(data[i]);
+    const data = seriesConfigs[s].data as CartesianSeriesData;
+    const n = getPointCount(data);
+    for (let i = 0; i < n; i++) {
+      const x = getX(data, i);
       if (!Number.isFinite(x)) continue;
       const px = xScale.scale(x);
       if (Number.isFinite(px)) sx.push(px);
@@ -334,9 +302,10 @@ const computeBaselineForBarsFromData = (seriesConfigs: ReadonlyArray<ResolvedBar
   let yMax = Number.NEGATIVE_INFINITY;
 
   for (let s = 0; s < seriesConfigs.length; s++) {
-    const data = seriesConfigs[s].data;
-    for (let i = 0; i < data.length; i++) {
-      const { y } = getPointXY(data[i]);
+    const data = seriesConfigs[s].data as CartesianSeriesData;
+    const n = getPointCount(data);
+    for (let i = 0; i < n; i++) {
+      const y = getY(data, i);
       if (!Number.isFinite(y)) continue;
       if (y < yMin) yMin = y;
       if (y > yMax) yMax = y;
@@ -357,9 +326,10 @@ export function inferPlotHeightPxForBarHitTesting(
   // approximate plotHeightCss (or be <= plotHeightCss if axis min/max are overridden).
   let maxY = 0;
   for (let s = 0; s < seriesConfigs.length; s++) {
-    const data = seriesConfigs[s].data;
-    for (let i = 0; i < data.length; i++) {
-      const { y } = getPointXY(data[i]);
+    const data = seriesConfigs[s].data as CartesianSeriesData;
+    const n = getPointCount(data);
+    for (let i = 0; i < n; i++) {
+      const y = getY(data, i);
       if (!Number.isFinite(y)) continue;
       const py = yScale.scale(y);
       if (Number.isFinite(py) && py > maxY) maxY = py;
@@ -423,36 +393,6 @@ export function bucketStackedXKey(
   }
   return Math.round(xDomain * 1e6);
 }
-
-const lowerBoundTuple = (
-  data: ReadonlyArray<TuplePoint>,
-  xTarget: number,
-): number => {
-  let lo = 0;
-  let hi = data.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    const x = data[mid][0];
-    if (x < xTarget) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
-};
-
-const lowerBoundObject = (
-  data: ReadonlyArray<ObjectPoint>,
-  xTarget: number,
-): number => {
-  let lo = 0;
-  let hi = data.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    const x = data[mid].x;
-    if (x < xTarget) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
-};
 
 /**
  * Finds the nearest data point to the given cursor position across all series.
@@ -533,12 +473,14 @@ export function findNearestPoint(
         const originalSeriesIndex = barSeriesIndexByBar[b] ?? -1;
         if (originalSeriesIndex < 0) continue;
 
-        const data = seriesCfg.data;
+        const data = seriesCfg.data as CartesianSeriesData;
+        const n = getPointCount(data);
         const clusterIndex = clusterSlots.clusterIndexBySeries[b] ?? 0;
         const stackId = clusterSlots.stackIdBySeries[b] ?? '';
 
-        for (let i = 0; i < data.length; i++) {
-          const { x: xDomain, y: yDomain } = getPointXY(data[i]);
+        for (let i = 0; i < n; i++) {
+          const xDomain = getX(data, i);
+          const yDomain = getY(data, i);
           if (!Number.isFinite(xDomain) || !Number.isFinite(yDomain)) continue;
 
           const xCenterPx = xScale.scale(xDomain);
@@ -603,8 +545,12 @@ export function findNearestPoint(
       }
 
       if (bestBarHit) {
-        const point = series[bestBarHit.seriesIndex]?.data[bestBarHit.dataIndex] as DataPoint | undefined;
-        if (point) {
+        const seriesData = series[bestBarHit.seriesIndex]?.data as CartesianSeriesData | undefined;
+        if (seriesData) {
+          const x = getX(seriesData, bestBarHit.dataIndex);
+          const y = getY(seriesData, bestBarHit.dataIndex);
+          const size = getSize(seriesData, bestBarHit.dataIndex);
+          const point: DataPoint = size !== undefined ? [x, y, size] : [x, y];
           return {
             seriesIndex: bestBarHit.seriesIndex,
             dataIndex: bestBarHit.dataIndex,
@@ -637,242 +583,153 @@ export function findNearestPoint(
     const originalSeriesIndex = cartesianSeriesIndexMap[s] ?? -1;
     if (originalSeriesIndex < 0) continue;
 
-    const data = seriesCfg.data;
-    const n = data.length;
+    const data = seriesCfg.data as CartesianSeriesData;
+    const n = getPointCount(data);
     if (n === 0) continue;
 
     const isScatter = seriesCfg.type === 'scatter';
     const scatterCfg = isScatter ? (seriesCfg as ResolvedScatterSeriesConfig) : null;
-    const maxRadiusInSeries = scatterCfg ? getMaxScatterRadiusCssPx(scatterCfg) : 0;
-    const seriesCutoffSq = isScatter ? (md + maxRadiusInSeries) * (md + maxRadiusInSeries) : maxDistSq;
 
-    const first = data[0];
-    const isTuple = Array.isArray(first);
+    // Check if data is monotonic for O(log n) fast path
+    const canBinarySearch = isMonotonicNonDecreasingFiniteX(data);
 
-    if (isTuple) {
-      const tupleData = data as ReadonlyArray<TuplePoint>;
-      const insertionIndex = lowerBoundTuple(tupleData, xTarget);
+    if (canBinarySearch) {
+      // Fast path: binary search + expand outward
+      // Find the index where data[i].x >= xTarget (lower bound)
+      const startIdx = lowerBoundX(data, xTarget);
 
-      let left = insertionIndex - 1;
-      let right = insertionIndex;
+      // Expand outward from startIdx while points could still be closer
+      // Check right side first (startIdx onwards)
+      for (let i = startIdx; i < n; i++) {
+        const px = getX(data, i);
+        const py = getY(data, i);
+        if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
 
-      // Expand outward while x-distance alone could still beat bestDistSq.
-      while (left >= 0 || right < n) {
-        const pruneSq = Math.min(bestDistSq, seriesCutoffSq);
+        const sx = xScale.scale(px);
+        const sy = yScale.scale(py);
+        if (!Number.isFinite(sx) || !Number.isFinite(sy)) continue;
 
-        let dxSqLeft = Number.POSITIVE_INFINITY;
-        if (left >= 0) {
-          const px = tupleData[left][0];
-          if (Number.isFinite(px)) {
-            const sx = xScale.scale(px);
-            if (Number.isFinite(sx)) {
-              const dx = sx - x;
-              dxSqLeft = dx * dx;
-            }
-          }
+        const dx = sx - x;
+        const dy = sy - y;
+        const distSq = dx * dx + dy * dy;
+
+        // Early exit: if x-distance alone exceeds current best, no point can be closer (monotonic x)
+        const dxSq = dx * dx;
+        if (dxSq > bestDistSq) break;
+
+        // Check scatter radius if applicable
+        let allowedSq = maxDistSq;
+        if (scatterCfg) {
+          const size = getSize(data, i);
+          const p: DataPoint = size !== undefined ? [px, py, size] : [px, py];
+          const r = getScatterRadiusCssPx(scatterCfg, p);
+          const allowed = md + r;
+          allowedSq = allowed * allowed;
         }
 
-        let dxSqRight = Number.POSITIVE_INFINITY;
-        if (right < n) {
-          const px = tupleData[right][0];
-          if (Number.isFinite(px)) {
-            const sx = xScale.scale(px);
-            if (Number.isFinite(sx)) {
-              const dx = sx - x;
-              dxSqRight = dx * dx;
-            }
-          }
+        if (distSq > allowedSq) continue;
+
+        const isBetter =
+          distSq < bestDistSq ||
+          (distSq === bestDistSq &&
+            (bestPoint === null ||
+              originalSeriesIndex < bestSeriesIndex ||
+              (originalSeriesIndex === bestSeriesIndex && i < bestDataIndex)));
+
+        if (isBetter) {
+          bestDistSq = distSq;
+          bestSeriesIndex = originalSeriesIndex;
+          bestDataIndex = i;
+          const size = getSize(data, i);
+          bestPoint = size !== undefined ? [px, py, size] : [px, py];
+        }
+      }
+
+      // Check left side (before startIdx)
+      for (let i = startIdx - 1; i >= 0; i--) {
+        const px = getX(data, i);
+        const py = getY(data, i);
+        if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
+
+        const sx = xScale.scale(px);
+        const sy = yScale.scale(py);
+        if (!Number.isFinite(sx) || !Number.isFinite(sy)) continue;
+
+        const dx = sx - x;
+        const dy = sy - y;
+        const distSq = dx * dx + dy * dy;
+
+        // Early exit: if x-distance alone exceeds current best, no point can be closer
+        const dxSq = dx * dx;
+        if (dxSq > bestDistSq) break;
+
+        // Check scatter radius if applicable
+        let allowedSq = maxDistSq;
+        if (scatterCfg) {
+          const size = getSize(data, i);
+          const p: DataPoint = size !== undefined ? [px, py, size] : [px, py];
+          const r = getScatterRadiusCssPx(scatterCfg, p);
+          const allowed = md + r;
+          allowedSq = allowed * allowed;
         }
 
-        if (dxSqLeft > pruneSq && dxSqRight > pruneSq) break;
+        if (distSq > allowedSq) continue;
 
-        // If both sides are equally close in x, evaluate both for stable tie behavior.
-        if (dxSqLeft <= dxSqRight && dxSqLeft <= pruneSq && left >= 0) {
-          const py = tupleData[left][1];
-          if (Number.isFinite(py)) {
-            const sy = yScale.scale(py);
-            if (Number.isFinite(sy)) {
-              const dy = sy - y;
-              const distSq = dxSqLeft + dy * dy;
-              const p = data[left] as DataPoint;
+        const isBetter =
+          distSq < bestDistSq ||
+          (distSq === bestDistSq &&
+            (bestPoint === null ||
+              originalSeriesIndex < bestSeriesIndex ||
+              (originalSeriesIndex === bestSeriesIndex && i < bestDataIndex)));
 
-              const allowedSq = scatterCfg
-                ? (() => {
-                    const r = getScatterRadiusCssPx(scatterCfg, p);
-                    const allowed = md + r;
-                    return allowed * allowed;
-                  })()
-                : maxDistSq;
-
-              if (distSq <= allowedSq) {
-                const isBetter =
-                  distSq < bestDistSq ||
-                  (distSq === bestDistSq &&
-                    (bestPoint === null ||
-                      originalSeriesIndex < bestSeriesIndex ||
-                      (originalSeriesIndex === bestSeriesIndex && left < bestDataIndex)));
-                if (isBetter) {
-                  bestDistSq = distSq;
-                  bestSeriesIndex = originalSeriesIndex;
-                  bestDataIndex = left;
-                  bestPoint = p;
-                }
-              }
-            }
-          }
-          left--;
-        } else if (dxSqLeft <= dxSqRight) {
-          left--;
-        }
-
-        if (dxSqRight <= dxSqLeft && dxSqRight <= pruneSq && right < n) {
-          const py = tupleData[right][1];
-          if (Number.isFinite(py)) {
-            const sy = yScale.scale(py);
-            if (Number.isFinite(sy)) {
-              const dy = sy - y;
-              const distSq = dxSqRight + dy * dy;
-              const p = data[right] as DataPoint;
-
-              const allowedSq = scatterCfg
-                ? (() => {
-                    const r = getScatterRadiusCssPx(scatterCfg, p);
-                    const allowed = md + r;
-                    return allowed * allowed;
-                  })()
-                : maxDistSq;
-
-              if (distSq <= allowedSq) {
-                const isBetter =
-                  distSq < bestDistSq ||
-                  (distSq === bestDistSq &&
-                    (bestPoint === null ||
-                      originalSeriesIndex < bestSeriesIndex ||
-                      (originalSeriesIndex === bestSeriesIndex && right < bestDataIndex)));
-                if (isBetter) {
-                  bestDistSq = distSq;
-                  bestSeriesIndex = originalSeriesIndex;
-                  bestDataIndex = right;
-                  bestPoint = p;
-                }
-              }
-            }
-          }
-          right++;
-        } else if (dxSqRight < dxSqLeft) {
-          right++;
+        if (isBetter) {
+          bestDistSq = distSq;
+          bestSeriesIndex = originalSeriesIndex;
+          bestDataIndex = i;
+          const size = getSize(data, i);
+          bestPoint = size !== undefined ? [px, py, size] : [px, py];
         }
       }
     } else {
-      const objectData = data as ReadonlyArray<ObjectPoint>;
-      const insertionIndex = lowerBoundObject(objectData, xTarget);
+      // Fallback: linear scan for non-monotonic data
+      for (let i = 0; i < n; i++) {
+        const px = getX(data, i);
+        const py = getY(data, i);
+        if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
 
-      let left = insertionIndex - 1;
-      let right = insertionIndex;
+        const sx = xScale.scale(px);
+        const sy = yScale.scale(py);
+        if (!Number.isFinite(sx) || !Number.isFinite(sy)) continue;
 
-      while (left >= 0 || right < n) {
-        const pruneSq = Math.min(bestDistSq, seriesCutoffSq);
+        const dx = sx - x;
+        const dy = sy - y;
+        const distSq = dx * dx + dy * dy;
 
-        let dxSqLeft = Number.POSITIVE_INFINITY;
-        if (left >= 0) {
-          const px = objectData[left].x;
-          if (Number.isFinite(px)) {
-            const sx = xScale.scale(px);
-            if (Number.isFinite(sx)) {
-              const dx = sx - x;
-              dxSqLeft = dx * dx;
-            }
-          }
+        // Check scatter radius if applicable
+        let allowedSq = maxDistSq;
+        if (scatterCfg) {
+          const size = getSize(data, i);
+          const p: DataPoint = size !== undefined ? [px, py, size] : [px, py];
+          const r = getScatterRadiusCssPx(scatterCfg, p);
+          const allowed = md + r;
+          allowedSq = allowed * allowed;
         }
 
-        let dxSqRight = Number.POSITIVE_INFINITY;
-        if (right < n) {
-          const px = objectData[right].x;
-          if (Number.isFinite(px)) {
-            const sx = xScale.scale(px);
-            if (Number.isFinite(sx)) {
-              const dx = sx - x;
-              dxSqRight = dx * dx;
-            }
-          }
-        }
+        if (distSq > allowedSq) continue;
 
-        if (dxSqLeft > pruneSq && dxSqRight > pruneSq) break;
+        const isBetter =
+          distSq < bestDistSq ||
+          (distSq === bestDistSq &&
+            (bestPoint === null ||
+              originalSeriesIndex < bestSeriesIndex ||
+              (originalSeriesIndex === bestSeriesIndex && i < bestDataIndex)));
 
-        if (dxSqLeft <= dxSqRight && dxSqLeft <= pruneSq && left >= 0) {
-          const py = objectData[left].y;
-          if (Number.isFinite(py)) {
-            const sy = yScale.scale(py);
-            if (Number.isFinite(sy)) {
-              const dy = sy - y;
-              const distSq = dxSqLeft + dy * dy;
-              const p = data[left] as DataPoint;
-
-              const allowedSq = scatterCfg
-                ? (() => {
-                    const r = getScatterRadiusCssPx(scatterCfg, p);
-                    const allowed = md + r;
-                    return allowed * allowed;
-                  })()
-                : maxDistSq;
-
-              if (distSq <= allowedSq) {
-                const isBetter =
-                  distSq < bestDistSq ||
-                  (distSq === bestDistSq &&
-                    (bestPoint === null ||
-                      originalSeriesIndex < bestSeriesIndex ||
-                      (originalSeriesIndex === bestSeriesIndex && left < bestDataIndex)));
-                if (isBetter) {
-                  bestDistSq = distSq;
-                  bestSeriesIndex = originalSeriesIndex;
-                  bestDataIndex = left;
-                  bestPoint = p;
-                }
-              }
-            }
-          }
-          left--;
-        } else if (dxSqLeft <= dxSqRight) {
-          left--;
-        }
-
-        if (dxSqRight <= dxSqLeft && dxSqRight <= pruneSq && right < n) {
-          const py = objectData[right].y;
-          if (Number.isFinite(py)) {
-            const sy = yScale.scale(py);
-            if (Number.isFinite(sy)) {
-              const dy = sy - y;
-              const distSq = dxSqRight + dy * dy;
-              const p = data[right] as DataPoint;
-
-              const allowedSq = scatterCfg
-                ? (() => {
-                    const r = getScatterRadiusCssPx(scatterCfg, p);
-                    const allowed = md + r;
-                    return allowed * allowed;
-                  })()
-                : maxDistSq;
-
-              if (distSq <= allowedSq) {
-                const isBetter =
-                  distSq < bestDistSq ||
-                  (distSq === bestDistSq &&
-                    (bestPoint === null ||
-                      originalSeriesIndex < bestSeriesIndex ||
-                      (originalSeriesIndex === bestSeriesIndex && right < bestDataIndex)));
-                if (isBetter) {
-                  bestDistSq = distSq;
-                  bestSeriesIndex = originalSeriesIndex;
-                  bestDataIndex = right;
-                  bestPoint = p;
-                }
-              }
-            }
-          }
-          right++;
-        } else if (dxSqRight < dxSqLeft) {
-          right++;
+        if (isBetter) {
+          bestDistSq = distSq;
+          bestSeriesIndex = originalSeriesIndex;
+          bestDataIndex = i;
+          const size = getSize(data, i);
+          bestPoint = size !== undefined ? [px, py, size] : [px, py];
         }
       }
     }

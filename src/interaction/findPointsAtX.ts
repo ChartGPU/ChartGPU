@@ -1,7 +1,8 @@
-import type { DataPoint } from '../config/types';
+import type { DataPoint, CartesianSeriesData } from '../config/types';
 import type { ResolvedBarSeriesConfig, ResolvedSeriesConfig } from '../config/OptionResolver';
 import type { LinearScale } from '../utils/scales';
 import { computeBarLayoutPx } from './findNearestPoint';
+import { getPointCount, getX, getY, getSize } from '../data/cartesianData';
 
 export type PointsAtXMatch = Readonly<{
   seriesIndex: number;
@@ -9,37 +10,27 @@ export type PointsAtXMatch = Readonly<{
   point: DataPoint;
 }>;
 
-type TuplePoint = readonly [x: number, y: number];
-type ObjectPoint = Readonly<{ x: number; y: number }>;
+const hasNaNXCache = new WeakMap<object, boolean>();
 
-const hasNaNXCache = new WeakMap<ReadonlyArray<unknown>, boolean>();
-
-const seriesHasNaNX = (data: ReadonlyArray<DataPoint>, isTuple: boolean): boolean => {
-  if (hasNaNXCache.has(data)) return hasNaNXCache.get(data)!;
+const seriesHasNaNX = (data: CartesianSeriesData): boolean => {
+  // Use data object as cache key (works for arrays, typed arrays, and XYArraysData)
+  const cacheKey = typeof data === 'object' && data !== null ? data : null;
+  if (cacheKey && hasNaNXCache.has(cacheKey)) {
+    return hasNaNXCache.get(cacheKey)!;
+  }
 
   let hasNaN = false;
+  const n = getPointCount(data);
 
-  if (isTuple) {
-    const tupleData = data as ReadonlyArray<TuplePoint>;
-    for (let i = 0; i < tupleData.length; i++) {
-      const x = tupleData[i][0];
-      if (Number.isNaN(x)) {
-        hasNaN = true;
-        break;
-      }
-    }
-  } else {
-    const objectData = data as ReadonlyArray<ObjectPoint>;
-    for (let i = 0; i < objectData.length; i++) {
-      const x = objectData[i].x;
-      if (Number.isNaN(x)) {
-        hasNaN = true;
-        break;
-      }
+  for (let i = 0; i < n; i++) {
+    const x = getX(data, i);
+    if (Number.isNaN(x)) {
+      hasNaN = true;
+      break;
     }
   }
 
-  hasNaNXCache.set(data, hasNaN);
+  if (cacheKey) hasNaNXCache.set(cacheKey, hasNaN);
   return hasNaN;
 };
 
@@ -92,24 +83,12 @@ const computeBarHitTestLayout = (
   };
 };
 
-const lowerBoundTuple = (data: ReadonlyArray<TuplePoint>, xTarget: number): number => {
+const lowerBoundX = (data: CartesianSeriesData, xTarget: number): number => {
   let lo = 0;
-  let hi = data.length;
+  let hi = getPointCount(data);
   while (lo < hi) {
     const mid = (lo + hi) >>> 1;
-    const x = data[mid][0];
-    if (x < xTarget) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
-};
-
-const lowerBoundObject = (data: ReadonlyArray<ObjectPoint>, xTarget: number): number => {
-  let lo = 0;
-  let hi = data.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    const x = data[mid].x;
+    const x = getX(data, mid);
     if (x < xTarget) lo = mid + 1;
     else hi = mid;
   }
@@ -169,12 +148,9 @@ export function findPointsAtX(
     // Skip invisible series.
     if (seriesConfig.visible === false) continue;
 
-    const data = seriesConfig.data;
-    const n = data.length;
+    const data = seriesConfig.data as CartesianSeriesData;
+    const n = getPointCount(data);
     if (n === 0) continue;
-
-    const first = data[0];
-    const isTuple = Array.isArray(first);
 
     // Bar series: return the correct bar dataIndex for xValue when inside the bar interval.
     // When tolerance is finite: require an (expanded) interval hit.
@@ -200,42 +176,25 @@ export function findPointsAtX(
             return xValue >= left - hitTol && xValue < right + hitTol;
           };
 
-          if (seriesHasNaNX(data, isTuple)) {
+          if (seriesHasNaNX(data)) {
             // NaN breaks ordering; linear scan for correctness.
-            if (isTuple) {
-              const tupleData = data as ReadonlyArray<TuplePoint>;
-              for (let i = 0; i < n; i++) {
-                const px = tupleData[i][0];
-                if (!Number.isFinite(px)) continue;
-                const xCenter = xScale.scale(px);
-                if (isHit(xCenter)) {
-                  hitIndex = hitIndex < 0 ? i : Math.min(hitIndex, i);
-                }
-              }
-            } else {
-              const objectData = data as ReadonlyArray<ObjectPoint>;
-              for (let i = 0; i < n; i++) {
-                const px = objectData[i].x;
-                if (!Number.isFinite(px)) continue;
-                const xCenter = xScale.scale(px);
-                if (isHit(xCenter)) {
-                  hitIndex = hitIndex < 0 ? i : Math.min(hitIndex, i);
-                }
+            for (let i = 0; i < n; i++) {
+              const px = getX(data, i);
+              if (!Number.isFinite(px)) continue;
+              const xCenter = xScale.scale(px);
+              if (isHit(xCenter)) {
+                hitIndex = hitIndex < 0 ? i : Math.min(hitIndex, i);
               }
             }
           } else {
             // Use a lower-bound search around the adjusted x (accounts for cluster offset).
             const xTargetAdjusted = xScale.invert(xValue - offsetLeftFromCategoryCenter);
             if (Number.isFinite(xTargetAdjusted)) {
-              const insertionIndex = isTuple
-                ? lowerBoundTuple(data as ReadonlyArray<TuplePoint>, xTargetAdjusted)
-                : lowerBoundObject(data as ReadonlyArray<ObjectPoint>, xTargetAdjusted);
+              const insertionIndex = lowerBoundX(data, xTargetAdjusted);
 
               const getXCenterAt = (idx: number): number | null => {
                 if (idx < 0 || idx >= n) return null;
-                const px = isTuple
-                  ? (data as ReadonlyArray<TuplePoint>)[idx][0]
-                  : (data as ReadonlyArray<ObjectPoint>)[idx].x;
+                const px = getX(data, idx);
                 if (!Number.isFinite(px)) return null;
                 const xCenter = xScale.scale(px);
                 return Number.isFinite(xCenter) ? xCenter : null;
@@ -268,7 +227,11 @@ export function findPointsAtX(
           }
 
           if (hitIndex >= 0) {
-            matches.push({ seriesIndex: s, dataIndex: hitIndex, point: data[hitIndex] as DataPoint });
+            const x = getX(data, hitIndex);
+            const y = getY(data, hitIndex);
+            const size = getSize(data, hitIndex);
+            const point: DataPoint = size !== undefined ? [x, y, size] : [x, y];
+            matches.push({ seriesIndex: s, dataIndex: hitIndex, point });
             continue;
           }
 
@@ -294,42 +257,32 @@ export function findPointsAtX(
       if (!isBetter) return;
       bestDxSq = dxSq;
       bestDataIndex = idx;
-      bestPoint = data[idx] as DataPoint;
+      // Construct DataPoint for return
+      const x = getX(data, idx);
+      const y = getY(data, idx);
+      const size = getSize(data, idx);
+      bestPoint = size !== undefined ? [x, y, size] : [x, y];
     };
 
     // If the series contains NaN x values, binary search cannot be trusted (NaN breaks ordering).
     // Fall back to a linear scan for correctness. Cached per data array for performance.
-    if (seriesHasNaNX(data, isTuple)) {
-      if (isTuple) {
-        const tupleData = data as ReadonlyArray<TuplePoint>;
-        for (let i = 0; i < n; i++) {
-          const px = tupleData[i][0];
-          if (!Number.isFinite(px)) continue;
-          const sx = xScale.scale(px);
-          if (!Number.isFinite(sx)) continue;
-          const dx = sx - xValue;
-          tryUpdate(i, dx * dx);
-        }
-      } else {
-        const objectData = data as ReadonlyArray<ObjectPoint>;
-        for (let i = 0; i < n; i++) {
-          const px = objectData[i].x;
-          if (!Number.isFinite(px)) continue;
-          const sx = xScale.scale(px);
-          if (!Number.isFinite(sx)) continue;
-          const dx = sx - xValue;
-          tryUpdate(i, dx * dx);
-        }
+    if (seriesHasNaNX(data)) {
+      for (let i = 0; i < n; i++) {
+        const px = getX(data, i);
+        if (!Number.isFinite(px)) continue;
+        const sx = xScale.scale(px);
+        if (!Number.isFinite(sx)) continue;
+        const dx = sx - xValue;
+        tryUpdate(i, dx * dx);
       }
-    } else if (isTuple) {
-      const tupleData = data as ReadonlyArray<TuplePoint>;
-      const insertionIndex = lowerBoundTuple(tupleData, xTarget);
+    } else {
+      const insertionIndex = lowerBoundX(data, xTarget);
 
       let left = insertionIndex - 1;
       let right = insertionIndex;
 
       const dxSqAt = (idx: number): number | null => {
-        const px = tupleData[idx][0];
+        const px = getX(data, idx);
         if (!Number.isFinite(px)) return null;
         const sx = xScale.scale(px);
         if (!Number.isFinite(sx)) return null;
@@ -348,44 +301,6 @@ export function findPointsAtX(
         if (dxSqLeft > bestDxSq && dxSqRight > bestDxSq) break;
 
         // If both sides are equally close in x, evaluate left first (smaller index) for stable ties.
-        if (dxSqLeft <= dxSqRight) {
-          if (left >= 0 && dxSqLeft <= bestDxSq) tryUpdate(left, dxSqLeft);
-          left--;
-          if (right < n && dxSqRight <= bestDxSq && dxSqRight === dxSqLeft) {
-            tryUpdate(right, dxSqRight);
-            right++;
-          }
-        } else {
-          if (right < n && dxSqRight <= bestDxSq) tryUpdate(right, dxSqRight);
-          right++;
-        }
-      }
-    } else {
-      const objectData = data as ReadonlyArray<ObjectPoint>;
-      const insertionIndex = lowerBoundObject(objectData, xTarget);
-
-      let left = insertionIndex - 1;
-      let right = insertionIndex;
-
-      const dxSqAt = (idx: number): number | null => {
-        const px = objectData[idx].x;
-        if (!Number.isFinite(px)) return null;
-        const sx = xScale.scale(px);
-        if (!Number.isFinite(sx)) return null;
-        const dx = sx - xValue;
-        return dx * dx;
-      };
-
-      while (left >= 0 || right < n) {
-        while (left >= 0 && dxSqAt(left) === null) left--;
-        while (right < n && dxSqAt(right) === null) right++;
-        if (left < 0 && right >= n) break;
-
-        const dxSqLeft = left >= 0 ? (dxSqAt(left) ?? Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
-        const dxSqRight = right < n ? (dxSqAt(right) ?? Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
-
-        if (dxSqLeft > bestDxSq && dxSqRight > bestDxSq) break;
-
         if (dxSqLeft <= dxSqRight) {
           if (left >= 0 && dxSqLeft <= bestDxSq) tryUpdate(left, dxSqLeft);
           left--;

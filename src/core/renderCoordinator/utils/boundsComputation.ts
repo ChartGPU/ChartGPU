@@ -11,6 +11,7 @@
 import type { DataPoint, OHLCDataPoint } from '../../../config/types';
 import type { ResolvedChartGPUOptions } from '../../../config/OptionResolver';
 import { getPointXY, isTupleOHLCDataPoint } from './dataPointUtils';
+import { computeRawBoundsFromCartesianData } from '../../../data/cartesianData';
 
 /**
  * Bounds type for min/max x and y values.
@@ -226,14 +227,14 @@ export const computeGlobalBounds = (
       continue;
     }
 
-    const data = seriesConfig.data;
-    for (let i = 0; i < data.length; i++) {
-      const { x, y } = getPointXY(data[i]);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-      if (x < xMin) xMin = x;
-      if (x > xMax) xMax = x;
-      if (y < yMin) yMin = y;
-      if (y > yMax) yMax = y;
+    // Compute bounds from CartesianSeriesData (supports all three formats)
+    const cartesianBounds = computeRawBoundsFromCartesianData(seriesConfig.data);
+    if (cartesianBounds) {
+      const b = cartesianBounds;
+      if (b.xMin < xMin) xMin = b.xMin;
+      if (b.xMax > xMax) xMax = b.xMax;
+      if (b.yMin < yMin) yMin = b.yMin;
+      if (b.yMax > yMax) yMax = b.yMax;
     }
   }
 

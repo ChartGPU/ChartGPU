@@ -200,7 +200,8 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
   const computeBarCategoryStep = (seriesConfigs: ReadonlyArray<ResolvedBarSeriesConfig>): number => {
     categoryXScratch.length = 0;
     for (let s = 0; s < seriesConfigs.length; s++) {
-      const data = seriesConfigs[s].data;
+      // TODO(step 2): normalize CartesianSeriesData to ReadonlyArray<DataPoint>
+      const data = seriesConfigs[s].data as ReadonlyArray<DataPoint>;
       for (let i = 0; i < data.length; i++) {
         const { x } = getPointXY(data[i]);
         if (Number.isFinite(x)) categoryXScratch.push(x);
@@ -240,7 +241,8 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
     let yMax = Number.NEGATIVE_INFINITY;
 
     for (let s = 0; s < seriesConfigs.length; s++) {
-      const data = seriesConfigs[s].data;
+      // TODO(step 2): normalize CartesianSeriesData to ReadonlyArray<DataPoint>
+      const data = seriesConfigs[s].data as ReadonlyArray<DataPoint>;
       for (let i = 0; i < data.length; i++) {
         const { y } = getPointXY(data[i]);
         if (!Number.isFinite(y)) continue;
@@ -329,7 +331,9 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
 
     let fallbackCategoryCount = 1;
     for (let s = 0; s < seriesConfigs.length; s++) {
-      fallbackCategoryCount = Math.max(fallbackCategoryCount, Math.floor(seriesConfigs[s].data.length));
+      // TODO(step 2): normalize CartesianSeriesData to ReadonlyArray<DataPoint>
+      const dataLength = (seriesConfigs[s].data as ReadonlyArray<DataPoint>).length;
+      fallbackCategoryCount = Math.max(fallbackCategoryCount, Math.floor(dataLength));
     }
 
     const categoryWidthClip = computeCategoryWidthClip(xScale, categoryStep, plotClipRect, fallbackCategoryCount);
@@ -374,7 +378,10 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
     }
 
     let maxBars = 0;
-    for (let s = 0; s < seriesConfigs.length; s++) maxBars += Math.max(0, seriesConfigs[s].data.length);
+    for (let s = 0; s < seriesConfigs.length; s++) {
+      // TODO(step 2): normalize CartesianSeriesData to ReadonlyArray<DataPoint>
+      maxBars += Math.max(0, (seriesConfigs[s].data as ReadonlyArray<DataPoint>).length);
+    }
 
     ensureCpuInstanceCapacityFloats(maxBars * INSTANCE_STRIDE_FLOATS);
     const f32 = cpuInstanceStagingF32;
@@ -385,7 +392,8 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
 
     for (let seriesIndex = 0; seriesIndex < seriesConfigs.length; seriesIndex++) {
       const series = seriesConfigs[seriesIndex];
-      const data = series.data;
+      // TODO(step 2): normalize CartesianSeriesData to ReadonlyArray<DataPoint>
+      const data = series.data as ReadonlyArray<DataPoint>;
       const [r, g, b, a] = parseSeriesColorToRgba01(series.color);
       const stackId = normalizeStackId(series.stack);
       const clusterIndex = clusterIndexBySeries[seriesIndex] ?? 0;

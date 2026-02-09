@@ -8,6 +8,7 @@
  */
 
 import type { ResolvedChartGPUOptions, ResolvedSeriesConfig, ResolvedBarSeriesConfig, ResolvedAreaSeriesConfig, ResolvedPieSeriesConfig } from '../../../config/OptionResolver';
+import type { DataPoint } from '../../../config/types';
 import type { LinearScale } from '../../../utils/scales';
 import type { GridArea } from '../../../renderers/createGridRenderer';
 import type { LineRenderer } from '../../../renderers/createLineRenderer';
@@ -138,7 +139,8 @@ export function prepareSeries(
     switch (s.type) {
       case 'area': {
         const baseline = s.baseline ?? defaultBaseline;
-        renderers.areaRenderers[i].prepare(s, s.data, xScale, yScale, baseline);
+        // TODO(step 2): normalize CartesianSeriesData to ReadonlyArray<DataPoint>
+        renderers.areaRenderers[i].prepare(s, s.data as ReadonlyArray<DataPoint>, xScale, yScale, baseline);
         break;
       }
       case 'line': {
@@ -148,16 +150,18 @@ export function prepareSeries(
         // (Float32 ulp at ~1e12 is ~2e5), which can manifest as stroke shimmer during zoom.
         const xOffset = (() => {
           if (currentOptions.xAxis.type !== 'time') return 0;
-          const d = s.data;
+          // TODO(step 2): normalize CartesianSeriesData to ReadonlyArray<DataPoint>
+          const d = s.data as ReadonlyArray<DataPoint>;
           for (let k = 0; k < d.length; k++) {
-            const p = d[k]!;
+            const p = d[k]!
             const x = isTupleDataPoint(p) ? p[0] : p.x;
             if (Number.isFinite(x)) return x;
           }
           return 0;
         })();
         if (!appendedGpuThisFrame.has(i)) {
-          dataStore.setSeries(i, s.data, { xOffset });
+          // TODO(step 2): normalize CartesianSeriesData to ReadonlyArray<DataPoint>
+          dataStore.setSeries(i, s.data as ReadonlyArray<DataPoint>, { xOffset });
         }
         const buffer = dataStore.getSeriesBuffer(i);
         renderers.lineRenderers[i].prepare(s, buffer, xScale, yScale, xOffset);
@@ -189,7 +193,8 @@ export function prepareSeries(
             samplingThreshold: s.samplingThreshold,
           };
 
-          renderers.areaRenderers[i].prepare(areaLike, areaLike.data, xScale, yScale, defaultBaseline);
+          // TODO(step 2): normalize CartesianSeriesData to ReadonlyArray<DataPoint>
+          renderers.areaRenderers[i].prepare(areaLike, areaLike.data as ReadonlyArray<DataPoint>, xScale, yScale, defaultBaseline);
         }
 
         break;
@@ -203,7 +208,8 @@ export function prepareSeries(
         if (s.mode === 'density') {
           // Density mode bins raw (unsampled) data for correctness, but limits compute to the visible
           // range when x is monotonic.
-          const rawData = s.rawData ?? s.data;
+          // TODO(step 2): normalize CartesianSeriesData to ReadonlyArray<DataPoint>
+          const rawData = (s.rawData ?? s.data) as ReadonlyArray<DataPoint>;
           const visible = findVisibleRangeIndicesByX(rawData, visibleXDomain.min, visibleXDomain.max);
 
           // Upload full raw data for compute. DataStore hashing makes this a cheap no-op when unchanged.
@@ -228,7 +234,8 @@ export function prepareSeries(
           gpuSeriesKindByIndex[i] = 'other';
         } else {
           const animated = introP < 1 ? ({ ...s, color: withAlpha(s.color, introP) } as const) : s;
-          renderers.scatterRenderers[i].prepare(animated, s.data, xScale, yScale, gridArea);
+          // TODO(step 2): normalize CartesianSeriesData to ReadonlyArray<DataPoint>
+          renderers.scatterRenderers[i].prepare(animated, s.data as ReadonlyArray<DataPoint>, xScale, yScale, gridArea);
         }
         break;
       }

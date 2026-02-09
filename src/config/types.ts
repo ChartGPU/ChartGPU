@@ -15,6 +15,34 @@ export type DataPointTuple = readonly [x: number, y: number, size?: number];
 export type DataPoint = DataPointTuple | Readonly<{ x: number; y: number; size?: number }>;
 
 /**
+ * Separate x/y/size arrays for cartesian series data.
+ * Allows providing data as parallel arrays instead of array-of-objects.
+ */
+export type XYArraysData = Readonly<{
+  x: ArrayLike<number>;
+  y: ArrayLike<number>;
+  size?: ArrayLike<number>;
+}>;
+
+/**
+ * Pre-interleaved XY cartesian data as a typed array view.
+ * Data must be laid out as [x0, y0, x1, y1, ...] with even length.
+ * Size dimension is NOT interleaved (use XYArraysData.size if needed).
+ * 
+ * Prefer Float32Array for GPU-friendly data transfer, but any ArrayBufferView is accepted.
+ */
+export type InterleavedXYData = ArrayBufferView;
+
+/**
+ * Union type for cartesian series data formats.
+ * Supports three input formats:
+ * - Traditional array of DataPoint objects/tuples
+ * - Separate x/y arrays (XYArraysData)
+ * - Pre-interleaved typed array (InterleavedXYData)
+ */
+export type CartesianSeriesData = ReadonlyArray<DataPoint> | XYArraysData | InterleavedXYData;
+
+/**
  * OHLC (Open-High-Low-Close) data point for candlestick charts.
  * Order matches ECharts convention: [timestamp, open, close, low, high].
  */
@@ -97,7 +125,7 @@ export interface AreaStyleConfig {
 
 export interface SeriesConfigBase {
   readonly name?: string;
-  readonly data: ReadonlyArray<DataPoint>;
+  readonly data: CartesianSeriesData;
   readonly color?: string;
   /**
    * Controls whether the series is visible and rendered.

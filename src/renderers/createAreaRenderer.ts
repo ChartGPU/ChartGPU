@@ -1,6 +1,6 @@
 import areaWgsl from '../shaders/area.wgsl?raw';
 import type { ResolvedAreaSeriesConfig } from '../config/OptionResolver';
-import type { DataPointTuple } from '../config/types';
+import type { DataPoint, DataPointTuple } from '../config/types';
 import type { LinearScale } from '../utils/scales';
 import { parseCssColorToRgba01 } from '../utils/colors';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
@@ -8,7 +8,8 @@ import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from '.
 export interface AreaRenderer {
   prepare(
     seriesConfig: ResolvedAreaSeriesConfig,
-    data: ResolvedAreaSeriesConfig['data'],
+    // TODO(step 2): This will accept normalized ReadonlyArray<DataPoint>
+    data: ReadonlyArray<DataPoint>,
     xScale: LinearScale,
     yScale: LinearScale,
     baseline?: number
@@ -35,17 +36,17 @@ const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
 const parseSeriesColorToRgba01 = (color: string): Rgba =>
   parseCssColorToRgba01(color) ?? ([0, 0, 0, 1] as const);
 
-const isTupleDataPoint = (point: ResolvedAreaSeriesConfig['data'][number]): point is DataPointTuple => Array.isArray(point);
+const isTupleDataPoint = (point: DataPoint): point is DataPointTuple => Array.isArray(point);
 
 const getPointXY = (
-  point: ResolvedAreaSeriesConfig['data'][number]
+  point: DataPoint
 ): { readonly x: number; readonly y: number } => {
   if (isTupleDataPoint(point)) return { x: point[0], y: point[1] };
   return { x: point.x, y: point.y };
 };
 
 const computeDataBounds = (
-  data: ResolvedAreaSeriesConfig['data']
+  data: ReadonlyArray<DataPoint>
 ): { readonly xMin: number; readonly xMax: number; readonly yMin: number; readonly yMax: number } => {
   let xMin = Number.POSITIVE_INFINITY;
   let xMax = Number.NEGATIVE_INFINITY;
@@ -110,7 +111,7 @@ const writeTransformMat4F32 = (out: Float32Array, ax: number, bx: number, ay: nu
   out[15] = 1; // col3
 };
 
-const createAreaVertices = (data: ResolvedAreaSeriesConfig['data']): Float32Array => {
+const createAreaVertices = (data: ReadonlyArray<DataPoint>): Float32Array => {
   // Triangle-strip expects duplicated vertices:
   // p0,p0,p1,p1,... and WGSL uses vertex_index parity to swap y to baseline for odd indices.
   const n = data.length;

@@ -10,7 +10,7 @@
  * Uses optimistic updates during drag for 60 FPS performance.
  */
 
-import type { AnnotationConfig } from '../config/types.js';
+import type { AnnotationConfig, DataPoint } from '../config/types.js';
 import type { ChartGPUInstance } from '../ChartGPU.js';
 
 export interface AnnotationDragCallbacks {
@@ -81,7 +81,8 @@ export function createAnnotationDragHandler(
             if (timestamp > dataXMax) dataXMax = timestamp;
           }
         } else {
-          const data = s.data;
+          // TODO(step 2): normalize CartesianSeriesData to ReadonlyArray<DataPoint>
+          const data = s.data as ReadonlyArray<DataPoint>;
           for (const p of data) {
             const x = getPointX(p);
             if (x < dataXMin) dataXMin = x;
@@ -130,7 +131,8 @@ export function createAnnotationDragHandler(
             if (low < dataYMin) dataYMin = low;
           }
         } else {
-          const data = s.data;
+          // TODO(step 2): normalize CartesianSeriesData to ReadonlyArray<DataPoint>
+          const data = s.data as ReadonlyArray<DataPoint>;
           for (const p of data) {
             const y = getPointY(p);
             if (y < dataYMin) dataYMin = y;

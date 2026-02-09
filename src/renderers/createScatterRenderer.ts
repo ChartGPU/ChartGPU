@@ -9,7 +9,8 @@ import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from '.
 export interface ScatterRenderer {
   prepare(
     seriesConfig: ResolvedScatterSeriesConfig,
-    data: ResolvedScatterSeriesConfig['data'],
+    // TODO(step 2): This will accept normalized ReadonlyArray<DataPoint>
+    data: ReadonlyArray<DataPoint>,
     xScale: LinearScale,
     yScale: LinearScale,
     gridArea?: GridArea

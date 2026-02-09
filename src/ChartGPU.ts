@@ -3,7 +3,16 @@ import { createRenderCoordinator } from './core/createRenderCoordinator';
 import type { RenderCoordinator } from './core/createRenderCoordinator';
 import { resolveOptionsForChart } from './config/OptionResolver';
 import type { ResolvedCandlestickSeriesConfig, ResolvedChartGPUOptions, ResolvedPieSeriesConfig } from './config/OptionResolver';
-import type { ChartGPUOptions, DataPoint, DataPointTuple, OHLCDataPoint, OHLCDataPointTuple, PieCenter, PieRadius } from './config/types';
+import type {
+  CartesianSeriesData,
+  ChartGPUOptions,
+  DataPoint,
+  DataPointTuple,
+  OHLCDataPoint,
+  OHLCDataPointTuple,
+  PieCenter,
+  PieRadius,
+} from './config/types';
 import { createDataZoomSlider } from './components/createDataZoomSlider';
 import type { DataZoomSlider } from './components/createDataZoomSlider';
 import type { ZoomRange, ZoomState } from './interaction/createZoomState';
@@ -25,6 +34,13 @@ import type {
   MemoryStats,
   FrameDropStats,
 } from './config/types';
+import {
+  computeRawBoundsFromCartesianData,
+  getPointCount as getCartesianPointCount,
+  getSize as getCartesianSize,
+  getX as getCartesianX,
+  getY as getCartesianY,
+} from './data/cartesianData';
 
 /**
  * Circular buffer size for frame timestamps (120 frames = 2 seconds at 60fps).
@@ -195,6 +211,23 @@ const getPointXY = (p: DataPoint): { readonly x: number; readonly y: number } =>
   return { x: p.x, y: p.y };
 };
 
+const cartesianDataToDataPointArray = (data: CartesianSeriesData): DataPoint[] => {
+  // Clone DataPoint[] so we can mutate for streaming appends without touching user input.
+  if (Array.isArray(data)) return data.length === 0 ? [] : (data.slice() as DataPoint[]);
+
+  const n = getCartesianPointCount(data);
+  if (n === 0) return [];
+
+  const out: DataPoint[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = getCartesianX(data, i);
+    const y = getCartesianY(data, i);
+    const size = getCartesianSize(data, i);
+    out[i] = (size === undefined ? [x, y] : [x, y, size]) as DataPointTuple;
+  }
+  return out;
+};
+
 const getOHLCTimestamp = (p: OHLCDataPoint): number => (isTupleOHLCDataPoint(p) ? p[0] : p.timestamp);
 const getOHLCClose = (p: OHLCDataPoint): number => (isTupleOHLCDataPoint(p) ? p[2] : p.close);
 
@@ -355,15 +388,30 @@ const computeGlobalBounds = (
       }
     }
 
-    const data = seriesConfig.data as ReadonlyArray<DataPoint>;
-    for (let i = 0; i < data.length; i++) {
-      const { x, y } = getPointXY(data[i]!);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-      if (x < xMin) xMin = x;
-      if (x > xMax) xMax = x;
-      if (y < yMin) yMin = y;
-      if (y > yMax) yMax = y;
+    if (seriesConfig.type === 'candlestick') {
+      // Fallback scan when resolver-provided bounds aren't present.
+      const data = seriesConfig.data as ReadonlyArray<OHLCDataPoint>;
+      for (let i = 0; i < data.length; i++) {
+        const p = data[i]!;
+        const timestamp = getOHLCTimestamp(p);
+        const low = isTupleOHLCDataPoint(p) ? p[3] : p.low;
+        const high = isTupleOHLCDataPoint(p) ? p[4] : p.high;
+
+        if (!Number.isFinite(timestamp) || !Number.isFinite(low) || !Number.isFinite(high)) continue;
+        if (timestamp < xMin) xMin = timestamp;
+        if (timestamp > xMax) xMax = timestamp;
+        if (low < yMin) yMin = low;
+        if (high > yMax) yMax = high;
+      }
+      continue;
     }
+
+    const b = computeRawBoundsFromCartesianData(seriesConfig.data as CartesianSeriesData);
+    if (!b) continue;
+    if (b.xMin < xMin) xMin = b.xMin;
+    if (b.xMax > xMax) xMax = b.xMax;
+    if (b.yMin < yMin) yMin = b.yMin;
+    if (b.yMax > yMax) yMax = b.yMax;
   }
 
   if (!Number.isFinite(xMin) || !Number.isFinite(xMax) || !Number.isFinite(yMin) || !Number.isFinite(yMax)) {
@@ -543,9 +591,10 @@ export async function createChartGPU(
         runtimeRawDataByIndex[i] = raw.length === 0 ? [] : raw.slice();
         runtimeRawBoundsByIndex[i] = ((s as unknown as { rawBounds?: Bounds | null }).rawBounds ?? null);
       } else {
-        const raw = ((s as unknown as { rawData?: ReadonlyArray<DataPoint> }).rawData ?? s.data) as ReadonlyArray<DataPoint>;
-        runtimeRawDataByIndex[i] = raw.length === 0 ? [] : raw.slice();
-        runtimeRawBoundsByIndex[i] = ((s as unknown as { rawBounds?: Bounds | null }).rawBounds ?? null) ?? computeRawBoundsFromData(raw);
+        const raw = ((s as unknown as { rawData?: CartesianSeriesData }).rawData ?? s.data) as CartesianSeriesData;
+        runtimeRawDataByIndex[i] = cartesianDataToDataPointArray(raw);
+        runtimeRawBoundsByIndex[i] =
+          ((s as unknown as { rawBounds?: Bounds | null }).rawBounds ?? null) ?? (computeRawBoundsFromCartesianData(raw) as Bounds | null);
       }
     }
   };

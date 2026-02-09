@@ -4,8 +4,6 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  isTuplePoint,
-  isTupleDataArray,
   isTupleOHLCDataPoint,
   isMonotonicNonDecreasingFiniteX,
   isMonotonicNonDecreasingFiniteTimestamp,
@@ -17,16 +15,6 @@ import type { DataPoint, OHLCDataPoint } from '../../../../config/types';
 
 describe('computeVisibleSlice', () => {
   describe('Type guards', () => {
-    it('identifies tuple data points', () => {
-      expect(isTuplePoint([1, 2])).toBe(true);
-      expect(isTuplePoint({ x: 1, y: 2 })).toBe(false);
-    });
-
-    it('identifies tuple data arrays', () => {
-      expect(isTupleDataArray([[1, 2], [3, 4]])).toBe(true);
-      expect(isTupleDataArray([{ x: 1, y: 2 }])).toBe(false);
-      expect(isTupleDataArray([])).toBe(false);
-    });
 
     it('identifies tuple OHLC data points', () => {
       expect(isTupleOHLCDataPoint([100, 10, 12, 9, 11])).toBe(true);
@@ -37,45 +25,76 @@ describe('computeVisibleSlice', () => {
   describe('Monotonicity checks - Cartesian', () => {
     it('detects monotonic tuple data', () => {
       const data: DataPoint[] = [[1, 10], [2, 20], [3, 15], [4, 25]];
-      expect(isMonotonicNonDecreasingFiniteX(data, true)).toBe(true);
+      expect(isMonotonicNonDecreasingFiniteX(data)).toBe(true);
     });
 
     it('detects monotonic object data', () => {
       const data: DataPoint[] = [{ x: 1, y: 10 }, { x: 2, y: 20 }, { x: 3, y: 15 }];
-      expect(isMonotonicNonDecreasingFiniteX(data, false)).toBe(true);
+      expect(isMonotonicNonDecreasingFiniteX(data)).toBe(true);
     });
 
     it('detects non-monotonic tuple data', () => {
       const data: DataPoint[] = [[1, 10], [3, 20], [2, 15]];
-      expect(isMonotonicNonDecreasingFiniteX(data, true)).toBe(false);
+      expect(isMonotonicNonDecreasingFiniteX(data)).toBe(false);
     });
 
     it('detects non-monotonic object data', () => {
       const data: DataPoint[] = [{ x: 1, y: 10 }, { x: 3, y: 20 }, { x: 2, y: 15 }];
-      expect(isMonotonicNonDecreasingFiniteX(data, false)).toBe(false);
+      expect(isMonotonicNonDecreasingFiniteX(data)).toBe(false);
     });
 
     it('rejects data with non-finite X values (tuple)', () => {
       const data: DataPoint[] = [[1, 10], [NaN, 20], [3, 15]];
-      expect(isMonotonicNonDecreasingFiniteX(data, true)).toBe(false);
+      expect(isMonotonicNonDecreasingFiniteX(data)).toBe(false);
     });
 
     it('rejects data with non-finite X values (object)', () => {
       const data: DataPoint[] = [{ x: 1, y: 10 }, { x: Infinity, y: 20 }];
-      expect(isMonotonicNonDecreasingFiniteX(data, false)).toBe(false);
+      expect(isMonotonicNonDecreasingFiniteX(data)).toBe(false);
     });
 
     it('caches monotonicity results', () => {
       const data: DataPoint[] = [[1, 10], [2, 20], [3, 15]];
-      const result1 = isMonotonicNonDecreasingFiniteX(data, true);
-      const result2 = isMonotonicNonDecreasingFiniteX(data, true);
+      const result1 = isMonotonicNonDecreasingFiniteX(data);
+      const result2 = isMonotonicNonDecreasingFiniteX(data);
       expect(result1).toBe(result2);
       expect(result1).toBe(true);
     });
 
     it('allows equal consecutive X values (monotonic non-decreasing)', () => {
       const data: DataPoint[] = [[1, 10], [2, 20], [2, 25], [3, 15]];
-      expect(isMonotonicNonDecreasingFiniteX(data, true)).toBe(true);
+      expect(isMonotonicNonDecreasingFiniteX(data)).toBe(true);
+    });
+
+    it('detects monotonic XYArraysData', () => {
+      const data = { x: [1, 2, 3, 4], y: [10, 20, 15, 25] };
+      expect(isMonotonicNonDecreasingFiniteX(data)).toBe(true);
+    });
+
+    it('detects non-monotonic XYArraysData', () => {
+      const data = { x: [1, 3, 2, 4], y: [10, 20, 15, 25] };
+      expect(isMonotonicNonDecreasingFiniteX(data)).toBe(false);
+    });
+
+    it('detects monotonic InterleavedXYData (Float32Array)', () => {
+      const data = new Float32Array([1, 10, 2, 20, 3, 15, 4, 25]);
+      expect(isMonotonicNonDecreasingFiniteX(data)).toBe(true);
+    });
+
+    it('detects non-monotonic InterleavedXYData (Float32Array)', () => {
+      const data = new Float32Array([1, 10, 3, 20, 2, 15, 4, 25]);
+      expect(isMonotonicNonDecreasingFiniteX(data)).toBe(false);
+    });
+
+    it('handles InterleavedXYData with byteOffset (subarray)', () => {
+      const base = new Float32Array([99, 99, 1, 10, 2, 20, 3, 15]);
+      const data = base.subarray(2); // [1, 10, 2, 20, 3, 15]
+      expect(isMonotonicNonDecreasingFiniteX(data)).toBe(true);
+    });
+
+    it('rejects InterleavedXYData with non-finite X values', () => {
+      const data = new Float32Array([1, 10, NaN, 20, 3, 15]);
+      expect(isMonotonicNonDecreasingFiniteX(data)).toBe(false);
     });
   });
 
@@ -141,6 +160,25 @@ describe('computeVisibleSlice', () => {
       expect(result).toEqual([{ x: 2, y: 20 }, { x: 3, y: 30 }]);
     });
 
+    it('slices monotonic XYArraysData using binary search', () => {
+      const data = { x: [1, 2, 3, 4, 5], y: [10, 20, 30, 40, 50] };
+      const result = sliceVisibleRangeByX(data, 2, 4);
+      expect(result).toEqual({ x: [2, 3, 4], y: [20, 30, 40] });
+    });
+
+    it('slices monotonic InterleavedXYData (Float32Array) using binary search', () => {
+      const data = new Float32Array([1, 10, 2, 20, 3, 30, 4, 40, 5, 50]);
+      const result = sliceVisibleRangeByX(data, 2, 4) as Float32Array;
+      expect(Array.from(result)).toEqual([2, 20, 3, 30, 4, 40]);
+    });
+
+    it('handles InterleavedXYData subarray with byteOffset', () => {
+      const base = new Float32Array([99, 99, 1, 10, 2, 20, 3, 30, 4, 40]);
+      const data = base.subarray(2); // [1, 10, 2, 20, 3, 30, 4, 40]
+      const result = sliceVisibleRangeByX(data, 2, 3) as Float32Array;
+      expect(Array.from(result)).toEqual([2, 20, 3, 30]);
+    });
+
     it('returns empty array when range has no points', () => {
       const data: DataPoint[] = [[1, 10], [2, 20], [5, 50]];
       const result = sliceVisibleRangeByX(data, 3, 4);
@@ -187,6 +225,18 @@ describe('computeVisibleSlice', () => {
   describe('findVisibleRangeIndicesByX', () => {
     it('finds correct index range for monotonic data', () => {
       const data: DataPoint[] = [[1, 10], [2, 20], [3, 30], [4, 40], [5, 50]];
+      const result = findVisibleRangeIndicesByX(data, 2, 4);
+      expect(result).toEqual({ start: 1, end: 4 });
+    });
+
+    it('finds correct index range for monotonic XYArraysData', () => {
+      const data = { x: [1, 2, 3, 4, 5], y: [10, 20, 30, 40, 50] };
+      const result = findVisibleRangeIndicesByX(data, 2, 4);
+      expect(result).toEqual({ start: 1, end: 4 });
+    });
+
+    it('finds correct index range for monotonic InterleavedXYData', () => {
+      const data = new Float32Array([1, 10, 2, 20, 3, 30, 4, 40, 5, 50]);
       const result = findVisibleRangeIndicesByX(data, 2, 4);
       expect(result).toEqual({ start: 1, end: 4 });
     });

@@ -22,6 +22,13 @@ import {
   sliceVisibleRangeByOHLC,
   isTupleOHLCDataPoint as isTupleOHLCDataPointImported,
 } from './renderCoordinator/data/computeVisibleSlice';
+import { 
+  getPointCount, 
+  getX, 
+  getY, 
+  computeRawBoundsFromCartesianData 
+} from '../data/cartesianData';
+import type { CartesianSeriesData } from '../config/types';
 import { renderAxisLabels } from './renderCoordinator/render/renderAxisLabels';
 import { renderAnnotationLabels } from './renderCoordinator/render/renderAnnotationLabels';
 import { prepareOverlays } from './renderCoordinator/render/renderOverlays';
@@ -213,30 +220,25 @@ const getPointXY = (p: DataPoint): { readonly x: number; readonly y: number } =>
   return { x: p.x, y: p.y };
 };
 
-const computeRawBoundsFromData = (data: ReadonlyArray<DataPoint>): Bounds | null => {
-  let xMin = Number.POSITIVE_INFINITY;
-  let xMax = Number.NEGATIVE_INFINITY;
-  let yMin = Number.POSITIVE_INFINITY;
-  let yMax = Number.NEGATIVE_INFINITY;
-
-  for (let i = 0; i < data.length; i++) {
-    const { x, y } = getPointXY(data[i]!);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-    if (x < xMin) xMin = x;
-    if (x > xMax) xMax = x;
-    if (y < yMin) yMin = y;
-    if (y > yMax) yMax = y;
+/**
+ * Helper: Convert CartesianSeriesData to mutable DataPoint[] array.
+ * Used for runtime storage that supports streaming appends.
+ */
+const cartesianDataToDataPointArray = (data: CartesianSeriesData): DataPoint[] => {
+  // If already a DataPoint array, clone it
+  if (Array.isArray(data)) {
+    return data.length === 0 ? [] : data.slice();
   }
 
-  if (!Number.isFinite(xMin) || !Number.isFinite(xMax) || !Number.isFinite(yMin) || !Number.isFinite(yMax)) {
-    return null;
+  // Convert XYArraysData or InterleavedXYData to DataPoint[]
+  const n = getPointCount(data);
+  const out: DataPoint[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = getX(data, i);
+    const y = getY(data, i);
+    out[i] = [x, y];
   }
-
-  // Keep bounds usable for downstream scale derivation.
-  if (xMin === xMax) xMax = xMin + 1;
-  if (yMin === yMax) yMax = yMin + 1;
-
-  return { xMin, xMax, yMin, yMax };
+  return out;
 };
 
 const extendBoundsWithDataPoints = (bounds: Bounds | null, points: ReadonlyArray<DataPoint>): Bounds | null => {
@@ -245,7 +247,7 @@ const extendBoundsWithDataPoints = (bounds: Bounds | null, points: ReadonlyArray
   let b = bounds;
   if (!b) {
     // Try to seed from the appended points.
-    const seeded = computeRawBoundsFromData(points);
+    const seeded = computeRawBoundsFromCartesianData(points);
     if (!seeded) return bounds;
     b = seeded;
   }
@@ -390,9 +392,12 @@ const computeGlobalBounds = (
       continue;
     }
 
-    const data = seriesConfig.data;
-    for (let i = 0; i < data.length; i++) {
-      const { x, y } = getPointXY(data[i]);
+    // Cartesian series (line, area, bar, scatter): use CartesianSeriesData accessors
+    const data = seriesConfig.data as CartesianSeriesData;
+    const n = getPointCount(data);
+    for (let i = 0; i < n; i++) {
+      const x = getX(data, i);
+      const y = getY(data, i);
       if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
       if (x < xMin) xMin = x;
       if (x > xMax) xMax = x;
@@ -825,9 +830,10 @@ const computeVisibleYBounds = (series: ResolvedChartGPUOptions['series']): Bound
     }
 
     // Cartesian series (line, area, bar, scatter): scan y from visible data
-    const data = seriesConfig.data;
-    for (let i = 0; i < data.length; i++) {
-      const { y } = getPointXY(data[i]);
+    const data = seriesConfig.data as CartesianSeriesData;
+    const n = getPointCount(data);
+    for (let i = 0; i < n; i++) {
+      const y = getY(data, i);
       if (!Number.isFinite(y)) continue;
       if (y < yMin) yMin = y;
       if (y > yMax) yMax = y;
@@ -990,9 +996,10 @@ const computeBaselineForBarsFromData = (seriesConfigs: ReadonlyArray<ResolvedBar
   let yMax = Number.NEGATIVE_INFINITY;
 
   for (let s = 0; s < seriesConfigs.length; s++) {
-    const data = seriesConfigs[s]!.data;
-    for (let i = 0; i < data.length; i++) {
-      const { y } = getPointXY(data[i]!);
+    const data = seriesConfigs[s]!.data as CartesianSeriesData;
+    const n = getPointCount(data);
+    for (let i = 0; i < n; i++) {
+      const y = getY(data, i);
       if (!Number.isFinite(y)) continue;
       if (y < yMin) yMin = y;
       if (y > yMax) yMax = y;
@@ -1709,10 +1716,10 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         // Handle other cartesian series (line, area, bar, scatter).
         let raw = runtimeRawDataByIndex[seriesIndex] as DataPoint[] | null;
         if (!raw) {
-          const seed = (s.rawData ?? s.data) as ReadonlyArray<DataPoint>;
-          raw = seed.length === 0 ? [] : seed.slice();
+          const seed = (s.rawData ?? s.data) as CartesianSeriesData;
+          raw = cartesianDataToDataPointArray(seed);
           runtimeRawDataByIndex[seriesIndex] = raw;
-          runtimeRawBoundsByIndex[seriesIndex] = s.rawBounds ?? computeRawBoundsFromData(raw);
+          runtimeRawBoundsByIndex[seriesIndex] = s.rawBounds ?? computeRawBoundsFromCartesianData(seed);
         }
 
         const dataPoints = points as unknown as ReadonlyArray<DataPoint>;
@@ -2169,8 +2176,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       }
 
       const raw =
-        (runtimeRawDataByIndex[i] as ReadonlyArray<DataPoint> | null) ??
-        ((s.rawData ?? s.data) as ReadonlyArray<DataPoint>);
+        (runtimeRawDataByIndex[i] as DataPoint[] | null) ??
+        cartesianDataToDataPointArray((s.rawData ?? s.data) as CartesianSeriesData);
       maxPoints = Math.max(maxPoints, raw.length);
     }
 
@@ -2274,11 +2281,11 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         continue;
       }
 
-      const raw = (s.rawData ?? s.data) as ReadonlyArray<DataPoint>;
-      // Coordinator-owned: copy into a mutable array (streaming appends mutate this).
-      const owned = raw.length === 0 ? [] : raw.slice();
+      const raw = (s.rawData ?? s.data) as CartesianSeriesData;
+      // Coordinator-owned: convert to mutable DataPoint[] array (streaming appends mutate this).
+      const owned = cartesianDataToDataPointArray(raw);
       runtimeRawDataByIndex[i] = owned;
-      runtimeRawBoundsByIndex[i] = s.rawBounds ?? computeRawBoundsFromData(owned);
+      runtimeRawBoundsByIndex[i] = s.rawBounds ?? computeRawBoundsFromCartesianData(raw);
     }
   };
 
@@ -2304,7 +2311,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       }
 
       const raw =
-        (runtimeRawDataByIndex[i] as DataPoint[] | null) ?? ((s.rawData ?? s.data) as ReadonlyArray<DataPoint>);
+        (runtimeRawDataByIndex[i] as DataPoint[] | null) ?? 
+        cartesianDataToDataPointArray((s.rawData ?? s.data) as CartesianSeriesData);
       const bounds = runtimeRawBoundsByIndex[i] ?? s.rawBounds ?? undefined;
       const baselineSampled = sampleSeriesDataPoints(raw, s.sampling, s.samplingThreshold);
       next[i] = { ...s, rawData: raw, rawBounds: bounds, data: baselineSampled };
@@ -2353,12 +2361,12 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         if (baseline.type === 'candlestick') {
           next[i] = {
             ...baseline,
-            data: sliceVisibleRangeByOHLC(cache.data as unknown as ReadonlyArray<OHLCDataPoint>, visibleX.min, visibleX.max)
+            data: sliceVisibleRangeByOHLC(cache.data as ReadonlyArray<OHLCDataPoint>, visibleX.min, visibleX.max)
           };
         } else {
           next[i] = {
             ...baseline,
-            data: sliceVisibleRangeByX(cache.data as unknown as ReadonlyArray<DataPoint>, visibleX.min, visibleX.max)
+            data: sliceVisibleRangeByX(cache.data as CartesianSeriesData, visibleX.min, visibleX.max)
           };
         }
         continue;
@@ -2373,7 +2381,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       } else {
         next[i] = {
           ...baseline,
-          data: sliceVisibleRangeByX(baseline.data as ReadonlyArray<DataPoint>, visibleX.min, visibleX.max)
+          data: sliceVisibleRangeByX(baseline.data as CartesianSeriesData, visibleX.min, visibleX.max)
         };
       }
     }
@@ -2460,7 +2468,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
 
       // Cartesian series (line, area, bar, scatter).
       const rawData =
-        (runtimeRawDataByIndex[i] as DataPoint[] | null) ?? ((s.rawData ?? s.data) as ReadonlyArray<DataPoint>);
+        (runtimeRawDataByIndex[i] as DataPoint[] | null) ?? 
+        cartesianDataToDataPointArray((s.rawData ?? s.data) as CartesianSeriesData);
       // Slice to buffered range for sampling
       const bufferedRaw = sliceVisibleRangeByX(rawData, bufferedMin, bufferedMax);
 
@@ -2471,17 +2480,17 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       const maxTarget = Math.min(MAX_TARGET_POINTS_ABS, Math.max(MIN_TARGET_POINTS, baseT * MAX_TARGET_MULTIPLIER));
       const target = clampInt(Math.round(baseT / spanFracSafe), MIN_TARGET_POINTS, maxTarget);
 
-      const sampled = sampleSeriesDataPoints(bufferedRaw, sampling, target);
+      const sampled = sampleSeriesDataPoints(bufferedRaw as CartesianSeriesData, sampling, target);
 
       // Store sampled data in cache with buffered range
       lastSampledData[i] = {
-        data: sampled,
+        data: sampled as unknown as ReadonlyArray<DataPoint>,
         cachedRange: { min: bufferedMin, max: bufferedMax },
         timestamp: Date.now()
       };
 
       // Slice to actual visible range for renderSeries
-      const visibleSampled = sliceVisibleRangeByX(sampled, visibleX.min, visibleX.max);
+      const visibleSampled = sliceVisibleRangeByX(sampled as CartesianSeriesData, visibleX.min, visibleX.max);
       next[i] = { ...s, data: visibleSampled };
     }
 
@@ -2944,7 +2953,12 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
             case 'bar':
             case 'scatter':
             case 'candlestick': {
-              if (s.data.length > 0) return true;
+              // TODO(step 2): normalize CartesianSeriesData to ReadonlyArray<DataPoint>
+              const dataLength =
+                Array.isArray(s.data) || ArrayBuffer.isView(s.data)
+                  ? (s.data as ArrayLike<unknown>).length
+                  : (s.data as { x: ArrayLike<unknown> }).x.length;
+              if (dataLength > 0) return true;
               break;
             }
             default:

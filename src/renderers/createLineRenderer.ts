@@ -1,6 +1,6 @@
 import lineWgsl from '../shaders/line.wgsl?raw';
 import type { ResolvedLineSeriesConfig } from '../config/OptionResolver';
-import type { DataPointTuple } from '../config/types';
+import type { DataPoint, DataPointTuple } from '../config/types';
 import type { LinearScale } from '../utils/scales';
 import { parseCssColorToRgba01 } from '../utils/colors';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
@@ -36,16 +36,16 @@ const parseSeriesColorToRgba01 = (color: string): Rgba =>
   parseCssColorToRgba01(color) ?? ([0, 0, 0, 1] as const);
 
 const isTupleDataPoint = (
-  point: ResolvedLineSeriesConfig['data'][number]
+  point: DataPoint
 ): point is DataPointTuple => Array.isArray(point);
 
-const getPointXY = (point: ResolvedLineSeriesConfig['data'][number]): { readonly x: number; readonly y: number } => {
+const getPointXY = (point: DataPoint): { readonly x: number; readonly y: number } => {
   if (isTupleDataPoint(point)) return { x: point[0], y: point[1] };
   return { x: point.x, y: point.y };
 };
 
 const computeDataBounds = (
-  data: ResolvedLineSeriesConfig['data']
+  data: ReadonlyArray<DataPoint>
 ): { readonly xMin: number; readonly xMax: number; readonly yMin: number; readonly yMax: number } => {
   let xMin = Number.POSITIVE_INFINITY;
   let xMax = Number.NEGATIVE_INFINITY;
@@ -177,9 +177,11 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     assertNotDisposed();
 
     currentVertexBuffer = dataBuffer;
-    currentVertexCount = seriesConfig.data.length;
+    // TODO(step 2): data will already be normalized to ReadonlyArray<DataPoint>
+    const dataArray = seriesConfig.data as ReadonlyArray<DataPoint>;
+    currentVertexCount = dataArray.length;
 
-    const { xMin, xMax, yMin, yMax } = computeDataBounds(seriesConfig.data);
+    const { xMin, xMax, yMin, yMax } = computeDataBounds(dataArray);
     const { a: ax, b: bx } = computeClipAffineFromScale(xScale, xMin, xMax);
     const { a: ay, b: by } = computeClipAffineFromScale(yScale, yMin, yMax);
 

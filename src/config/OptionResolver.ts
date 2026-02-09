@@ -10,8 +10,6 @@ import type {
   CandlestickSeriesConfig,
   CandlestickStyle,
   ChartGPUOptions,
-  DataPoint,
-  DataPointTuple,
   DataZoomConfig,
   GridConfig,
   LineStyleConfig,
@@ -38,6 +36,7 @@ import { getTheme } from '../themes';
 import type { ThemeConfig } from '../themes/types';
 import { sampleSeriesDataPoints } from '../data/sampleSeries';
 import { ohlcSample } from '../data/ohlcSample';
+import { computeRawBoundsFromCartesianData } from '../data/cartesianData';
 
 export type ResolvedGridConfig = Readonly<Required<GridConfig>>;
 export type ResolvedLineStyleConfig = Readonly<Required<Omit<LineStyleConfig, 'color'>> & { readonly color: string }>;
@@ -581,56 +580,6 @@ const normalizeAxisAutoBounds = (value: unknown): AxisConfig['autoBounds'] | und
   return v === 'global' || v === 'visible' ? (v as AxisConfig['autoBounds']) : undefined;
 };
 
-const isTupleDataPoint = (p: DataPoint): p is DataPointTuple => Array.isArray(p);
-
-const computeRawBoundsFromData = (data: ReadonlyArray<DataPoint>): RawBounds | undefined => {
-  if (data.length === 0) return undefined;
-
-  let xMin = Number.POSITIVE_INFINITY;
-  let xMax = Number.NEGATIVE_INFINITY;
-  let yMin = Number.POSITIVE_INFINITY;
-  let yMax = Number.NEGATIVE_INFINITY;
-
-  // Hoist tuple-vs-object detection once (assume homogeneous arrays).
-  const isTuple = isTupleDataPoint(data[0]!);
-
-  if (isTuple) {
-    const dataAsTuples = data as ReadonlyArray<DataPointTuple>;
-    for (let i = 0; i < dataAsTuples.length; i++) {
-      const p = dataAsTuples[i]!;
-      const x = p[0];
-      const y = p[1];
-      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-      if (x < xMin) xMin = x;
-      if (x > xMax) xMax = x;
-      if (y < yMin) yMin = y;
-      if (y > yMax) yMax = y;
-    }
-  } else {
-    const dataAsObjects = data as ReadonlyArray<Exclude<DataPoint, DataPointTuple>>;
-    for (let i = 0; i < dataAsObjects.length; i++) {
-      const p = dataAsObjects[i]!;
-      const x = p.x;
-      const y = p.y;
-      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-      if (x < xMin) xMin = x;
-      if (x > xMax) xMax = x;
-      if (y < yMin) yMin = y;
-      if (y > yMax) yMax = y;
-    }
-  }
-
-  if (!Number.isFinite(xMin) || !Number.isFinite(xMax) || !Number.isFinite(yMin) || !Number.isFinite(yMax)) {
-    return undefined;
-  }
-
-  // Keep bounds usable for downstream scale derivation.
-  if (xMin === xMax) xMax = xMin + 1;
-  if (yMin === yMax) yMax = yMin + 1;
-
-  return { xMin, xMax, yMin, yMax };
-};
-
 const isTupleOHLCDataPoint = (p: OHLCDataPoint): p is OHLCDataPointTuple => Array.isArray(p);
 
 const computeRawBoundsFromOHLC = (data: ReadonlyArray<OHLCDataPoint>): RawBounds | undefined => {
@@ -805,7 +754,7 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
           color: effectiveColor,
         };
 
-        const rawBounds = computeRawBoundsFromData(s.data);
+        const rawBounds = computeRawBoundsFromCartesianData(s.data) ?? undefined;
         return {
           ...s,
           visible,
@@ -831,7 +780,7 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
 
         // Avoid leaking the unresolved (user) areaStyle shape via object spread.
         const { areaStyle: _userAreaStyle, ...rest } = s;
-        const rawBounds = computeRawBoundsFromData(s.data);
+        const rawBounds = computeRawBoundsFromCartesianData(s.data) ?? undefined;
         const sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
 
         return {
@@ -856,7 +805,7 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
         };
       }
       case 'bar': {
-        const rawBounds = computeRawBoundsFromData(s.data);
+        const rawBounds = computeRawBoundsFromCartesianData(s.data) ?? undefined;
         return {
           ...s,
           visible,
@@ -869,7 +818,7 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
         };
       }
       case 'scatter': {
-        const rawBounds = computeRawBoundsFromData(s.data);
+        const rawBounds = computeRawBoundsFromCartesianData(s.data) ?? undefined;
         const mode =
           normalizeScatterMode((s as unknown as { readonly mode?: unknown }).mode) ?? scatterDefaults.mode;
         const binSize =
