@@ -1,6 +1,6 @@
 {
   "name": "chartgpu",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "High-performance WebGPU charting library",
   "keywords": [
     "webgpu",
