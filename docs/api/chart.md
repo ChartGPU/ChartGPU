@@ -64,7 +64,7 @@ See [ChartGPU.ts](../../src/ChartGPU.ts) for the full interface and lifecycle be
 - `setCrosshairX(x: number | null, source?: unknown): void`: alias for `setInteractionX(...)` with chart-sync semantics (external crosshair/tooltip control); `x` is in domain units and `null` clears. See [`ChartGPU.ts`](../../src/ChartGPU.ts).
 - `onInteractionXChange(callback: (x: number | null, source?: unknown) => void): () => void`: subscribes to interaction x updates and returns an unsubscribe function. See [`ChartGPU.ts`](../../src/ChartGPU.ts).
 - `getZoomRange(): { start: number; end: number } | null`: returns the current percent-space zoom window in \([0, 100]\), or `null` when data zoom is disabled. See [`ChartGPU.ts`](../../src/ChartGPU.ts) and percent-space semantics in [`createZoomState.ts`](../../src/interaction/createZoomState.ts).
-- `setZoomRange(start: number, end: number, source?: unknown): void`: sets the percent-space zoom window (ordered/clamped to \([0, 100]\)); no-op when data zoom is disabled. `source` is an optional token forwarded to `'zoomRangeChange'` listeners (useful for sync loop prevention). See [`ChartGPU.ts`](../../src/ChartGPU.ts) and percent-space semantics in [`createZoomState.ts`](../../src/interaction/createZoomState.ts).
+- `setZoomRange(start: number, end: number, source?: unknown): void`: sets the percent-space zoom window (ordered/clamped to \([0, 100]\)); no-op when data zoom is disabled. `source` is an optional token forwarded to `'zoomRangeChange'` listeners (useful for sync loop prevention). Emits a `'zoomRangeChange'` event with `sourceKind: 'api'` when the range actually changes. See [`ChartGPU.ts`](../../src/ChartGPU.ts) and percent-space semantics in [`createZoomState.ts`](../../src/interaction/createZoomState.ts).
 - `getPerformanceMetrics(): Readonly<PerformanceMetrics> | null`: returns a snapshot of current performance metrics including FPS, frame time statistics, memory usage, and frame drops; returns `null` if metrics are not available. See [`PerformanceMetrics`](options.md#performancemetrics) for type details.
 - `getPerformanceCapabilities(): Readonly<PerformanceCapabilities> | null`: returns which performance features are supported (e.g., GPU timing, high-resolution timers); returns `null` if capabilities information is not available. Useful for determining what metrics are available before subscribing to updates. See [`PerformanceCapabilities`](options.md#performancecapabilities) for type details.
 - `onPerformanceUpdate(callback: (metrics: Readonly<PerformanceMetrics>) => void): () => void`: subscribes to real-time performance updates that fire on every render frame; returns an unsubscribe function to clean up the subscription.
@@ -145,7 +145,9 @@ Connects charts so interaction updates in one chart drive the others. Returns a 
 - `syncCrosshair?: boolean` (default `true`): sync crosshair + tooltip x-position
 - `syncZoom?: boolean` (default `false`): sync zoom/pan via zoom range changes
 
-**Important:** Zoom sync only has an effect when **all connected charts have data zoom enabled** (i.e. `options.dataZoom` is configured). If data zoom is disabled on a chart, `setZoomRange(...)` is a no-op for that chart.
+**Important:** 
+- Zoom sync only has an effect when **all connected charts have data zoom enabled** (i.e. `options.dataZoom` is configured). If data zoom is disabled on a chart, `setZoomRange(...)` is a no-op for that chart.
+- Zoom sync **ignores `'auto-scroll'` zoom changes** (from streaming with `autoScroll: true`). This prevents auto-scroll adjustments in one chart from unintentionally shifting the zoom window in other charts.
 
 Example (sync both crosshair and zoom/pan):
 

@@ -81,6 +81,7 @@ import { createAnimationController } from './createAnimationController';
 import type { AnimationId } from './createAnimationController';
 import { getEasing } from '../utils/easing';
 import type { EasingFunction } from '../utils/easing';
+import type { ZoomChangeSourceKind } from '../ChartGPU';
 
 export interface GPUContextLike {
   readonly device: GPUDevice | null;
@@ -167,7 +168,7 @@ export interface RenderCoordinator {
    *
    * Returns an unsubscribe function.
    */
-  onZoomRangeChange(cb: (range: Readonly<{ start: number; end: number }>) => void): () => void;
+  onZoomRangeChange(cb: (range: Readonly<{ start: number; end: number }>, sourceKind?: ZoomChangeSourceKind) => void): () => void;
   render(): void;
   dispose(): void;
 }
@@ -1810,6 +1811,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
 
     // Dataset-aware zoom span constraints depend on raw point density.
     // When streaming appends add points, recompute and apply constraints so wheel+slider remain consistent.
+    // Arm auto-scroll source kind before setSpanConstraints (clamping may emit onChange).
+    if (canAutoScroll) pendingZoomSourceKind = 'auto-scroll';
     if (zoomState) {
       const constraints = computeEffectiveZoomSpanConstraints();
       const withConstraints = zoomState as unknown as {
@@ -1819,7 +1822,9 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     }
 
     // Auto-scroll is applied only on append (not on `setOptions`).
+    // Re-arm in case setSpanConstraints already triggered onChange and cleared.
     if (canAutoScroll && zoomRangeBefore && prevVisibleXDomain) {
+      pendingZoomSourceKind = 'auto-scroll';
       const r = zoomRangeBefore;
       if (r.end >= 99.5) {
         const span = r.end - r.start;
@@ -1845,6 +1850,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         }
       }
     }
+    // Fallback clear if no onChange fired (e.g. range unchanged).
+    if (canAutoScroll) pendingZoomSourceKind = undefined;
 
     recomputeRuntimeBaseSeries();
 
@@ -2159,11 +2166,12 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   let insideZoom: ReturnType<typeof createInsideZoom> | null = null;
   let unsubscribeZoom: (() => void) | null = null;
   let lastOptionsZoomRange: Readonly<{ start: number; end: number }> | null = null;
-  const zoomRangeListeners = new Set<(range: Readonly<{ start: number; end: number }>) => void>();
+  let pendingZoomSourceKind: ZoomChangeSourceKind | undefined = undefined;
+  const zoomRangeListeners = new Set<(range: Readonly<{ start: number; end: number }>, sourceKind?: ZoomChangeSourceKind) => void>();
 
-  const emitZoomRange = (range: Readonly<{ start: number; end: number }>): void => {
+  const emitZoomRange = (range: Readonly<{ start: number; end: number }>, sourceKind?: ZoomChangeSourceKind): void => {
     const snapshot = Array.from(zoomRangeListeners);
-    for (const cb of snapshot) cb(range);
+    for (const cb of snapshot) cb(range, sourceKind);
   };
 
   const getZoomOptionsConfig = (
@@ -2275,14 +2283,19 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         requestRender();
         // Debounce resampling; the unified flush will do the work.
         scheduleZoomResample();
-        // Ensure listeners get a stable readonly object.
-        emitZoomRange({ start: range.start, end: range.end });
+        // Capture source kind for this change; clear after emit so listeners see it.
+        const sourceKind = pendingZoomSourceKind;
+        emitZoomRange({ start: range.start, end: range.end }, sourceKind);
+        pendingZoomSourceKind = undefined;
       });
     } else {
       const constraints = computeEffectiveZoomSpanConstraints();
       const withConstraints = zoomState as unknown as {
         setSpanConstraints?: (minSpan: number, maxSpan: number) => void;
       };
+      // If setSpanConstraints clamps the range (constraint violation), this is an internal adjustment
+      // (not 'api' since this is driven by setOptions, not setZoomRange; not 'auto-scroll' since no append).
+      // Leave sourceKind undefined (uncategorized).
       withConstraints.setSpanConstraints?.(constraints.minSpan, constraints.maxSpan);
 
       if (

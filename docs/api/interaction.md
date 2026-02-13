@@ -13,7 +13,7 @@ Chart instances expose `on()` and `off()` methods for subscribing to user intera
 - **`'mouseover'`**: fires when the pointer enters a chart item (or transitions from one chart item to another). Chart items include cartesian hits (points/bars) and pie slices. Only fires when listeners are registered (`on('mouseover', ...)` or `on('mouseout', ...)`).
 - **`'mouseout'`**: fires when the pointer leaves a chart item (or transitions from one chart item to another). Chart items include cartesian hits (points/bars) and pie slices. Only fires when listeners are registered (`on('mouseover', ...)` or `on('mouseout', ...)`).
 - **`'crosshairMove'`**: fires when the chart's "interaction x" changes (domain units). This includes pointer movement inside the plot area, pointer leaving the plot area (emits `x: null`), programmatic calls to `setInteractionX(...)` / `setCrosshairX(...)`, and updates received via `connectCharts(...)` sync. See [`ChartGPU.ts`](../../src/ChartGPU.ts) and [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
-- **`'zoomRangeChange'`**: fires when the chart’s percent-space zoom window changes (\([0, 100]\)). This includes inside-zoom gestures, slider updates, programmatic calls to `setZoomRange(...)`, and updates received via `connectCharts(..., { syncZoom: true })`.
+- **`'zoomRangeChange'`**: fires when the chart’s percent-space zoom window changes (\([0, 100]\)). This includes inside-zoom gestures, slider updates, programmatic calls to `setZoomRange(...)`, auto-scroll adjustments from streaming with `autoScroll: true`, and updates received via `connectCharts(..., { syncZoom: true })`.
 
 ### Event callback payload
 
@@ -43,6 +43,11 @@ For `'crosshairMove'`, callbacks receive a `ChartGPUCrosshairMovePayload` object
 For `'zoomRangeChange'`, callbacks receive a `ChartGPUZoomRangeChangePayload` object with:
 - `start: number`: zoom window start in percent space \([0, 100]\)
 - `end: number`: zoom window end in percent space \([0, 100]\)
+- `sourceKind?: 'user' | 'auto-scroll' | 'api'`: optional string categorizing the origin of the zoom change:
+  - `'auto-scroll'`: internal adjustment from streaming data append with `autoScroll: true`
+  - `'api'`: programmatic call to `setZoomRange(...)`
+  - `'user'`: reserved for future use (user gestures like inside-zoom, slider drag); not currently emitted
+  - `undefined`: may occur for internal changes not explicitly categorized (e.g., constraint clamping during `setOptions`); do not assume all changes are tagged
 - `source?: unknown`: optional token identifying the origin of the update (useful for sync loop prevention; forwarded by `connectCharts(..., { syncZoom: true })`)
 
 ### Behavioral notes

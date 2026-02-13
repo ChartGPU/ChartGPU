@@ -22,6 +22,7 @@ export type {
   ChartGPUZoomRangeChangeCallback,
   ChartGPUHitTestMatch,
   ChartGPUHitTestResult,
+  ZoomChangeSourceKind,
 } from './ChartGPU';
 export type {
   AnnotationConfig,

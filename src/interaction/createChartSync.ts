@@ -91,6 +91,8 @@ export function connectCharts(charts: ChartGPU[], options?: ChartSyncOptions): D
       const onZoomRangeChange = (payload: ChartGPUZoomRangeChangePayload): void => {
         if (disconnected) return;
         if (payload.source === connectionToken) return;
+        // Ignore auto-scroll zoom changes to prevent syncing streaming-induced zoom adjustments
+        if (payload.sourceKind === 'auto-scroll') return;
         if (chart.disposed) return;
         broadcastZoom(chart, payload.start, payload.end);
       };

@@ -58,6 +58,16 @@ const EXPECTED_FRAME_TIME_MS = 1000 / 60;
 const FRAME_DROP_THRESHOLD_MULTIPLIER = 1.5;
 
 /**
+ * Source kind for zoom range changes.
+ *
+ * Used to distinguish zoom change sources:
+ * - `'user'`: Direct user interaction (pan, pinch, wheel, slider)
+ * - `'auto-scroll'`: Automatic zoom adjustment from streaming data with auto-scroll enabled
+ * - `'api'`: Programmatic zoom via `setZoomRange(..., source)` calls
+ */
+export type ZoomChangeSourceKind = 'user' | 'auto-scroll' | 'api';
+
+/**
  * Hit-test match for a chart element.
  */
 export type ChartGPUHitTestMatch = Readonly<{
@@ -198,6 +208,7 @@ export type ChartGPUZoomRangeChangePayload = Readonly<{
   readonly start: number;
   readonly end: number;
   readonly source?: unknown;
+  readonly sourceKind?: ZoomChangeSourceKind;
 }>;
 
 export type ChartGPUEventCallback = (payload: ChartGPUEventPayload) => void;
@@ -924,7 +935,7 @@ export async function createChartGPU(
   // Internal mutable versions; cast to readonly when emitting (safe since payload is passed by reference
   // and consumers receive readonly types, preventing external mutation).
   const crosshairMovePayload = { x: null as number | null, source: undefined as unknown };
-  const zoomRangeChangePayload = { start: 0, end: 100, source: undefined as unknown };
+  const zoomRangeChangePayload = { start: 0, end: 100, source: undefined as unknown, sourceKind: undefined as ZoomChangeSourceKind | undefined };
 
   const bindCoordinatorInteractionXChange = (): void => {
     unbindCoordinatorInteractionXChange();
@@ -943,15 +954,26 @@ export async function createChartGPU(
     if (disposed) return;
     if (!coordinator) return;
 
-    unsubscribeCoordinatorZoomRangeChange = coordinator.onZoomRangeChange((range) => {
-      // If a programmatic setZoomRange armed a source token, attach it to this change so
-      // chart sync can avoid feedback loops.
-      const source = pendingZoomSourceArmed ? pendingZoomSource : undefined;
+    unsubscribeCoordinatorZoomRangeChange = coordinator.onZoomRangeChange((range, sourceKind) => {
+      // If setZoomRange armed the next change, classify it as 'api'. If a source token was provided,
+      // forward it so chart sync can avoid feedback loops.
+      const wasApiArmed = pendingZoomSourceArmed;
+      const pendingSource = pendingZoomSource;
       pendingZoomSourceArmed = false;
       pendingZoomSource = undefined;
+
+      const source = pendingSource !== undefined ? pendingSource : undefined;
+
+      // Classify zoom change source:
+      // - Use coordinator's sourceKind if provided (e.g., 'user', 'auto-scroll')
+      // - If no sourceKind but this was armed by setZoomRange, classify as 'api'
+      // - Otherwise, leave sourceKind undefined (not classified)
+      const classifiedSourceKind = sourceKind ?? (wasApiArmed ? 'api' : undefined);
+
       zoomRangeChangePayload.start = range.start;
       zoomRangeChangePayload.end = range.end;
       zoomRangeChangePayload.source = source;
+      zoomRangeChangePayload.sourceKind = classifiedSourceKind;
       emit('zoomRangeChange', zoomRangeChangePayload as ChartGPUZoomRangeChangePayload);
     });
   };
@@ -1698,9 +1720,9 @@ export async function createChartGPU(
       const before = coordinator.getZoomRange();
       if (!before) return;
 
-      // Arm a source token for the next coordinator zoom-range notification (loop prevention).
-      // Only arm when source is explicitly provided (not undefined).
-      pendingZoomSourceArmed = source !== undefined;
+      // Mark the next coordinator zoom-range notification as originating from this API call.
+      // If a `source` token is provided, it will be forwarded to zoom listeners (loop prevention).
+      pendingZoomSourceArmed = true;
       pendingZoomSource = source;
 
       coordinator.setZoomRange(start, end);
