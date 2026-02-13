@@ -19,6 +19,7 @@ jobs:
           node-version: 20
           cache: npm
           registry-url: https://npm.pkg.github.com
+          scope: "@chartgpu"
 
       - name: Install dependencies
         run: npm ci
@@ -28,6 +29,13 @@ jobs:
 
       - name: Copy dist to GitHub package
         run: cp -r dist packages/github/dist
+
+      - name: Sync version from release tag
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+          jq --arg v "$VERSION" '.version = $v' packages/github/package.json > packages/github/package.json.tmp
+          mv packages/github/package.json.tmp packages/github/package.json
 
       - name: Publish to GitHub Packages
         working-directory: packages/github
