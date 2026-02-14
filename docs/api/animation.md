@@ -18,3 +18,5 @@ See [`createAnimationController.ts`](../../src/core/createAnimationController.ts
 For a minimal acceptance check (0→100 over 300ms with easing), see [`examples/acceptance/animation-controller.ts`](../../examples/acceptance/animation-controller.ts).
 
 For animation configuration options, see [Animation Configuration](options.md#animation-configuration).
+
+For a visual demo of data-update transitions across multiple series types (area, bar, line, scatter) on a single chart, see [`examples/multi-series-animation/`](../../examples/multi-series-animation/).

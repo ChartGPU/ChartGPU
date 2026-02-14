@@ -356,6 +356,7 @@ The [`examples/`](../examples/) folder contains working demos of all ChartGPU fe
 - **[`scatter-density-1m/`](../examples/scatter-density-1m/)** - Scatter density/heatmap rendering for large point clouds (`mode: 'density'`). See [`ScatterSeriesConfig`](./api/options.md#scatterseriesconfig) and the example entrypoint [`examples/scatter-density-1m/main.ts`](../examples/scatter-density-1m/main.ts).
 - **[`grouped-bar/`](../examples/grouped-bar/)** - Bar charts with clustering and stacking
 - **[`pie/`](../examples/pie/)** - Pie and donut charts
+- **[`multi-series-animation/`](../examples/multi-series-animation/)** - Four series types (line, bar, scatter, area) on one chart with animated data updates and configurable line width
 
 To run the examples locally:
 

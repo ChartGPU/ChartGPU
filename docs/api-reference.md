@@ -70,7 +70,7 @@ chart.setOption({
 });
 ```
 
-See [`examples/data-update-animation/`](../examples/data-update-animation/).
+See [`examples/data-update-animation/`](../examples/data-update-animation/) and [`examples/multi-series-animation/`](../examples/multi-series-animation/) (four series types on one chart with configurable line width).
 
 #### `appendData(seriesIndex, newPoints)`
 
