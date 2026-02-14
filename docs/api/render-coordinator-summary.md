@@ -107,6 +107,30 @@ export function createRenderCoordinator(
 ): RenderCoordinator
 ```
 
+## Rendering Pipeline
+
+The render coordinator implements a **3-pass MSAA rendering strategy** for high-quality anti-aliased output:
+
+### Pass 1: Main Scene (4x MSAA)
+- **Target**: 4x MSAA texture (`mainColorTexture` with `sampleCount: 4`)
+- **Resolve**: Single-sample texture (`mainResolveTexture`)
+- **Renderers**: grid, area, line, bar, scatter, candlestick, reference lines, annotation markers
+- **Sample count**: All main-pass renderers use `MAIN_SCENE_MSAA_SAMPLE_COUNT` (4) in their pipeline configuration
+
+### Pass 2: Blit + Annotations
+- **Target**: MSAA overlay texture
+- **Purpose**: Composite resolved main scene with additional annotation overlays
+
+### Pass 3: UI Overlays (single-sample)
+- **Target**: Swapchain texture (canvas context)
+- **Renderers**: axes, crosshair, highlight
+- **Sample count**: `1` (no MSAA)
+
+**Critical for renderer implementations:**
+- `MAIN_SCENE_MSAA_SAMPLE_COUNT` is exported from `textureManager.ts`
+- All main-pass renderer pipelines **must** use `sampleCount: 4` in their `multisample` configuration
+- Overlay-pass renderers retain `sampleCount: 1`
+
 ## Related Types
 
 - `ResolvedChartGPUOptions`: See [`types.ts`](../../src/config/types.ts)

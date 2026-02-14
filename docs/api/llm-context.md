@@ -111,6 +111,7 @@ ChartGPU follows a **functional-first architecture**:
 - **Renderers**: Internal pipeline-based renderers for each series type
 - **Interaction**: Event-driven with render-on-demand scheduling
 - **Render coordinator**: Modular architecture with 11 specialized modules under `src/core/renderCoordinator/` (see [INTERNALS.md](INTERNALS.md#modular-architecture-refactoring-complete))
+- **Anti-aliasing**: Main scene rendering uses 4x MSAA for all series types. Lines use SDF (Signed Distance Field) anti-aliased triangle-based rendering for smooth, configurable-width strokes. See `MAIN_SCENE_MSAA_SAMPLE_COUNT` in [textureManager.ts](../../src/core/renderCoordinator/gpu/textureManager.ts) for contributors modifying renderer pipelines.
 
 ### Architecture Diagram
 

@@ -193,3 +193,7 @@ Always call `destroyGPUContext()` (functional) or `destroy()` (class) when done 
 **Alpha Mode:**
 - Use `'opaque'` (default) for better performance when transparency is not needed
 - Use `'premultiplied'` only when compositing transparent canvas with other page elements
+
+**Anti-aliasing (Internal):**
+- ChartGPU uses 4x MSAA (Multi-Sample Anti-Aliasing) for main scene rendering (series, grid, reference lines). This is managed internally by the texture manager and does not require user configuration.
+- If you are creating custom overlays on a separate canvas alongside ChartGPU (as described in "Using GPUContext alongside ChartGPU" above), your own render pipelines do not need to match ChartGPU's MSAA settings since they render to a separate canvas.

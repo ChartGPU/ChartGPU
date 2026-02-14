@@ -377,7 +377,7 @@ See [`docs/internal/GPU_TIMING_IMPLEMENTATION.md`](./internal/GPU_TIMING_IMPLEME
 - Solutions:
   - Enable sampling (reduce vertex/fragment work)
   - Reduce canvas size or device pixel ratio
-  - Lower line width (less fragment shader cost)
+  - Lower line width (reduces fill rate due to triangle-based rendering; wider lines render larger quads)
   - Upgrade GPU hardware (if feasible)
 
 **Balanced scenario (CPU time ≈ GPU time ≈ frame time):**
@@ -392,6 +392,8 @@ Results vary significantly based on:
 - **Canvas size:** Larger viewports increase fragment shader cost
 - **GPU tier:** Integrated vs discrete GPU (orders of magnitude difference)
 - **Browser:** Chrome/Edge typically faster than Safari (WebGPU maturity)
+- **4x MSAA:** Main scene rendering uses 4x multisample anti-aliasing, which increases GPU memory usage (4x for main render target) and fill rate cost. This trade-off provides smooth anti-aliased lines and shapes.
+- **Line width:** Configurable line width (`lineStyle.width` in CSS pixels) increases fill rate cost for wider lines due to triangle-based quad rendering. Wider lines render larger quads with more fragment shader invocations.
 
 Run the benchmark on your target hardware to establish baseline performance for your deployment environment.
 

@@ -150,10 +150,10 @@ flowchart TB
 | **ChartGPU** | `src/ChartGPU.ts` | Factory + instance lifecycle, canvas management, public events |
 | **GPUContext** | `src/core/GPUContext.ts` | WebGPU adapter/device/context initialization |
 | **PipelineCache (optional)** | `src/core/PipelineCache.ts` | Shared cache for `GPUShaderModule`, `GPURenderPipeline`, and `GPUComputePipeline` across charts on the same `GPUDevice` (opt-in via `ChartGPU.create(..., { pipelineCache })`) |
-| **Render Coordinator** | `src/core/createRenderCoordinator.ts` | Layout, scales, data upload, render pass orchestration |
-| **Coordinator Modules** | `src/core/renderCoordinator/*` | 11 specialized modules (utils, gpu, renderers, data, zoom, animation, interaction, ui, axis, annotations, render) |
-| **GPU Renderers** | `src/renderers/*` | Series-type-specific WebGPU pipeline renderers |
-| **WGSL Shaders** | `src/shaders/*` | Vertex/fragment/compute shaders for each renderer |
+| **Render Coordinator** | `src/core/createRenderCoordinator.ts` | Layout, scales, data upload, **3-pass MSAA rendering** (main scene @ 4x MSAA → blit → overlay) |
+| **Coordinator Modules** | `src/core/renderCoordinator/*` | 11 specialized modules (utils, gpu/textureManager with 4x MSAA, renderers, data, zoom, animation, interaction, ui, axis, annotations, render) |
+| **GPU Renderers** | `src/renderers/*` | Series-type-specific WebGPU pipeline renderers (main-pass @ 4x MSAA, overlay @ 1x) |
+| **WGSL Shaders** | `src/shaders/*` | Vertex/fragment/compute shaders (line shader uses screen-space quad expansion + SDF anti-aliasing) |
 | **Chart Sync** | `src/interaction/createChartSync.ts` | Multi-chart crosshair and zoom synchronization |
 | **Data Store** | `src/data/createDataStore.ts` | GPU buffer upload, caching, geometric growth |
 | **External Render Mode** | `src/ChartGPU.ts` | `renderFrame()`, `needsRender()`, `setRenderMode()` — application-driven render scheduling for multi-chart dashboards |

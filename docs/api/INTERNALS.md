@@ -221,6 +221,8 @@ See [render-coordinator-summary.md](render-coordinator-summary.md) for the essen
   - When axis bounds are not explicitly set, the coordinator derives bounds from series data.
   - For the y-axis, bounds derivation follows `yAxis.autoBounds` (`'visible'` vs `'global'`) when x-axis zoom is active.
 - **Orchestration order**: clear → grid → area fills → bars → scatter → line strokes → hover highlight → axes → crosshair.
+  - **Main scene pass** (grid, area, bars, scatter, lines, candlestick, reference lines, annotation markers) uses **4x MSAA** rendering to a multisampled texture, resolved to a single-sample texture.
+  - **Overlay passes** (axes, crosshair, highlight) use **single-sample** rendering directly to the swapchain or overlay texture.
 - **Interaction overlays (internal)**: the render coordinator creates an internal [event manager](#event-manager-internal), an internal [crosshair renderer](#crosshair-renderer-internal--contributor-notes), and an internal [highlight renderer](#highlight-renderer-internal--contributor-notes). Pointer `mousemove`/`mouseleave` updates interaction state and toggles overlay visibility; when provided, `callbacks.onRequestRender?.()` is used so pointer movement schedules renders in render-on-demand systems (e.g. `ChartGPU`).
 - **Pointer coordinate contract (high-level)**: the crosshair `prepare(...)` path expects **canvas-local CSS pixels** (`EventManager` payload `x`/`y`). See [`createEventManager.ts`](../../src/interaction/createEventManager.ts) and [`createCrosshairRenderer.ts`](../../src/renderers/createCrosshairRenderer.ts).
 - **Target format**: uses `gpuContext.preferredFormat` (fallback `'bgra8unorm'`) for renderer pipelines; must match the render pass color attachment format.
@@ -245,7 +247,7 @@ The render coordinator has been systematically refactored into a modular archite
    - `timeAxisUtils.ts` (342 lines) - Time formatting and adaptive tick generation
 
 2. **`gpu/`** - GPU resource management
-   - `textureManager.ts` (256 lines) - Lazy texture allocation, MSAA overlay management, blit pipeline for multi-pass rendering
+   - `textureManager.ts` (256 lines) - 4x MSAA main scene rendering with resolve texture, lazy texture allocation, blit pipeline for multi-pass rendering
 
 3. **`renderers/`** - Renderer lifecycle
    - `rendererPool.ts` (303 lines) - Dynamic renderer array sizing, lazy instantiation, per-chart-type pools
@@ -297,12 +299,17 @@ The `render()` method orchestrates the following phases using the modular archit
 3. **Scale creation** (`axisUtils`) - Build clip-space scales for rendering
 4. **Data transformation** (`computeVisibleSlice`) - Slice visible data range with binary search
 5. **Animation** (`animationHelpers`) - Interpolate data during animations
-6. **Texture management** (`textureManager`) - Allocate/reallocate GPU textures as needed
+6. **Texture management** (`textureManager`) - Allocate/reallocate 4x MSAA main scene texture + resolve texture, plus overlay textures
 7. **Renderer lifecycle** (`rendererPool`) - Ensure renderer arrays match series counts
-8. **Series rendering** (`renderSeries`) - Render all chart types (area, line, bar, scatter, pie, candlestick)
-9. **Overlay rendering** (`renderOverlays`) - Render grid, axes, crosshair, highlight
+8. **Series rendering** (`renderSeries`) - Render all chart types to 4x MSAA target (area, line, bar, scatter, pie, candlestick)
+9. **Overlay rendering** (`renderOverlays`) - Render grid, axes, crosshair, highlight (MSAA for main pass, single-sample for overlays)
 10. **Annotation processing** (`processAnnotations`) - Process annotations for GPU rendering
 11. **Label rendering** (`renderAxisLabels`, `renderAnnotationLabels`) - Generate DOM labels
+
+**3-pass rendering strategy:**
+1. **Main scene** → 4x MSAA texture (grid, area, line, bar, scatter, candlestick, reference lines, annotation markers), resolved to single-sample `mainResolveTexture`
+2. **Blit + annotations** → MSAA overlay (composite main scene with additional overlays)
+3. **UI overlays** → single-sample swapchain (axes, crosshair, highlight)
 
 **Implementation notes:**
 
@@ -338,6 +345,7 @@ Shared WebGPU renderer helpers live in [`rendererUtils.ts`](../../src/renderers/
 - **`createShaderModule(device, code, label?, pipelineCache?)`**: creates a `GPUShaderModule` from WGSL source (deduped via `pipelineCache` when provided).
 - **`createRenderPipeline(device, config, pipelineCache?)`**: creates a `GPURenderPipeline` from either existing shader modules or WGSL code (deduped via `pipelineCache` when provided).
   - **Defaults**: `layout: 'auto'`, `vertex.entryPoint: 'vsMain'`, `fragment.entryPoint: 'fsMain'`, `primitive.topology: 'triangle-list'`, `multisample.count: 1`
+  - **MSAA override**: Main-pass renderers (grid, area, line, bar, scatter, candlestick, reference lines, annotation markers) override `multisample.count` to `MAIN_SCENE_MSAA_SAMPLE_COUNT` (4) for anti-aliased rendering.
   - **Fragment targets convenience**: provide `fragment.formats` (one or many formats) instead of full `fragment.targets` to generate `GPUColorTargetState[]` (optionally with shared `blend` / `writeMask`).
   - **Cache behavior (important)**: when `pipelineCache` is provided and `bindGroupLayouts` are supplied, `rendererUtils` forces `layout: 'auto'` to maximize cross-chart pipeline reuse.
 - **`createComputePipeline(device, descriptor, pipelineCache?)`**: creates a `GPUComputePipeline` from a compute shader module or WGSL code (deduped via `pipelineCache` when provided). Used for GPU-accelerated operations like scatter-density binning and reduction.
@@ -347,17 +355,45 @@ Shared WebGPU renderer helpers live in [`rendererUtils.ts`](../../src/renderers/
 
 ### Line renderer (internal / contributor notes)
 
-A minimal line-strip renderer factory lives in [`createLineRenderer.ts`](../../src/renderers/createLineRenderer.ts). It's intended as a reference implementation for renderer structure (pipeline setup, uniforms, and draw calls) and is not part of the public API exports.
+A screen-space quad-expansion line renderer factory lives in [`createLineRenderer.ts`](../../src/renderers/createLineRenderer.ts). It renders configurable-width lines with SDF anti-aliasing and is not part of the public API exports.
 
 - **`createLineRenderer(device: GPUDevice): LineRenderer`**
 - **`createLineRenderer(device: GPUDevice, options?: LineRendererOptions): LineRenderer`**
 - **`LineRendererOptions.targetFormat?: GPUTextureFormat`**: must match the render pass color attachment format (typically `GPUContextState.preferredFormat`). Defaults to `'bgra8unorm'` for backward compatibility.
-- **Alpha blending**: the pipeline enables standard alpha blending so per-series `lineStyle.opacity` composites as expected over an opaque cleared background.
-- **`LineRenderer.prepare(seriesConfig: ResolvedLineSeriesConfig, dataBuffer: GPUBuffer, xScale: LinearScale, yScale: LinearScale): void`**: updates per-series uniforms and binds the current vertex buffer
+- **`LineRendererOptions.sampleCount?: number`**: MSAA sample count for the render pipeline. Main-pass renderers use `MAIN_SCENE_MSAA_SAMPLE_COUNT` (4).
+
+**Rendering approach:**
+- **Topology**: `triangle-list` with instanced screen-space quad expansion (not `line-strip`).
+- **Draw call**: `draw(6, pointCount - 1)` — 6 vertices per quad, one instance per line segment.
+- **Vertex shader**: reads point data from a storage buffer (binding 2, `read-only-storage`), computes perpendicular offsets in screen space to expand each segment into a quad.
+- **Fragment shader**: applies SDF anti-aliasing using `smoothstep(0.0, aa, edgeDist)` with `fwidth` for smooth edges. Uses `AA_PADDING = 1.5` for soft edge falloff.
+- **Line width**: `lineStyle.width` is now **functional** and controls actual line width in CSS pixels (previously dead code with `line-strip` topology).
+
+**Uniforms (80 bytes total):**
+- Transform matrix (64 bytes)
+- `canvasSize: vec2<f32>` (8 bytes) — canvas dimensions in device pixels
+- `devicePixelRatio: f32` (4 bytes)
+- `lineWidthCssPx: f32` (4 bytes)
+
+**`LineRenderer.prepare(...)` signature:**
+```typescript
+prepare(
+  seriesConfig: ResolvedLineSeriesConfig,
+  dataBuffer: GPUBuffer,
+  xScale: LinearScale,
+  yScale: LinearScale,
+  devicePixelRatio: number,
+  canvasWidthDevicePx: number,
+  canvasHeightDevicePx: number
+): void
+```
+
 - **`LineRenderer.render(passEncoder: GPURenderPassEncoder): void`**
 - **`LineRenderer.dispose(): void`**
 
-Shader sources: [`line.wgsl`](../../src/shaders/line.wgsl) and [`area.wgsl`](../../src/shaders/area.wgsl) (triangle-strip filled area under a line).
+**Alpha blending**: the pipeline enables standard alpha blending so per-series `lineStyle.opacity` composites as expected over an opaque cleared background.
+
+Shader source: [`line.wgsl`](../../src/shaders/line.wgsl) (screen-space quad expansion + SDF anti-aliasing).
 
 Bar renderer implementation: [`createBarRenderer.ts`](../../src/renderers/createBarRenderer.ts). Shader source: [`bar.wgsl`](../../src/shaders/bar.wgsl) (instanced rectangle expansion; per-instance `vec4<f32>(x, y, width, height)`; intended draw call uses 6 vertices per instance for 2 triangles).
 
@@ -459,7 +495,7 @@ Notes:
 - **Example shader compilation smoke-check**: the hello-world example imports `line.wgsl`, `area.wgsl`, `scatter.wgsl`, and `pie.wgsl` via `?raw` and (when supported) uses `GPUShaderModule.getCompilationInfo()` to fail fast on shader compilation errors. See [`examples/hello-world/main.ts`](../../examples/hello-world/main.ts).
 - **Render target format**: a renderer pipeline's target format must match the render pass color attachment format (otherwise WebGPU raises a pipeline/attachment format mismatch validation error). `createAxisRenderer`, `createGridRenderer`, and `createLineRenderer` each accept `options.targetFormat` (typically `GPUContextState.preferredFormat`) and default to `'bgra8unorm'` for backward compatibility.
 - **Scale output space**: `prepare(...)` treats scales as affine and uses `scale(...)` samples to build a clip-space transform. Scales that output pixels (or non-linear scales) will require a different transform strategy.
-- **Line width and alpha**: line primitives are effectively 1px-class across implementations; wide lines require triangle-based extrusion. `createLineRenderer` enables standard alpha blending so `lineStyle.opacity` composites as expected.
+- **Line rendering**: ChartGPU uses **triangle-based quad expansion** with configurable width via `lineStyle.width` (CSS pixels). Each line segment is rendered as a quad (6 vertices per instance, `pointCount - 1` instances). The fragment shader applies SDF anti-aliasing for smooth edges. This replaces the previous `line-strip` approach (which was limited to 1px hardware lines).
 
 **Caveats (important):**
 

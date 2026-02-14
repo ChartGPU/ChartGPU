@@ -3,8 +3,8 @@
  *
  * Handles lazy allocation of render target textures and MSAA overlay management.
  * Uses a multi-pass rendering strategy:
- * 1. Main scene → single-sample texture
- * 2. Blit to MSAA target + draw annotations (MSAA overlay pass)
+ * 1. Main scene → 4x MSAA texture, resolved to single-sample mainResolveTexture
+ * 2. Blit resolved main scene to MSAA overlay target + draw annotations (MSAA overlay pass)
  * 3. Draw UI overlays on resolved swapchain (single-sample)
  *
  * @module textureManager
@@ -12,6 +12,13 @@
 
 import { createRenderPipeline } from '../../../renderers/rendererUtils';
 import type { PipelineCache } from '../../PipelineCache';
+
+/**
+ * MSAA sample count for the main scene render pass.
+ * All series renderers (line, area, bar, scatter, etc.) and the grid
+ * must create pipelines with this sample count.
+ */
+export const MAIN_SCENE_MSAA_SAMPLE_COUNT = 4;
 
 /**
  * MSAA sample count for annotation overlay pass.
@@ -53,10 +60,14 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
  */
 export interface TextureManagerState {
   readonly mainColorView: GPUTextureView | null;
+  /** Single-sample resolve target for the MSAA main pass. Used by the overlay blit. */
+  readonly mainResolveView: GPUTextureView | null;
   readonly overlayMsaaView: GPUTextureView | null;
   readonly overlayBlitBindGroup: GPUBindGroup | null;
   readonly overlayBlitPipeline: GPURenderPipeline;
   readonly msaaSampleCount: number;
+  /** MSAA sample count for the main scene render pass. */
+  readonly mainSceneMsaaSampleCount: number;
 }
 
 /**
@@ -65,6 +76,9 @@ export interface TextureManagerState {
 interface InternalState {
   mainColorTexture: GPUTexture | null;
   mainColorView: GPUTextureView | null;
+  /** Single-sample resolve target for the MSAA main pass. */
+  mainResolveTexture: GPUTexture | null;
+  mainResolveView: GPUTextureView | null;
   overlayMsaaTexture: GPUTexture | null;
   overlayMsaaView: GPUTextureView | null;
   overlayBlitBindGroup: GPUBindGroup | null;
@@ -132,9 +146,10 @@ function destroyTexture(tex: GPUTexture | null): void {
  * or format change.
  *
  * **Architecture:**
- * - Main color texture: Single-sample render target for main scene
+ * - Main color texture: 4x MSAA render target for main scene
+ * - Main resolve texture: Single-sample resolve target (read by overlay blit)
  * - Overlay MSAA texture: Multi-sample render target for annotations
- * - Blit pipeline: Copies main color to MSAA target for overlay pass
+ * - Blit pipeline: Copies resolved main scene to MSAA target for overlay pass
  *
  * @param config - Configuration with device and target format
  * @returns Texture manager instance
@@ -146,6 +161,8 @@ export function createTextureManager(config: TextureManagerConfig): TextureManag
   const state: InternalState = {
     mainColorTexture: null,
     mainColorView: null,
+    mainResolveTexture: null,
+    mainResolveView: null,
     overlayMsaaTexture: null,
     overlayMsaaView: null,
     overlayBlitBindGroup: null,
@@ -185,6 +202,7 @@ export function createTextureManager(config: TextureManagerConfig): TextureManag
     // Check if textures are already allocated with correct dimensions and format
     if (
       state.mainColorTexture &&
+      state.mainResolveTexture &&
       state.overlayMsaaTexture &&
       state.overlayBlitBindGroup &&
       state.overlayTargetsWidth === w &&
@@ -196,16 +214,29 @@ export function createTextureManager(config: TextureManagerConfig): TextureManag
 
     // Destroy old textures before allocating new ones
     destroyTexture(state.mainColorTexture);
+    destroyTexture(state.mainResolveTexture);
     destroyTexture(state.overlayMsaaTexture);
 
-    // Allocate main color texture (single-sample)
+    // Allocate main color texture (MSAA render target).
+    // RENDER_ATTACHMENT only — multisampled textures cannot have TEXTURE_BINDING.
     state.mainColorTexture = device.createTexture({
       label: 'textureManager/mainColorTexture',
+      size: { width: w, height: h },
+      sampleCount: MAIN_SCENE_MSAA_SAMPLE_COUNT,
+      format: targetFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    state.mainColorView = state.mainColorTexture.createView();
+
+    // Allocate single-sample resolve target for the MSAA main pass.
+    // This receives the resolved result and is read by the overlay blit pipeline.
+    state.mainResolveTexture = device.createTexture({
+      label: 'textureManager/mainResolveTexture',
       size: { width: w, height: h },
       format: targetFormat,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
-    state.mainColorView = state.mainColorTexture.createView();
+    state.mainResolveView = state.mainResolveTexture.createView();
 
     // Allocate MSAA overlay texture (multi-sample)
     state.overlayMsaaTexture = device.createTexture({
@@ -217,11 +248,11 @@ export function createTextureManager(config: TextureManagerConfig): TextureManag
     });
     state.overlayMsaaView = state.overlayMsaaTexture.createView();
 
-    // Create bind group for blit pipeline
+    // Create bind group for blit pipeline — reads from the resolved (single-sample) texture.
     state.overlayBlitBindGroup = device.createBindGroup({
       label: 'textureManager/overlayBlitBindGroup',
       layout: overlayBlitBindGroupLayout,
-      entries: [{ binding: 0, resource: state.mainColorView }],
+      entries: [{ binding: 0, resource: state.mainResolveView }],
     });
 
     // Update cached dimensions and format
@@ -246,10 +277,12 @@ export function createTextureManager(config: TextureManagerConfig): TextureManag
     if (!cachedState) {
       cachedState = {
         mainColorView: state.mainColorView,
+        mainResolveView: state.mainResolveView,
         overlayMsaaView: state.overlayMsaaView,
         overlayBlitBindGroup: state.overlayBlitBindGroup,
         overlayBlitPipeline,
         msaaSampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
+        mainSceneMsaaSampleCount: MAIN_SCENE_MSAA_SAMPLE_COUNT,
       };
     }
     return cachedState;
@@ -260,11 +293,14 @@ export function createTextureManager(config: TextureManagerConfig): TextureManag
    */
   function dispose(): void {
     destroyTexture(state.mainColorTexture);
+    destroyTexture(state.mainResolveTexture);
     destroyTexture(state.overlayMsaaTexture);
 
     // Clear references
     state.mainColorTexture = null;
     state.mainColorView = null;
+    state.mainResolveTexture = null;
+    state.mainResolveView = null;
     state.overlayMsaaTexture = null;
     state.overlayMsaaView = null;
     state.overlayBlitBindGroup = null;

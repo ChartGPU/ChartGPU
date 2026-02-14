@@ -44,7 +44,7 @@ import { createAxisRenderer } from '../renderers/createAxisRenderer';
 import { createGridRenderer } from '../renderers/createGridRenderer';
 import type { GridArea } from '../renderers/createGridRenderer';
 import { createRendererPool } from './renderCoordinator/renderers/rendererPool';
-import { createTextureManager, ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT } from './renderCoordinator/gpu/textureManager';
+import { createTextureManager, ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT, MAIN_SCENE_MSAA_SAMPLE_COUNT } from './renderCoordinator/gpu/textureManager';
 import { createCrosshairRenderer } from '../renderers/createCrosshairRenderer';
 import { createHighlightRenderer } from '../renderers/createHighlightRenderer';
 import { createReferenceLineRenderer } from '../renderers/createReferenceLineRenderer';
@@ -1467,21 +1467,24 @@ export function createRenderCoordinator(
 
   let dataStore = createDataStore(device);
 
-  const gridRenderer = createGridRenderer(device, { targetFormat, pipelineCache });
+  const gridRenderer = createGridRenderer(device, { targetFormat, sampleCount: MAIN_SCENE_MSAA_SAMPLE_COUNT, pipelineCache });
+  // Axis and crosshair renderers draw into the top overlay pass (swapchain, single-sample) — keep sampleCount: 1.
   const xAxisRenderer = createAxisRenderer(device, { targetFormat, pipelineCache });
   const yAxisRenderer = createAxisRenderer(device, { targetFormat, pipelineCache });
   const crosshairRenderer = createCrosshairRenderer(device, { targetFormat, pipelineCache });
   crosshairRenderer.setVisible(false);
+  // Highlight renders into the top overlay pass (swapchain, single-sample) — keep sampleCount: 1.
   const highlightRenderer = createHighlightRenderer(device, { targetFormat, pipelineCache });
   highlightRenderer.setVisible(false);
 
   // MSAA for the *annotation overlay* (above-series) pass to reduce shimmer during zoom.
   // NOTE: In WebGPU, pipeline sampleCount must match the render pass attachment sampleCount.
-  // To keep MSAA scoped, we render the main scene to a single-sample texture, then:
-  // - MSAA overlay pass: blit main scene into an MSAA target + draw above-series annotations, resolve to swapchain
+  // The main scene renders into a 4x MSAA texture (resolved to a single-sample target), then:
+  // - MSAA overlay pass: blit resolved main scene into an MSAA target + draw above-series annotations, resolve to swapchain
   // - Top overlay pass: draw crosshair/axes/highlight (single-sample) on top of the resolved swapchain
-  const referenceLineRenderer = createReferenceLineRenderer(device, { targetFormat, pipelineCache });
-  const annotationMarkerRenderer = createAnnotationMarkerRenderer(device, { targetFormat, pipelineCache });
+  // Below-series reference lines and annotation markers draw into the main MSAA pass.
+  const referenceLineRenderer = createReferenceLineRenderer(device, { targetFormat, sampleCount: MAIN_SCENE_MSAA_SAMPLE_COUNT, pipelineCache });
+  const annotationMarkerRenderer = createAnnotationMarkerRenderer(device, { targetFormat, sampleCount: MAIN_SCENE_MSAA_SAMPLE_COUNT, pipelineCache });
   const referenceLineRendererMsaa = createReferenceLineRenderer(device, {
     targetFormat,
     sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
@@ -2463,7 +2466,7 @@ export function createRenderCoordinator(
   recomputeRenderSeries();
   lastSampledData = new Array(currentOptions.series.length).fill(null);
 
-  const rendererPool = createRendererPool({ device, targetFormat, pipelineCache });
+  const rendererPool = createRendererPool({ device, targetFormat, pipelineCache, sampleCount: MAIN_SCENE_MSAA_SAMPLE_COUNT });
 
   rendererPool.ensureAreaRendererCount(currentOptions.series.length);
   rendererPool.ensureLineRendererCount(currentOptions.series.length);
@@ -3349,10 +3352,11 @@ export function createRenderCoordinator(
       label: 'renderCoordinator/mainPass',
       colorAttachments: [
         {
-          view: texState.mainColorView!,
+          view: texState.mainColorView!,          // MSAA texture (4x)
+          resolveTarget: texState.mainResolveView!, // single-sample resolve target
           clearValue,
           loadOp: 'clear',
-          storeOp: 'store',
+          storeOp: 'discard',  // MSAA content discarded after resolve
         },
       ],
     });

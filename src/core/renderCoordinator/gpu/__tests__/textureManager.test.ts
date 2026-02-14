@@ -130,9 +130,21 @@ describe('TextureManager', () => {
     const manager = createTextureManager(config);
     manager.ensureTextures(800, 600);
 
+    // Main color texture is now 4x MSAA (RENDER_ATTACHMENT only — multisampled textures cannot have TEXTURE_BINDING).
     expect(device.createTexture).toHaveBeenCalledWith(
       expect.objectContaining({
         label: 'textureManager/mainColorTexture',
+        size: { width: 800, height: 600 },
+        sampleCount: 4,
+        format: 'bgra8unorm',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      })
+    );
+
+    // Single-sample resolve target receives the MSAA resolve and is read by the overlay blit.
+    expect(device.createTexture).toHaveBeenCalledWith(
+      expect.objectContaining({
+        label: 'textureManager/mainResolveTexture',
         size: { width: 800, height: 600 },
         format: 'bgra8unorm',
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,

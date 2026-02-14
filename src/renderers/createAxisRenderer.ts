@@ -29,6 +29,13 @@ export interface AxisRendererOptions {
    */
   readonly targetFormat?: GPUTextureFormat;
   /**
+   * Multisample count for the render pipeline.
+   *
+   * Must match the render pass color attachment sampleCount.
+   * Defaults to 1 (no MSAA).
+   */
+  readonly sampleCount?: number;
+  /**
    * Optional shared cache for shader modules + render pipelines.
    */
   readonly pipelineCache?: PipelineCache;
@@ -197,6 +204,9 @@ const generateAxisVertices = (
 export function createAxisRenderer(device: GPUDevice, options?: AxisRendererOptions): AxisRenderer {
   let disposed = false;
   const targetFormat = options?.targetFormat ?? DEFAULT_TARGET_FORMAT;
+  // Be resilient: coerce invalid values to 1 (no MSAA).
+  const sampleCountRaw = options?.sampleCount ?? 1;
+  const sampleCount = Number.isFinite(sampleCountRaw) ? Math.max(1, Math.floor(sampleCountRaw)) : 1;
   const pipelineCache = options?.pipelineCache;
 
   const bindGroupLayout = device.createBindGroupLayout({
@@ -252,7 +262,7 @@ export function createAxisRenderer(device: GPUDevice, options?: AxisRendererOpti
         },
       },
       primitive: { topology: 'line-list', cullMode: 'none' },
-      multisample: { count: 1 },
+      multisample: { count: sampleCount },
     },
     pipelineCache
   );

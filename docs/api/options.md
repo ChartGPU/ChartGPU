@@ -63,6 +63,9 @@ Extends shared series fields with `type: 'candlestick'` and OHLC-specific config
 
 Extends the shared series fields with `type: 'line'`, optional `lineStyle?: LineStyleConfig`, and optional `areaStyle?: AreaStyleConfig`.
 
+- **`lineStyle.width?: number`**: Line width in CSS pixels. Default: `2` (see [`defaults.ts`](../../src/config/defaults.ts)). Lines are rendered with SDF (Signed Distance Field) anti-aliasing, producing smooth edges at any width.
+- **`lineStyle.opacity?: number`**: Line opacity (0.0–1.0). Default: `1`. Composites via alpha blending.
+- **`lineStyle.color?: string`**: Line color (CSS color string). When omitted, uses series color precedence (see [Default Options](#default-options)).
 - When a line series includes `areaStyle`, ChartGPU renders a filled area behind the line (area fills then line strokes). See [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
 
 ### AreaSeriesConfig
