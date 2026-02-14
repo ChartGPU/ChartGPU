@@ -10,6 +10,14 @@ export interface TextOverlayLabelOptions {
   readonly rotation?: number;
 }
 
+export interface TextOverlayOptions {
+  /**
+   * When true, clip labels to the overlay bounds (default: false).
+   * Prevents labels from overflowing outside the container.
+   */
+  readonly clip?: boolean;
+}
+
 export interface TextOverlay {
   clear(): void;
   addLabel(
@@ -34,13 +42,15 @@ const getAnchorTransform = (
   }
 };
 
-export function createTextOverlay(container: HTMLElement): TextOverlay {
+export function createTextOverlay(container: HTMLElement, options?: TextOverlayOptions): TextOverlay {
   const computedStyle = getComputedStyle(container);
   const computedPosition = computedStyle.position;
   const computedOverflow = computedStyle.overflow;
 
+  const clip = options?.clip ?? false;
+
   const didSetRelative = computedPosition === 'static';
-  const didSetOverflowVisible = computedOverflow === 'hidden' || computedOverflow === 'scroll' || computedOverflow === 'auto';
+  const didSetOverflowVisible = !clip && (computedOverflow === 'hidden' || computedOverflow === 'scroll' || computedOverflow === 'auto');
 
   const previousInlinePosition = didSetRelative ? container.style.position : null;
   const previousInlineOverflow = didSetOverflowVisible ? container.style.overflow : null;
@@ -57,7 +67,7 @@ export function createTextOverlay(container: HTMLElement): TextOverlay {
   overlay.style.position = 'absolute';
   overlay.style.inset = '0';
   overlay.style.pointerEvents = 'none';
-  overlay.style.overflow = 'visible';
+  overlay.style.overflow = clip ? 'hidden' : 'visible';
   overlay.style.zIndex = '10'; // Above zoom slider (z-index: 4) and other overlays
   container.appendChild(overlay);
 

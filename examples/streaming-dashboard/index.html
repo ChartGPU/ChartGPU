@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Streaming Dashboard — ChartGPU</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+      overflow: hidden;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    .dashboard {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-rows: auto 1fr 1fr;
+      gap: 8px;
+      padding: 8px;
+      height: 100vh;
+    }
+
+    .header {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      background: #111;
+      border-radius: 6px;
+      border: 1px solid #222;
+    }
+
+    .header h1 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .status {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      font-size: 0.85rem;
+    }
+
+    .status-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .status-label {
+      color: #888;
+    }
+
+    .status-value {
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .chart-panel {
+      background: #111;
+      border-radius: 6px;
+      border: 1px solid #222;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .chart-title {
+      padding: 6px 12px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #aaa;
+      border-bottom: 1px solid #1a1a1a;
+      flex-shrink: 0;
+    }
+
+    .chart-container {
+      flex: 1;
+      min-height: 0;
+      min-width: 0;
+    }
+
+    .bottom-wide {
+      grid-column: 1 / 3;
+    }
+
+    #error {
+      display: none;
+      grid-column: 1 / -1;
+      padding: 16px;
+      background: #2a1515;
+      border: 1px solid #5a2020;
+      border-radius: 6px;
+      color: #ff6b6b;
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="dashboard">
+    <div class="header">
+      <h1>APM Streaming Dashboard</h1>
+      <div class="status">
+        <div class="status-item">
+          <span class="status-label">Phase:</span>
+          <span class="status-value" id="phase-name">Initializing...</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">Elapsed:</span>
+          <span class="status-value" id="elapsed-time">0s</span>
+        </div>
+      </div>
+    </div>
+    <div id="error"></div>
+
+    <!-- Top row: 3 charts -->
+    <div class="chart-panel">
+      <div class="chart-title">Response Latency</div>
+      <div class="chart-container" id="chart-latency"></div>
+    </div>
+    <div class="chart-panel">
+      <div class="chart-title">Request Throughput</div>
+      <div class="chart-container" id="chart-throughput"></div>
+    </div>
+    <div class="chart-panel">
+      <div class="chart-title">CPU &amp; Memory</div>
+      <div class="chart-container" id="chart-resources"></div>
+    </div>
+
+    <!-- Bottom row: Error Rate spans 2 columns, Connection Pool spans 1 -->
+    <div class="chart-panel bottom-wide">
+      <div class="chart-title">Error Rate</div>
+      <div class="chart-container" id="chart-errors"></div>
+    </div>
+    <div class="chart-panel">
+      <div class="chart-title">Connection Pool</div>
+      <div class="chart-container" id="chart-connections"></div>
+    </div>
+  </div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

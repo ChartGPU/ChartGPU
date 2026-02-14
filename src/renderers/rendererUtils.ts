@@ -195,17 +195,19 @@ export function createRenderPipeline(device: GPUDevice, config: RenderPipelineCo
 
   // Layout selection:
   // - Default is `'auto'`
-  // - If `bindGroupLayouts` are provided, we historically created an explicit pipeline layout.
-  //   **IMPORTANT**: When `pipelineCache` is enabled, we force `'auto'` to maximize cross-chart
-  //   pipeline reuse. Explicit layouts created per-chart would prevent cache hits even when
-  //   bind group layouts are structurally identical. This is a deliberate trade-off:
-  //   - With cache: 'auto' layout -> better dedupe, WebGPU driver handles layout internally
-  //   - Without cache: explicit layout -> more predictable (but no cross-chart reuse anyway)
+  // - If `bindGroupLayouts` are provided, create an explicit pipeline layout.
+  //   NOTE: We always create an explicit layout when bindGroupLayouts are given,
+  //   even with pipelineCache. Using 'auto' with pipelineCache would improve
+  //   pipeline dedup (structurally identical layouts from different charts would
+  //   share one cached pipeline), BUT it breaks bind group compatibility:
+  //   bind groups created with manually-created GPUBindGroupLayout objects are
+  //   NOT compatible with auto-inferred pipeline layouts. Shader module caching
+  //   (the most expensive part) still works regardless of layout strategy.
   let layout: GPUPipelineLayout | 'auto';
   if (config.layout != null) {
     layout = config.layout;
   } else if (config.bindGroupLayouts) {
-    layout = pipelineCache ? 'auto' : device.createPipelineLayout({ bindGroupLayouts: [...config.bindGroupLayouts] });
+    layout = device.createPipelineLayout({ bindGroupLayouts: [...config.bindGroupLayouts] });
   } else {
     layout = 'auto';
   }

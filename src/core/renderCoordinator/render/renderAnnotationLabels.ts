@@ -222,6 +222,17 @@ export function renderAnnotationLabels(
       continue;
     }
 
+    // Cull annotations that are far outside the visible plot area (performance + visual cleanup)
+    const cullMargin = 200; // px margin for labels near edges
+    if (
+      anchorXCss < plotLeftCss - cullMargin ||
+      anchorXCss > plotLeftCss + plotWidthCss + cullMargin ||
+      anchorYCss < plotTopCss - cullMargin ||
+      anchorYCss > plotTopCss + plotHeightCss + cullMargin
+    ) {
+      continue;
+    }
+
     const dx = labelCfg?.offset?.[0] ?? 0;
     const dy = labelCfg?.offset?.[1] ?? 0;
     const x = anchorXCss + dx;

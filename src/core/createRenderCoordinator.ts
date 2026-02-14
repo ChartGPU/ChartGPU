@@ -1106,7 +1106,7 @@ export function createRenderCoordinator(
   const overlayContainer = isHTMLCanvasElement(gpuContext.canvas) ? gpuContext.canvas.parentElement : null;
   const axisLabelOverlay: TextOverlay | null = overlayContainer ? createTextOverlay(overlayContainer) : null;
   // Dedicated overlay for annotations (do not reuse axis label overlay).
-  const annotationOverlay: TextOverlay | null = overlayContainer ? createTextOverlay(overlayContainer) : null;
+  const annotationOverlay: TextOverlay | null = overlayContainer ? createTextOverlay(overlayContainer, { clip: true }) : null;
 
   const handleSeriesToggle = (seriesIndex: number, sliceIndex?: number): void => {
     if (disposed) return;
@@ -1232,13 +1232,20 @@ export function createRenderCoordinator(
 
     const t = clamp01(t01);
     for (let i = 0; i < n; i++) {
+      const xFrom = getX(fromData, i);
+      const xTo = getX(toData, i);
       const yFrom = getY(fromData, i);
       const yTo = getY(toData, i);
+      // Interpolate both x and y so scatter (and any series with shifting x) animates smoothly.
+      // For series where x doesn't change (line, area, bar with fixed indices), lerp(x, x, t) = x.
+      const x = Number.isFinite(xFrom) && Number.isFinite(xTo) ? lerp(xFrom, xTo, t) : xTo;
       const y = Number.isFinite(yFrom) && Number.isFinite(yTo) ? lerp(yFrom, yTo, t) : yTo;
       const p = out[i]!;
       if (isTupleDataPoint(p)) {
+        (p as unknown as number[])[0] = x;
         (p as unknown as number[])[1] = y;
       } else {
+        (p as any).x = x;
         (p as any).y = y;
       }
     }
@@ -2556,17 +2563,22 @@ export function createRenderCoordinator(
     const likelyDataChanged = didSeriesDataLikelyChange(currentOptions.series, resolvedOptions.series);
 
     currentOptions = resolvedOptions;
-    runtimeBaseSeries = resolvedOptions.series;
-    renderSeries = resolvedOptions.series;
-    // Recompute visible y-bounds from the new series
+
+    if (likelyDataChanged) {
+      // Series data or structure changed — full reset of runtime data state.
+      runtimeBaseSeries = resolvedOptions.series;
+      renderSeries = resolvedOptions.series;
+      gpuSeriesKindByIndex = new Array(resolvedOptions.series.length).fill('unknown');
+      lastSampledData = new Array(resolvedOptions.series.length).fill(null);
+      cancelZoomResampleDebounce();
+      zoomResampleDue = false;
+      cancelScheduledFlush();
+      initRuntimeSeriesFromOptions();
+    }
+
+    // Always refresh: annotations, themes, tooltip config, etc. may have changed.
     cachedVisibleYBounds = null;
-    gpuSeriesKindByIndex = new Array(resolvedOptions.series.length).fill('unknown');
-    lastSampledData = new Array(resolvedOptions.series.length).fill(null);
     legend?.update(resolvedOptions.series, resolvedOptions.theme);
-    cancelZoomResampleDebounce();
-    zoomResampleDue = false;
-    cancelScheduledFlush();
-    initRuntimeSeriesFromOptions();
     recomputeRuntimeBaseSeries();
     updateZoom();
     recomputeRenderSeries();

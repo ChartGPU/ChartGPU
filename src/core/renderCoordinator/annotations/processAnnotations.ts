@@ -348,6 +348,17 @@ export function processAnnotations(context: AnnotationContext): AnnotationResult
       continue;
     }
 
+    // Cull labels that are far outside the visible plot area
+    const cullMargin = 200;
+    if (
+      anchorXCss < plotBounds.leftCss - cullMargin ||
+      anchorXCss > plotBounds.leftCss + plotBounds.widthCss + cullMargin ||
+      anchorYCss < plotBounds.topCss - cullMargin ||
+      anchorYCss > plotBounds.topCss + plotBounds.heightCss + cullMargin
+    ) {
+      continue;
+    }
+
     // Apply label offset
     const dx = labelCfg?.offset?.[0] ?? 0;
     const dy = labelCfg?.offset?.[1] ?? 0;
