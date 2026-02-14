@@ -27,427 +27,85 @@ Each chart creates its own `GPUDevice` independently (~50-100ms initialization p
 
 ## Shared GPUDevice
 
-For multi-chart dashboards, share a single `GPUDevice` across all charts to reduce GPU memory overhead and avoid repeated initialization.
-
-### Basic Pattern
+Share a single `GPUDevice` across all charts to reduce GPU memory overhead and avoid repeated initialization. You must destroy the shared device after disposing all charts.
 
 ```typescript
 import { ChartGPU } from 'chartgpu';
 
-// 1. Create a shared GPUAdapter and GPUDevice once
-const adapter = await navigator.gpu.requestAdapter({ 
-  powerPreference: 'high-performance' 
-});
+// Create shared device
+const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
 if (!adapter) throw new Error('No WebGPU adapter available');
-
 const device = await adapter.requestDevice();
 
-// 2. Pass shared device to all charts via third parameter
-const chart1 = await ChartGPU.create(container1, chartOptions1, { adapter, device });
-const chart2 = await ChartGPU.create(container2, chartOptions2, { adapter, device });
-const chart3 = await ChartGPU.create(container3, chartOptions3, { adapter, device });
-
-// 3. Cleanup: dispose all charts first, then destroy the shared device
-chart1.dispose();
-chart2.dispose();
-chart3.dispose();
-
-device.destroy();
+// Pass shared context as third parameter
+const chart1 = await ChartGPU.create(container1, options1, { adapter, device });
+const chart2 = await ChartGPU.create(container2, options2, { adapter, device });
 ```
 
-**Important:** The third parameter to `ChartGPU.create()` is `{ adapter: GPUAdapter, device: GPUDevice }`. Both fields are required when using shared device mode.
+## Pipeline Cache
 
-### Ownership and Lifecycle
-
-**Charts with injected devices do NOT destroy the device on dispose:**
-
-- **Your responsibility:** Destroy the shared device after all charts are disposed
-- **Canvas unconfiguration:** Always happens on `dispose()`, regardless of device ownership (releases textures)
-- **Cleanup order:** Dispose all charts first → then `device.destroy()`
+Share a pipeline cache to avoid redundant GPU shader compilation when multiple charts use the same series types. Cache hit rate typically exceeds 90% after the first chart initialization.
 
 ```typescript
-// Cleanup pattern
-async function cleanupDashboard(charts: ChartGPUInstance[], device: GPUDevice) {
-  // 1. Dispose all charts (unconfigures canvases, releases resources)
-  for (const chart of charts) {
-    chart.dispose();
-  }
-  
-  // 2. Now safe to destroy the shared device
-  device.destroy();
-}
+import { ChartGPU, createPipelineCache } from 'chartgpu';
+
+const pipelineCache = createPipelineCache(device);
+const sharedContext = { adapter, device, pipelineCache };
+
+const chart1 = await ChartGPU.create(container1, options1, sharedContext);
+const chart2 = await ChartGPU.create(container2, options2, sharedContext);
 ```
-
-### Benefits
-
-**Shared device advantages:**
-
-- **Faster initialization:** Avoids N independent GPU device setups (~50-100ms each)
-- **Reduced memory pressure:** Shared buffer pools and pipeline caches
-- **Single capability negotiation:** One adapter request for all charts
-- **WebGPU spec compliant:** One `GPUDevice` can configure multiple `GPUCanvasContext`s
-
-**When to use:**
-
-- Dashboards with 3+ charts (overhead vs. benefit tradeoff)
-- Real-time monitoring dashboards with many synchronized charts
-- Applications already managing a WebGPU device for other purposes
 
 ## Chart Sync
 
-Connect multiple charts to synchronize crosshair, tooltip, and zoom/pan interactions using `connectCharts()`.
-
-### Crosshair + Tooltip Sync (default)
+Synchronize crosshair, tooltip, and zoom/pan interactions using `connectCharts()`. The function returns a `disconnect` function for cleanup.
 
 ```typescript
-import { ChartGPU, connectCharts } from 'chartgpu';
+import { connectCharts } from 'chartgpu';
 
-const chart1 = await ChartGPU.create(container1, options1);
-const chart2 = await ChartGPU.create(container2, options2);
-const chart3 = await ChartGPU.create(container3, options3);
-
-// Sync crosshair and tooltip across all charts
+// connectCharts returns a disconnect function
 const disconnect = connectCharts([chart1, chart2, chart3], {
-  syncCrosshair: true  // default, can be omitted
+  syncCrosshair: true,  // default
+  syncZoom: true        // requires dataZoom on all charts
 });
 
 // Later: disconnect sync
 disconnect();
 ```
 
-When the user hovers over any chart, all connected charts show the crosshair at the same x-coordinate (in domain units).
+Zoom sync ignores `'auto-scroll'` zoom changes by design to prevent streaming charts from shifting other charts' views.
 
-### Zoom + Pan Sync
+## Streaming Data
 
-```typescript
-// Sync both zoom and pan gestures
-const disconnect = connectCharts([chart1, chart2, chart3], {
-  syncCrosshair: true,  // default
-  syncZoom: true        // opt-in
-});
-```
-
-**Important requirements for zoom sync:**
-
-- **All charts must have `dataZoom` configured** (otherwise `setZoomRange()` is a no-op)
-- Each chart should configure data zoom (e.g., `dataZoom: [{ type: 'inside' }, { type: 'slider' }]`)
-
-Example with zoom sync:
+Each chart streams data independently using `appendData()`. Always batch multiple points into a single call for optimal performance.
 
 ```typescript
-const chartA = await ChartGPU.create(containerA, {
-  series: [{ type: 'line', data: dataA }],
-  dataZoom: [
-    { type: 'inside' },
-    { type: 'slider' }
-  ]
-});
+// Batch append (single render)
+const batch = dataPoints.map(p => [p.timestamp, p.value]);
+chart.appendData(0, batch);
 
-const chartB = await ChartGPU.create(containerB, {
-  series: [{ type: 'line', data: dataB }],
-  dataZoom: [
-    { type: 'inside' },
-    { type: 'slider' }
-  ]
-});
-
-const disconnect = connectCharts([chartA, chartB], {
-  syncZoom: true
-});
-```
-
-### Auto-Scroll and Sync
-
-**Important:** Zoom sync **ignores `'auto-scroll'` zoom changes**. This is by design to prevent streaming charts from shifting other charts' views.
-
-```typescript
-// Streaming chart with auto-scroll
-const streamingChart = await ChartGPU.create(container1, {
-  series: [{ type: 'line', data: [] }],
-  autoScroll: true,  // Enables auto-scroll on streaming data
-  dataZoom: [{ type: 'inside' }, { type: 'slider' }]
-});
-
-// Static chart synced with streaming chart
-const staticChart = await ChartGPU.create(container2, {
-  series: [{ type: 'line', data: staticData }],
-  dataZoom: [{ type: 'inside' }, { type: 'slider' }]
-});
-
-connectCharts([streamingChart, staticChart], { syncZoom: true });
-
-// Auto-scroll adjustments in streamingChart do NOT propagate to staticChart
-streamingChart.appendData(0, newPoints);  // Auto-scroll happens independently
-```
-
-### Disconnecting Sync
-
-```typescript
-const disconnect = connectCharts([chart1, chart2, chart3], {
-  syncCrosshair: true,
-  syncZoom: true
-});
-
-// Later: remove sync listeners
-disconnect();
-
-// On disconnect, ChartGPU clears synced crosshair/tooltip state
-// but does NOT reset zoom (preserves user's zoom level)
-```
-
-## Shared Device + Pipeline Cache + Sync
-
-The production pattern: combine shared device, pipeline cache, and chart sync for optimal dashboard performance.
-
-```typescript
-import { ChartGPU, connectCharts, createPipelineCache } from 'chartgpu';
-
-// 1. Create shared device + pipeline cache
-const adapter = await navigator.gpu.requestAdapter({ 
-  powerPreference: 'high-performance' 
-});
-if (!adapter) throw new Error('No WebGPU adapter available');
-const device = await adapter.requestDevice();
-const pipelineCache = createPipelineCache(device);
-
-// 2. Create charts with shared device + pipeline cache
-const chart1 = await ChartGPU.create(container1, {
-  series: [{ type: 'line', data: dataset1 }],
-  dataZoom: [{ type: 'inside' }, { type: 'slider' }]
-}, { adapter, device, pipelineCache });
-
-const chart2 = await ChartGPU.create(container2, {
-  series: [{ type: 'line', data: dataset2 }],
-  dataZoom: [{ type: 'inside' }, { type: 'slider' }]
-}, { adapter, device, pipelineCache });
-
-const chart3 = await ChartGPU.create(container3, {
-  series: [{ type: 'bar', data: dataset3 }],
-  dataZoom: [{ type: 'inside' }, { type: 'slider' }]
-}, { adapter, device, pipelineCache });
-
-// 3. Connect charts for interaction sync
-const disconnect = connectCharts([chart1, chart2, chart3], {
-  syncCrosshair: true,
-  syncZoom: true
-});
-
-// 4. Full cleanup
-function cleanup() {
-  disconnect();           // Remove sync listeners
-  chart1.dispose();
-  chart2.dispose();
-  chart3.dispose();
-  device.destroy();       // Destroy shared device last
-}
-```
-
-## Shared Device + Pipeline Cache
-
-When you have many charts of the **same series types** (common in dashboards), you can additionally share a **pipeline cache** to dedupe WebGPU shader modules and render pipelines across charts.
-
-```ts
-import { ChartGPU, createPipelineCache } from 'chartgpu';
-
-// 1. Create shared device once
-const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-if (!adapter) throw new Error('No WebGPU adapter available');
-const device = await adapter.requestDevice();
-
-// 2. Create pipeline cache bound to that device
-const pipelineCache = createPipelineCache(device);
-
-// 3. Create charts with shared device + cache
-const chart1 = await ChartGPU.create(container1, chartOptions1, { adapter, device, pipelineCache });
-const chart2 = await ChartGPU.create(container2, chartOptions2, { adapter, device, pipelineCache });
-const chart3 = await ChartGPU.create(container3, chartOptions3, { adapter, device, pipelineCache });
-
-// Optional: inspect hit/miss stats
-console.log(pipelineCache.getStats());
-```
-
-**Notes:**
-- The cache is **opt-in**. If you omit `pipelineCache`, behavior is unchanged.
-- The cache is scoped to a single `GPUDevice` and validates device mismatches.
-- It dedupes **shader modules**, **render pipelines**, and **compute pipelines** (including scatter-density binning/reduction) for maximum cross-chart reuse.
-
-## Device Loss Handling & Recovery
-
-WebGPU devices can be lost due to GPU driver crashes, system sleep, or resource exhaustion. Charts with injected (shared) devices emit a `'deviceLost'` event for manual recovery.
-
-### Device Lost Event
-
-```typescript
-chart.on('deviceLost', (info) => {
-  console.error('Device lost:', info.reason, info.message);
-  // info.reason: 'unknown' | 'destroyed'
-  // info.message: Human-readable description from browser
-});
-```
-
-**Important:**
-
-- **Only charts with injected devices emit `'deviceLost'`** (charts with self-owned devices handle loss internally)
-- **Device loss is NOT recoverable** — must create a new device
-- **Recovery flow:** Dispose all charts → destroy old device → request new adapter/device → recreate charts
-
-### Full Recovery Pattern
-
-```typescript
-import { ChartGPU, connectCharts, createPipelineCache, type ChartGPUInstance, type PipelineCache } from 'chartgpu';
-
-let charts: ChartGPUInstance[] = [];
-let shared: { adapter: GPUAdapter; device: GPUDevice; pipelineCache: PipelineCache };
-let disconnect: (() => void) | null = null;
-
-async function createSharedContext(): Promise<{ adapter: GPUAdapter; device: GPUDevice; pipelineCache: PipelineCache }> {
-  const adapter = await navigator.gpu.requestAdapter({ 
-    powerPreference: 'high-performance' 
-  });
-  if (!adapter) throw new Error('No WebGPU adapter available');
-  const device = await adapter.requestDevice();
-  const pipelineCache = createPipelineCache(device);
-  return { adapter, device, pipelineCache };
-}
-
-async function initDashboard() {
-  // 1. Create shared device + pipeline cache
-  shared = await createSharedContext();
-  
-  // 2. Create charts
-  charts = [
-    await ChartGPU.create(container1, chartOptions1, shared),
-    await ChartGPU.create(container2, chartOptions2, shared),
-    await ChartGPU.create(container3, chartOptions3, shared)
-  ];
-  
-  // 3. Connect charts
-  disconnect = connectCharts(charts, {
-    syncCrosshair: true,
-    syncZoom: true
-  });
-  
-  // 4. Attach device loss handlers
-  charts.forEach(chart => {
-    chart.on('deviceLost', handleDeviceLoss);
-  });
-}
-
-async function handleDeviceLoss(info: { reason: string; message: string }) {
-  console.error('Device lost - recovering...', info);
-  
-  // 1. Disconnect sync
-  if (disconnect) {
-    disconnect();
-    disconnect = null;
-  }
-  
-  // 2. Dispose all charts
-  await Promise.all(charts.map(c => c.dispose()));
-  charts = [];
-  
-  // 3. Destroy the lost device (safe even if already destroyed)
-  shared.device.destroy();
-  
-  // 4. Recreate everything
-  await initDashboard();
-  
-  console.log('Dashboard recovered successfully');
-}
-
-// Initialize
-await initDashboard();
-```
-
-## Streaming Data in Dashboards
-
-Each chart can stream data independently using `appendData()`. Shared device doesn't affect streaming behavior.
-
-### Independent Streaming
-
-```typescript
-// Create streaming charts with shared device
-const chart1 = await ChartGPU.create(container1, {
-  series: [{ type: 'line', data: [] }],
-  autoScroll: true,
-  dataZoom: [{ type: 'inside' }]
-}, { adapter, device });
-
-const chart2 = await ChartGPU.create(container2, {
-  series: [{ type: 'line', data: [] }],
-  autoScroll: true,
-  dataZoom: [{ type: 'inside' }]
-}, { adapter, device });
-
-// Stream different data to each chart
-setInterval(() => {
-  const timestamp = Date.now();
-  
-  // Chart 1: CPU metrics
-  chart1.appendData(0, [[timestamp, Math.random() * 100]]);
-  
-  // Chart 2: Memory metrics
-  chart2.appendData(0, [[timestamp, Math.random() * 8000]]);
-}, 1000);
-```
-
-### Streaming with Typed Arrays
-
-Use `Float32Array` interleaved format for zero-copy GPU upload:
-
-```typescript
-// Generate 10 new points
-const count = 10;
+// Or use typed arrays for zero-copy transfer
 const interleaved = new Float32Array(count * 2);
-const baseTime = Date.now();
-
 for (let i = 0; i < count; i++) {
-  interleaved[i * 2] = baseTime + i * 100;       // x (timestamp)
-  interleaved[i * 2 + 1] = Math.random() * 100;  // y (value)
+  interleaved[i * 2] = timestamp;
+  interleaved[i * 2 + 1] = value;
 }
-
 chart.appendData(0, interleaved);
 ```
 
-### Coordinated Streaming
-
-Stream correlated data to multiple synced charts:
-
-```typescript
-function streamDashboard(metrics: { timestamp: number; cpu: number; memory: number; disk: number }) {
-  // All charts receive the same timestamp for alignment
-  cpuChart.appendData(0, [[metrics.timestamp, metrics.cpu]]);
-  memoryChart.appendData(0, [[metrics.timestamp, metrics.memory]]);
-  diskChart.appendData(0, [[metrics.timestamp, metrics.disk]]);
-}
-
-// Fetch and stream data
-setInterval(async () => {
-  const metrics = await fetchSystemMetrics();
-  streamDashboard(metrics);
-}, 1000);
-```
-
-**Tip:** Use `autoScroll: true` for real-time tailing behavior in monitoring dashboards.
-
 ## Resize Handling
 
-Use `ResizeObserver` to detect container size changes and call `chart.resize()` in `requestAnimationFrame`.
-
-### Pattern for Multiple Charts
+Use `ResizeObserver` to detect container size changes and call `chart.resize()` in `requestAnimationFrame` to debounce resize events.
 
 ```typescript
 const charts = [chart1, chart2, chart3];
 const containers = [container1, container2, container3];
 
-// Create one ResizeObserver per container
 const observers = containers.map((container, i) => {
   let rafId: number | null = null;
   
   const observer = new ResizeObserver(() => {
-    // Debounce resize with rAF
     if (rafId !== null) cancelAnimationFrame(rafId);
-    
     rafId = requestAnimationFrame(() => {
       charts[i].resize();
       rafId = null;
@@ -457,305 +115,46 @@ const observers = containers.map((container, i) => {
   observer.observe(container);
   return observer;
 });
-
-// Cleanup: disconnect all observers
-function cleanup() {
-  observers.forEach(obs => obs.disconnect());
-  charts.forEach(chart => chart.dispose());
-}
 ```
-
-### Container Layout Tips
-
-**CSS Grid (recommended for dashboards):**
-
-```css
-.dashboard {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
-  gap: 16px;
-  height: 100vh;
-}
-
-.chart-container {
-  min-width: 0;  /* Prevent overflow */
-  min-height: 0;
-}
-```
-
-**Flexbox:**
-
-```css
-.dashboard {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  height: 100vh;
-}
-
-.chart-container {
-  flex: 1;
-  min-height: 0;  /* Critical for flex sizing */
-}
-```
-
-**Tip:** Always set `min-width: 0` and `min-height: 0` on chart containers inside grid/flex layouts to prevent overflow issues.
 
 ## Cleanup & Disposal
 
-Proper cleanup prevents memory leaks and resource exhaustion. Follow this order:
-
-### Full Cleanup Checklist
+Proper cleanup prevents memory leaks and resource exhaustion. Follow this critical order:
 
 ```typescript
-import { ChartGPU, connectCharts, createPipelineCache, type ChartGPUInstance, type PipelineCache } from 'chartgpu';
-
-class Dashboard {
-  private charts: ChartGPUInstance[] = [];
-  private device: GPUDevice | null = null;
-  private pipelineCache: PipelineCache | null = null;
-  private disconnect: (() => void) | null = null;
-  private observers: ResizeObserver[] = [];
+function cleanupDashboard(
+  disconnect: () => void,
+  observers: ResizeObserver[],
+  charts: ChartGPUInstance[],
+  device: GPUDevice
+) {
+  // 1. Disconnect sync groups (remove event listeners)
+  disconnect();
   
-  async init() {
-    // Create shared device + pipeline cache
-    const adapter = await navigator.gpu.requestAdapter({ 
-      powerPreference: 'high-performance' 
-    });
-    if (!adapter) throw new Error('No WebGPU adapter available');
-    this.device = await adapter.requestDevice();
-    this.pipelineCache = createPipelineCache(this.device);
-    
-    // Create charts with shared device + pipeline cache
-    this.charts = [
-      await ChartGPU.create(container1, options1, { 
-        adapter, 
-        device: this.device,
-        pipelineCache: this.pipelineCache
-      }),
-      await ChartGPU.create(container2, options2, { 
-        adapter, 
-        device: this.device,
-        pipelineCache: this.pipelineCache
-      }),
-      await ChartGPU.create(container3, options3, { 
-        adapter, 
-        device: this.device,
-        pipelineCache: this.pipelineCache
-      })
-    ];
-    
-    // Connect charts
-    this.disconnect = connectCharts(this.charts, {
-      syncCrosshair: true,
-      syncZoom: true
-    });
-    
-    // Set up resize observers
-    const containers = [container1, container2, container3];
-    this.charts.forEach((chart, i) => {
-      const observer = new ResizeObserver(() => {
-        requestAnimationFrame(() => chart.resize());
-      });
-      observer.observe(containers[i]);
-      this.observers.push(observer);
-    });
-  }
+  // 2. Disconnect ResizeObservers
+  observers.forEach(obs => obs.disconnect());
   
-  dispose() {
-    // 1. Disconnect sync groups
-    if (this.disconnect) {
-      this.disconnect();
-      this.disconnect = null;
-    }
-    
-    // 2. Disconnect ResizeObservers
-    this.observers.forEach(obs => obs.disconnect());
-    this.observers = [];
-    
-    // 3. Dispose each chart
-    this.charts.forEach(chart => chart.dispose());
-    this.charts = [];
-    
-    // 4. Destroy shared device (after all charts disposed)
-    if (this.device) {
-      this.device.destroy();
-      this.device = null;
-    }
-    
-    // 5. Clear pipeline cache reference (auto-clears on device loss)
-    this.pipelineCache = null;
-  }
+  // 3. Dispose each chart (unconfigure canvases, release GPU resources)
+  charts.forEach(chart => chart.dispose());
+  
+  // 4. Destroy shared device (after all charts disposed)
+  device.destroy();
 }
-
-// Usage
-const dashboard = new Dashboard();
-await dashboard.init();
-
-// Later: cleanup
-dashboard.dispose();
 ```
 
-**Critical order:**
+## Streaming Dashboard Example
 
-1. Disconnect sync groups (remove event listeners)
-2. Disconnect ResizeObservers (remove resize listeners)
-3. Dispose each chart (unconfigure canvases, release GPU resources)
-4. Destroy shared device (if using shared device mode)
+A production example demonstrating a 5-chart APM dashboard with shared device, chart sync, real-time streaming at 5 Hz, and programmatic annotations triggered by statistical anomaly detection. The data generator produces a causal incident narrative: memory leak → GC pressure → CPU spikes → latency increase → connection pool saturation → throughput drop → error cascade over ~180 seconds.
 
-## Performance Tips
+**Location:** `examples/streaming-dashboard/`
 
-Optimize multi-chart dashboards with these strategies:
+**Files:**
+- **`main.ts`** — Orchestrator: shared device/cache, chart creation, sync, streaming loop, cleanup
+- **`annotations.ts`** — 6 annotation triggers mapping detectors to chart annotations
+- **`dataGenerator.ts`** — Correlated metrics generation simulating a memory leak incident
+- **`detectors.ts`** — Statistical detectors: z-score, hysteresis, rate-of-change, rolling stats
 
-### Use Shared Device for 3+ Charts
-
-```typescript
-// BAD: Each chart creates its own device
-const charts = await Promise.all([
-  ChartGPU.create(container1, options1),  // ~50-100ms initialization
-  ChartGPU.create(container2, options2),  // ~50-100ms initialization
-  ChartGPU.create(container3, options3),  // ~50-100ms initialization
-  ChartGPU.create(container4, options4),  // ~50-100ms initialization
-]);
-// Total: ~200-400ms + memory overhead
-
-// GOOD: Share one device across all charts
-const adapter = await navigator.gpu.requestAdapter({ 
-  powerPreference: 'high-performance' 
-});
-const device = await adapter.requestDevice();  // ~50-100ms once
-
-const charts = await Promise.all([
-  ChartGPU.create(container1, options1, { adapter, device }),
-  ChartGPU.create(container2, options2, { adapter, device }),
-  ChartGPU.create(container3, options3, { adapter, device }),
-  ChartGPU.create(container4, options4, { adapter, device })
-]);
-// Total: ~50-100ms + reduced memory overhead
-```
-
-### Use Pipeline Cache for Shader/Pipeline Deduplication
-
-When multiple charts use the same series types (common in monitoring dashboards), share a pipeline cache to avoid redundant GPU shader compilation:
-
-```typescript
-import { ChartGPU, createPipelineCache } from 'chartgpu';
-
-// Create shared device + pipeline cache
-const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-const device = await adapter!.requestDevice();
-const pipelineCache = createPipelineCache(device);
-
-// All charts reuse compiled shaders and pipelines
-const charts = await Promise.all([
-  ChartGPU.create(container1, options1, { adapter, device, pipelineCache }),
-  ChartGPU.create(container2, options2, { adapter, device, pipelineCache }),
-  ChartGPU.create(container3, options3, { adapter, device, pipelineCache }),
-  ChartGPU.create(container4, options4, { adapter, device, pipelineCache }),
-]);
-
-// Monitor cache effectiveness
-const stats = pipelineCache.getStats();
-console.log(`Shader hits: ${stats.shaderModules.hits}/${stats.shaderModules.total}`);
-console.log(`Render pipeline hits: ${stats.renderPipelines.hits}/${stats.renderPipelines.total}`);
-console.log(`Compute pipeline hits: ${stats.computePipelines.hits}/${stats.computePipelines.total}`);
-```
-
-### Use High-Performance Power Preference
-
-```typescript
-const adapter = await navigator.gpu.requestAdapter({ 
-  powerPreference: 'high-performance'  // Prioritize performance over battery
-});
-```
-
-### Debounce Resize with rAF
-
-```typescript
-// GOOD: Debounce with requestAnimationFrame
-let rafId: number | null = null;
-
-resizeObserver = new ResizeObserver(() => {
-  if (rafId !== null) cancelAnimationFrame(rafId);
-  
-  rafId = requestAnimationFrame(() => {
-    chart.resize();
-    rafId = null;
-  });
-});
-```
-
-### Use connectCharts Instead of Manual Wiring
-
-```typescript
-// BAD: Manual event wiring (error-prone, harder to cleanup)
-chart1.on('crosshairMove', ({ x }) => {
-  if (x !== null) chart2.setCrosshairX(x);
-});
-chart2.on('crosshairMove', ({ x }) => {
-  if (x !== null) chart1.setCrosshairX(x);
-});
-
-// GOOD: Use connectCharts (handles sync loops, cleanup)
-const disconnect = connectCharts([chart1, chart2], {
-  syncCrosshair: true
-});
-```
-
-### Batch Streaming Data
-
-```typescript
-// BAD: Many small appends (triggers multiple renders)
-dataPoints.forEach(point => {
-  chart.appendData(0, [point]);
-});
-
-// GOOD: Batch append (single render)
-chart.appendData(0, dataPoints);
-```
-
-### Optimize Streaming Batch Size
-
-For real-time dashboards, balance update frequency with batch size:
-
-```typescript
-// Example: Collect metrics for 1 second, then batch append
-const buffer: Array<[number, number]> = [];
-
-function collectMetric(timestamp: number, value: number) {
-  buffer.push([timestamp, value]);
-  
-  if (buffer.length >= 10) {  // Flush every 10 points
-    chart.appendData(0, buffer);
-    buffer.length = 0;
-  }
-}
-
-setInterval(() => {
-  collectMetric(Date.now(), Math.random() * 100);
-}, 100);
-```
-
-**Tip:** For 60fps dashboards, aim for 16ms frame budget. Use `chart.getPerformanceMetrics()` to monitor frame times.
-
-### Monitor Performance
-
-```typescript
-// Subscribe to performance updates
-const unsubscribe = chart.onPerformanceUpdate((metrics) => {
-  console.log('FPS:', metrics.fps);
-  console.log('Frame time (avg):', metrics.frameTime.avg, 'ms');
-  console.log('Frame drops:', metrics.frameDrops.total);
-  
-  if (metrics.fps < 30) {
-    console.warn('Performance degradation detected');
-  }
-});
-
-// Later: cleanup
-unsubscribe();
-```
+See the [full source code](../../examples/streaming-dashboard/) for the complete implementation pattern.
 
 ## See Also
 
@@ -763,3 +162,5 @@ unsubscribe();
 - [GPU Context](../api/gpu-context.md) — `GPUContextOptions`, shared device support
 - [Interaction](../api/interaction.md) — Chart sync, events, `connectCharts()`
 - [Options](../api/options.md) — `ChartGPUOptions`, series config, data zoom
+- [Annotations API](../api/annotations.md) — Programmatic annotations, authoring tools
+- [Streaming Dashboard Example](../../examples/streaming-dashboard/) — Full source code
