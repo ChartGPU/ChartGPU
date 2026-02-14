@@ -10,6 +10,18 @@ const showError = (message: string): void => {
   el.style.display = 'block';
 };
 
+// Shared dark theme with a deep background matching the dashboard panels
+const darkTheme = {
+  backgroundColor: '#09090d',
+  textColor: '#b0b0b0',
+  axisLineColor: 'rgba(255,255,255,0.15)',
+  axisTickColor: 'rgba(255,255,255,0.35)',
+  gridLineColor: 'rgba(255,255,255,0.06)',
+  colorPalette: ['#00E5FF', '#FF2D95', '#B026FF', '#00F5A0', '#FFD300', '#FF6B00', '#4D5BFF', '#FF3D3D'],
+  fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+  fontSize: 11,
+};
+
 async function main(): Promise<void> {
   // Request shared GPU resources with high performance
   const adapter = await navigator.gpu?.requestAdapter({
@@ -44,6 +56,7 @@ async function main(): Promise<void> {
   const chartConfigs: ChartGPUOptions[] = [
     // Chart 0 — Response Latency (P50 / P95 / P99)
     {
+      theme: darkTheme,
       grid: { left: 60, right: 16, top: 24, bottom: 32 },
       xAxis: { type: 'time' },
       yAxis: { type: 'value', name: 'ms' },
@@ -59,6 +72,7 @@ async function main(): Promise<void> {
     },
     // Chart 1 — Request Throughput
     {
+      theme: darkTheme,
       grid: { left: 70, right: 16, top: 24, bottom: 32 },
       xAxis: { type: 'time' },
       yAxis: { type: 'value', name: 'req/s' },
@@ -72,6 +86,7 @@ async function main(): Promise<void> {
     },
     // Chart 2 — CPU & Memory
     {
+      theme: darkTheme,
       grid: { left: 60, right: 16, top: 24, bottom: 32 },
       xAxis: { type: 'time' },
       yAxis: { type: 'value', name: '%', min: 0, max: 100 },
@@ -86,6 +101,7 @@ async function main(): Promise<void> {
     },
     // Chart 3 — Error Rate
     {
+      theme: darkTheme,
       grid: { left: 60, right: 16, top: 24, bottom: 32 },
       xAxis: { type: 'time' },
       yAxis: { type: 'value', name: 'err/s' },
@@ -100,6 +116,7 @@ async function main(): Promise<void> {
     },
     // Chart 4 — Connection Pool
     {
+      theme: darkTheme,
       grid: { left: 60, right: 16, top: 24, bottom: 32 },
       xAxis: { type: 'time' },
       yAxis: { type: 'value', name: 'conns', min: 0, max: 220 },
