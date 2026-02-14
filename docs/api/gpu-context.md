@@ -46,6 +46,7 @@ ChartGPU supports using a **shared GPUDevice** across multiple contexts for effi
 - Reduce GPU memory overhead
 - Coordinate resource management centrally
 - Support multi-canvas rendering scenarios
+- Optional: share a pipeline cache to dedupe shader modules + render pipelines across charts — see [Pipeline cache](./chart.md#pipeline-cache-cgpu-pipeline-cache)
 
 **Lifecycle and ownership:**
 - When a **shared device** is injected (via `GPUContextOptions.adapter` + `GPUContextOptions.device`, or `ChartGPU.create()` third parameter), the context does **NOT** take ownership

@@ -204,13 +204,12 @@ See [render-coordinator-summary.md](render-coordinator-summary.md) for the essen
 
 - **Factory**: `createRenderCoordinator(gpuContext: GPUContextLike, options: ResolvedChartGPUOptions, callbacks?: RenderCoordinatorCallbacks): RenderCoordinator`
 
-- **Callbacks (optional)**: `RenderCoordinatorCallbacks` supports render-on-demand integration and an optional no-DOM mode via DOM overlay separation. See [DOM Overlay Separation (No-DOM mode)](#dom-overlay-separation-no-dom-mode) below and [render-coordinator-summary.md](render-coordinator-summary.md#rendercoordinatorcallbacks) for the type definition.
+- **Callbacks (optional)**: `RenderCoordinatorCallbacks` supports render-on-demand integration (via `onRequestRender`) and optional **pipeline caching** (via `pipelineCache`, see CGPU-PIPELINE-CACHE). See [render-coordinator-summary.md](render-coordinator-summary.md#rendercoordinatorcallbacks) for the type definition.
 
 **`RenderCoordinator` methods (essential):**
 
 - **`setOptions(resolvedOptions: ResolvedChartGPUOptions): void`**: updates the current resolved chart options; adjusts per-series renderer/buffer allocations when series count changes.
 - **`render(): void`**: performs a full frame by computing layout (`GridArea`), deriving clip-space scales (`xScale`, `yScale`), preparing renderers, uploading series data via the internal data store, and recording/submitting a render pass.
-- **`handlePointerEvent(event: PointerEventData): void`**: processes pointer events when `domOverlays: false` (no-DOM mode). See [`handlePointerEvent()`](#rendercoordinatorhandlepointerevent) below.
 - **`dispose(): void`**: destroys renderer resources and the internal data store; safe to call multiple times.
 
 **Responsibilities (essential):**
@@ -225,6 +224,7 @@ See [render-coordinator-summary.md](render-coordinator-summary.md) for the essen
 - **Interaction overlays (internal)**: the render coordinator creates an internal [event manager](#event-manager-internal), an internal [crosshair renderer](#crosshair-renderer-internal--contributor-notes), and an internal [highlight renderer](#highlight-renderer-internal--contributor-notes). Pointer `mousemove`/`mouseleave` updates interaction state and toggles overlay visibility; when provided, `callbacks.onRequestRender?.()` is used so pointer movement schedules renders in render-on-demand systems (e.g. `ChartGPU`).
 - **Pointer coordinate contract (high-level)**: the crosshair `prepare(...)` path expects **canvas-local CSS pixels** (`EventManager` payload `x`/`y`). See [`createEventManager.ts`](../../src/interaction/createEventManager.ts) and [`createCrosshairRenderer.ts`](../../src/renderers/createCrosshairRenderer.ts).
 - **Target format**: uses `gpuContext.preferredFormat` (fallback `'bgra8unorm'`) for renderer pipelines; must match the render pass color attachment format.
+- **Pipeline cache (optional)**: if `callbacks.pipelineCache` is provided, it is forwarded into renderer factories, and shader module / render pipeline creation is routed through `rendererUtils.ts` and deduped via `PipelineCache`.
 - **Theme application (essential)**: see [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
   - Background clear uses `resolvedOptions.theme.backgroundColor`.
   - Grid lines use `resolvedOptions.theme.gridLineColor`.
@@ -245,10 +245,10 @@ The render coordinator has been systematically refactored into a modular archite
    - `timeAxisUtils.ts` (342 lines) - Time formatting and adaptive tick generation
 
 2. **`gpu/`** - GPU resource management
-   - `textureManager.ts` (256 lines) - Lazy texture allocation, MSAA overlay management, blit pipeline for multi-pass rendering
+   - `textureManager.ts` (256 lines) - Lazy texture allocation, MSAA overlay management, blit pipeline for multi-pass rendering (**note**: module exists but is not currently wired into `createRenderCoordinator.ts`)
 
 3. **`renderers/`** - Renderer lifecycle
-   - `rendererPool.ts` (303 lines) - Dynamic renderer array sizing, lazy instantiation, per-chart-type pools
+   - `rendererPool.ts` (303 lines) - Dynamic renderer array sizing, lazy instantiation, per-chart-type pools (**note**: module exists but is not currently wired into `createRenderCoordinator.ts`)
 
 4. **`data/`** - Data transformation pipeline
    - `computeVisibleSlice.ts` (365 lines) - Visible range slicing with binary search optimization and WeakMap caching
@@ -297,8 +297,8 @@ The `render()` method orchestrates the following phases using the modular archit
 3. **Scale creation** (`axisUtils`) - Build clip-space scales for rendering
 4. **Data transformation** (`computeVisibleSlice`) - Slice visible data range with binary search
 5. **Animation** (`animationHelpers`) - Interpolate data during animations
-6. **Texture management** (`textureManager`) - Allocate/reallocate GPU textures as needed
-7. **Renderer pool** (`rendererPool`) - Ensure renderer arrays match series counts
+6. **Texture management** (current: inline in `createRenderCoordinator.ts`; `textureManager.ts` exists but is not currently wired) - Allocate/reallocate GPU textures as needed
+7. **Renderer lifecycle** (current: inline in `createRenderCoordinator.ts`; `rendererPool.ts` exists but is not currently wired) - Ensure renderer arrays match series counts
 8. **Series rendering** (`renderSeries`) - Render all chart types (area, line, bar, scatter, pie, candlestick)
 9. **Overlay rendering** (`renderOverlays`) - Render grid, axes, crosshair, highlight
 10. **Annotation processing** (`processAnnotations`) - Process annotations for GPU rendering
@@ -311,229 +311,36 @@ The `render()` method orchestrates the following phases using the modular archit
 - Data store, sampling coordination, and cache management remain in coordinator due to tight coupling
 - All coordinate transformations document their input/output spaces to prevent coordinate system bugs
 
+### Pipeline cache wiring notes (CGPU-PIPELINE-CACHE)
+
+- `createRenderCoordinator(...)` receives `callbacks?.pipelineCache` and forwards it into renderer factories.
+- Renderers create shader modules and render pipelines via `src/renderers/rendererUtils.ts`, which consults `PipelineCache` when provided.
+- Known gaps / drift points:
+  - Scatter-density uses **compute pipelines** (`device.createComputePipeline(...)`) that are not currently cached.
+  - `src/core/renderCoordinator/gpu/textureManager.ts` and `src/core/renderCoordinator/renderers/rendererPool.ts` are not currently wired into `createRenderCoordinator.ts`. If/when they are wired, they should accept `pipelineCache` and pass it through to `rendererUtils.createRenderPipeline(...)`.
+
 ## DOM Overlay Separation (No-DOM mode)
 
-RenderCoordinator can run without DOM access. When `domOverlays: false` is set in [`RenderCoordinatorCallbacks`](#rendercoordinatorcallbacks), all DOM-dependent features (tooltip, legend, axis labels, event listeners) are disabled, and data is emitted via callbacks for external rendering.
+**Status (important):** Not implemented in the current codebase.
 
-**Key capabilities:**
+The current `RenderCoordinator` API (`src/core/createRenderCoordinator.ts`) does **not** expose:
+- `domOverlays` toggles
+- callback-based overlay emission (tooltip/legend/axis labels)
+- a `handlePointerEvent(...)` method
 
-- Rendering without DOM access (no tooltip/legend/text overlay/event manager)
-- External overlay rendering via callbacks
-- Pre-computed pointer event forwarding via [`handlePointerEvent()`](#rendercoordinatorhandlepointerevent)
-- Full interaction support (hover, tooltip, click, crosshair)
+ChartGPU owns DOM overlays and pointer event wiring internally in `src/ChartGPU.ts`.
 
-See complete types in [`types.ts`](../../src/config/types.ts) and implementation in [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
-
-### RenderCoordinatorCallbacks
-
-Type definition: [`RenderCoordinatorCallbacks`](render-coordinator-summary.md#rendercoordinatorcallbacks) (see [render-coordinator-summary.md](render-coordinator-summary.md) for complete type definition)
-
-**Essential properties:**
-
-- **`onRequestRender?: () => void`**: Called when interaction state changes require a render (e.g., pointer movement triggers crosshair update). Used by render-on-demand systems like `ChartGPU`.
-
-- **`domOverlays?: boolean`**: Default: `true`. When `false`, disables all DOM overlays (tooltip, legend, text overlay, event manager) and enables callback-based data emission for external rendering.
-
-**No-DOM callbacks (only when `domOverlays: false`):**
-
-- **`onTooltipUpdate?: (data: TooltipData | null) => void`**: Emitted when tooltip data changes. Receives tooltip content, params array, and canvas-local position, or `null` when tooltip should be hidden.
-
-- **`onLegendUpdate?: (items: ReadonlyArray<LegendItem>) => void`**: Emitted when legend items change (series updates, theme changes).
-
-- **`onAxisLabelsUpdate?: (xLabels: ReadonlyArray<AxisLabel>, yLabels: ReadonlyArray<AxisLabel>) => void`**: Emitted when axis labels change (option changes, zoom/pan, data updates).
-
-- **`onHoverChange?: (payload: ChartGPUEventPayload | null) => void`**: Emitted when hover state changes (pointer enters/leaves data point). `null` when hover state clears.
-
-- **`onCrosshairMove?: (x: number | null) => void`**: Emitted when crosshair moves. Receives canvas-local CSS pixel x coordinate, or `null` when crosshair is hidden.
-
-- **`onClickData?: (payload: ClickDataPayload) => void`**: Emitted when user taps/clicks (only when `domOverlays: false`). Includes hit test results for nearest point, pie slice, and candlestick. The host app is responsible for click/tap detection; RenderCoordinator performs hit testing. See [ClickDataPayload](#clickdatapayload) below for payload structure.
-
-- **`onDeviceLost?: (reason: string) => void`**: Called when GPU device is lost. RenderCoordinator becomes non-functional after device loss and must be re-created.
-
-**Key behaviors:**
-
-- All no-DOM callbacks are only emitted when `domOverlays: false`
-- Callbacks fire during `render()` when relevant state changes
-- Coordinates are always canvas-local CSS pixels
-- Tooltip params is always an array (single-item trigger = array with 1 element)
-
-### ClickDataPayload
-
-Inline type in [`RenderCoordinatorCallbacks`](render-coordinator-summary.md#rendercoordinatorcallbacks) (see [render-coordinator-summary.md](render-coordinator-summary.md) for complete type definition)
-
-Click event payload structure emitted via `onClickData` callback.
-
-**Properties:**
-
-- **`x: number`**: Canvas-local CSS pixel x coordinate
-- **`y: number`**: Canvas-local CSS pixel y coordinate
-- **`gridX: number`**: Plot-area-local CSS pixel x coordinate
-- **`gridY: number`**: Plot-area-local CSS pixel y coordinate
-- **`isInGrid: boolean`**: Whether click occurred inside plot area
-- **`nearest: NearestPointMatch | null`**: Nearest data point match (null when no points nearby)
-- **`pieSlice: PieSliceMatch | null`**: Pie slice match (null when no slice clicked)
-- **`candlestick: CandlestickMatch | null`**: Candlestick match (null when no candlestick clicked)
-
-**Usage notes:**
-
-- Hit tests execute in order: pie slice → candlestick → nearest point
-- Only one match type is returned per click (first match wins)
-- All match fields are `null` when no hit detected
-- Coordinates are canvas-local CSS pixels
-
-### TooltipData
-
-Type definition: [`TooltipData`](../../src/config/types.ts)
-
-Tooltip data structure emitted via `onTooltipUpdate` callback when `domOverlays: false`.
-
-**Properties:**
-
-- **`content: string`**: Tooltip HTML content (formatted via `TooltipConfig.formatter` or default formatter)
-- **`params: ReadonlyArray<TooltipParams>`**: Array of tooltip params for data points. Always an array for consistency (single-item trigger = array with 1 element)
-- **`x: number`**: Canvas-local CSS pixel x coordinate for tooltip positioning
-- **`y: number`**: Canvas-local CSS pixel y coordinate for tooltip positioning
-
-**Usage notes:**
-
-- Coordinate origin is top-left of canvas
-- HTML content should be rendered with appropriate sanitization by the host app
-- Position accounts for padding but not tooltip dimensions (caller responsible for viewport bounds checking)
-
-### LegendItem
-
-Type definition: [`LegendItem`](../../src/config/types.ts)
-
-Legend item data structure emitted via `onLegendUpdate` callback when `domOverlays: false`.
-
-**Properties:**
-
-- **`name: string`**: Series name (from `SeriesConfig.name`)
-- **`color: string`**: Series color (resolved from palette or explicit color)
-- **`seriesIndex: number`**: Zero-based series index in options array
-
-**Usage notes:**
-
-- Legend items are emitted in series order
-- Colors are always resolved CSS color strings
-- Series visibility toggling not yet supported (future feature)
-
-### AxisLabel
-
-Type definition: [`AxisLabel`](../../src/config/types.ts)
-
-Axis label data structure emitted via `onAxisLabelsUpdate` callback when `domOverlays: false`.
-
-**Properties:**
-
-- **`axis: 'x' | 'y'`**: Which axis this label belongs to
-- **`text: string`**: Label text (tick value or axis title)
-- **`position: number`**: CSS pixels from canvas edge (x-axis: from left; y-axis: from bottom)
-- **`rotation?: number`**: Optional rotation in degrees (for rotated x-axis labels). Positive values rotate clockwise
-- **`isTitle?: boolean`**: `true` for axis title, `false` or `undefined` for tick labels
-
-**Usage notes:**
-
-- Position is relative to canvas edge (not plot area)
-- Y-axis positions measured from bottom for consistency with canvas coordinate system
-- Title labels typically styled larger/bolder than tick labels
-- Rotation only used for x-axis labels when space is constrained
-
-### PointerEventData
-
-Type definition: [`PointerEventData`](../../src/config/types.ts)
-
-High-level pointer event data for programmatic event forwarding when `domOverlays: false`. Pre-computed grid coordinates eliminate redundant computation.
-
-**Properties:**
-
-- **`type: 'move' | 'click' | 'leave'`**: Event type
-- **`x: number`**: Canvas-local CSS pixel x coordinate
-- **`y: number`**: Canvas-local CSS pixel y coordinate
-- **`gridX: number`**: Plot-area-local CSS pixel x coordinate
-- **`gridY: number`**: Plot-area-local CSS pixel y coordinate
-- **`plotWidthCss: number`**: Plot area width in CSS pixels
-- **`plotHeightCss: number`**: Plot area height in CSS pixels
-- **`isInGrid: boolean`**: Whether pointer is inside plot area
-- **`timestamp: number`**: Event timestamp in milliseconds (for gesture detection)
-
-**Usage notes:**
-
-- Used exclusively when `domOverlays: false` (no-DOM mode)
-- The host app computes grid coordinates and forwards to `handlePointerEvent()`
-- Coordinates must be relative to canvas top-left (use `getBoundingClientRect()`)
-- Invalid coordinates (NaN/Infinity) are silently ignored by RenderCoordinator
-- The host app is responsible for tap/click detection
-
-### NormalizedPointerEvent (Deprecated)
-
-Type definition: [`NormalizedPointerEvent`](../../src/config/types.ts)
-
-**DEPRECATED**: Use [`PointerEventData`](#pointereventdata) for no-DOM event forwarding. This type is retained for backward compatibility only.
-
-**Migration note:**
-
-- `PointerEventData` provides pre-computed grid coordinates (eliminates redundant computation)
-- `PointerEventData` uses simplified event types (`'move' | 'click' | 'leave'` instead of pointer event types)
-- Click detection handled by the host app (`'click'` events instead of `'pointerdown'/'pointerup'`)
-
-**Properties:**
-
-- **`type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointerleave'`**: Event type
-- **`x: number`**: Canvas-local CSS pixel x coordinate
-- **`y: number`**: Canvas-local CSS pixel y coordinate
-- **`buttons: number`**: Mouse button state (bitmask: 1=primary, 2=secondary, 4=auxiliary)
-- **`timestamp: number`**: Event timestamp in milliseconds (for gesture detection and debouncing)
-
-### RenderCoordinator.handlePointerEvent()
-
-Method signature: [`handlePointerEvent(event: PointerEventData): void`](render-coordinator-summary.md#rendercoordinator) (see [render-coordinator-summary.md](render-coordinator-summary.md) for complete interface definition)
-
-Processes pointer events with pre-computed grid coordinates for interaction when `domOverlays: false`.
-
-**Parameters:**
-
-- **`event: PointerEventData`**: Pointer event with pre-computed grid coordinates from main thread
-
-**Behavior:**
-
-- Ignored when `domOverlays: true` (uses native DOM event listeners instead)
-- **`type: 'move'`**: Updates hover state, crosshair position; triggers `onRequestRender()` callback
-- **`type: 'leave'`**: Clears hover/crosshair/tooltip; emits `onHoverChange(null)`, `onCrosshairMove(null)`; triggers `onRequestRender()` callback
-- **`type: 'click'`**: Performs hit testing (nearest point, pie slice, candlestick); emits `onClickData()` callback with results
-- Validates event coordinates (silently ignores NaN/Infinity)
-- Uses pre-computed grid coordinates from event (no redundant computation)
-
-**Click handling:**
-
-- Hit tests in order: pie slice → candlestick → nearest point
-- Only one match type is returned per click (first match wins)
-- Results include `{ x, y, gridX, gridY, isInGrid, nearest, pieSlice, candlestick }`
-- All match fields are `null` when no hit detected
-- Only fires when `onClickData` callback is provided
-
-**Error handling:**
-
-- Invalid coordinates ignored (no error thrown)
-- Safe to call when disposed (no-op)
-- Not thread-safe (call from same thread as `render()`)
-
-**No-DOM usage pattern:**
-
-1. Attach pointer event listeners to a canvas (or other input surface).
-2. Compute grid coordinates using `getBoundingClientRect()` and `GridArea` margins.
-3. Detect taps/clicks (host app responsibility).
-4. Normalize events to the `PointerEventData` structure.
-5. Call `coordinator.handlePointerEvent(event)` and schedule `render()` using `onRequestRender()` when needed.
+If you need headless / no-DOM rendering, you will need to fork ChartGPU and extend the coordinator with an explicit callbacks surface.
 
 ## Renderer utilities (Contributor notes)
 
-Shared WebGPU renderer helpers live in [`rendererUtils.ts`](../../src/renderers/rendererUtils.ts). These are small, library-friendly utilities intended to reduce repeated boilerplate when building renderers.
+Shared WebGPU renderer helpers live in [`rendererUtils.ts`](../../src/renderers/rendererUtils.ts). These are small, library-friendly utilities intended to reduce repeated boilerplate when building renderers, and (optionally) route shader/pipeline creation through the shared pipeline cache (CGPU-PIPELINE-CACHE).
 
-- **`createShaderModule(device, code, label?)`**: creates a `GPUShaderModule` from WGSL source.
-- **`createRenderPipeline(device, config)`**: creates a `GPURenderPipeline` from either existing shader modules or WGSL code.
+- **`createShaderModule(device, code, label?, pipelineCache?)`**: creates a `GPUShaderModule` from WGSL source (deduped via `pipelineCache` when provided).
+- **`createRenderPipeline(device, config, pipelineCache?)`**: creates a `GPURenderPipeline` from either existing shader modules or WGSL code (deduped via `pipelineCache` when provided).
   - **Defaults**: `layout: 'auto'`, `vertex.entryPoint: 'vsMain'`, `fragment.entryPoint: 'fsMain'`, `primitive.topology: 'triangle-list'`, `multisample.count: 1`
   - **Fragment targets convenience**: provide `fragment.formats` (one or many formats) instead of full `fragment.targets` to generate `GPUColorTargetState[]` (optionally with shared `blend` / `writeMask`).
+  - **Cache behavior (important)**: when `pipelineCache` is provided and `bindGroupLayouts` are supplied, `rendererUtils` forces `layout: 'auto'` to maximize cross-chart pipeline reuse.
 - **`createUniformBuffer(device, size, options?)`**: creates a `GPUBuffer` with usage `UNIFORM | COPY_DST`, aligning size (defaults to 16-byte alignment).
 - **`writeUniformBuffer(device, buffer, data)`**: writes `BufferSource` data at offset 0 via `device.queue.writeBuffer(...)`.
 - **Uniform packing (perf)**: several renderers reuse small scratch typed arrays for uniform packing to avoid per-frame allocations; see [`createLineRenderer.ts`](../../src/renderers/createLineRenderer.ts), [`createAreaRenderer.ts`](../../src/renderers/createAreaRenderer.ts), [`createScatterRenderer.ts`](../../src/renderers/createScatterRenderer.ts), and [`createPieRenderer.ts`](../../src/renderers/createPieRenderer.ts).

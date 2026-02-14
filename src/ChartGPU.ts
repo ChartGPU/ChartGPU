@@ -1,6 +1,6 @@
 import { GPUContext } from './core/GPUContext';
 import { createRenderCoordinator } from './core/createRenderCoordinator';
-import type { RenderCoordinator } from './core/createRenderCoordinator';
+import type { RenderCoordinator, RenderCoordinatorCallbacks } from './core/createRenderCoordinator';
 import { resolveOptionsForChart } from './config/OptionResolver';
 import type { ResolvedCandlestickSeriesConfig, ResolvedChartGPUOptions, ResolvedPieSeriesConfig } from './config/OptionResolver';
 import type {
@@ -24,6 +24,8 @@ import { findPieSlice } from './interaction/findPieSlice';
 import { createLinearScale } from './utils/scales';
 import type { LinearScale } from './utils/scales';
 import { checkWebGPUSupport } from './utils/checkWebGPU';
+import type { PipelineCache } from './core/PipelineCache';
+export type { PipelineCache, PipelineCacheStats } from './core/PipelineCache';
 import type {
   PerformanceMetrics,
   PerformanceCapabilities,
@@ -265,13 +267,31 @@ type AnyChartGPUEventCallback = ChartGPUEventCallback | ChartGPUCrosshairMoveCal
 
 type ListenerRegistry = Readonly<Record<ChartGPUEventName, Set<AnyChartGPUEventCallback>>>;
 
+// Pipeline cache types are defined in `src/core/PipelineCache.ts` and re-exported near the top
+// of this file so public API uses a single canonical definition.
+
 /**
  * Context for creating a ChartGPU instance with shared WebGPU device and adapter.
  * Use this to share a single GPU device across multiple chart instances for improved resource efficiency.
+ * 
+ * Optionally provide a `pipelineCache` to share compiled pipelines across charts, reducing
+ * shader compilation overhead during initialization.
  */
 export type ChartGPUCreateContext = Readonly<{
   readonly device: GPUDevice;
   readonly adapter: GPUAdapter;
+  /**
+   * Optional pipeline cache for sharing compiled pipelines across charts.
+   * Must be created for the same GPUDevice as the context.
+   * 
+   * @example
+   * ```ts
+   * const cache = createPipelineCache(device);
+   * const chart1 = await ChartGPU.create(container1, options, { adapter, device, pipelineCache: cache });
+   * const chart2 = await ChartGPU.create(container2, options, { adapter, device, pipelineCache: cache });
+   * ```
+   */
+  readonly pipelineCache?: PipelineCache;
 }>;
 
 type TapCandidate = {
@@ -706,6 +726,14 @@ export async function createChartGPU(
     }
   }
 
+  // Fail fast: pipeline cache (if provided) must be created for the same GPUDevice this chart will use.
+  if (context?.pipelineCache && context.pipelineCache.device !== context.device) {
+    throw new Error(
+      'ChartGPU: pipelineCache.device must match the GPUDevice in the creation context. ' +
+        'Create the pipeline cache with the same device: createPipelineCache(device).'
+    );
+  }
+
   const canvas = document.createElement('canvas');
 
   // Ensure the canvas participates in layout and can size via the container.
@@ -1112,9 +1140,11 @@ export async function createChartGPU(
     pendingZoomSourceArmed = false;
     pendingZoomSource = undefined;
     
-    coordinator = createRenderCoordinator(gpuContext, resolvedOptions, {
+    const coordinatorCallbacks: RenderCoordinatorCallbacks = {
       onRequestRender: requestRender,
-    });
+      pipelineCache: context?.pipelineCache,
+    };
+    coordinator = createRenderCoordinator(gpuContext, resolvedOptions, coordinatorCallbacks);
     coordinatorTargetFormat = gpuContext.preferredFormat;
     bindCoordinatorInteractionXChange();
     bindCoordinatorZoomRangeChange();

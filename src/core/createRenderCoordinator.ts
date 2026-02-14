@@ -58,6 +58,7 @@ import type { ReferenceLineInstance } from '../renderers/createReferenceLineRend
 import { createAnnotationMarkerRenderer } from '../renderers/createAnnotationMarkerRenderer';
 import type { AnnotationMarkerInstance } from '../renderers/createAnnotationMarkerRenderer';
 import { createEventManager } from '../interaction/createEventManager';
+import type { PipelineCache } from './PipelineCache';
 import type { ChartGPUEventPayload } from '../interaction/createEventManager';
 import { createInsideZoom } from '../interaction/createInsideZoom';
 import { createZoomState } from '../interaction/createZoomState';
@@ -179,6 +180,11 @@ export type RenderCoordinatorCallbacks = Readonly<{
    * interaction state changes (e.g. crosshair on pointer move).
    */
   readonly onRequestRender?: () => void;
+  /**
+   * Optional shared cache for shader modules + render pipelines (CGPU-PIPELINE-CACHE).
+   * Opt-in only: if omitted, coordinator/renderers behave identically.
+   */
+  readonly pipelineCache?: PipelineCache;
 }>;
 
 type Bounds = Readonly<{ xMin: number; xMax: number; yMin: number; yMax: number }>;
@@ -1100,6 +1106,7 @@ export function createRenderCoordinator(
   }
 
   const targetFormat = gpuContext.preferredFormat ?? DEFAULT_TARGET_FORMAT;
+  const pipelineCache = callbacks?.pipelineCache;
   
   // DOM-dependent features (overlays, legends) require HTMLCanvasElement.
   const overlayContainer = isHTMLCanvasElement(gpuContext.canvas) ? gpuContext.canvas.parentElement : null;
@@ -1466,12 +1473,12 @@ export function createRenderCoordinator(
 
   let dataStore = createDataStore(device);
 
-  const gridRenderer = createGridRenderer(device, { targetFormat });
-  const xAxisRenderer = createAxisRenderer(device, { targetFormat });
-  const yAxisRenderer = createAxisRenderer(device, { targetFormat });
-  const crosshairRenderer = createCrosshairRenderer(device, { targetFormat });
+  const gridRenderer = createGridRenderer(device, { targetFormat, pipelineCache });
+  const xAxisRenderer = createAxisRenderer(device, { targetFormat, pipelineCache });
+  const yAxisRenderer = createAxisRenderer(device, { targetFormat, pipelineCache });
+  const crosshairRenderer = createCrosshairRenderer(device, { targetFormat, pipelineCache });
   crosshairRenderer.setVisible(false);
-  const highlightRenderer = createHighlightRenderer(device, { targetFormat });
+  const highlightRenderer = createHighlightRenderer(device, { targetFormat, pipelineCache });
   highlightRenderer.setVisible(false);
 
   // MSAA for the *annotation overlay* (above-series) pass to reduce shimmer during zoom.
@@ -1481,15 +1488,17 @@ export function createRenderCoordinator(
   // - Top overlay pass: draw crosshair/axes/highlight (single-sample) on top of the resolved swapchain
   const ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT = 4;
 
-  const referenceLineRenderer = createReferenceLineRenderer(device, { targetFormat });
-  const annotationMarkerRenderer = createAnnotationMarkerRenderer(device, { targetFormat });
+  const referenceLineRenderer = createReferenceLineRenderer(device, { targetFormat, pipelineCache });
+  const annotationMarkerRenderer = createAnnotationMarkerRenderer(device, { targetFormat, pipelineCache });
   const referenceLineRendererMsaa = createReferenceLineRenderer(device, {
     targetFormat,
     sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
+    pipelineCache,
   });
   const annotationMarkerRendererMsaa = createAnnotationMarkerRenderer(device, {
     targetFormat,
     sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
+    pipelineCache,
   });
 
   let mainColorTexture: GPUTexture | null = null;
@@ -1529,14 +1538,18 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } }],
   });
 
-  const overlayBlitPipeline = createRenderPipeline(device, {
-    label: 'renderCoordinator/overlayBlitPipeline',
-    bindGroupLayouts: [overlayBlitBindGroupLayout],
-    vertex: { code: OVERLAY_BLIT_WGSL, label: 'renderCoordinator/overlayBlit.wgsl' },
-    fragment: { code: OVERLAY_BLIT_WGSL, label: 'renderCoordinator/overlayBlit.wgsl', formats: targetFormat },
-    primitive: { topology: 'triangle-list', cullMode: 'none' },
-    multisample: { count: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT },
-  });
+  const overlayBlitPipeline = createRenderPipeline(
+    device,
+    {
+      label: 'renderCoordinator/overlayBlitPipeline',
+      bindGroupLayouts: [overlayBlitBindGroupLayout],
+      vertex: { code: OVERLAY_BLIT_WGSL, label: 'renderCoordinator/overlayBlit.wgsl' },
+      fragment: { code: OVERLAY_BLIT_WGSL, label: 'renderCoordinator/overlayBlit.wgsl', formats: targetFormat },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      multisample: { count: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT },
+    },
+    pipelineCache
+  );
 
   let overlayBlitBindGroup: GPUBindGroup | null = null;
 
@@ -2562,7 +2575,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   const scatterDensityRenderers: Array<ReturnType<typeof createScatterDensityRenderer>> = [];
   const pieRenderers: Array<ReturnType<typeof createPieRenderer>> = [];
   const candlestickRenderers: Array<ReturnType<typeof createCandlestickRenderer>> = [];
-  const barRenderer = createBarRenderer(device, { targetFormat });
+  const barRenderer = createBarRenderer(device, { targetFormat, pipelineCache });
 
   const ensureAreaRendererCount = (count: number): void => {
     while (areaRenderers.length > count) {
@@ -2570,7 +2583,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       r?.dispose();
     }
     while (areaRenderers.length < count) {
-      areaRenderers.push(createAreaRenderer(device, { targetFormat }));
+      areaRenderers.push(createAreaRenderer(device, { targetFormat, pipelineCache }));
     }
   };
 
@@ -2580,7 +2593,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       r?.dispose();
     }
     while (lineRenderers.length < count) {
-      lineRenderers.push(createLineRenderer(device, { targetFormat }));
+      lineRenderers.push(createLineRenderer(device, { targetFormat, pipelineCache }));
     }
   };
 
@@ -2590,7 +2603,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       r?.dispose();
     }
     while (scatterRenderers.length < count) {
-      scatterRenderers.push(createScatterRenderer(device, { targetFormat }));
+      scatterRenderers.push(createScatterRenderer(device, { targetFormat, pipelineCache }));
     }
   };
 
@@ -2600,7 +2613,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       r?.dispose();
     }
     while (scatterDensityRenderers.length < count) {
-      scatterDensityRenderers.push(createScatterDensityRenderer(device, { targetFormat }));
+      scatterDensityRenderers.push(createScatterDensityRenderer(device, { targetFormat, pipelineCache }));
     }
   };
 
@@ -2610,7 +2623,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       r?.dispose();
     }
     while (pieRenderers.length < count) {
-      pieRenderers.push(createPieRenderer(device, { targetFormat }));
+      pieRenderers.push(createPieRenderer(device, { targetFormat, pipelineCache }));
     }
   };
 
@@ -2620,7 +2633,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       r?.dispose();
     }
     while (candlestickRenderers.length < count) {
-      candlestickRenderers.push(createCandlestickRenderer(device, { targetFormat }));
+      candlestickRenderers.push(createCandlestickRenderer(device, { targetFormat, pipelineCache }));
     }
   };
 

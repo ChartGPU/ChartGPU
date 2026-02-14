@@ -18,7 +18,7 @@ At a high level, `ChartGPU.create(...)` owns the canvas + WebGPU lifecycle, and 
 flowchart TB
   UserApp["Consumer app"] --> PublicAPI["src/index.ts - Public API exports"]
 
-  PublicAPI --> ChartCreate["ChartGPU.create(container, options)"]
+  PublicAPI --> ChartCreate["ChartGPU.create(container, options, context?)"]
   PublicAPI --> SyncAPI["connectCharts(charts)"]
 
   subgraph MainThread["Main Thread Rendering - Default"]
@@ -27,7 +27,7 @@ flowchart TB
       ChartCreate --> Canvas["Create canvas + mount into container"]
       ChartCreate --> Options["resolveOptionsForChart(options) - adds bottom reserve when slider present"]
       ChartCreate --> GPUInit["GPUContext.create(canvas)"]
-      ChartCreate --> Coordinator["createRenderCoordinator(gpuContext, resolvedOptions)"]
+      ChartCreate --> Coordinator["createRenderCoordinator(gpuContext, resolvedOptions, callbacks?)"]
 
       ChartCreate --> InstanceAPI["ChartGPUInstance APIs"]
       InstanceAPI --> RequestRender["requestAnimationFrame - coalesced (auto mode)"]
@@ -139,6 +139,7 @@ flowchart TB
 |-----------|----------|----------------|
 | **ChartGPU** | `src/ChartGPU.ts` | Factory + instance lifecycle, canvas management, public events |
 | **GPUContext** | `src/core/GPUContext.ts` | WebGPU adapter/device/context initialization |
+| **PipelineCache (optional)** | `src/core/PipelineCache.ts` | Shared cache for `GPUShaderModule` + `GPURenderPipeline` across charts on the same `GPUDevice` (opt-in via `ChartGPU.create(..., { pipelineCache })`) |
 | **Render Coordinator** | `src/core/createRenderCoordinator.ts` | Layout, scales, data upload, render pass orchestration |
 | **Coordinator Modules** | `src/core/renderCoordinator/*` | 11 specialized modules (utils, gpu, renderers, data, zoom, animation, interaction, ui, axis, annotations, render) |
 | **GPU Renderers** | `src/renderers/*` | Series-type-specific WebGPU pipeline renderers |

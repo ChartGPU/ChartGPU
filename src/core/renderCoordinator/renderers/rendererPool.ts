@@ -15,6 +15,7 @@ import { createScatterDensityRenderer } from '../../../renderers/createScatterDe
 import { createPieRenderer } from '../../../renderers/createPieRenderer';
 import { createCandlestickRenderer } from '../../../renderers/createCandlestickRenderer';
 import { createBarRenderer } from '../../../renderers/createBarRenderer';
+import type { PipelineCache } from '../../PipelineCache';
 
 /**
  * Configuration for renderer pool creation.
@@ -22,6 +23,7 @@ import { createBarRenderer } from '../../../renderers/createBarRenderer';
 export interface RendererPoolConfig {
   readonly device: GPUDevice;
   readonly targetFormat: GPUTextureFormat;
+  readonly pipelineCache?: PipelineCache;
 }
 
 /**
@@ -121,7 +123,7 @@ export interface RendererPool {
  * @returns Renderer pool instance
  */
 export function createRendererPool(config: RendererPoolConfig): RendererPool {
-  const { device, targetFormat } = config;
+  const { device, targetFormat, pipelineCache } = config;
 
   // Mutable renderer arrays (exposed as readonly externally)
   const areaRenderers: Array<ReturnType<typeof createAreaRenderer>> = [];
@@ -132,7 +134,7 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
   const candlestickRenderers: Array<ReturnType<typeof createCandlestickRenderer>> = [];
 
   // Bar renderer is a singleton (one instance handles all bar series)
-  const barRenderer = createBarRenderer(device, { targetFormat });
+  const barRenderer = createBarRenderer(device, { targetFormat, pipelineCache });
 
   /**
    * Ensures area renderer count matches the given count.
@@ -145,7 +147,7 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
       r?.dispose();
     }
     while (areaRenderers.length < count) {
-      areaRenderers.push(createAreaRenderer(device, { targetFormat }));
+      areaRenderers.push(createAreaRenderer(device, { targetFormat, pipelineCache }));
     }
   }
 
@@ -160,7 +162,7 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
       r?.dispose();
     }
     while (lineRenderers.length < count) {
-      lineRenderers.push(createLineRenderer(device, { targetFormat }));
+      lineRenderers.push(createLineRenderer(device, { targetFormat, pipelineCache }));
     }
   }
 
@@ -175,7 +177,7 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
       r?.dispose();
     }
     while (scatterRenderers.length < count) {
-      scatterRenderers.push(createScatterRenderer(device, { targetFormat }));
+      scatterRenderers.push(createScatterRenderer(device, { targetFormat, pipelineCache }));
     }
   }
 
@@ -190,7 +192,7 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
       r?.dispose();
     }
     while (scatterDensityRenderers.length < count) {
-      scatterDensityRenderers.push(createScatterDensityRenderer(device, { targetFormat }));
+      scatterDensityRenderers.push(createScatterDensityRenderer(device, { targetFormat, pipelineCache }));
     }
   }
 
@@ -205,7 +207,7 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
       r?.dispose();
     }
     while (pieRenderers.length < count) {
-      pieRenderers.push(createPieRenderer(device, { targetFormat }));
+      pieRenderers.push(createPieRenderer(device, { targetFormat, pipelineCache }));
     }
   }
 
@@ -220,7 +222,7 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
       r?.dispose();
     }
     while (candlestickRenderers.length < count) {
-      candlestickRenderers.push(createCandlestickRenderer(device, { targetFormat }));
+      candlestickRenderers.push(createCandlestickRenderer(device, { targetFormat, pipelineCache }));
     }
   }
 

@@ -1,6 +1,7 @@
 import referenceLineWgsl from '../shaders/referenceLine.wgsl?raw';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
 import type { GridArea } from './createGridRenderer';
+import type { PipelineCache } from '../core/PipelineCache';
 
 /**
  * Maximum dash entries supported per line instance.
@@ -77,6 +78,10 @@ export interface ReferenceLineRendererOptions {
    * Defaults to 1 (no MSAA).
    */
   readonly sampleCount?: number;
+  /**
+   * Optional shared cache for shader modules + render pipelines.
+   */
+  readonly pipelineCache?: PipelineCache;
 }
 
 export interface ReferenceLineRenderer {
@@ -152,6 +157,7 @@ export function createReferenceLineRenderer(device: GPUDevice, options?: Referen
   // Be resilient: coerce invalid values to 1 (no MSAA).
   const sampleCountRaw = options?.sampleCount ?? 1;
   const sampleCount = Number.isFinite(sampleCountRaw) ? Math.max(1, Math.floor(sampleCountRaw)) : 1;
+  const pipelineCache = options?.pipelineCache;
 
   const bindGroupLayout = device.createBindGroupLayout({
     entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }],
@@ -173,39 +179,43 @@ export function createReferenceLineRenderer(device: GPUDevice, options?: Referen
   const INSTANCE_STRIDE_BYTES = 72;
   const INSTANCE_STRIDE_FLOATS = INSTANCE_STRIDE_BYTES / 4;
 
-  const pipeline = createRenderPipeline(device, {
-    label: 'referenceLineRenderer/pipeline',
-    bindGroupLayouts: [bindGroupLayout],
-    vertex: {
-      code: referenceLineWgsl,
-      label: 'referenceLine.wgsl',
-      buffers: [
-        {
-          arrayStride: INSTANCE_STRIDE_BYTES,
-          stepMode: 'instance',
-          attributes: [
-            { shaderLocation: 0, format: 'float32x2', offset: 0 },  // axisPos
-            { shaderLocation: 1, format: 'float32x2', offset: 8 },  // widthDashCount
-            { shaderLocation: 2, format: 'float32x2', offset: 16 }, // dashMeta
-            { shaderLocation: 3, format: 'float32x4', offset: 24 }, // dash0_3
-            { shaderLocation: 4, format: 'float32x4', offset: 40 }, // dash4_7
-            { shaderLocation: 5, format: 'float32x4', offset: 56 }, // color
-          ],
-        },
-      ],
-    },
-    fragment: {
-      code: referenceLineWgsl,
-      label: 'referenceLine.wgsl',
-      formats: targetFormat,
-      blend: {
-        color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
-        alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+  const pipeline = createRenderPipeline(
+    device,
+    {
+      label: 'referenceLineRenderer/pipeline',
+      bindGroupLayouts: [bindGroupLayout],
+      vertex: {
+        code: referenceLineWgsl,
+        label: 'referenceLine.wgsl',
+        buffers: [
+          {
+            arrayStride: INSTANCE_STRIDE_BYTES,
+            stepMode: 'instance',
+            attributes: [
+              { shaderLocation: 0, format: 'float32x2', offset: 0 }, // axisPos
+              { shaderLocation: 1, format: 'float32x2', offset: 8 }, // widthDashCount
+              { shaderLocation: 2, format: 'float32x2', offset: 16 }, // dashMeta
+              { shaderLocation: 3, format: 'float32x4', offset: 24 }, // dash0_3
+              { shaderLocation: 4, format: 'float32x4', offset: 40 }, // dash4_7
+              { shaderLocation: 5, format: 'float32x4', offset: 56 }, // color
+            ],
+          },
+        ],
       },
+      fragment: {
+        code: referenceLineWgsl,
+        label: 'referenceLine.wgsl',
+        formats: targetFormat,
+        blend: {
+          color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
+          alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+        },
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      multisample: { count: sampleCount },
     },
-    primitive: { topology: 'triangle-list', cullMode: 'none' },
-    multisample: { count: sampleCount },
-  });
+    pipelineCache
+  );
 
   let instanceBuffer: GPUBuffer | null = null;
   let instanceCapacity = 0;

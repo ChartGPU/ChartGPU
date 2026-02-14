@@ -241,6 +241,35 @@ function cleanup() {
 }
 ```
 
+## Shared Device + Pipeline Cache
+
+When you have many charts of the **same series types** (common in dashboards), you can additionally share a **pipeline cache** to dedupe WebGPU shader modules and render pipelines across charts.
+
+```ts
+import { ChartGPU, createPipelineCache } from 'chartgpu';
+
+// 1. Create shared device once
+const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+if (!adapter) throw new Error('No WebGPU adapter available');
+const device = await adapter.requestDevice();
+
+// 2. Create pipeline cache bound to that device
+const pipelineCache = createPipelineCache(device);
+
+// 3. Create charts with shared device + cache
+const chart1 = await ChartGPU.create(container1, chartOptions1, { adapter, device, pipelineCache });
+const chart2 = await ChartGPU.create(container2, chartOptions2, { adapter, device, pipelineCache });
+const chart3 = await ChartGPU.create(container3, chartOptions3, { adapter, device, pipelineCache });
+
+// Optional: inspect hit/miss stats
+console.log(pipelineCache.getStats());
+```
+
+**Notes:**
+- The cache is **opt-in**. If you omit `pipelineCache`, behavior is unchanged.
+- The cache is scoped to a single `GPUDevice` and validates device mismatches.
+- It dedupes **shader modules + render pipelines**. Compute pipelines (e.g. scatter-density binning/reduction) are not yet cached.
+
 ## Device Loss Handling & Recovery
 
 WebGPU devices can be lost due to GPU driver crashes, system sleep, or resource exhaustion. Charts with injected (shared) devices emit a `'deviceLost'` event for manual recovery.

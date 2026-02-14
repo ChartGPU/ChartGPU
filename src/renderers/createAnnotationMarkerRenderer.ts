@@ -1,5 +1,6 @@
 import annotationMarkerWgsl from '../shaders/annotationMarker.wgsl?raw';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
+import type { PipelineCache } from '../core/PipelineCache';
 
 export type AnnotationMarkerInstance = Readonly<{
   /**
@@ -65,6 +66,10 @@ export interface AnnotationMarkerRendererOptions {
    * Defaults to 1 (no MSAA).
    */
   readonly sampleCount?: number;
+  /**
+   * Optional shared cache for shader modules + render pipelines.
+   */
+  readonly pipelineCache?: PipelineCache;
 }
 
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
@@ -88,6 +93,7 @@ export function createAnnotationMarkerRenderer(device: GPUDevice, options?: Anno
   // Be resilient: coerce invalid values to 1 (no MSAA).
   const sampleCountRaw = options?.sampleCount ?? 1;
   const sampleCount = Number.isFinite(sampleCountRaw) ? Math.max(1, Math.floor(sampleCountRaw)) : 1;
+  const pipelineCache = options?.pipelineCache;
 
   const bindGroupLayout = device.createBindGroupLayout({
     entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }],
@@ -103,38 +109,42 @@ export function createAnnotationMarkerRenderer(device: GPUDevice, options?: Anno
     entries: [{ binding: 0, resource: { buffer: vsUniformBuffer } }],
   });
 
-  const pipeline = createRenderPipeline(device, {
-    label: 'annotationMarkerRenderer/pipeline',
-    bindGroupLayouts: [bindGroupLayout],
-    vertex: {
-      code: annotationMarkerWgsl,
-      label: 'annotationMarker.wgsl',
-      buffers: [
-        {
-          arrayStride: INSTANCE_STRIDE_BYTES,
-          stepMode: 'instance',
-          attributes: [
-            { shaderLocation: 0, format: 'float32x2', offset: 0 }, // centerCssPx
-            { shaderLocation: 1, format: 'float32', offset: 8 }, // sizeCssPx
-            { shaderLocation: 2, format: 'float32', offset: 12 }, // strokeWidthCssPx
-            { shaderLocation: 3, format: 'float32x4', offset: 16 }, // fillRgba
-            { shaderLocation: 4, format: 'float32x4', offset: 32 }, // strokeRgba
-          ],
-        },
-      ],
-    },
-    fragment: {
-      code: annotationMarkerWgsl,
-      label: 'annotationMarker.wgsl',
-      formats: targetFormat,
-      blend: {
-        color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
-        alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+  const pipeline = createRenderPipeline(
+    device,
+    {
+      label: 'annotationMarkerRenderer/pipeline',
+      bindGroupLayouts: [bindGroupLayout],
+      vertex: {
+        code: annotationMarkerWgsl,
+        label: 'annotationMarker.wgsl',
+        buffers: [
+          {
+            arrayStride: INSTANCE_STRIDE_BYTES,
+            stepMode: 'instance',
+            attributes: [
+              { shaderLocation: 0, format: 'float32x2', offset: 0 }, // centerCssPx
+              { shaderLocation: 1, format: 'float32', offset: 8 }, // sizeCssPx
+              { shaderLocation: 2, format: 'float32', offset: 12 }, // strokeWidthCssPx
+              { shaderLocation: 3, format: 'float32x4', offset: 16 }, // fillRgba
+              { shaderLocation: 4, format: 'float32x4', offset: 32 }, // strokeRgba
+            ],
+          },
+        ],
       },
+      fragment: {
+        code: annotationMarkerWgsl,
+        label: 'annotationMarker.wgsl',
+        formats: targetFormat,
+        blend: {
+          color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
+          alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+        },
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      multisample: { count: sampleCount },
     },
-    primitive: { topology: 'triangle-list', cullMode: 'none' },
-    multisample: { count: sampleCount },
-  });
+    pipelineCache
+  );
 
   let instanceBuffer: GPUBuffer | null = null;
   let instanceCount = 0;

@@ -9,7 +9,7 @@ Creates a chart instance bound to a container element.
 **Parameters:**
 - `container`: HTMLElement to mount the chart canvas
 - `options`: Chart configuration (series, axes, theme, etc.)
-- `context` (optional): Shared WebGPU context `{ adapter, device }` (share one GPUDevice across multiple charts)
+- `context` (optional): Shared WebGPU context `{ adapter, device, pipelineCache? }` (share one GPUDevice across multiple charts; optionally share a pipeline cache for shader/pipeline dedupe)
 - `options.renderMode` (optional): `'auto' | 'external'` — controls render loop ownership (default: `'auto'`). See **External Render Mode** below.
 
 **Returns:** Promise that resolves to a `ChartGPUInstance`
@@ -129,6 +129,41 @@ async function handleDeviceLoss() {
 // Attach device loss handlers
 charts.forEach(chart => chart.on('deviceLost', handleDeviceLoss));
 ```
+
+## Pipeline cache (CGPU-PIPELINE-CACHE)
+
+When using a **shared `GPUDevice`** for dashboards, you can also opt into a **shared pipeline cache** to avoid redundant shader compilation and render pipeline creation across charts of the same type.
+
+### What is cached
+
+- **`GPUShaderModule`**: deduped by WGSL source string
+- **`GPURenderPipeline`**: deduped by identity-defining pipeline state (shader modules + vertex layouts + targets + depth/stencil + multisample + etc.)
+
+### Usage
+
+```ts
+import { ChartGPU, createPipelineCache } from 'chartgpu';
+
+const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+if (!adapter) throw new Error('No WebGPU adapter available');
+const device = await adapter.requestDevice();
+
+// Create a cache bound to this device.
+const pipelineCache = createPipelineCache(device);
+
+const chartA = await ChartGPU.create(containerA, optionsA, { adapter, device, pipelineCache });
+const chartB = await ChartGPU.create(containerB, optionsB, { adapter, device, pipelineCache });
+
+// Optional: inspect cache effectiveness
+console.log(pipelineCache.getStats());
+```
+
+### Important constraints
+
+- **Device binding**: the cache is scoped to a single `GPUDevice`. Passing a cache created for a different device throws.
+- **Opt-in**: if you omit `pipelineCache`, ChartGPU behaves exactly as before.
+- **Device loss**: the cache clears itself when `device.lost` resolves (stats reset). On recovery, create a new device and a new cache.
+- **Scope**: the cache currently dedupes **shader modules + render pipelines**. Compute pipelines (e.g. scatter-density binning/reduction) are not yet cached.
 
 ## `ChartGPUInstance`
 

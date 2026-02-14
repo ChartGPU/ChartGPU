@@ -92,6 +92,7 @@ See [Annotations Documentation](https://github.com/chartgpu/chartgpu/blob/main/d
 - 🔍 X-axis zoom (inside gestures + optional slider UI)
 - 🎛️ Theme presets (`'dark' | 'light'`) and custom theme support
 - 🔗 Shared GPUDevice support for multi-chart dashboards (efficient GPU resource management) — see [`docs/api/chart.md#shared-gpudevice`](docs/api/chart.md#shared-gpudevice)
+- 🧱 Shared pipeline cache for multi-chart dashboards (dedupe shader modules + render pipelines across charts) — see [`docs/api/chart.md#pipeline-cache-cgpu-pipeline-cache`](docs/api/chart.md#pipeline-cache-cgpu-pipeline-cache)
 
 
 ### Candlestick Charts

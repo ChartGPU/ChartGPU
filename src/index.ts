@@ -142,3 +142,7 @@ export {
 
 // Class-based API (for backward compatibility)
 export { RenderScheduler } from './core/RenderScheduler';
+
+// Pipeline cache - Functional API
+export type { PipelineCache, PipelineCacheStats } from './core/PipelineCache';
+export { createPipelineCache, getPipelineCacheStats, destroyPipelineCache } from './core/createPipelineCache';

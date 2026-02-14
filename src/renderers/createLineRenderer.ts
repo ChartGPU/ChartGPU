@@ -4,6 +4,7 @@ import type { LinearScale } from '../utils/scales';
 import { parseCssColorToRgba01 } from '../utils/colors';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
 import { getPointCount, computeRawBoundsFromCartesianData } from '../data/cartesianData';
+import type { PipelineCache } from '../core/PipelineCache';
 
 export interface LineRenderer {
   prepare(
@@ -25,6 +26,11 @@ export interface LineRendererOptions {
    * Defaults to `'bgra8unorm'` for backward compatibility.
    */
   readonly targetFormat?: GPUTextureFormat;
+  /**
+   * Optional shared cache for shader modules + render pipelines.
+   * Opt-in only: if omitted, behavior is identical to the uncached path.
+   */
+  readonly pipelineCache?: PipelineCache;
 }
 
 type Rgba = readonly [r: number, g: number, b: number, a: number];
@@ -77,6 +83,7 @@ const writeTransformMat4F32 = (out: Float32Array, ax: number, bx: number, ay: nu
 export function createLineRenderer(device: GPUDevice, options?: LineRendererOptions): LineRenderer {
   let disposed = false;
   const targetFormat = options?.targetFormat ?? DEFAULT_TARGET_FORMAT;
+  const pipelineCache = options?.pipelineCache;
 
   const bindGroupLayout = device.createBindGroupLayout({
     entries: [
@@ -101,7 +108,9 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     ],
   });
 
-  const pipeline = createRenderPipeline(device, {
+  const pipeline = createRenderPipeline(
+    device,
+    {
     label: 'lineRenderer/pipeline',
     bindGroupLayouts: [bindGroupLayout],
     vertex: {
@@ -128,7 +137,9 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     },
     primitive: { topology: 'line-strip', cullMode: 'none' },
     multisample: { count: 1 },
-  });
+    },
+    pipelineCache
+  );
 
   let currentVertexBuffer: GPUBuffer | null = null;
   let currentVertexCount = 0;

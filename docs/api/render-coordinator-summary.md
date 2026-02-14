@@ -67,7 +67,9 @@ export interface RenderCoordinator {
    *
    * Returns an unsubscribe function.
    */
-  onZoomRangeChange(cb: (range: Readonly<{ start: number; end: number }>) => void): () => void;
+  onZoomRangeChange(
+    cb: (range: Readonly<{ start: number; end: number }>, sourceKind?: ZoomChangeSourceKind) => void
+  ): () => void;
   /**
    * Renders a full frame.
    */
@@ -86,9 +88,12 @@ export type RenderCoordinatorCallbacks = Readonly<{
    */
   readonly onRequestRender?: () => void;
   /**
-   * Called when GPU device is lost.
+   * Optional shared cache for shader modules + render pipelines (CGPU-PIPELINE-CACHE).
+   *
+   * Must be bound to the same `GPUDevice` as `gpuContext.device`.
+   * If omitted, coordinator and renderers behave identically (no caching).
    */
-  readonly onDeviceLost?: (reason: string) => void;
+  readonly pipelineCache?: PipelineCache;
 }>;
 ```
 
@@ -108,6 +113,8 @@ export function createRenderCoordinator(
 - `DataPoint`, `OHLCDataPoint`: See [`types.ts`](../../src/config/types.ts)
 - `ChartGPUEventPayload`: See [`types.ts`](../../src/config/types.ts)
 - `NearestPointMatch`, `PieSliceMatch`, `CandlestickMatch`: See [`types.ts`](../../src/config/types.ts)
+- `PipelineCache`: See [`PipelineCache.ts`](../../src/core/PipelineCache.ts)
+- `ZoomChangeSourceKind`: Exported from the public entrypoint (`src/index.ts`) via [`ChartGPU.ts`](../../src/ChartGPU.ts)
 
 ## Documentation
 

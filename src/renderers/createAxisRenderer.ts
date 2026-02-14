@@ -4,6 +4,7 @@ import type { LinearScale } from '../utils/scales';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
 import type { GridArea } from './createGridRenderer';
 import { parseCssColorToRgba01 } from '../utils/colors';
+import type { PipelineCache } from '../core/PipelineCache';
 
 export interface AxisRenderer {
   prepare(
@@ -27,6 +28,10 @@ export interface AxisRendererOptions {
    * Defaults to `'bgra8unorm'` for backward compatibility.
    */
   readonly targetFormat?: GPUTextureFormat;
+  /**
+   * Optional shared cache for shader modules + render pipelines.
+   */
+  readonly pipelineCache?: PipelineCache;
 }
 
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
@@ -192,6 +197,7 @@ const generateAxisVertices = (
 export function createAxisRenderer(device: GPUDevice, options?: AxisRendererOptions): AxisRenderer {
   let disposed = false;
   const targetFormat = options?.targetFormat ?? DEFAULT_TARGET_FORMAT;
+  const pipelineCache = options?.pipelineCache;
 
   const bindGroupLayout = device.createBindGroupLayout({
     entries: [
@@ -220,32 +226,36 @@ export function createAxisRenderer(device: GPUDevice, options?: AxisRendererOpti
     ],
   });
 
-  const pipeline = createRenderPipeline(device, {
-    label: 'axisRenderer/pipeline',
-    bindGroupLayouts: [bindGroupLayout],
-    vertex: {
-      code: gridWgsl,
-      label: 'grid.wgsl',
-      buffers: [
-        {
-          arrayStride: 8,
-          stepMode: 'vertex',
-          attributes: [{ shaderLocation: 0, format: 'float32x2', offset: 0 }],
-        },
-      ],
-    },
-    fragment: {
-      code: gridWgsl,
-      label: 'grid.wgsl',
-      formats: targetFormat,
-      blend: {
-        color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
-        alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+  const pipeline = createRenderPipeline(
+    device,
+    {
+      label: 'axisRenderer/pipeline',
+      bindGroupLayouts: [bindGroupLayout],
+      vertex: {
+        code: gridWgsl,
+        label: 'grid.wgsl',
+        buffers: [
+          {
+            arrayStride: 8,
+            stepMode: 'vertex',
+            attributes: [{ shaderLocation: 0, format: 'float32x2', offset: 0 }],
+          },
+        ],
       },
+      fragment: {
+        code: gridWgsl,
+        label: 'grid.wgsl',
+        formats: targetFormat,
+        blend: {
+          color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
+          alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+        },
+      },
+      primitive: { topology: 'line-list', cullMode: 'none' },
+      multisample: { count: 1 },
     },
-    primitive: { topology: 'line-list', cullMode: 'none' },
-    multisample: { count: 1 },
-  });
+    pipelineCache
+  );
 
   let vertexBuffer: GPUBuffer | null = null;
   let vertexCount = 0;

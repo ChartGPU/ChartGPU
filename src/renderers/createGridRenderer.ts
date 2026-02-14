@@ -1,6 +1,7 @@
 import gridWgsl from '../shaders/grid.wgsl?raw';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
 import { parseCssColorToRgba01 } from '../utils/colors';
+import type { PipelineCache } from '../core/PipelineCache';
 
 export interface GridRenderer {
   /**
@@ -48,6 +49,10 @@ export interface GridRendererOptions {
    * Defaults to `'bgra8unorm'` for backward compatibility.
    */
   readonly targetFormat?: GPUTextureFormat;
+  /**
+   * Optional shared cache for shader modules + render pipelines.
+   */
+  readonly pipelineCache?: PipelineCache;
 }
 
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
@@ -135,6 +140,7 @@ const generateGridVertices = (gridArea: GridArea, horizontal: number, vertical: 
 export function createGridRenderer(device: GPUDevice, options?: GridRendererOptions): GridRenderer {
   let disposed = false;
   const targetFormat = options?.targetFormat ?? DEFAULT_TARGET_FORMAT;
+  const pipelineCache = options?.pipelineCache;
 
   const bindGroupLayout = device.createBindGroupLayout({
     entries: [
@@ -154,34 +160,38 @@ export function createGridRenderer(device: GPUDevice, options?: GridRendererOpti
     ],
   });
 
-  const pipeline = createRenderPipeline(device, {
-    label: 'gridRenderer/pipeline',
-    bindGroupLayouts: [bindGroupLayout],
-    vertex: {
-      code: gridWgsl,
-      label: 'grid.wgsl',
-      buffers: [
-        {
-          arrayStride: 8, // vec2<f32> = 2 * 4 bytes
-          stepMode: 'vertex',
-          attributes: [{ shaderLocation: 0, format: 'float32x2', offset: 0 }],
-        },
-      ],
-    },
-    fragment: {
-      code: gridWgsl,
-      label: 'grid.wgsl',
-      formats: targetFormat,
-      // Enable standard alpha blending so `fsUniforms.color.a` behaves as expected
-      // (blends into the cleared background instead of making the canvas pixels transparent).
-      blend: {
-        color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
-        alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+  const pipeline = createRenderPipeline(
+    device,
+    {
+      label: 'gridRenderer/pipeline',
+      bindGroupLayouts: [bindGroupLayout],
+      vertex: {
+        code: gridWgsl,
+        label: 'grid.wgsl',
+        buffers: [
+          {
+            arrayStride: 8, // vec2<f32> = 2 * 4 bytes
+            stepMode: 'vertex',
+            attributes: [{ shaderLocation: 0, format: 'float32x2', offset: 0 }],
+          },
+        ],
       },
+      fragment: {
+        code: gridWgsl,
+        label: 'grid.wgsl',
+        formats: targetFormat,
+        // Enable standard alpha blending so `fsUniforms.color.a` behaves as expected
+        // (blends into the cleared background instead of making the canvas pixels transparent).
+        blend: {
+          color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
+          alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+        },
+      },
+      primitive: { topology: 'line-list', cullMode: 'none' },
+      multisample: { count: 1 },
     },
-    primitive: { topology: 'line-list', cullMode: 'none' },
-    multisample: { count: 1 },
-  });
+    pipelineCache
+  );
 
   let vertexBuffer: GPUBuffer | null = null;
   let vertexCount = 0;

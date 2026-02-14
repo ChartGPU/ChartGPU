@@ -6,6 +6,7 @@ import { parseCssColorToRgba01 } from '../utils/colors';
 import type { GridArea } from './createGridRenderer';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
 import { getPointCount, getX, getY, getSize, computeRawBoundsFromCartesianData } from '../data/cartesianData';
+import type { PipelineCache } from '../core/PipelineCache';
 
 export interface ScatterRenderer {
   prepare(
@@ -27,6 +28,10 @@ export interface ScatterRendererOptions {
    * Defaults to `'bgra8unorm'` for backward compatibility.
    */
   readonly targetFormat?: GPUTextureFormat;
+  /**
+   * Optional shared cache for shader modules + render pipelines.
+   */
+  readonly pipelineCache?: PipelineCache;
 }
 
 type Rgba = readonly [r: number, g: number, b: number, a: number];
@@ -110,6 +115,7 @@ const computePlotScissorDevicePx = (
 export function createScatterRenderer(device: GPUDevice, options?: ScatterRendererOptions): ScatterRenderer {
   let disposed = false;
   const targetFormat = options?.targetFormat ?? DEFAULT_TARGET_FORMAT;
+  const pipelineCache = options?.pipelineCache;
 
   const bindGroupLayout = device.createBindGroupLayout({
     entries: [
@@ -135,36 +141,40 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     ],
   });
 
-  const pipeline = createRenderPipeline(device, {
-    label: 'scatterRenderer/pipeline',
-    bindGroupLayouts: [bindGroupLayout],
-    vertex: {
-      code: scatterWgsl,
-      label: 'scatter.wgsl',
-      buffers: [
-        {
-          arrayStride: INSTANCE_STRIDE_BYTES,
-          stepMode: 'instance',
-          attributes: [
-            { shaderLocation: 0, format: 'float32x2', offset: 0 },
-            { shaderLocation: 1, format: 'float32', offset: 8 },
-          ],
-        },
-      ],
-    },
-    fragment: {
-      code: scatterWgsl,
-      label: 'scatter.wgsl',
-      formats: targetFormat,
-      // Standard alpha blending (circle AA uses alpha, and series color may be translucent).
-      blend: {
-        color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
-        alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+  const pipeline = createRenderPipeline(
+    device,
+    {
+      label: 'scatterRenderer/pipeline',
+      bindGroupLayouts: [bindGroupLayout],
+      vertex: {
+        code: scatterWgsl,
+        label: 'scatter.wgsl',
+        buffers: [
+          {
+            arrayStride: INSTANCE_STRIDE_BYTES,
+            stepMode: 'instance',
+            attributes: [
+              { shaderLocation: 0, format: 'float32x2', offset: 0 },
+              { shaderLocation: 1, format: 'float32', offset: 8 },
+            ],
+          },
+        ],
       },
+      fragment: {
+        code: scatterWgsl,
+        label: 'scatter.wgsl',
+        formats: targetFormat,
+        // Standard alpha blending (circle AA uses alpha, and series color may be translucent).
+        blend: {
+          color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
+          alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+        },
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      multisample: { count: 1 },
     },
-    primitive: { topology: 'triangle-list', cullMode: 'none' },
-    multisample: { count: 1 },
-  });
+    pipelineCache
+  );
 
   let instanceBuffer: GPUBuffer | null = null;
   let instanceCount = 0;

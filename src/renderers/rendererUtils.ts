@@ -11,6 +11,8 @@
  * - First argument is always `device: GPUDevice`.
  */
 
+import type { PipelineCache } from '../core/PipelineCache';
+
 export type ShaderStageModuleSource =
   | {
       /** Use an existing module. */
@@ -86,8 +88,14 @@ const alignTo = (value: number, alignment: number): number => {
 
 const getStageModule = (
   device: GPUDevice,
-  stage: ShaderStageModuleSource
+  stage: ShaderStageModuleSource,
+  pipelineCache?: PipelineCache
 ): { readonly module: GPUShaderModule; readonly entryPoint: string; readonly constants?: Record<string, GPUPipelineConstantValue> } => {
+  // Validate pipelineCache device match early (before any shader module creation).
+  if (pipelineCache && pipelineCache.device !== device) {
+    throw new Error('getStageModule(pipelineCache): cache.device must match the provided GPUDevice.');
+  }
+
   if ('module' in stage) {
     return {
       module: stage.module,
@@ -97,7 +105,7 @@ const getStageModule = (
   }
 
   return {
-    module: createShaderModule(device, stage.code, stage.label),
+    module: createShaderModule(device, stage.code, stage.label, pipelineCache),
     entryPoint: stage.entryPoint || '',
     constants: stage.constants,
   };
@@ -106,9 +114,15 @@ const getStageModule = (
 /**
  * Creates a shader module from WGSL source.
  */
-export function createShaderModule(device: GPUDevice, code: string, label?: string): GPUShaderModule {
+export function createShaderModule(device: GPUDevice, code: string, label?: string, pipelineCache?: PipelineCache): GPUShaderModule {
   if (typeof code !== 'string' || code.length === 0) {
     throw new Error('createShaderModule(code): WGSL code must be a non-empty string.');
+  }
+  if (pipelineCache) {
+    if (pipelineCache.device !== device) {
+      throw new Error('createShaderModule(pipelineCache): cache.device must match the provided GPUDevice.');
+    }
+    return pipelineCache.getOrCreateShaderModule(code, label);
   }
   return device.createShaderModule({ code, label });
 }
@@ -123,47 +137,80 @@ export function createShaderModule(device: GPUDevice, code: string, label?: stri
  * - `primitive.topology: 'triangle-list'`
  * - `multisample.count: 1`
  */
-export function createRenderPipeline(device: GPUDevice, config: RenderPipelineConfig): GPURenderPipeline {
-  const layout: GPUPipelineLayout | 'auto' =
-    config.layout ??
-    (config.bindGroupLayouts ? device.createPipelineLayout({ bindGroupLayouts: [...config.bindGroupLayouts] }) : 'auto');
+export function createRenderPipeline(device: GPUDevice, config: RenderPipelineConfig, pipelineCache?: PipelineCache): GPURenderPipeline {
+  if (pipelineCache && pipelineCache.device !== device) {
+    throw new Error('createRenderPipeline(pipelineCache): cache.device must match the provided GPUDevice.');
+  }
 
-  const vertexStage = getStageModule(device, config.vertex);
+  // Resolve stages first (shader modules may be cached).
+  const vertexStage = getStageModule(device, config.vertex, pipelineCache);
   const vertexEntryPoint = vertexStage.entryPoint || DEFAULT_VERTEX_ENTRY;
 
   let fragment: GPUFragmentState | undefined = undefined;
   if (config.fragment) {
-    const fragmentStage = getStageModule(device, config.fragment);
-    const fragmentEntryPoint = fragmentStage.entryPoint || DEFAULT_FRAGMENT_ENTRY;
+    const fragmentStageResolved = getStageModule(device, config.fragment, pipelineCache);
+    const fragmentEntryPoint = fragmentStageResolved.entryPoint || DEFAULT_FRAGMENT_ENTRY;
 
-    let targets: readonly GPUColorTargetState[] | undefined = config.fragment.targets;
-    if (!targets) {
+    // Avoid double-cloning target arrays: if we synthesize targets, we already own the array.
+    let targets: GPUColorTargetState[];
+    if (config.fragment.targets) {
+      targets = [...config.fragment.targets];
+    } else {
       const formats = config.fragment.formats;
       if (!formats) {
         throw new Error(
           "createRenderPipeline(fragment): provide either `fragment.targets` or `fragment.formats` when a fragment stage is present."
         );
       }
-      const formatList = Array.isArray(formats) ? formats : [formats];
-      targets = formatList.map((format) => ({
-        format,
-        blend: config.fragment!.blend,
-        writeMask: config.fragment!.writeMask,
-      }));
+      if (typeof formats === 'string') {
+        targets = [
+          {
+            format: formats,
+            blend: config.fragment.blend,
+            writeMask: config.fragment.writeMask,
+          },
+        ];
+      } else {
+        targets = new Array(formats.length);
+        for (let i = 0; i < formats.length; i++) {
+          targets[i] = {
+            format: formats[i]!,
+            blend: config.fragment.blend,
+            writeMask: config.fragment.writeMask,
+          };
+        }
+      }
     }
 
     fragment = {
-      module: fragmentStage.module,
+      module: fragmentStageResolved.module,
       entryPoint: fragmentEntryPoint,
-      targets: [...targets],
-      constants: fragmentStage.constants,
+      targets,
+      constants: fragmentStageResolved.constants,
     };
   }
 
   const primitive: GPUPrimitiveState = config.primitive ?? { topology: 'triangle-list' };
   const multisample: GPUMultisampleState = config.multisample ?? { count: 1 };
 
-  return device.createRenderPipeline({
+  // Layout selection:
+  // - Default is `'auto'`
+  // - If `bindGroupLayouts` are provided, we historically created an explicit pipeline layout.
+  //   **IMPORTANT**: When `pipelineCache` is enabled, we force `'auto'` to maximize cross-chart
+  //   pipeline reuse. Explicit layouts created per-chart would prevent cache hits even when
+  //   bind group layouts are structurally identical. This is a deliberate trade-off:
+  //   - With cache: 'auto' layout -> better dedupe, WebGPU driver handles layout internally
+  //   - Without cache: explicit layout -> more predictable (but no cross-chart reuse anyway)
+  let layout: GPUPipelineLayout | 'auto';
+  if (config.layout != null) {
+    layout = config.layout;
+  } else if (config.bindGroupLayouts) {
+    layout = pipelineCache ? 'auto' : device.createPipelineLayout({ bindGroupLayouts: [...config.bindGroupLayouts] });
+  } else {
+    layout = 'auto';
+  }
+
+  const descriptor: GPURenderPipelineDescriptor = {
     label: config.label,
     layout,
     vertex: {
@@ -176,7 +223,13 @@ export function createRenderPipeline(device: GPUDevice, config: RenderPipelineCo
     primitive,
     depthStencil: config.depthStencil,
     multisample,
-  });
+  };
+
+  if (pipelineCache) {
+    return pipelineCache.getOrCreateRenderPipeline(descriptor);
+  }
+
+  return device.createRenderPipeline(descriptor);
 }
 
 /**

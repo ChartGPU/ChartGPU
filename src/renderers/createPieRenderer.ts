@@ -4,6 +4,7 @@ import type { PieCenter, PieRadius } from '../config/types';
 import { parseCssColorToRgba01 } from '../utils/colors';
 import type { GridArea } from './createGridRenderer';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
+import type { PipelineCache } from '../core/PipelineCache';
 
 export interface PieRenderer {
   prepare(seriesConfig: ResolvedPieSeriesConfig, gridArea: GridArea): void;
@@ -19,6 +20,10 @@ export interface PieRendererOptions {
    * Defaults to `'bgra8unorm'` for backward compatibility.
    */
   readonly targetFormat?: GPUTextureFormat;
+  /**
+   * Optional shared cache for shader modules + render pipelines.
+   */
+  readonly pipelineCache?: PipelineCache;
 }
 
 type Rgba = readonly [r: number, g: number, b: number, a: number];
@@ -150,6 +155,7 @@ const IDENTITY_MAT4_F32 = new Float32Array([
 export function createPieRenderer(device: GPUDevice, options?: PieRendererOptions): PieRenderer {
   let disposed = false;
   const targetFormat = options?.targetFormat ?? DEFAULT_TARGET_FORMAT;
+  const pipelineCache = options?.pipelineCache;
 
   const bindGroupLayout = device.createBindGroupLayout({
     entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }],
@@ -167,39 +173,43 @@ export function createPieRenderer(device: GPUDevice, options?: PieRendererOption
     entries: [{ binding: 0, resource: { buffer: vsUniformBuffer } }],
   });
 
-  const pipeline = createRenderPipeline(device, {
-    label: 'pieRenderer/pipeline',
-    bindGroupLayouts: [bindGroupLayout],
-    vertex: {
-      code: pieWgsl,
-      label: 'pie.wgsl',
-      buffers: [
-        {
-          arrayStride: INSTANCE_STRIDE_BYTES,
-          stepMode: 'instance',
-          attributes: [
-            { shaderLocation: 0, format: 'float32x2', offset: 0 }, // center
-            { shaderLocation: 1, format: 'float32', offset: 8 }, // startAngleRad
-            { shaderLocation: 2, format: 'float32', offset: 12 }, // endAngleRad
-            { shaderLocation: 3, format: 'float32x2', offset: 16 }, // radiiPx
-            { shaderLocation: 4, format: 'float32x4', offset: 24 }, // color
-          ],
-        },
-      ],
-    },
-    fragment: {
-      code: pieWgsl,
-      label: 'pie.wgsl',
-      formats: targetFormat,
-      // Standard alpha blending for AA edges and translucent slice colors.
-      blend: {
-        color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
-        alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+  const pipeline = createRenderPipeline(
+    device,
+    {
+      label: 'pieRenderer/pipeline',
+      bindGroupLayouts: [bindGroupLayout],
+      vertex: {
+        code: pieWgsl,
+        label: 'pie.wgsl',
+        buffers: [
+          {
+            arrayStride: INSTANCE_STRIDE_BYTES,
+            stepMode: 'instance',
+            attributes: [
+              { shaderLocation: 0, format: 'float32x2', offset: 0 }, // center
+              { shaderLocation: 1, format: 'float32', offset: 8 }, // startAngleRad
+              { shaderLocation: 2, format: 'float32', offset: 12 }, // endAngleRad
+              { shaderLocation: 3, format: 'float32x2', offset: 16 }, // radiiPx
+              { shaderLocation: 4, format: 'float32x4', offset: 24 }, // color
+            ],
+          },
+        ],
       },
+      fragment: {
+        code: pieWgsl,
+        label: 'pie.wgsl',
+        formats: targetFormat,
+        // Standard alpha blending for AA edges and translucent slice colors.
+        blend: {
+          color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
+          alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+        },
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      multisample: { count: 1 },
     },
-    primitive: { topology: 'triangle-list', cullMode: 'none' },
-    multisample: { count: 1 },
-  });
+    pipelineCache
+  );
 
   let instanceBuffer: GPUBuffer | null = null;
   let instanceCount = 0;

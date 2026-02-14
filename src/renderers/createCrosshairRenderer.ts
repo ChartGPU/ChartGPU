@@ -3,6 +3,7 @@ import { createStreamBuffer } from '../data/createStreamBuffer';
 import { parseCssColorToRgba01 } from '../utils/colors';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
 import type { GridArea } from './createGridRenderer';
+import type { PipelineCache } from '../core/PipelineCache';
 
 export interface CrosshairRenderOptions {
   /** Whether to render the vertical crosshair line. */
@@ -45,6 +46,10 @@ export interface CrosshairRendererOptions {
    * Defaults to `'bgra8unorm'` for backward compatibility.
    */
   readonly targetFormat?: GPUTextureFormat;
+  /**
+   * Optional shared cache for shader modules + render pipelines.
+   */
+  readonly pipelineCache?: PipelineCache;
 }
 
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
@@ -258,6 +263,7 @@ export function createCrosshairRenderer(device: GPUDevice, options?: CrosshairRe
   let visible = true;
 
   const targetFormat = options?.targetFormat ?? DEFAULT_TARGET_FORMAT;
+  const pipelineCache = options?.pipelineCache;
 
   const bindGroupLayout = device.createBindGroupLayout({
     entries: [
@@ -277,32 +283,36 @@ export function createCrosshairRenderer(device: GPUDevice, options?: CrosshairRe
     ],
   });
 
-  const pipeline = createRenderPipeline(device, {
-    label: 'crosshairRenderer/pipeline',
-    bindGroupLayouts: [bindGroupLayout],
-    vertex: {
-      code: crosshairWgsl,
-      label: 'crosshair.wgsl',
-      buffers: [
-        {
-          arrayStride: 8,
-          stepMode: 'vertex',
-          attributes: [{ shaderLocation: 0, format: 'float32x2', offset: 0 }],
-        },
-      ],
-    },
-    fragment: {
-      code: crosshairWgsl,
-      label: 'crosshair.wgsl',
-      formats: targetFormat,
-      blend: {
-        color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
-        alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+  const pipeline = createRenderPipeline(
+    device,
+    {
+      label: 'crosshairRenderer/pipeline',
+      bindGroupLayouts: [bindGroupLayout],
+      vertex: {
+        code: crosshairWgsl,
+        label: 'crosshair.wgsl',
+        buffers: [
+          {
+            arrayStride: 8,
+            stepMode: 'vertex',
+            attributes: [{ shaderLocation: 0, format: 'float32x2', offset: 0 }],
+          },
+        ],
       },
+      fragment: {
+        code: crosshairWgsl,
+        label: 'crosshair.wgsl',
+        formats: targetFormat,
+        blend: {
+          color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
+          alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+        },
+      },
+      primitive: { topology: 'line-list', cullMode: 'none' },
+      multisample: { count: 1 },
     },
-    primitive: { topology: 'line-list', cullMode: 'none' },
-    multisample: { count: 1 },
-  });
+    pipelineCache
+  );
 
   const stream = createStreamBuffer(device, MAX_VERTICES * 8);
   let vertexCount = 0;

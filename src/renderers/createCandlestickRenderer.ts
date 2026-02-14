@@ -5,6 +5,7 @@ import type { LinearScale } from '../utils/scales';
 import type { GridArea } from './createGridRenderer';
 import { parseCssColorToRgba01 } from '../utils/colors';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
+import type { PipelineCache } from '../core/PipelineCache';
 
 export interface CandlestickRenderer {
   prepare(
@@ -27,6 +28,10 @@ export interface CandlestickRendererOptions {
    * Defaults to `'bgra8unorm'` for backward compatibility.
    */
   readonly targetFormat?: GPUTextureFormat;
+  /**
+   * Optional shared cache for shader modules + render pipelines.
+   */
+  readonly pipelineCache?: PipelineCache;
 }
 
 type Rgba = readonly [r: number, g: number, b: number, a: number];
@@ -175,6 +180,7 @@ const createIdentityMat4Buffer = (): ArrayBuffer => {
 export function createCandlestickRenderer(device: GPUDevice, options?: CandlestickRendererOptions): CandlestickRenderer {
   let disposed = false;
   const targetFormat = options?.targetFormat ?? DEFAULT_TARGET_FORMAT;
+  const pipelineCache = options?.pipelineCache;
 
   const bindGroupLayout = device.createBindGroupLayout({
     entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }],
@@ -192,40 +198,44 @@ export function createCandlestickRenderer(device: GPUDevice, options?: Candlesti
     entries: [{ binding: 0, resource: { buffer: vsUniformBuffer } }],
   });
 
-  const pipeline = createRenderPipeline(device, {
-    label: 'candlestickRenderer/pipeline',
-    bindGroupLayouts: [bindGroupLayout],
-    vertex: {
-      code: candlestickWgsl,
-      label: 'candlestick.wgsl',
-      buffers: [
-        {
-          arrayStride: INSTANCE_STRIDE_BYTES,
-          stepMode: 'instance',
-          attributes: [
-            { shaderLocation: 0, format: 'float32', offset: 0 },
-            { shaderLocation: 1, format: 'float32', offset: 4 },
-            { shaderLocation: 2, format: 'float32', offset: 8 },
-            { shaderLocation: 3, format: 'float32', offset: 12 },
-            { shaderLocation: 4, format: 'float32', offset: 16 },
-            { shaderLocation: 5, format: 'float32', offset: 20 },
-            { shaderLocation: 6, format: 'float32x4', offset: 24 },
-          ],
-        },
-      ],
-    },
-    fragment: {
-      code: candlestickWgsl,
-      label: 'candlestick.wgsl',
-      formats: targetFormat,
-      blend: {
-        color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
-        alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+  const pipeline = createRenderPipeline(
+    device,
+    {
+      label: 'candlestickRenderer/pipeline',
+      bindGroupLayouts: [bindGroupLayout],
+      vertex: {
+        code: candlestickWgsl,
+        label: 'candlestick.wgsl',
+        buffers: [
+          {
+            arrayStride: INSTANCE_STRIDE_BYTES,
+            stepMode: 'instance',
+            attributes: [
+              { shaderLocation: 0, format: 'float32', offset: 0 },
+              { shaderLocation: 1, format: 'float32', offset: 4 },
+              { shaderLocation: 2, format: 'float32', offset: 8 },
+              { shaderLocation: 3, format: 'float32', offset: 12 },
+              { shaderLocation: 4, format: 'float32', offset: 16 },
+              { shaderLocation: 5, format: 'float32', offset: 20 },
+              { shaderLocation: 6, format: 'float32x4', offset: 24 },
+            ],
+          },
+        ],
       },
+      fragment: {
+        code: candlestickWgsl,
+        label: 'candlestick.wgsl',
+        formats: targetFormat,
+        blend: {
+          color: { operation: 'add', srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
+          alpha: { operation: 'add', srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+        },
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      multisample: { count: 1 },
     },
-    primitive: { topology: 'triangle-list', cullMode: 'none' },
-    multisample: { count: 1 },
-  });
+    pipelineCache
+  );
 
   let instanceBuffer: GPUBuffer | null = null;
   let instanceCount = 0;
