@@ -1149,7 +1149,7 @@ export function createRenderCoordinator(
     setOptions({ ...currentOptions, series: updatedSeries });
   };
 
-  const legend: Legend | null = overlayContainer ? createLegend(overlayContainer, 'right', handleSeriesToggle) : null;
+  const legend: Legend | null = overlayContainer && options.legend?.show!==false ? createLegend(overlayContainer, options.legend?.position, handleSeriesToggle) : null;
   // Text measurement for axis labels. Requires DOM context.
   const tickMeasureCtx: CanvasRenderingContext2D | null = (() => {
     if (typeof document === 'undefined') {
