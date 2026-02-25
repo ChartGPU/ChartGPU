@@ -1,8 +1,20 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { createInsideZoom } from '../createInsideZoom';
 import type { EventManager, ChartGPUEventPayload } from '../createEventManager';
 import type { ZoomState } from '../createZoomState';
 import type { ZoomRange } from '../createZoomState';
+
+// Mock navigator.maxTouchPoints so isTouchDevice evaluates to true in tests.
+const originalMaxTouchPoints = Object.getOwnPropertyDescriptor(navigator, 'maxTouchPoints');
+Object.defineProperty(navigator, 'maxTouchPoints', { value: 10, configurable: true });
+afterAll(() => {
+  if (originalMaxTouchPoints) {
+    Object.defineProperty(navigator, 'maxTouchPoints', originalMaxTouchPoints);
+  } else {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+    delete (navigator as Record<string, unknown>)['maxTouchPoints'];
+  }
+});
 
 // --- helpers -----------------------------------------------------------
 
@@ -35,6 +47,8 @@ function createMockEventManager(): EventManager & {
       }
     }),
     getBoundingClientRect: vi.fn(() => ({ left: 0, top: 0, width: 800, height: 600 })),
+    setPointerCapture: vi.fn(),
+    releasePointerCapture: vi.fn(),
     style: {} as CSSStyleDeclaration,
   } as unknown as HTMLCanvasElement;
 

@@ -189,6 +189,15 @@ export function createInsideZoom(eventManager: EventManager, zoomState: ZoomStat
 
   // --- Touch pointer handlers (on canvas) ---
 
+  /** Fallback grid check when lastPointer isn't available yet (e.g. touch-only device). */
+  const isPointInGrid = (e: PointerEvent, canvas: HTMLCanvasElement): boolean => {
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return false;
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    return x >= 0 && x <= rect.width && y >= 0 && y <= rect.height;
+  };
+
   const onTouchPointerDown = (e: PointerEvent): void => {
     if (!enabled || disposed) return;
     if (e.pointerType !== 'touch') return;
@@ -196,10 +205,22 @@ export function createInsideZoom(eventManager: EventManager, zoomState: ZoomStat
     // Prevent default to suppress browser scroll/zoom on touch.
     e.preventDefault();
 
-    // Only start tracking if the last known pointer position is inside the grid.
-    if (!lastPointer || !lastPointer.isInGrid) return;
+    // Only start tracking if the pointer is inside the grid.
+    // Use lastPointer when available (precise grid margins); fall back to canvas bounds
+    // so touch-only devices (where mousemove may never fire) are not locked out.
+    const inGrid = lastPointer
+      ? lastPointer.isInGrid
+      : isPointInGrid(e, eventManager.canvas);
+
+    if (!inGrid) return;
+
+    // Reject 3+ simultaneous pointers to prevent corrupting pinch state.
+    if (activePointers.size >= 2) return;
 
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    // Capture pointer so up/cancel events route here even if the finger slides off canvas.
+    eventManager.canvas.setPointerCapture(e.pointerId);
 
     // Reset pinch state when pointer count changes (transition between pan/pinch).
     resetPinchState();
@@ -238,9 +259,9 @@ export function createInsideZoom(eventManager: EventManager, zoomState: ZoomStat
       // Update the moved pointer position first.
       activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-      const pointers = Array.from(activePointers.values());
-      const p1 = pointers[0];
-      const p2 = pointers[1];
+      const iter = activePointers.values();
+      const p1 = iter.next().value!;
+      const p2 = iter.next().value!;
 
       const currentDist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
       const currentMidX = (p1.x + p2.x) / 2;
@@ -292,12 +313,14 @@ export function createInsideZoom(eventManager: EventManager, zoomState: ZoomStat
   };
 
   const onTouchPointerUp = (e: PointerEvent): void => {
+    if (!enabled || disposed) return;
     if (e.pointerType !== 'touch') return;
     activePointers.delete(e.pointerId);
     resetPinchState();
   };
 
   const onTouchPointerCancel = (e: PointerEvent): void => {
+    if (!enabled || disposed) return;
     if (e.pointerType !== 'touch') return;
     activePointers.delete(e.pointerId);
     resetPinchState();
@@ -312,16 +335,17 @@ export function createInsideZoom(eventManager: EventManager, zoomState: ZoomStat
     eventManager.on('mouseleave', onMouseLeave);
     eventManager.canvas.addEventListener('wheel', onWheel, { passive: false });
 
-    // Touch gesture listeners on canvas (only modify touchAction on touch-capable devices).
-    const canvas = eventManager.canvas;
+    // Touch gesture listeners on canvas (only on touch-capable devices to avoid
+    // registering passive-false pointermove on desktop where it degrades scroll perf).
     if (isTouchDevice) {
+      const canvas = eventManager.canvas;
       savedTouchAction = canvas.style.touchAction;
       canvas.style.touchAction = 'none';
+      canvas.addEventListener('pointerdown', onTouchPointerDown, { passive: false });
+      canvas.addEventListener('pointermove', onTouchPointerMove, { passive: false });
+      canvas.addEventListener('pointerup', onTouchPointerUp);
+      canvas.addEventListener('pointercancel', onTouchPointerCancel);
     }
-    canvas.addEventListener('pointerdown', onTouchPointerDown, { passive: false });
-    canvas.addEventListener('pointermove', onTouchPointerMove, { passive: false });
-    canvas.addEventListener('pointerup', onTouchPointerUp);
-    canvas.addEventListener('pointercancel', onTouchPointerCancel);
   };
 
   const disable: InsideZoom['disable'] = () => {
@@ -332,14 +356,14 @@ export function createInsideZoom(eventManager: EventManager, zoomState: ZoomStat
     eventManager.canvas.removeEventListener('wheel', onWheel);
 
     // Remove touch gesture listeners.
-    const canvas = eventManager.canvas;
     if (isTouchDevice) {
+      const canvas = eventManager.canvas;
       canvas.style.touchAction = savedTouchAction;
+      canvas.removeEventListener('pointerdown', onTouchPointerDown);
+      canvas.removeEventListener('pointermove', onTouchPointerMove);
+      canvas.removeEventListener('pointerup', onTouchPointerUp);
+      canvas.removeEventListener('pointercancel', onTouchPointerCancel);
     }
-    canvas.removeEventListener('pointerdown', onTouchPointerDown);
-    canvas.removeEventListener('pointermove', onTouchPointerMove);
-    canvas.removeEventListener('pointerup', onTouchPointerUp);
-    canvas.removeEventListener('pointercancel', onTouchPointerCancel);
 
     activePointers.clear();
     resetPinchState();
