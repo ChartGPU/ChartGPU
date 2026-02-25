@@ -108,6 +108,7 @@ export function renderAxisLabels(
     return createTickFormatter(xTickStep);
   })();
 
+  const xTickFormatter = currentOptions.xAxis.tickFormatter;
   for (let i = 0; i < xTickValues.length; i++) {
     const v = xTickValues[i]!;
     const xClip = xScale.scale(v);
@@ -115,7 +116,11 @@ export function renderAxisLabels(
 
     const anchor: TextOverlayAnchor =
       xTickValues.length === 1 ? 'middle' : i === 0 ? 'start' : i === xTickValues.length - 1 ? 'end' : 'middle';
-    const label = isTimeXAxis ? formatTimeTickValue(v, visibleXRangeMs) : formatTickValue(xFormatter!, v);
+    const label = xTickFormatter
+      ? xTickFormatter(v)
+      : isTimeXAxis
+        ? formatTimeTickValue(v, visibleXRangeMs)
+        : formatTickValue(xFormatter!, v);
     if (label == null) continue;
 
     const span = axisLabelOverlay.addLabel(label, offsetX + xCss, offsetY + xLabelY, {
@@ -136,13 +141,14 @@ export function renderAxisLabels(
   const yLabelX = plotLeftCss - yTickLengthCssPx - LABEL_PADDING_CSS_PX;
   const ySpans: HTMLSpanElement[] = [];
 
+  const yTickFormatter = currentOptions.yAxis.tickFormatter;
   for (let i = 0; i < yTickCount; i++) {
     const t = yTickCount <= 1 ? 0.5 : i / (yTickCount - 1);
     const v = yDomainMin + t * (yDomainMax - yDomainMin);
     const yClip = yScale.scale(v);
     const yCss = clipYToCanvasCssPx(yClip, canvasCssHeight);
 
-    const label = formatTickValue(yFormatter, v);
+    const label = yTickFormatter ? yTickFormatter(v) : formatTickValue(yFormatter, v);
     if (label == null) continue;
 
     const span = axisLabelOverlay.addLabel(label, offsetX + yLabelX, offsetY + yCss, {

@@ -724,6 +724,7 @@ const computeAdaptiveTimeXAxisTicks = (params: {
   readonly measureCache?: Map<string, number>;
   readonly fontSize: number;
   readonly fontFamily: string;
+  readonly tickFormatter?: (value: number) => string | null;
 }): { readonly tickCount: number; readonly tickValues: readonly number[] } => {
   const {
     axisMin,
@@ -737,6 +738,7 @@ const computeAdaptiveTimeXAxisTicks = (params: {
     measureCache,
     fontSize,
     fontFamily,
+    tickFormatter,
   } = params;
 
   // Domain fallback matches `createAxisRenderer` (use explicit min/max when provided).
@@ -763,7 +765,7 @@ const computeAdaptiveTimeXAxisTicks = (params: {
 
     for (let i = 0; i < tickValues.length; i++) {
       const v = tickValues[i]!;
-      const label = formatTimeTickValue(v, visibleRangeMs);
+      const label = tickFormatter ? tickFormatter(v) : formatTimeTickValue(v, visibleRangeMs);
       if (label == null) continue;
 
       const w = (() => {
@@ -2938,6 +2940,7 @@ export function createRenderCoordinator(
         measureCache: tickMeasureCache ?? undefined,
         fontSize: currentOptions.theme.fontSize,
         fontFamily: currentOptions.theme.fontFamily || 'sans-serif',
+        tickFormatter: currentOptions.xAxis.tickFormatter,
       });
       xTickCount = computed.tickCount;
       xTickValues = computed.tickValues;

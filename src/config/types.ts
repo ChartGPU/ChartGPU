@@ -107,6 +107,13 @@ export interface AxisConfig {
    * This option is primarily intended for `yAxis` (it has no effect on `xAxis` currently).
    */
   readonly autoBounds?: 'global' | 'visible';
+  /**
+   * Custom formatter for axis tick labels.
+   * When provided, replaces the built-in tick label formatting.
+   * For time axes, `value` is a timestamp in milliseconds (epoch-ms).
+   * Return `null` to suppress a specific tick label.
+   */
+  readonly tickFormatter?: (value: number) => string | null;
 }
 
 export interface DataZoomConfig {

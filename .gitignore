@@ -55,5 +55,8 @@ lerna-debug.log*
 # .pnpm-store/
 .grepai/
 
+# Plans (local design docs, not shipped)
+docs/plans/
+
 # CLAUDE.md generator (local tooling, not shipped)
 update-claude-md.sh

@@ -28,8 +28,10 @@ import {
   pad2,
   parseNumberOrPercent,
   computeMaxFractionDigitsFromStep,
+  // Tick generation
   generateLinearTicks,
 } from '../index';
+import { computeAdaptiveTimeXAxisTicks } from '../timeAxisUtils';
 
 describe('Data Point Utilities', () => {
   it('finiteOrNull returns number for finite values', () => {
@@ -208,5 +210,64 @@ describe('Canvas Utilities', () => {
     // With DPR of 2
     const size = getCanvasCssSizeFromDevicePixels(mockCanvas, 2);
     expect(size).toEqual({ width: 400, height: 300 });
+  });
+});
+
+describe('computeAdaptiveTimeXAxisTicks with tickFormatter', () => {
+  it('uses tickFormatter for label width measurement when provided', () => {
+    const wideFormatter = (v: number) => `WIDE-LABEL-${v.toFixed(0)}`;
+
+    const mockMeasureCtx = {
+      font: '',
+      measureText: (text: string) => ({
+        width: text.length * 20,
+      }),
+    } as unknown as CanvasRenderingContext2D;
+
+    const result = computeAdaptiveTimeXAxisTicks({
+      axisMin: 0,
+      axisMax: 86400000,
+      xScale: {
+        scale: (v: number) => -1 + (v / 86400000) * 2,
+        invert: (c: number) => ((c + 1) / 2) * 86400000,
+      } as any,
+      plotClipLeft: -0.85,
+      plotClipRight: 0.95,
+      canvasCssWidth: 400,
+      visibleRangeMs: 86400000,
+      measureCtx: mockMeasureCtx,
+      fontSize: 12,
+      fontFamily: 'sans-serif',
+      tickFormatter: wideFormatter,
+    });
+
+    expect(result.tickCount).toBeLessThan(9);
+    expect(result.tickValues.length).toBe(result.tickCount);
+  });
+
+  it('falls back to formatTimeTickValue when tickFormatter is not provided', () => {
+    const mockMeasureCtx = {
+      font: '',
+      measureText: () => ({ width: 40 }),
+    } as unknown as CanvasRenderingContext2D;
+
+    const result = computeAdaptiveTimeXAxisTicks({
+      axisMin: 0,
+      axisMax: 86400000,
+      xScale: {
+        scale: (v: number) => -1 + (v / 86400000) * 2,
+        invert: (c: number) => ((c + 1) / 2) * 86400000,
+      } as any,
+      plotClipLeft: -0.85,
+      plotClipRight: 0.95,
+      canvasCssWidth: 800,
+      visibleRangeMs: 86400000,
+      measureCtx: mockMeasureCtx,
+      fontSize: 12,
+      fontFamily: 'sans-serif',
+    });
+
+    expect(result.tickCount).toBeGreaterThanOrEqual(1);
+    expect(result.tickValues.length).toBe(result.tickCount);
   });
 });

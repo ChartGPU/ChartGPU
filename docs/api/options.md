@@ -88,6 +88,41 @@ Notes (density mode):
     - **`'visible'` (default)**: when x-axis data zoom is active, ChartGPU derives y-bounds from the **visible** (zoomed) x-range.
     - **`'global'`**: derive y-bounds from the **full dataset** (pre-zoom behavior), even while x-zoomed.
   - This option is intended for `yAxis` (it has no effect on `xAxis`).
+- **`AxisConfig.tickFormatter?: (value: number) => string | null`**: custom formatter for axis tick labels. When provided, replaces the built-in tick label formatting for that axis.
+  - For `type: 'value'` axes, `value` is the numeric tick value.
+  - For `type: 'time'` axes, `value` is a timestamp in milliseconds (epoch-ms, same unit as `new Date(ms)`).
+  - Return a `string` to display as the label, or `null` to suppress that specific tick label.
+  - When omitted, ChartGPU uses its built-in formatting: `Intl.NumberFormat` for value axes, adaptive tier-based date formatting for time axes.
+  - The formatter is also used for label width measurement in the adaptive time x-axis tick count algorithm, ensuring overlap avoidance uses the correct label widths.
+
+#### Tick Formatter Examples
+
+```ts
+// Duration formatting (seconds → human-readable)
+yAxis: {
+  tickFormatter: (seconds) => {
+    const d = Math.floor(seconds / 86400);
+    const h = Math.floor((seconds % 86400) / 3600);
+    return d > 0 ? `${d}d ${h}h` : `${h}h`;
+  }
+}
+
+// Percentage formatting (0–1 → 0%–100%)
+yAxis: { tickFormatter: (v) => `${(v * 100).toFixed(0)}%` }
+
+// Integer-only ticks (suppress fractional labels)
+xAxis: { tickFormatter: (v) => Number.isInteger(v) ? v.toLocaleString() : null }
+
+// Custom time axis formatting
+xAxis: {
+  type: 'time',
+  tickFormatter: (ms) => new Date(ms).toLocaleDateString('de-DE')
+}
+
+// Append units
+yAxis: { tickFormatter: (v) => `${v.toFixed(1)} ms` }
+```
+
 - **`xAxis.type: 'time'` (timestamps)**: when `xAxis.type === 'time'`, x-values are interpreted as **timestamps in milliseconds since Unix epoch** (the same unit accepted by `new Date(ms)`), including candlestick `timestamp` values. For GPU precision, ChartGPU may internally **rebase** large time x-values (e.g. epoch-ms domains) before uploading to Float32 vertex buffers; this is automatic and does not change your units. See the runtime axis label/tick logic in [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
 - **Time x-axis tick labels (automatic tiers)**: when `xAxis.type === 'time'`, x-axis tick labels are formatted based on the **current visible x-range** (after data zoom):
 
