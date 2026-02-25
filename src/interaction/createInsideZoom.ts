@@ -64,6 +64,8 @@ const isShiftLeftDrag = (e: PointerEvent): boolean =>
  * Internal “inside” zoom interaction:
  * - wheel zoom centered at cursor-x (only when inside grid)
  * - shift+left drag OR middle-mouse drag pans left/right (only when inside grid)
+ * - single-finger touch drag pans left/right (only when inside grid)
+ * - two-finger pinch-to-zoom centered at finger midpoint (only when inside grid)
  */
 export function createInsideZoom(eventManager: EventManager, zoomState: ZoomState): InsideZoom {
   let disposed = false;
@@ -73,10 +75,22 @@ export function createInsideZoom(eventManager: EventManager, zoomState: ZoomStat
   let isPanning = false;
   let lastPanGridX = 0;
 
+  // --- Touch state ---
+  const isTouchDevice = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0;
+  const activePointers = new Map<number, { x: number; y: number }>();
+  let previousPinchDist = 0;
+  let savedTouchAction = '';
+
+  const resetPinchState = (): void => {
+    previousPinchDist = 0;
+  };
+
   const clearPan = (): void => {
     isPanning = false;
     lastPanGridX = 0;
   };
+
+  // --- Mouse event handlers (from EventManager) ---
 
   const onMouseMove = (payload: ChartGPUEventPayload): void => {
     lastPointer = payload;
@@ -122,6 +136,8 @@ export function createInsideZoom(eventManager: EventManager, zoomState: ZoomStat
     lastPointer = null;
     clearPan();
   };
+
+  // --- Wheel handler ---
 
   const onWheel = (e: WheelEvent): void => {
     if (!enabled || disposed) return;
@@ -171,12 +187,165 @@ export function createInsideZoom(eventManager: EventManager, zoomState: ZoomStat
     else zoomState.zoomOut(centerPct, factor);
   };
 
+  // --- Touch pointer handlers (on canvas) ---
+
+  /** Fallback grid check when lastPointer isn't available yet (e.g. touch-only device). */
+  const isPointInGrid = (e: PointerEvent, canvas: HTMLCanvasElement): boolean => {
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return false;
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    return x >= 0 && x <= rect.width && y >= 0 && y <= rect.height;
+  };
+
+  const onTouchPointerDown = (e: PointerEvent): void => {
+    if (!enabled || disposed) return;
+    if (e.pointerType !== 'touch') return;
+
+    // Prevent default to suppress browser scroll/zoom on touch.
+    e.preventDefault();
+
+    // Only start tracking if the pointer is inside the grid.
+    // Use lastPointer when available (precise grid margins); fall back to canvas bounds
+    // so touch-only devices (where mousemove may never fire) are not locked out.
+    const inGrid = lastPointer
+      ? lastPointer.isInGrid
+      : isPointInGrid(e, eventManager.canvas);
+
+    if (!inGrid) return;
+
+    // Reject 3+ simultaneous pointers to prevent corrupting pinch state.
+    if (activePointers.size >= 2) return;
+
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    // Capture pointer so up/cancel events route here even if the finger slides off canvas.
+    eventManager.canvas.setPointerCapture(e.pointerId);
+
+    // Reset pinch state when pointer count changes (transition between pan/pinch).
+    resetPinchState();
+  };
+
+  const onTouchPointerMove = (e: PointerEvent): void => {
+    if (!enabled || disposed) return;
+    if (e.pointerType !== 'touch') return;
+    if (!activePointers.has(e.pointerId)) return;
+
+    const pointerCount = activePointers.size;
+
+    if (pointerCount === 1) {
+      // --- Single-finger pan ---
+      const prev = activePointers.get(e.pointerId);
+      if (!prev) return;
+
+      const dxCss = e.clientX - prev.x;
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if (!Number.isFinite(dxCss) || dxCss === 0) return;
+
+      const plotWidthCss = lastPointer?.plotWidthCss ?? 0;
+      if (!(plotWidthCss > 0)) return;
+
+      const { start, end } = zoomState.getRange();
+      const span = end - start;
+      if (!Number.isFinite(span) || span === 0) return;
+
+      const deltaPct = -(dxCss / plotWidthCss) * span;
+      if (!Number.isFinite(deltaPct) || deltaPct === 0) return;
+
+      zoomState.pan(deltaPct);
+    } else if (pointerCount === 2) {
+      // --- Pinch-to-zoom ---
+      // Update the moved pointer position first.
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      const iter = activePointers.values();
+      const p1 = iter.next().value!;
+      const p2 = iter.next().value!;
+
+      const currentDist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+      const currentMidX = (p1.x + p2.x) / 2;
+
+      if (!Number.isFinite(currentDist) || currentDist === 0) return;
+
+      if (previousPinchDist > 0 && Number.isFinite(previousPinchDist)) {
+        const ratio = previousPinchDist / currentDist;
+
+        // Compute zoom center in percent space from the midpoint.
+        const canvas = eventManager.canvas;
+        const rect = canvas.getBoundingClientRect();
+        const plotWidthCss = lastPointer?.plotWidthCss ?? 0;
+        if (!(plotWidthCss > 0) || rect.width === 0) {
+          previousPinchDist = currentDist;
+          return;
+        }
+
+        // Estimate grid-left offset from lastPointer (gridX is relative to plot area).
+        // plotLeftCss = lastPointer.x - lastPointer.gridX gives the plot area's left edge
+        // in canvas CSS coordinates. The midpoint in canvas CSS is (currentMidX - rect.left).
+        const plotLeftCss = lastPointer
+          ? lastPointer.x - lastPointer.gridX
+          : 0;
+        const midGridX = currentMidX - rect.left - plotLeftCss;
+        const r = clamp(midGridX / plotWidthCss, 0, 1);
+
+        const { start, end } = zoomState.getRange();
+        const span = end - start;
+        if (!Number.isFinite(span) || span === 0) {
+          previousPinchDist = currentDist;
+          return;
+        }
+
+        const centerPct = clamp(start + r * span, 0, 100);
+
+        // Apply zoom based on pinch direction.
+        // ratio > 1 means fingers got closer => zoom out (pass ratio directly as factor).
+        // ratio < 1 means fingers spread apart => zoom in (invert to get factor > 1).
+        if (ratio > 1) {
+          zoomState.zoomOut(centerPct, ratio);
+        } else if (ratio > 0 && ratio < 1) {
+          zoomState.zoomIn(centerPct, 1 / ratio);
+        }
+      }
+
+      previousPinchDist = currentDist;
+    }
+  };
+
+  const onTouchPointerUp = (e: PointerEvent): void => {
+    if (!enabled || disposed) return;
+    if (e.pointerType !== 'touch') return;
+    activePointers.delete(e.pointerId);
+    resetPinchState();
+  };
+
+  const onTouchPointerCancel = (e: PointerEvent): void => {
+    if (!enabled || disposed) return;
+    if (e.pointerType !== 'touch') return;
+    activePointers.delete(e.pointerId);
+    resetPinchState();
+  };
+
+  // --- Enable / disable / dispose ---
+
   const enable: InsideZoom['enable'] = () => {
     if (disposed || enabled) return;
     enabled = true;
     eventManager.on('mousemove', onMouseMove);
     eventManager.on('mouseleave', onMouseLeave);
     eventManager.canvas.addEventListener('wheel', onWheel, { passive: false });
+
+    // Touch gesture listeners on canvas (only on touch-capable devices to avoid
+    // registering passive-false pointermove on desktop where it degrades scroll perf).
+    if (isTouchDevice) {
+      const canvas = eventManager.canvas;
+      savedTouchAction = canvas.style.touchAction;
+      canvas.style.touchAction = 'none';
+      canvas.addEventListener('pointerdown', onTouchPointerDown, { passive: false });
+      canvas.addEventListener('pointermove', onTouchPointerMove, { passive: false });
+      canvas.addEventListener('pointerup', onTouchPointerUp);
+      canvas.addEventListener('pointercancel', onTouchPointerCancel);
+    }
   };
 
   const disable: InsideZoom['disable'] = () => {
@@ -185,6 +354,19 @@ export function createInsideZoom(eventManager: EventManager, zoomState: ZoomStat
     eventManager.off('mousemove', onMouseMove);
     eventManager.off('mouseleave', onMouseLeave);
     eventManager.canvas.removeEventListener('wheel', onWheel);
+
+    // Remove touch gesture listeners.
+    if (isTouchDevice) {
+      const canvas = eventManager.canvas;
+      canvas.style.touchAction = savedTouchAction;
+      canvas.removeEventListener('pointerdown', onTouchPointerDown);
+      canvas.removeEventListener('pointermove', onTouchPointerMove);
+      canvas.removeEventListener('pointerup', onTouchPointerUp);
+      canvas.removeEventListener('pointercancel', onTouchPointerCancel);
+    }
+
+    activePointers.clear();
+    resetPinchState();
     lastPointer = null;
     clearPan();
   };

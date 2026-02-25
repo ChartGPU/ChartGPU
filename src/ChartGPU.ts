@@ -16,6 +16,8 @@ import type {
 } from './config/types';
 import { createDataZoomSlider } from './components/createDataZoomSlider';
 import type { DataZoomSlider } from './components/createDataZoomSlider';
+import { createZoomResetButton } from './components/createZoomResetButton';
+import type { ZoomResetButton } from './components/createZoomResetButton';
 import type { ZoomRange, ZoomState } from './interaction/createZoomState';
 import { computeCandlestickBodyWidthRange, findCandlestick } from './interaction/findCandlestick';
 import { findNearestPoint } from './interaction/findNearestPoint';
@@ -357,6 +359,7 @@ const getOHLCTimestamp = (p: OHLCDataPoint): number => (isTupleOHLCDataPoint(p) 
 const getOHLCClose = (p: OHLCDataPoint): number => (isTupleOHLCDataPoint(p) ? p[2] : p.close);
 
 const hasSliderDataZoom = (options: ChartGPUOptions): boolean => options.dataZoom?.some((z) => z?.type === 'slider') ?? false;
+const hasInsideDataZoom = (options: ChartGPUOptions): boolean => options.dataZoom?.some((z) => z?.type === 'inside') ?? false;
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
@@ -764,6 +767,7 @@ export async function createChartGPU(
 
   let dataZoomSliderHost: HTMLDivElement | null = null;
   let dataZoomSlider: DataZoomSlider | null = null;
+  let zoomResetButton: ZoomResetButton | null = null;
 
   let currentOptions: ChartGPUOptions = options;
   let resolvedOptions: ResolvedChartGPUOptions = resolveOptionsForChart(currentOptions);
@@ -1076,6 +1080,29 @@ export async function createChartGPU(
     dataZoomSlider.update(resolvedOptions.theme);
   };
 
+  const disposeZoomResetButton = (): void => {
+    zoomResetButton?.dispose();
+    zoomResetButton = null;
+  };
+
+  const syncZoomResetButton = (): void => {
+    const shouldHaveButton = hasInsideDataZoom(currentOptions);
+    if (!shouldHaveButton) {
+      disposeZoomResetButton();
+      return;
+    }
+
+    // Button requires a coordinator-backed zoom state.
+    if (!coordinator) return;
+    if (!coordinator.getZoomRange()) return;
+
+    if (!zoomResetButton) {
+      zoomResetButton = createZoomResetButton(container, createCoordinatorZoomStateLike(), resolvedOptions.theme);
+    } else {
+      zoomResetButton.update(resolvedOptions.theme);
+    }
+  };
+
   // Reusable event payloads to avoid allocations in hot paths (pointer/zoom/dataAppend interactions).
   // Internal mutable versions; cast to readonly when emitting (safe since payload is passed by reference
   // and consumers receive readonly types, preventing external mutation).
@@ -1132,8 +1159,9 @@ export async function createChartGPU(
 
     unbindCoordinatorInteractionXChange();
     unbindCoordinatorZoomRangeChange();
-    // Coordinator recreation invalidates zoom subscriptions; recreate the slider if present.
+    // Coordinator recreation invalidates zoom subscriptions; recreate the slider and reset button if present.
     disposeDataZoomSlider();
+    disposeZoomResetButton();
     coordinator?.dispose();
     
     // Clear any pending zoom source tokens to avoid stale tokens after recreation.
@@ -1151,6 +1179,7 @@ export async function createChartGPU(
 
     if (prevZoomRange) coordinator.setZoomRange(prevZoomRange.start, prevZoomRange.end);
     syncDataZoomUi();
+    syncZoomResetButton();
   };
 
   const resizeInternal = (shouldRequestRenderAfterChanges: boolean): void => {
@@ -1652,6 +1681,7 @@ export async function createChartGPU(
       // Requirement: dispose order: cancel RAF, coordinator.dispose(), gpuContext.destroy(), remove canvas.
       cancelPendingFrame();
       disposeDataZoomUi();
+      disposeZoomResetButton();
       unbindCoordinatorInteractionXChange();
       unbindCoordinatorZoomRangeChange();
       coordinator?.dispose();
@@ -1703,6 +1733,7 @@ export async function createChartGPU(
       cachedGlobalBounds = computeGlobalBounds(resolvedOptions.series, runtimeRawBoundsByIndex);
       interactionScalesCache = null;
       syncDataZoomUi();
+      syncZoomResetButton();
 
       // Requirement: setOption triggers a render (and thus series parsing/extent/scales update inside render).
       requestRender();
@@ -2279,6 +2310,7 @@ export async function createChartGPU(
 
     // Mount data-zoom UI (if configured).
     syncDataZoomUi();
+    syncZoomResetButton();
 
     // Kick an initial render.
     if (renderMode === 'auto') requestRender();
