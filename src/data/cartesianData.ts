@@ -335,6 +335,16 @@ export function computeRawBoundsFromCartesianData(data: CartesianSeriesData): Bo
 }
 
 /**
+ * Returns true if a CartesianSeriesData array contains any null entries (gap markers).
+ * Only applies to ReadonlyArray<DataPoint | null> format — XYArraysData and
+ * InterleavedXYData cannot contain null entries and always return false.
+ */
+export function hasNullGaps(data: CartesianSeriesData): boolean {
+  if (!Array.isArray(data)) return false;
+  return data.includes(null);
+}
+
+/**
  * Removes null entries from a DataPoint array.
  * Used by connectNulls to strip gap markers before GPU upload,
  * so the line/area draws through gaps instead of breaking.

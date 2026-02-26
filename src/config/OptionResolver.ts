@@ -39,7 +39,7 @@ import { getTheme } from '../themes';
 import type { ThemeConfig } from '../themes/types';
 import { sampleSeriesDataPoints } from '../data/sampleSeries';
 import { ohlcSample } from '../data/ohlcSample';
-import { computeRawBoundsFromCartesianData } from '../data/cartesianData';
+import { computeRawBoundsFromCartesianData, hasNullGaps } from '../data/cartesianData';
 import { parseCssColorToRgba01 } from '../utils/colors';
 
 export type ResolvedGridConfig = Readonly<Required<GridConfig>>;
@@ -842,11 +842,15 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
         };
 
         const rawBounds = computeRawBoundsFromCartesianData(s.data) ?? undefined;
+        // Bypass sampling when data contains null gap markers to preserve gap structure
+        const sampledAreaData = hasNullGaps(s.data)
+          ? s.data
+          : sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
         return {
           ...s,
           visible,
           rawData: s.data,
-          data: sampleSeriesDataPoints(s.data, sampling, samplingThreshold),
+          data: sampledAreaData,
           color: effectiveColor,
           areaStyle,
           sampling,
@@ -869,7 +873,10 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
         // Avoid leaking the unresolved (user) areaStyle shape via object spread.
         const { areaStyle: _userAreaStyle, ...rest } = s;
         const rawBounds = computeRawBoundsFromCartesianData(s.data) ?? undefined;
-        const sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
+        // Bypass sampling when data contains null gap markers to preserve gap structure
+        const sampledData = hasNullGaps(s.data)
+          ? s.data
+          : sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
 
         return {
           ...rest,
