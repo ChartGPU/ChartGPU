@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Line Gaps</title>
+  <style>
+    body { margin: 0; background: #1a1a2e; color: #eee; font-family: system-ui; }
+    .chart-container { width: 800px; height: 300px; margin: 20px auto; }
+    h2 { text-align: center; margin: 10px 0 0; font-size: 14px; font-weight: normal; opacity: 0.7; }
+  </style>
+</head>
+<body>
+  <h2>Line with null gaps (connectNulls: false)</h2>
+  <div id="chart1" class="chart-container"></div>
+  <h2>Line with null gaps (connectNulls: true)</h2>
+  <div id="chart2" class="chart-container"></div>
+  <h2>Area with null gaps</h2>
+  <div id="chart3" class="chart-container"></div>
+  <h2>Multi-segment pattern: [...data1, null, ...data2]</h2>
+  <div id="chart4" class="chart-container"></div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>
