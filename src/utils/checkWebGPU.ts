@@ -92,6 +92,8 @@ export async function checkWebGPUSupport(): Promise<WebGPUSupportResult> {
       }
 
       // Success: WebGPU is supported and an adapter is available
+      // Null out adapter reference so the closure doesn't prevent GC (CGPU-OOM-139)
+      adapter = null;
       return { supported: true };
     } catch (error) {
       // Adapter request threw an error
