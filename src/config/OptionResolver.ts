@@ -69,7 +69,8 @@ export type ResolvedGridLinesConfig = Readonly<{
 export type RawBounds = Readonly<{ xMin: number; xMax: number; yMin: number; yMax: number }>;
 
 export type ResolvedLineSeriesConfig = Readonly<
-  Omit<LineSeriesConfig, 'color' | 'lineStyle' | 'areaStyle' | 'sampling' | 'samplingThreshold' | 'data'> & {
+  Omit<LineSeriesConfig, 'color' | 'lineStyle' | 'areaStyle' | 'sampling' | 'samplingThreshold' | 'data' | 'connectNulls'> & {
+    readonly connectNulls: boolean;
     readonly color: string;
     readonly lineStyle: ResolvedLineStyleConfig;
     readonly areaStyle?: ResolvedAreaStyleConfig;
@@ -92,7 +93,8 @@ export type ResolvedLineSeriesConfig = Readonly<
 >;
 
 export type ResolvedAreaSeriesConfig = Readonly<
-  Omit<AreaSeriesConfig, 'color' | 'areaStyle' | 'sampling' | 'samplingThreshold' | 'data'> & {
+  Omit<AreaSeriesConfig, 'color' | 'areaStyle' | 'sampling' | 'samplingThreshold' | 'data' | 'connectNulls'> & {
+    readonly connectNulls: boolean;
     readonly color: string;
     readonly areaStyle: ResolvedAreaStyleConfig;
     readonly sampling: SeriesSampling;
@@ -850,6 +852,7 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
           sampling,
           samplingThreshold,
           rawBounds,
+          connectNulls: s.connectNulls ?? false,
         };
       }
       case 'line': {
@@ -887,6 +890,7 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
           sampling,
           samplingThreshold,
           rawBounds,
+          connectNulls: s.connectNulls ?? false,
         };
       }
       case 'bar': {
