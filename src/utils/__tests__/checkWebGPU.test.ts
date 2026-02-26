@@ -1,10 +1,9 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 
 // Mock window global for SSR-safe checks in checkWebGPU
-beforeAll(() => {
+beforeEach(() => {
   if (typeof window === 'undefined') {
-    // @ts-ignore - Mock window global
-    globalThis.window = globalThis;
+    vi.stubGlobal('window', globalThis);
   }
 });
 
@@ -32,7 +31,7 @@ describe('checkWebGPUSupport', () => {
     expect(result.reason).toBeUndefined();
   });
 
-  it('does not hold adapter reference after check', async () => {
+  it('completes adapter check without error (smoke test for GC-safe code path)', async () => {
     let adapterRef: WeakRef<object> | null = null;
     const requestAdapter = vi.fn().mockImplementation(async () => {
       const adapter = { features: new Set(), limits: {} };
