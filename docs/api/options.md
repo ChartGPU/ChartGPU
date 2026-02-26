@@ -28,6 +28,22 @@ Chart configuration. Full types: [`types.ts`](../../src/config/types.ts).
 
 - **`lineStyle?: { width?, opacity?, color? }`** (default width 2). **`areaStyle?`** for fill under line. Color precedence: `lineStyle.color` → `series.color` → palette.
 
+#### Null Gaps (Line Segmentation)
+
+Line and area series support `null` entries in `DataPoint[]` arrays to represent gaps (disconnected segments):
+
+```ts
+series: [{
+  type: 'line',
+  data: [[0, 1], [1, 3], null, [3, 5], [4, 7]],  // gap between x=1 and x=3
+}]
+```
+
+- **`connectNulls?: boolean`** (default: `false`): when `true`, null entries are stripped and the line/area draws through the gap. When `false`, null entries produce visible gaps.
+- **Multi-segment pattern**: concatenate pre-split data with null separators: `[...segment1, null, ...segment2]`.
+- **Sampling**: when data contains null gaps and sampling is enabled, ChartGPU bypasses sampling and uses raw data to preserve gap positions. Gap-aware sampling may be added in a future release.
+- **Supported formats**: `DataPoint[]` only. `XYArraysData` and `InterleavedXYData` do not support null gaps.
+
 ### AreaSeriesConfig
 
 - **`baseline?: number`** (default: y-axis min). **`areaStyle?: { opacity?, color? }`**.
