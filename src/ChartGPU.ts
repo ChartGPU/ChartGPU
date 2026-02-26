@@ -72,6 +72,16 @@ function ensureUnloadListeners(): void {
   window.addEventListener('beforeunload', disposeAllInstances, { once: true });
 }
 
+/** @internal — exposed for test cleanup only. Not part of the public API. */
+export function _resetInstanceRegistryForTesting(): void {
+  activeInstances.clear();
+  if (typeof window !== 'undefined' && unloadListenersRegistered) {
+    window.removeEventListener('pagehide', disposeAllInstances);
+    window.removeEventListener('beforeunload', disposeAllInstances);
+    unloadListenersRegistered = false;
+  }
+}
+
 /**
  * Circular buffer size for frame timestamps (120 frames = 2 seconds at 60fps).
  */
