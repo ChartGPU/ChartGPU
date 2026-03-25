@@ -1,0 +1,133 @@
+name: Release Runner
+
+on:
+  workflow_run:
+    workflows: ["Deploy Examples to GitHub Pages"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: release-runner
+
+jobs:
+  release:
+    if: "${{ github.event.workflow_run.conclusion == 'success' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Determine version bump and release
+        env:
+          GH_TOKEN: "${{ secrets.AUTO_MAINTAINER_PAT }}"
+        run: |
+          HEAD_SHA="${{ github.event.workflow_run.head_sha }}"
+
+          # Find latest semver tag
+          LATEST_TAG=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v0.0.0"
+            RANGE="HEAD"
+          else
+            RANGE="${LATEST_TAG}..${HEAD_SHA}"
+          fi
+
+          echo "Latest tag: ${LATEST_TAG}"
+          echo "Commit range: ${RANGE}"
+
+          # Verify head_sha is ancestor of current tip
+          if ! git merge-base --is-ancestor "$HEAD_SHA" HEAD 2>/dev/null; then
+            echo "Warning: head_sha is not an ancestor of current tip, branch may have moved"
+          fi
+
+          # Find associated PRs for commits in range
+          COMMITS=$(git rev-list "$RANGE" 2>/dev/null || echo "")
+          if [ -z "$COMMITS" ]; then
+            echo "No new commits since ${LATEST_TAG}, nothing to release"
+            exit 0
+          fi
+
+          HAS_PATCH=false
+          HAS_MINOR=false
+          HAS_MAJOR=false
+          RELEASE_NOTES=""
+
+          for COMMIT_SHA in $COMMITS; do
+            # Find PRs associated with this commit
+            PRS=$(gh api "repos/${{ github.repository }}/commits/${COMMIT_SHA}/pulls" --jq '.[].number' 2>/dev/null || true)
+            for PR_NUM in $PRS; do
+              PR_LABELS=$(gh pr view "$PR_NUM" --json labels --jq '[.labels[].name] | join(" ")' 2>/dev/null || true)
+              PR_TITLE=$(gh pr view "$PR_NUM" --json title --jq '.title' 2>/dev/null || true)
+
+              RELEASE_NOTES="${RELEASE_NOTES}\n- ${PR_TITLE} (#${PR_NUM})"
+
+              if echo "$PR_LABELS" | grep -q "release:major"; then
+                HAS_MAJOR=true
+              fi
+              if echo "$PR_LABELS" | grep -q "risk:high"; then
+                HAS_MAJOR=true
+              fi
+              if echo "$PR_LABELS" | grep -q "release:minor"; then
+                HAS_MINOR=true
+              fi
+              if echo "$PR_LABELS" | grep -q "release:patch"; then
+                HAS_PATCH=true
+              fi
+            done
+          done
+
+          # If no release labels found, skip
+          if ! $HAS_PATCH && ! $HAS_MINOR && ! $HAS_MAJOR; then
+            echo "No release labels found on associated PRs, skipping release"
+            exit 0
+          fi
+
+          # If major: ask for human approval instead of releasing
+          if $HAS_MAJOR; then
+            echo "Major release detected — requires human approval"
+            # Find a PR to comment on
+            FIRST_PR=$(gh api "repos/${{ github.repository }}/commits/${HEAD_SHA}/pulls" --jq '.[0].number' 2>/dev/null || true)
+            if [ -n "$FIRST_PR" ]; then
+              gh pr comment "$FIRST_PR" --body "$(cat <<MSG
+          **Release blocked: major version bump detected.**
+
+          One or more PRs in this batch have \`release:major\` or \`risk:high\` labels.
+          A human must approve and create this release manually.
+
+          Changes since ${LATEST_TAG}:
+          $(echo -e "$RELEASE_NOTES")
+          MSG
+          )"
+            fi
+            exit 0
+          fi
+
+          # Parse current version
+          VERSION="${LATEST_TAG#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          # Determine bump (minor > patch)
+          if $HAS_MINOR; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
+
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "Creating release ${NEW_TAG}"
+
+          NOTES=$(echo -e "## What's Changed\n${RELEASE_NOTES}\n\n**Full Changelog**: ${LATEST_TAG}...${NEW_TAG}")
+
+          gh release create "$NEW_TAG" \
+            --target "$HEAD_SHA" \
+            --title "$NEW_TAG" \
+            --notes "$NOTES"

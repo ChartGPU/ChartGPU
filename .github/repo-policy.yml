@@ -1,0 +1,9 @@
+# Merge strategy: squash (default), merge, or rebase
+merge_strategy: squash
+
+# CI workflow name to watch for release gating
+# This must match the `name:` field in your CI workflow YAML, not the filename.
+ci_workflow_name: "Deploy Examples to GitHub Pages"
+
+# Branch to release from (default: repo's default branch)
+# release_branch: main

@@ -1,0 +1,133 @@
+name: Gate Runner
+
+on:
+  pull_request_target:
+    types: [labeled]
+  check_run:
+    types: [completed]
+  status: {}
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: read
+
+concurrency:
+  group: "gate-${{ github.event.pull_request.number || 'check' }}"
+
+jobs:
+  gate-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Determine PRs to check
+        id: prs
+        env:
+          GH_TOKEN: "${{ secrets.AUTO_MAINTAINER_PAT }}"
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+            echo "numbers=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          else
+            # For check_run/status/review events, find PRs labeled ready-to-merge
+            NUMBERS=$(gh pr list --label "state:ready-to-merge" --state open --json number --jq '.[].number' | tr '\n' ' ')
+            echo "numbers=$NUMBERS" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run gate checks
+        env:
+          GH_TOKEN: "${{ secrets.AUTO_MAINTAINER_PAT }}"
+        run: |
+          for PR_NUMBER in ${{ steps.prs.outputs.numbers }}; do
+            echo "::group::Checking PR #${PR_NUMBER}"
+
+            # Fetch PR data
+            PR_DATA=$(gh pr view "$PR_NUMBER" --json labels,mergeable,reviews,body,headRefName,baseRefName)
+
+            LABELS=$(echo "$PR_DATA" | jq -r '[.labels[].name] | join(" ")')
+
+            # Must have state:ready-to-merge
+            if ! echo "$LABELS" | grep -q "state:ready-to-merge"; then
+              echo "PR #${PR_NUMBER}: missing state:ready-to-merge label, skipping"
+              echo "::endgroup::"
+              continue
+            fi
+
+            # Must not have risk:high
+            if echo "$LABELS" | grep -q "risk:high"; then
+              echo "PR #${PR_NUMBER}: has risk:high label — gate failed"
+              gh pr comment "$PR_NUMBER" --body "Gate check failed: PR has \`risk:high\` label and requires human review."
+              gh pr edit "$PR_NUMBER" --remove-label "state:ready-to-merge" --add-label "state:in-progress"
+              echo "::endgroup::"
+              continue
+            fi
+
+            # Must have resolution:none
+            if ! echo "$LABELS" | grep -q "resolution:none"; then
+              echo "PR #${PR_NUMBER}: missing resolution:none label — gate failed"
+              gh pr comment "$PR_NUMBER" --body "Gate check failed: PR is missing the \`resolution:none\` label."
+              gh pr edit "$PR_NUMBER" --remove-label "state:ready-to-merge" --add-label "state:in-progress"
+              echo "::endgroup::"
+              continue
+            fi
+
+            # Must have non-empty body
+            BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
+            if [ -z "$BODY" ]; then
+              echo "PR #${PR_NUMBER}: empty body — gate failed"
+              gh pr comment "$PR_NUMBER" --body "Gate check failed: PR description is empty."
+              gh pr edit "$PR_NUMBER" --remove-label "state:ready-to-merge" --add-label "state:in-progress"
+              echo "::endgroup::"
+              continue
+            fi
+
+            # Check mergeable status
+            MERGEABLE=$(echo "$PR_DATA" | jq -r '.mergeable')
+            if [ "$MERGEABLE" = "UNKNOWN" ]; then
+              echo "PR #${PR_NUMBER}: mergeable status unknown (CI pending), will retry later"
+              echo "::endgroup::"
+              continue
+            fi
+            if [ "$MERGEABLE" != "MERGEABLE" ]; then
+              echo "PR #${PR_NUMBER}: not mergeable ($MERGEABLE) — gate failed"
+              gh pr comment "$PR_NUMBER" --body "Gate check failed: PR is not mergeable (status: ${MERGEABLE})."
+              gh pr edit "$PR_NUMBER" --remove-label "state:ready-to-merge" --add-label "state:in-progress"
+              echo "::endgroup::"
+              continue
+            fi
+
+            # Check for blocking reviews
+            CHANGES_REQUESTED=$(echo "$PR_DATA" | jq '[.reviews[] | select(.state == "CHANGES_REQUESTED")] | length')
+            if [ "$CHANGES_REQUESTED" -gt 0 ]; then
+              echo "PR #${PR_NUMBER}: has changes-requested reviews — gate failed"
+              gh pr comment "$PR_NUMBER" --body "Gate check failed: PR has outstanding change requests."
+              gh pr edit "$PR_NUMBER" --remove-label "state:ready-to-merge" --add-label "state:in-progress"
+              echo "::endgroup::"
+              continue
+            fi
+
+            # All gates passed — read merge strategy from repo policy
+            MERGE_METHOD="squash"
+            if [ -f .github/repo-policy.yml ]; then
+              CONFIGURED=$(yq -r '.merge_method // "squash"' .github/repo-policy.yml 2>/dev/null || echo "squash")
+              MERGE_METHOD="$CONFIGURED"
+            fi
+
+            echo "PR #${PR_NUMBER}: all gates passed, merging with ${MERGE_METHOD}"
+            gh pr merge "$PR_NUMBER" --"${MERGE_METHOD}" --auto
+
+            # Post-merge labels
+            gh pr edit "$PR_NUMBER" --add-label "resolution:merged,state:done" --remove-label "state:ready-to-merge"
+
+            # Close linked issues
+            LINKED_ISSUES=$(gh pr view "$PR_NUMBER" --json closingIssuesReferences --jq '.[].closingIssuesReferences[].number' 2>/dev/null || true)
+            for ISSUE in $LINKED_ISSUES; do
+              gh issue close "$ISSUE" --comment "Closed by PR #${PR_NUMBER}."
+            done
+
+            echo "::endgroup::"
+          done
