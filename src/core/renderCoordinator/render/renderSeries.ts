@@ -131,7 +131,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
     maxRadiusCss,
   } = context;
 
-  const defaultBaseline = currentOptions.yAxis.min ?? currentOptions.yAxis.min ?? 0;
+  const defaultBaseline = currentOptions.yAxis.min ?? 0;
   const barSeriesConfigs: ResolvedBarSeriesConfig[] = [];
 
   const introP = introPhase === 'running' ? clamp01(introProgress01) : 1;
