@@ -28,3 +28,6 @@ jobs:
 
       - name: Check for duplicate code
         run: npm run lint:duplication
+
+      - name: Validate AGENTS.md consistency
+        run: npm run validate:agents-md

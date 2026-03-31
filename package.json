@@ -56,6 +56,7 @@
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "lint:duplication": "jscpd --config .jscpd.json",
+    "validate:agents-md": "bash scripts/validate-agents-md.sh",
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {
