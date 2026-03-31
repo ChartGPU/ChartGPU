@@ -20,19 +20,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-      
+      - uses: oven-sh/setup-bun@v2
+
       - name: Install dependencies
-        run: npm ci
-      
+        run: bun install
+
       - name: Build library
-        run: npm run build
-      
+        run: bun run build
+
       - name: Build examples
-        run: npm run build:examples
+        run: bun run build:examples
 
       - name: Add root redirect
         run: cp examples/root-redirect.html examples/dist/index.html

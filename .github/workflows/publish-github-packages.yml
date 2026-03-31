@@ -17,15 +17,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
           registry-url: https://npm.pkg.github.com
           scope: "@chartgpu"
 
+      - uses: oven-sh/setup-bun@v2
+
       - name: Install dependencies
-        run: npm ci
+        run: bun install
 
       - name: Build library
-        run: npm run build
+        run: bun run build
 
       - name: Copy dist to GitHub package
         run: cp -r dist packages/github/dist

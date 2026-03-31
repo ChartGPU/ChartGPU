@@ -14,23 +14,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
 
       - name: Install dependencies
-        run: npm ci
+        run: bun install
 
       - name: Run unit tests
-        run: npm run test
+        run: bun run test
 
       - name: Check for duplicate code
-        run: npm run lint:duplication
+        run: bun run lint:duplication
 
       - name: Check for unused dependencies
-        run: npm run lint:deps
+        run: bun run lint:deps
 
       - name: Validate AGENTS.md consistency
-        run: npm run validate:agents-md
+        run: bun run validate:agents-md
