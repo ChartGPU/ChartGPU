@@ -1,9 +1,11 @@
 # Dependencies
 node_modules/
 
-# Cursor
+# Harnesses
 .cursor/
 .claude/
+.factory/
+
 # Build output
 dist/
 examples/dist/
