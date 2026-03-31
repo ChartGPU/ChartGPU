@@ -6,6 +6,8 @@ node_modules/
 .claude/
 .factory/
 
+.worktrees/
+
 # Build output
 dist/
 examples/dist/
@@ -65,3 +67,6 @@ Agents.md
 
 # Impeccable
 .impeccable.md
+
+# Linter reports
+report/
