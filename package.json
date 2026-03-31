@@ -36,7 +36,9 @@
     "access": "public"
   },
   "scripts": {
-    "dev": "vite",
+    "dev:vite": "vite examples",
+    "dev:format": "bunx onchange \"src/**/*.{ts,tsx,js,jsx,json,css,md}\" -- bunx prettier --write src/",
+    "dev": "bun run --parallel dev:vite dev:format",
     "test": "vitest",
     "acceptance:animation-controller": "tsx examples/acceptance/animation-controller.ts",
     "acceptance:sampling-config": "tsx examples/acceptance/sampling-config.ts",
