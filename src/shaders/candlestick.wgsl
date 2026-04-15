@@ -1,34 +1,42 @@
 // candlestick.wgsl
-// Instanced candlestick shader (bodies + wicks):
-// - Per-instance vertex input:
-//   - xClip, openClip, closeClip, lowClip, highClip, bodyWidthClip (6 floats)
-//   - bodyColor rgba (4 floats)
-// - Draw call: draw(18, instanceCount) using triangle-list expansion in VS
-//   - vertices 0-5: body quad (2 triangles)
-//   - vertices 6-11: upper wick (2 triangles)
+// GPU storage-buffer candlestick shader (bodies + wicks):
+// - Raw OHLC data read from a storage buffer (binding 1)
+// - Affine scale transforms applied in the vertex shader via uniforms (binding 0)
+// - Draw call: draw(18, candleCount) using triangle-list expansion in VS
+//   - vertices 0-5:   body quad (2 triangles)
+//   - vertices 6-11:  upper wick (2 triangles)
 //   - vertices 12-17: lower wick (2 triangles)
-// - Uniforms:
-//   - @group(0) @binding(0): VSUniforms { transform, wickWidthClip }
+// - Hollow mode:
+//   - hollowMode 0 = classic (uses upColor / downColor)
+//   - hollowMode 1 = hollow pass 1 (border colors for all candles)
+//   - hollowMode 2 = hollow pass 2 (bgColor punch-out for up candles; body only, draw(6, N))
 
-struct VSUniforms {
-  transform: mat4x4<f32>,
+struct Uniforms {
+  xScaleA: f32,
+  xScaleB: f32,
+  yScaleA: f32,
+  yScaleB: f32,
+  bodyWidthClip: f32,
   wickWidthClip: f32,
-  _pad0: f32,
-  _pad1: f32,
-  _pad2: f32,
+  borderWidthClip: f32,
+  hollowMode: u32,
+  upColor: vec4<f32>,
+  downColor: vec4<f32>,
+  upBorderColor: vec4<f32>,
+  downBorderColor: vec4<f32>,
+  bgColor: vec4<f32>,
 };
 
-@group(0) @binding(0) var<uniform> vsUniforms: VSUniforms;
-
-struct VSIn {
-  @location(0) xClip: f32,
-  @location(1) openClip: f32,
-  @location(2) closeClip: f32,
-  @location(3) lowClip: f32,
-  @location(4) highClip: f32,
-  @location(5) bodyWidthClip: f32,
-  @location(6) bodyColor: vec4<f32>,
+struct OHLCData {
+  timestamp: f32,
+  open: f32,
+  close: f32,
+  low: f32,
+  high: f32,
 };
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(1) var<storage, read> ohlcData: array<OHLCData>;
 
 struct VSOut {
   @builtin(position) clipPosition: vec4<f32>,
@@ -36,16 +44,54 @@ struct VSOut {
 };
 
 @vertex
-fn vsMain(in: VSIn, @builtin(vertex_index) vertexIndex: u32) -> VSOut {
+fn vsMain(
+  @builtin(vertex_index) vertexIndex: u32,
+  @builtin(instance_index) instanceIndex: u32,
+) -> VSOut {
+  let candle = ohlcData[instanceIndex];
+
+  // Apply affine scale transforms to get clip-space positions
+  let xClip = uniforms.xScaleA * candle.timestamp + uniforms.xScaleB;
+  let openClip = uniforms.yScaleA * candle.open + uniforms.yScaleB;
+  let closeClip = uniforms.yScaleA * candle.close + uniforms.yScaleB;
+  let lowClip = uniforms.yScaleA * candle.low + uniforms.yScaleB;
+  let highClip = uniforms.yScaleA * candle.high + uniforms.yScaleB;
+
+  let isUp = candle.close > candle.open;
+
+  // Select color based on hollow mode
+  var color: vec4<f32>;
+  if (uniforms.hollowMode == 2u) {
+    // Hollow pass 2: punch-out with background color (up candles only)
+    color = uniforms.bgColor;
+  } else if (uniforms.hollowMode == 1u) {
+    // Hollow pass 1: border colors
+    color = select(uniforms.downBorderColor, uniforms.upBorderColor, isUp);
+  } else {
+    // Classic mode: fill colors
+    color = select(uniforms.downColor, uniforms.upColor, isUp);
+  }
+
+  // Compute body width (inset for hollow pass 2)
+  var bodyWidth = uniforms.bodyWidthClip;
+  if (uniforms.hollowMode == 2u) {
+    // Only punch out UP candles; collapse down candles to zero-area body
+    if (!isUp) {
+      bodyWidth = 0.0;
+    } else {
+      bodyWidth = max(0.0, bodyWidth - 2.0 * uniforms.borderWidthClip);
+    }
+  }
+
   // Compute body bounds
-  let bodyTop = max(in.openClip, in.closeClip);
-  let bodyBottom = min(in.openClip, in.closeClip);
-  let bodyLeft = in.xClip - in.bodyWidthClip * 0.5;
-  let bodyRight = in.xClip + in.bodyWidthClip * 0.5;
+  let bodyTop = max(openClip, closeClip);
+  let bodyBottom = min(openClip, closeClip);
+  let bodyLeft = xClip - bodyWidth * 0.5;
+  let bodyRight = xClip + bodyWidth * 0.5;
 
   // Wick bounds
-  let wickLeft = in.xClip - vsUniforms.wickWidthClip * 0.5;
-  let wickRight = in.xClip + vsUniforms.wickWidthClip * 0.5;
+  let wickLeft = xClip - uniforms.wickWidthClip * 0.5;
+  let wickRight = xClip + uniforms.wickWidthClip * 0.5;
 
   var pos: vec2<f32>;
 
@@ -76,7 +122,7 @@ fn vsMain(in: VSIn, @builtin(vertex_index) vertexIndex: u32) -> VSOut {
     );
     let corner = corners[idx];
     let wickMin = vec2<f32>(wickLeft, bodyTop);
-    let wickMax = vec2<f32>(wickRight, in.highClip);
+    let wickMax = vec2<f32>(wickRight, highClip);
     pos = wickMin + corner * (wickMax - wickMin);
   } else {
     // Lower wick (vertices 12-17): from lowClip to bodyBottom
@@ -90,14 +136,14 @@ fn vsMain(in: VSIn, @builtin(vertex_index) vertexIndex: u32) -> VSOut {
       vec2<f32>(1.0, 1.0)
     );
     let corner = corners[idx];
-    let wickMin = vec2<f32>(wickLeft, in.lowClip);
+    let wickMin = vec2<f32>(wickLeft, lowClip);
     let wickMax = vec2<f32>(wickRight, bodyBottom);
     pos = wickMin + corner * (wickMax - wickMin);
   }
 
   var out: VSOut;
-  out.clipPosition = vsUniforms.transform * vec4<f32>(pos, 0.0, 1.0);
-  out.color = in.bodyColor;
+  out.clipPosition = vec4<f32>(pos, 0.0, 1.0);
+  out.color = color;
   return out;
 }
 

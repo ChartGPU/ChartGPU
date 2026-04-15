@@ -242,6 +242,30 @@ export function sampleSeriesDataPoints(
   if (pointCount <= threshold) return data;
 
   switch (sampling) {
+    case "auto": {
+      // "auto" delegates to LTTB with the caller-supplied threshold (typically
+      // plotWidthPx * 4). When no usable threshold is provided, fall back to a
+      // reasonable default so the chart still renders a sensible amount of data.
+      const autoThreshold = threshold > 0 ? threshold : 4000;
+      if (pointCount <= autoThreshold) return data;
+
+      if (data instanceof Float32Array) {
+        return lttbSample(data, autoThreshold);
+      }
+      if (isInterleavedXYData(data)) {
+        const packed = packToFloat32Array(data);
+        return lttbSample(packed, autoThreshold);
+      }
+      if (isXYArraysData(data)) {
+        const packed = packToFloat32Array(data);
+        return lttbSample(packed, autoThreshold);
+      }
+      const nonNullAutoData = (data as ReadonlyArray<DataPoint | null>).filter(
+        (p): p is DataPoint => p !== null,
+      );
+      return lttbSample(nonNullAutoData, autoThreshold);
+    }
+
     case "lttb": {
       // Float32Array fast path
       if (data instanceof Float32Array) {

@@ -152,13 +152,16 @@ export function prepareSeries(
       case "area": {
         const baseline = s.baseline ?? defaultBaseline;
         // When connectNulls is true, strip null/NaN gap entries so the area draws through gaps.
-        // Uses filterGaps which handles all CartesianSeriesData formats (Array, XYArraysData,
-        // InterleavedXYData), not just Array — important because recomputeRuntimeBaseSeries
-        // may convert the data to MutableXYColumns (XYArraysData-like) with NaN gap markers.
         const areaData = s.connectNulls ? filterGaps(s.data) : s.data;
+        if (!appendedGpuThisFrame.has(i)) {
+          dataStore.setSeries(i, areaData as ReadonlyArray<DataPoint>);
+        }
+        const areaBuffer = dataStore.getSeriesBuffer(i);
+        const areaPointCount = dataStore.getSeriesPointCount(i);
         renderers.areaRenderers[i].prepare(
           s,
-          areaData,
+          areaBuffer,
+          areaPointCount,
           xScale,
           yScale,
           baseline,
@@ -220,6 +223,7 @@ export function prepareSeries(
         }
 
         // If `areaStyle` is provided on a line series, render a fill behind it.
+        // Reuses the same DataStore buffer that was just uploaded for the line.
         if (s.areaStyle) {
           const areaLike: ResolvedAreaSeriesConfig = {
             type: "area",
@@ -233,9 +237,12 @@ export function prepareSeries(
             connectNulls: s.connectNulls,
           };
 
+          const lineAreaBuffer = dataStore.getSeriesBuffer(i);
+          const lineAreaPointCount = dataStore.getSeriesPointCount(i);
           renderers.areaRenderers[i].prepare(
             areaLike,
-            areaLike.data,
+            lineAreaBuffer,
+            lineAreaPointCount,
             xScale,
             yScale,
             defaultBaseline,
@@ -285,9 +292,15 @@ export function prepareSeries(
             introP < 1
               ? ({ ...s, color: withAlpha(s.color, introP) } as const)
               : s;
+          if (!appendedGpuThisFrame.has(i)) {
+            dataStore.setSeries(i, s.data as ReadonlyArray<DataPoint>);
+          }
+          const scatterBuffer = dataStore.getSeriesBuffer(i);
+          const scatterPointCount = dataStore.getSeriesPointCount(i);
           renderers.scatterRenderers[i].prepare(
             animated,
-            s.data,
+            scatterBuffer,
+            scatterPointCount,
             xScale,
             yScale,
             gridArea,

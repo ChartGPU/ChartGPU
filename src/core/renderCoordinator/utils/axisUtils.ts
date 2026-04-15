@@ -9,7 +9,8 @@
  * @module axisUtils
  */
 
-import type { GPUContextLike } from "../types";
+//import type { GPUContextLike } from "../types";
+import type { GPUContextLike } from "../../createRenderCoordinator";
 import type { ResolvedChartGPUOptions } from "../../../config/OptionResolver";
 import type { GridArea } from "../../../renderers/createGridRenderer";
 import { parseCssColorToRgba01 } from "../../../utils/colors";

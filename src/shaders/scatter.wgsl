@@ -1,22 +1,24 @@
 // scatter.wgsl
-// Instanced anti-aliased circle shader (SDF):
-// - Per-instance vertex input:
-//   - center   = vec2<f32> point center (transformed by VSUniforms.transform)
-//   - radiusPx = f32 circle radius in pixels
-// - Draw call: draw(6, instanceCount) using triangle-list expansion in VS
+// Instanced anti-aliased circle shader (SDF) with storage buffer reads:
+// - Points read from a storage buffer (binding 2) containing interleaved [x, y] pairs
+// - Per-instance: each point is one instance; vertex shader reads dataBuffer[instance_index]
+// - Draw call: draw(6, pointCount) using triangle-list expansion in VS
 // - Uniforms:
-//   - @group(0) @binding(0): VSUniforms { transform, viewportPx }
+//   - @group(0) @binding(0): VSUniforms { transform, viewportPx, symbolSizePx }
 //   - @group(0) @binding(1): FSUniforms { color }
+//   - @group(0) @binding(2): dataBuffer (storage, read-only array<vec2<f32>>)
 //
 // Notes:
 // - `viewportPx` is the current render target size in pixels (width, height).
-// - The quad is expanded in clip space using `radiusPx` and `viewportPx`.
+// - `symbolSizePx` is the circle radius in device pixels (constant for all points).
+// - The quad is expanded in clip space using `symbolSizePx` and `viewportPx`.
 
 struct VSUniforms {
   transform: mat4x4<f32>,
   viewportPx: vec2<f32>,
-  // Pad to 16-byte alignment (mat4x4 is 64B; vec2 adds 8B; pad to 80B).
-  _pad0: vec2<f32>,
+  symbolSizePx: f32,
+  // Pad to 16-byte alignment (mat4x4 is 64B; vec2 adds 8B; f32 adds 4B; pad f32 4B = 80B).
+  _pad0: f32,
 };
 
 @group(0) @binding(0) var<uniform> vsUniforms: VSUniforms;
@@ -27,10 +29,7 @@ struct FSUniforms {
 
 @group(0) @binding(1) var<uniform> fsUniforms: FSUniforms;
 
-struct VSIn {
-  @location(0) center: vec2<f32>,
-  @location(1) radiusPx: f32,
-};
+@group(0) @binding(2) var<storage, read> dataBuffer: array<vec2<f32>>;
 
 struct VSOut {
   @builtin(position) clipPosition: vec4<f32>,
@@ -39,9 +38,12 @@ struct VSOut {
 };
 
 @vertex
-fn vsMain(in: VSIn, @builtin(vertex_index) vertexIndex: u32) -> VSOut {
+fn vsMain(
+  @builtin(vertex_index) vertexIndex: u32,
+  @builtin(instance_index) instanceIndex: u32,
+) -> VSOut {
   // Fixed local corners for 2 triangles (triangle-list).
-  // `localNdc` is a quad in [-1, 1]^2; we convert it to pixel offsets via radiusPx.
+  // `localNdc` is a quad in [-1, 1]^2; we convert it to pixel offsets via symbolSizePx.
   let localNdc = array<vec2<f32>, 6>(
     vec2<f32>(-1.0, -1.0),
     vec2<f32>( 1.0, -1.0),
@@ -51,19 +53,32 @@ fn vsMain(in: VSIn, @builtin(vertex_index) vertexIndex: u32) -> VSOut {
     vec2<f32>( 1.0,  1.0)
   );
 
+  let point = dataBuffer[instanceIndex];
+  let radiusPx = vsUniforms.symbolSizePx;
+
+  // NaN gap detection: WGSL has no isnan(); use the IEEE 754 property that NaN != NaN.
+  // Collapse the quad to a degenerate point so the rasterizer discards it.
+  if (point.x != point.x || point.y != point.y) {
+    var out: VSOut;
+    out.clipPosition = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    out.localPx = vec2<f32>(0.0, 0.0);
+    out.radiusPx = 0.0;
+    return out;
+  }
+
   let corner = localNdc[vertexIndex];
-  let localPx = corner * in.radiusPx;
+  let localPx = corner * radiusPx;
 
   // Convert pixel offset to clip-space offset.
   // Clip space spans [-1, 1] across the viewport, so px -> clip is (2 / viewportPx).
   let localClip = localPx * (2.0 / vsUniforms.viewportPx);
 
-  let centerClip = (vsUniforms.transform * vec4<f32>(in.center, 0.0, 1.0)).xy;
+  let centerClip = (vsUniforms.transform * vec4<f32>(point, 0.0, 1.0)).xy;
 
   var out: VSOut;
   out.clipPosition = vec4<f32>(centerClip + localClip, 0.0, 1.0);
   out.localPx = localPx;
-  out.radiusPx = in.radiusPx;
+  out.radiusPx = radiusPx;
   return out;
 }
 
@@ -83,4 +98,3 @@ fn fsMain(in: VSOut) -> @location(0) vec4<f32> {
 
   return vec4<f32>(fsUniforms.color.rgb, fsUniforms.color.a * a);
 }
-

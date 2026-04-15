@@ -1,6 +1,5 @@
 import scatterWgsl from "../shaders/scatter.wgsl?raw";
 import type { ResolvedScatterSeriesConfig } from "../config/OptionResolver";
-import type { CartesianSeriesData } from "../config/types";
 import type { LinearScale } from "../utils/scales";
 import { parseCssColorToRgba01 } from "../utils/colors";
 import type { GridArea } from "./createGridRenderer";
@@ -9,19 +8,13 @@ import {
   createUniformBuffer,
   writeUniformBuffer,
 } from "./rendererUtils";
-import {
-  getPointCount,
-  getX,
-  getY,
-  getSize,
-  computeRawBoundsFromCartesianData,
-} from "../data/cartesianData";
 import type { PipelineCache } from "../core/PipelineCache";
 
 export interface ScatterRenderer {
   prepare(
     seriesConfig: ResolvedScatterSeriesConfig,
-    data: CartesianSeriesData,
+    dataBuffer: GPUBuffer,
+    pointCount: number,
     xScale: LinearScale,
     yScale: LinearScale,
     gridArea?: GridArea,
@@ -55,8 +48,6 @@ type Rgba = readonly [r: number, g: number, b: number, a: number];
 
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = "bgra8unorm";
 const DEFAULT_SCATTER_RADIUS_CSS_PX = 4;
-const INSTANCE_STRIDE_BYTES = 16; // center.xy, radiusPx, pad
-const INSTANCE_STRIDE_FLOATS = INSTANCE_STRIDE_BYTES / 4;
 
 const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
 const clampInt = (v: number, lo: number, hi: number): number =>
@@ -64,12 +55,6 @@ const clampInt = (v: number, lo: number, hi: number): number =>
 
 const parseSeriesColorToRgba01 = (color: string): Rgba =>
   parseCssColorToRgba01(color) ?? ([0, 0, 0, 1] as const);
-
-const nextPow2 = (v: number): number => {
-  if (!Number.isFinite(v) || v <= 0) return 1;
-  const n = Math.ceil(v);
-  return 2 ** Math.ceil(Math.log2(n));
-};
 
 const computeClipAffineFromScale = (
   scale: LinearScale,
@@ -187,10 +172,15 @@ export function createScatterRenderer(
         visibility: GPUShaderStage.FRAGMENT,
         buffer: { type: "uniform" },
       },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.VERTEX,
+        buffer: { type: "read-only-storage" },
+      },
     ],
   });
 
-  // VSUniforms: mat4x4 (64) + viewportPx vec2 (8) + pad vec2 (8) = 80 bytes.
+  // VSUniforms: mat4x4 (64) + viewportPx vec2 (8) + symbolSizePx f32 (4) + pad f32 (4) = 80 bytes.
   const vsUniformBuffer = createUniformBuffer(device, 80, {
     label: "scatterRenderer/vsUniforms",
   });
@@ -203,13 +193,8 @@ export function createScatterRenderer(
   const vsUniformScratchF32 = new Float32Array(vsUniformScratchBuffer);
   const fsUniformScratchF32 = new Float32Array(4);
 
-  const bindGroup = device.createBindGroup({
-    layout: bindGroupLayout,
-    entries: [
-      { binding: 0, resource: { buffer: vsUniformBuffer } },
-      { binding: 1, resource: { buffer: fsUniformBuffer } },
-    ],
-  });
+  // Bind group is recreated per-frame because the storage buffer (data buffer) changes per series.
+  let currentBindGroup: GPUBindGroup | null = null;
 
   const pipeline = createRenderPipeline(
     device,
@@ -219,16 +204,7 @@ export function createScatterRenderer(
       vertex: {
         code: scatterWgsl,
         label: "scatter.wgsl",
-        buffers: [
-          {
-            arrayStride: INSTANCE_STRIDE_BYTES,
-            stepMode: "instance",
-            attributes: [
-              { shaderLocation: 0, format: "float32x2", offset: 0 },
-              { shaderLocation: 1, format: "float32", offset: 8 },
-            ],
-          },
-        ],
+        buffers: [], // No vertex buffers — points are read from storage buffer.
       },
       fragment: {
         code: scatterWgsl,
@@ -254,10 +230,7 @@ export function createScatterRenderer(
     pipelineCache,
   );
 
-  let instanceBuffer: GPUBuffer | null = null;
-  let instanceCount = 0;
-  let cpuInstanceStagingBuffer = new ArrayBuffer(0);
-  let cpuInstanceStagingF32 = new Float32Array(cpuInstanceStagingBuffer);
+  let currentPointCount = 0;
 
   let lastCanvasWidth = 0;
   let lastCanvasHeight = 0;
@@ -273,13 +246,6 @@ export function createScatterRenderer(
     if (disposed) throw new Error("ScatterRenderer is disposed.");
   };
 
-  const ensureCpuInstanceCapacityFloats = (requiredFloats: number): void => {
-    if (requiredFloats <= cpuInstanceStagingF32.length) return;
-    const nextFloats = Math.max(8, nextPow2(requiredFloats));
-    cpuInstanceStagingBuffer = new ArrayBuffer(nextFloats * 4);
-    cpuInstanceStagingF32 = new Float32Array(cpuInstanceStagingBuffer);
-  };
-
   const writeVsUniforms = (
     ax: number,
     bx: number,
@@ -287,6 +253,7 @@ export function createScatterRenderer(
     by: number,
     viewportW: number,
     viewportH: number,
+    symbolSizePx: number,
   ): void => {
     const w = Number.isFinite(viewportW) && viewportW > 0 ? viewportW : 1;
     const h = Number.isFinite(viewportH) && viewportH > 0 ? viewportH : 1;
@@ -294,8 +261,8 @@ export function createScatterRenderer(
     writeTransformMat4F32(vsUniformScratchF32, ax, bx, ay, by);
     vsUniformScratchF32[16] = w;
     vsUniformScratchF32[17] = h;
-    vsUniformScratchF32[18] = 0;
-    vsUniformScratchF32[19] = 0;
+    vsUniformScratchF32[18] = symbolSizePx;
+    vsUniformScratchF32[19] = 0; // pad
     writeUniformBuffer(device, vsUniformBuffer, vsUniformScratchBuffer);
 
     lastViewportPx = [w, h];
@@ -303,22 +270,33 @@ export function createScatterRenderer(
 
   const prepare: ScatterRenderer["prepare"] = (
     seriesConfig,
-    data,
+    dataBuffer,
+    pointCount,
     xScale,
     yScale,
     gridArea,
   ) => {
     assertNotDisposed();
 
-    const bounds = computeRawBoundsFromCartesianData(data);
-    const { xMin, xMax, yMin, yMax } = bounds ?? {
-      xMin: 0,
-      xMax: 1,
-      yMin: 0,
-      yMax: 1,
-    };
-    const { a: ax, b: bx } = computeClipAffineFromScale(xScale, xMin, xMax);
-    const { a: ay, b: by } = computeClipAffineFromScale(yScale, yMin, yMax);
+    // Compute affine transform from scales.
+    // Any two distinct sample values produce the same affine (the scale is linear).
+    const { a: ax, b: bx } = computeClipAffineFromScale(xScale, 0, 1);
+    const { a: ay, b: by } = computeClipAffineFromScale(yScale, 0, 1);
+
+    // Resolve symbol size to device pixels.
+    const dpr = gridArea?.devicePixelRatio ?? 1;
+    const hasValidDpr = dpr > 0 && Number.isFinite(dpr);
+
+    const seriesSymbolSize = seriesConfig.symbolSize;
+    // TODO: Function-based per-point symbolSize would need a separate GPU size buffer.
+    // For now, resolve to a constant: use the numeric value, or the default.
+    const sizeCss =
+      typeof seriesSymbolSize === "number" && Number.isFinite(seriesSymbolSize)
+        ? seriesSymbolSize
+        : DEFAULT_SCATTER_RADIUS_CSS_PX;
+    const symbolSizePx = hasValidDpr
+      ? Math.max(0, sizeCss) * dpr
+      : Math.max(0, sizeCss);
 
     if (gridArea) {
       lastCanvasWidth = gridArea.canvasWidth;
@@ -330,11 +308,20 @@ export function createScatterRenderer(
         by,
         gridArea.canvasWidth,
         gridArea.canvasHeight,
+        symbolSizePx,
       );
       lastScissor = computePlotScissorDevicePx(gridArea);
     } else {
       // Backward-compatible: keep rendering with the last known viewport (or safe default).
-      writeVsUniforms(ax, bx, ay, by, lastViewportPx[0], lastViewportPx[1]);
+      writeVsUniforms(
+        ax,
+        bx,
+        ay,
+        by,
+        lastViewportPx[0],
+        lastViewportPx[1],
+        symbolSizePx,
+      );
       lastScissor = null;
     }
 
@@ -345,97 +332,22 @@ export function createScatterRenderer(
     fsUniformScratchF32[3] = clamp01(a);
     writeUniformBuffer(device, fsUniformBuffer, fsUniformScratchF32);
 
-    const dpr = gridArea?.devicePixelRatio ?? 1;
-    const hasValidDpr = dpr > 0 && Number.isFinite(dpr);
+    currentPointCount = pointCount;
 
-    const seriesSymbolSize = seriesConfig.symbolSize;
-    // Scratch tuple for symbolSize function: reuse to avoid per-point allocations
-    const scratchTuple: [number, number, number | undefined] = [
-      0,
-      0,
-      undefined,
-    ];
-
-    const getSeriesSizeCssPx =
-      typeof seriesSymbolSize === "function"
-        ? (x: number, y: number, size: number | undefined): number => {
-            scratchTuple[0] = x;
-            scratchTuple[1] = y;
-            scratchTuple[2] = size;
-            const v = seriesSymbolSize(scratchTuple);
-            return typeof v === "number" && Number.isFinite(v)
-              ? v
-              : DEFAULT_SCATTER_RADIUS_CSS_PX;
-          }
-        : typeof seriesSymbolSize === "number" &&
-            Number.isFinite(seriesSymbolSize)
-          ? (_x: number, _y: number, _size: number | undefined): number =>
-              seriesSymbolSize
-          : (_x: number, _y: number, _size: number | undefined): number =>
-              DEFAULT_SCATTER_RADIUS_CSS_PX;
-
-    const count = getPointCount(data);
-    ensureCpuInstanceCapacityFloats(count * INSTANCE_STRIDE_FLOATS);
-    const f32 = cpuInstanceStagingF32;
-    let outFloats = 0;
-
-    for (let i = 0; i < count; i++) {
-      const x = getX(data, i);
-      const y = getY(data, i);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-
-      // Per-point size from data overrides series.symbolSize
-      const pointSize = getSize(data, i);
-      const sizeCss = pointSize ?? getSeriesSizeCssPx(x, y, pointSize);
-      const radiusCss = Number.isFinite(sizeCss)
-        ? Math.max(0, sizeCss)
-        : DEFAULT_SCATTER_RADIUS_CSS_PX;
-      const radiusDevicePx = hasValidDpr ? radiusCss * dpr : radiusCss;
-      if (!(radiusDevicePx > 0)) continue;
-
-      f32[outFloats + 0] = x;
-      f32[outFloats + 1] = y;
-      f32[outFloats + 2] = radiusDevicePx;
-      f32[outFloats + 3] = 0; // pad
-      outFloats += INSTANCE_STRIDE_FLOATS;
-    }
-
-    instanceCount = outFloats / INSTANCE_STRIDE_FLOATS;
-    const requiredBytes = Math.max(4, instanceCount * INSTANCE_STRIDE_BYTES);
-
-    if (!instanceBuffer || instanceBuffer.size < requiredBytes) {
-      const grownBytes = Math.max(
-        Math.max(4, nextPow2(requiredBytes)),
-        instanceBuffer ? instanceBuffer.size : 0,
-      );
-      if (instanceBuffer) {
-        try {
-          instanceBuffer.destroy();
-        } catch {
-          // best-effort
-        }
-      }
-      instanceBuffer = device.createBuffer({
-        label: "scatterRenderer/instanceBuffer",
-        size: grownBytes,
-        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-      });
-    }
-
-    if (instanceBuffer && instanceCount > 0) {
-      device.queue.writeBuffer(
-        instanceBuffer,
-        0,
-        cpuInstanceStagingBuffer,
-        0,
-        instanceCount * INSTANCE_STRIDE_BYTES,
-      );
-    }
+    // Recreate bind group with the current data buffer.
+    currentBindGroup = device.createBindGroup({
+      layout: bindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: vsUniformBuffer } },
+        { binding: 1, resource: { buffer: fsUniformBuffer } },
+        { binding: 2, resource: { buffer: dataBuffer } },
+      ],
+    });
   };
 
   const render: ScatterRenderer["render"] = (passEncoder) => {
     assertNotDisposed();
-    if (!instanceBuffer || instanceCount === 0) return;
+    if (!currentBindGroup || currentPointCount === 0) return;
 
     // Clip to plot area when available.
     if (lastScissor && lastCanvasWidth > 0 && lastCanvasHeight > 0) {
@@ -448,9 +360,8 @@ export function createScatterRenderer(
     }
 
     passEncoder.setPipeline(pipeline);
-    passEncoder.setBindGroup(0, bindGroup);
-    passEncoder.setVertexBuffer(0, instanceBuffer);
-    passEncoder.draw(6, instanceCount);
+    passEncoder.setBindGroup(0, currentBindGroup);
+    passEncoder.draw(6, currentPointCount);
 
     // Reset scissor to full canvas to avoid impacting later renderers.
     if (lastScissor && lastCanvasWidth > 0 && lastCanvasHeight > 0) {
@@ -462,15 +373,8 @@ export function createScatterRenderer(
     if (disposed) return;
     disposed = true;
 
-    if (instanceBuffer) {
-      try {
-        instanceBuffer.destroy();
-      } catch {
-        // best-effort
-      }
-    }
-    instanceBuffer = null;
-    instanceCount = 0;
+    currentBindGroup = null;
+    currentPointCount = 0;
 
     try {
       vsUniformBuffer.destroy();

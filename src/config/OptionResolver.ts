@@ -658,7 +658,8 @@ const normalizeOptionalColor = (color: unknown): string | undefined => {
 const normalizeSampling = (value: unknown): SeriesSampling | undefined => {
   if (typeof value !== "string") return undefined;
   const v = value.trim().toLowerCase();
-  return v === "none" ||
+  return v === "auto" ||
+    v === "none" ||
     v === "lttb" ||
     v === "average" ||
     v === "max" ||
@@ -1038,7 +1039,7 @@ export function resolveOptions(
 
     const sampling: SeriesSampling =
       normalizeSampling((s as unknown as { sampling?: unknown }).sampling) ??
-      "lttb";
+      "auto";
     const samplingThreshold: number =
       normalizeSamplingThreshold(
         (s as unknown as { samplingThreshold?: unknown }).samplingThreshold,

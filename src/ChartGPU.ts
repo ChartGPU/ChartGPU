@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { GPUContext } from "./core/GPUContext";
 import { createRenderCoordinator } from "./core/createRenderCoordinator";
 import type {

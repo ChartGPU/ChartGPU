@@ -1,6 +1,5 @@
 import areaWgsl from "../shaders/area.wgsl?raw";
 import type { ResolvedAreaSeriesConfig } from "../config/OptionResolver";
-import type { CartesianSeriesData } from "../config/types";
 import type { LinearScale } from "../utils/scales";
 import { parseCssColorToRgba01 } from "../utils/colors";
 import {
@@ -8,18 +7,13 @@ import {
   createUniformBuffer,
   writeUniformBuffer,
 } from "./rendererUtils";
-import {
-  getPointCount,
-  getX,
-  getY,
-  computeRawBoundsFromCartesianData,
-} from "../data/cartesianData";
 import type { PipelineCache } from "../core/PipelineCache";
 
 export interface AreaRenderer {
   prepare(
     seriesConfig: ResolvedAreaSeriesConfig,
-    data: CartesianSeriesData,
+    dataBuffer: GPUBuffer,
+    pointCount: number,
     xScale: LinearScale,
     yScale: LinearScale,
     baseline?: number,
@@ -107,36 +101,6 @@ const writeTransformMat4F32 = (
   out[15] = 1; // col3
 };
 
-const createAreaVertices = (data: CartesianSeriesData): Float32Array => {
-  // Triangle-strip expects duplicated vertices:
-  // p0,p0,p1,p1,... and WGSL uses vertex_index parity to swap y to baseline for odd indices.
-  //
-  // For null gaps: when a point has NaN values, emit (0,0) degenerate vertices.
-  // This creates zero-area triangles at gap boundaries, visually breaking the fill.
-  const n = getPointCount(data);
-  const out = new Float32Array(n * 2 * 2); // n * 2 vertices * vec2<f32>
-
-  let idx = 0;
-  for (let i = 0; i < n; i++) {
-    const x = getX(data, i);
-    const y = getY(data, i);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) {
-      // Degenerate: collapse to (0,0) — produces zero-area triangles in strip
-      out[idx++] = 0;
-      out[idx++] = 0;
-      out[idx++] = 0;
-      out[idx++] = 0;
-    } else {
-      out[idx++] = x;
-      out[idx++] = y;
-      out[idx++] = x;
-      out[idx++] = y;
-    }
-  }
-
-  return out;
-};
-
 export function createAreaRenderer(
   device: GPUDevice,
   options?: AreaRendererOptions,
@@ -162,6 +126,11 @@ export function createAreaRenderer(
         visibility: GPUShaderStage.FRAGMENT,
         buffer: { type: "uniform" },
       },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.VERTEX,
+        buffer: { type: "read-only-storage" },
+      },
     ],
   });
 
@@ -177,13 +146,8 @@ export function createAreaRenderer(
   const vsUniformScratchF32 = new Float32Array(vsUniformScratchBuffer);
   const fsUniformScratchF32 = new Float32Array(4);
 
-  const bindGroup = device.createBindGroup({
-    layout: bindGroupLayout,
-    entries: [
-      { binding: 0, resource: { buffer: vsUniformBuffer } },
-      { binding: 1, resource: { buffer: fsUniformBuffer } },
-    ],
-  });
+  // Bind group is recreated per-frame because the storage buffer (data buffer) changes per series.
+  let currentBindGroup: GPUBindGroup | null = null;
 
   const pipeline = createRenderPipeline(
     device,
@@ -193,13 +157,7 @@ export function createAreaRenderer(
       vertex: {
         code: areaWgsl,
         label: "area.wgsl",
-        buffers: [
-          {
-            arrayStride: 8,
-            stepMode: "vertex",
-            attributes: [{ shaderLocation: 0, format: "float32x2", offset: 0 }],
-          },
-        ],
+        buffers: [], // No vertex buffers — points are read from storage buffer.
       },
       fragment: {
         code: areaWgsl,
@@ -225,8 +183,7 @@ export function createAreaRenderer(
     pipelineCache,
   );
 
-  let vertexBuffer: GPUBuffer | null = null;
-  let vertexCount = 0;
+  let currentPointCount = 0;
 
   const assertNotDisposed = (): void => {
     if (disposed) throw new Error("AreaRenderer is disposed.");
@@ -242,14 +199,8 @@ export function createAreaRenderer(
     // VSUniforms:
     // - mat4x4<f32> (64 bytes)
     // - baseline: f32 (4 bytes)
-    // - (implicit padding to next 16B boundary) (12 bytes)
-    // - _pad0: vec3<f32> (occupies 16 bytes in a uniform buffer)
-    // Total: 96 bytes.
-    //
-    // Layout details (uniform address space):
-    // - transform at byte offset 0
-    // - baseline at byte offset 64 (f32[16])
-    // - _pad0 at byte offset 80 (f32[20..22]) with trailing 4B padding
+    // - _pad0: vec3<f32> (12 bytes)
+    // Total: 96 bytes (aligned to 16).
     writeTransformMat4F32(vsUniformScratchF32, ax, bx, ay, by);
     vsUniformScratchF32[16] = baseline;
     vsUniformScratchF32[17] = 0;
@@ -264,58 +215,26 @@ export function createAreaRenderer(
 
   const prepare: AreaRenderer["prepare"] = (
     seriesConfig,
-    data,
+    dataBuffer,
+    pointCount,
     xScale,
     yScale,
     baseline,
   ) => {
     assertNotDisposed();
 
-    const vertices = createAreaVertices(data);
-    const requiredSize = vertices.byteLength;
-    const bufferSize = Math.max(4, requiredSize);
+    currentPointCount = pointCount;
 
-    if (!vertexBuffer || vertexBuffer.size < bufferSize) {
-      if (vertexBuffer) {
-        try {
-          vertexBuffer.destroy();
-        } catch {
-          // best-effort
-        }
-      }
-      vertexBuffer = device.createBuffer({
-        label: "areaRenderer/vertexBuffer",
-        size: bufferSize,
-        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-      });
-    }
+    // For a linear scale, the affine (a, b) is identical regardless of which two
+    // distinct domain samples we pick. Use 0 and 1 to avoid any data dependency.
+    const { a: ax, b: bx } = computeClipAffineFromScale(xScale, 0, 1);
+    const { a: ay, b: by } = computeClipAffineFromScale(yScale, 0, 1);
 
-    if (vertices.byteLength > 0) {
-      device.queue.writeBuffer(
-        vertexBuffer,
-        0,
-        vertices.buffer,
-        0,
-        vertices.byteLength,
-      );
-    }
-    vertexCount = vertices.length / 2;
-
-    const bounds = computeRawBoundsFromCartesianData(data);
-    const { xMin, xMax, yMin, yMax } = bounds ?? {
-      xMin: 0,
-      xMax: 1,
-      yMin: 0,
-      yMax: 1,
-    };
-    const { a: ax, b: bx } = computeClipAffineFromScale(xScale, xMin, xMax);
-    const { a: ay, b: by } = computeClipAffineFromScale(yScale, yMin, yMax);
-
+    // Derive baseline in data coords. Default to the minimum of the scale range
+    // (yScale maps 0→rangeMin), which matches the previous yMin default.
     const baselineValue = Number.isFinite(baseline ?? Number.NaN)
       ? (baseline as number)
-      : Number.isFinite(yMin)
-        ? yMin
-        : 0;
+      : 0;
 
     writeVsUniforms(ax, bx, ay, by, baselineValue);
 
@@ -327,31 +246,35 @@ export function createAreaRenderer(
     fsUniformScratchF32[2] = b;
     fsUniformScratchF32[3] = clamp01(a * opacity);
     writeUniformBuffer(device, fsUniformBuffer, fsUniformScratchF32);
+
+    // Recreate bind group with the current data buffer.
+    currentBindGroup = device.createBindGroup({
+      layout: bindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: vsUniformBuffer } },
+        { binding: 1, resource: { buffer: fsUniformBuffer } },
+        { binding: 2, resource: { buffer: dataBuffer } },
+      ],
+    });
   };
 
   const render: AreaRenderer["render"] = (passEncoder) => {
     assertNotDisposed();
-    if (!vertexBuffer || vertexCount < 4) return;
+    // Need at least 2 points (4 vertices) to form visible triangles.
+    if (!currentBindGroup || currentPointCount < 2) return;
 
     passEncoder.setPipeline(pipeline);
-    passEncoder.setBindGroup(0, bindGroup);
-    passEncoder.setVertexBuffer(0, vertexBuffer);
-    passEncoder.draw(vertexCount);
+    passEncoder.setBindGroup(0, currentBindGroup);
+    // Each data point generates 2 vertices (top + baseline) in the triangle strip.
+    passEncoder.draw(currentPointCount * 2);
   };
 
   const dispose: AreaRenderer["dispose"] = () => {
     if (disposed) return;
     disposed = true;
 
-    if (vertexBuffer) {
-      try {
-        vertexBuffer.destroy();
-      } catch {
-        // best-effort
-      }
-    }
-    vertexBuffer = null;
-    vertexCount = 0;
+    currentBindGroup = null;
+    currentPointCount = 0;
 
     try {
       vsUniformBuffer.destroy();

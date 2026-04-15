@@ -78,6 +78,7 @@ export type OHLCDataPointObject = Readonly<{
 export type OHLCDataPoint = OHLCDataPointTuple | OHLCDataPointObject;
 
 export type SeriesSampling =
+  | "auto"
   | "none"
   | "lttb"
   | "average"

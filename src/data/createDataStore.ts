@@ -25,6 +25,14 @@ export interface DataStore {
    * Throws if the series has not been set yet.
    */
   getSeriesPointCount(index: number): number;
+  /**
+   * Returns a monotonically increasing version number for the given series that
+   * increments whenever the underlying GPUBuffer reference changes (reallocation).
+   * Renderers can use this to know when to recreate bind groups.
+   *
+   * Throws if the series has not been set yet.
+   */
+  getSeriesBufferVersion(index: number): number;
   dispose(): void;
 }
 
@@ -43,6 +51,11 @@ type SeriesEntry = {
    * Maintained to enable efficient incremental append without repacking all data.
    */
   readonly stagingBuffer: Float32Array;
+  /**
+   * Monotonically increasing version that increments whenever the GPUBuffer reference changes.
+   * Used by renderers to detect when bind groups need recreation.
+   */
+  readonly bufferVersion: number;
 };
 
 const MIN_BUFFER_BYTES = 4;
@@ -157,6 +170,8 @@ export function createDataStore(device: GPUDevice): DataStore {
 
     let buffer = existing?.buffer ?? null;
     let capacityBytes = existing?.capacityBytes ?? 0;
+    let bufferVersion = existing?.bufferVersion ?? 0;
+    let newBufferCreated = false;
 
     if (!buffer || targetBytes > capacityBytes) {
       const maxBufferSize = device.limits.maxBufferSize;
@@ -192,23 +207,38 @@ export function createDataStore(device: GPUDevice): DataStore {
         usage:
           GPUBufferUsage.VERTEX |
           GPUBufferUsage.STORAGE |
-          GPUBufferUsage.COPY_DST,
+          GPUBufferUsage.COPY_DST |
+          GPUBufferUsage.COPY_SRC,
+        mappedAtCreation: true,
       });
-    }
 
-    // View-safe GPU upload: explicitly pass byteOffset and byteLength
-    if (packed.byteLength > 0) {
-      device.queue.writeBuffer(
-        buffer,
-        0,
-        packed.buffer,
-        packed.byteOffset,
-        packed.byteLength,
-      );
+      // Write data directly into the mapped range (avoids separate writeBuffer IPC round-trip)
+      if (packed.byteLength > 0) {
+        new Float32Array(buffer.getMappedRange(0, packed.byteLength)).set(
+          packed,
+        );
+      }
+      buffer.unmap();
+
+      newBufferCreated = true;
+      bufferVersion++;
+    } else {
+      // Existing buffer has enough capacity; update data in-place via writeBuffer
+      if (packed.byteLength > 0) {
+        device.queue.writeBuffer(
+          buffer,
+          0,
+          packed.buffer,
+          packed.byteOffset,
+          packed.byteLength,
+        );
+      }
     }
 
     // Create staging buffer matching the packed data for efficient append
-    const stagingBuffer = new Float32Array(capacityBytes / 4);
+    const stagingBuffer = newBufferCreated
+      ? new Float32Array(capacityBytes / 4)
+      : existing?.stagingBuffer ?? new Float32Array(capacityBytes / 4);
     stagingBuffer.set(packed);
 
     series.set(index, {
@@ -218,6 +248,7 @@ export function createDataStore(device: GPUDevice): DataStore {
       hash32,
       xOffset,
       stagingBuffer,
+      bufferVersion,
     });
   };
 
@@ -250,13 +281,6 @@ export function createDataStore(device: GPUDevice): DataStore {
         );
       }
 
-      // Replace buffer (no shrink). This is the slow path; we re-upload the full series.
-      try {
-        buffer.destroy();
-      } catch {
-        // Ignore destroy errors; we are replacing the buffer anyway.
-      }
-
       const grownCapacityBytes = computeGrownCapacityBytes(
         capacityBytes,
         targetBytes,
@@ -264,19 +288,37 @@ export function createDataStore(device: GPUDevice): DataStore {
       capacityBytes =
         grownCapacityBytes > maxBufferSize ? targetBytes : grownCapacityBytes;
 
-      buffer = device.createBuffer({
+      const newBuffer = device.createBuffer({
         size: capacityBytes,
         usage:
           GPUBufferUsage.VERTEX |
           GPUBufferUsage.STORAGE |
-          GPUBufferUsage.COPY_DST,
+          GPUBufferUsage.COPY_DST |
+          GPUBufferUsage.COPY_SRC,
       });
 
-      // Create new staging buffer with grown capacity
+      // GPU-to-GPU copy of existing data (fast, no CPU round-trip)
+      const existingBytes = prevPointCount * 2 * 4;
+      if (existingBytes > 0) {
+        const encoder = device.createCommandEncoder();
+        encoder.copyBufferToBuffer(buffer, 0, newBuffer, 0, existingBytes);
+        device.queue.submit([encoder.finish()]);
+      }
+
+      // Destroy old buffer after GPU copy is enqueued
+      try {
+        buffer.destroy();
+      } catch {
+        // Ignore destroy errors; we are replacing the buffer anyway.
+      }
+
+      buffer = newBuffer;
+
+      // Create new staging buffer with grown capacity and copy old staged data
       const newStagingBuffer = new Float32Array(capacityBytes / 4);
-      // Copy old data
       newStagingBuffer.set(stagingBuffer.subarray(0, prevPointCount * 2));
-      // Pack new data directly into staging buffer
+
+      // Pack only the NEW points into staging buffer and upload the delta
       packXYInto(
         newStagingBuffer,
         prevPointCount * 2,
@@ -286,16 +328,23 @@ export function createDataStore(device: GPUDevice): DataStore {
         existing.xOffset,
       );
 
-      const fullPacked = newStagingBuffer.subarray(0, nextPointCount * 2);
-      if (fullPacked.byteLength > 0) {
+      const appendedView = newStagingBuffer.subarray(
+        prevPointCount * 2,
+        nextPointCount * 2,
+      );
+      if (appendedView.byteLength > 0) {
+        const byteOffset = prevPointCount * 2 * 4;
         device.queue.writeBuffer(
           buffer,
-          0,
-          fullPacked.buffer,
-          fullPacked.byteOffset,
-          fullPacked.byteLength,
+          byteOffset,
+          appendedView.buffer,
+          appendedView.byteOffset,
+          appendedView.byteLength,
         );
       }
+
+      // Compute hash over the full data in the staging buffer
+      const fullPacked = newStagingBuffer.subarray(0, nextPointCount * 2);
 
       series.set(index, {
         buffer,
@@ -304,6 +353,7 @@ export function createDataStore(device: GPUDevice): DataStore {
         hash32: hashFloat32ArrayBits(fullPacked),
         xOffset: existing.xOffset,
         stagingBuffer: newStagingBuffer,
+        bufferVersion: existing.bufferVersion + 1,
       });
       return;
     }
@@ -348,6 +398,7 @@ export function createDataStore(device: GPUDevice): DataStore {
       hash32: nextHash32,
       xOffset: existing.xOffset,
       stagingBuffer,
+      bufferVersion: existing.bufferVersion,
     });
   };
 
@@ -373,6 +424,10 @@ export function createDataStore(device: GPUDevice): DataStore {
     return getSeriesEntry(index).pointCount;
   };
 
+  const getSeriesBufferVersion = (index: number): number => {
+    return getSeriesEntry(index).bufferVersion;
+  };
+
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
@@ -393,6 +448,7 @@ export function createDataStore(device: GPUDevice): DataStore {
     removeSeries,
     getSeriesBuffer,
     getSeriesPointCount,
+    getSeriesBufferVersion,
     dispose,
   };
 }
