@@ -31,14 +31,6 @@ export interface DataStore {
    * Throws if the series has not been set yet.
    */
   getSeriesPointCount(index: number): number;
-  /**
-   * Returns a monotonically increasing version number for the given series that
-   * increments whenever the underlying GPUBuffer reference changes (reallocation).
-   * Renderers can use this to know when to recreate bind groups.
-   *
-   * Throws if the series has not been set yet.
-   */
-  getSeriesBufferVersion(index: number): number;
   dispose(): void;
 }
 
@@ -57,11 +49,6 @@ type SeriesEntry = {
    * Maintained to enable efficient incremental append without repacking all data.
    */
   readonly stagingBuffer: Float32Array;
-  /**
-   * Monotonically increasing version that increments whenever the GPUBuffer reference changes.
-   * Used by renderers to detect when bind groups need recreation.
-   */
-  readonly bufferVersion: number;
 };
 
 const MIN_BUFFER_BYTES = 4;
@@ -176,7 +163,6 @@ export function createDataStore(device: GPUDevice): DataStore {
 
     let buffer = existing?.buffer ?? null;
     let capacityBytes = existing?.capacityBytes ?? 0;
-    let bufferVersion = existing?.bufferVersion ?? 0;
     let newBufferCreated = false;
 
     if (!buffer || targetBytes > capacityBytes) {
@@ -227,7 +213,6 @@ export function createDataStore(device: GPUDevice): DataStore {
       buffer.unmap();
 
       newBufferCreated = true;
-      bufferVersion++;
     } else {
       // Existing buffer has enough capacity; update data in-place via writeBuffer
       if (packed.byteLength > 0) {
@@ -254,7 +239,6 @@ export function createDataStore(device: GPUDevice): DataStore {
       hash32,
       xOffset,
       stagingBuffer,
-      bufferVersion,
     });
   };
 
@@ -362,7 +346,6 @@ export function createDataStore(device: GPUDevice): DataStore {
         hash32: hashFloat32ArrayBits(fullPacked),
         xOffset: existing.xOffset,
         stagingBuffer: newStagingBuffer,
-        bufferVersion: existing.bufferVersion + 1,
       });
       return;
     }
@@ -407,7 +390,6 @@ export function createDataStore(device: GPUDevice): DataStore {
       hash32: nextHash32,
       xOffset: existing.xOffset,
       stagingBuffer,
-      bufferVersion: existing.bufferVersion,
     });
   };
 
@@ -433,10 +415,6 @@ export function createDataStore(device: GPUDevice): DataStore {
     return getSeriesEntry(index).pointCount;
   };
 
-  const getSeriesBufferVersion = (index: number): number => {
-    return getSeriesEntry(index).bufferVersion;
-  };
-
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
@@ -457,7 +435,6 @@ export function createDataStore(device: GPUDevice): DataStore {
     removeSeries,
     getSeriesBuffer,
     getSeriesPointCount,
-    getSeriesBufferVersion,
     dispose,
   };
 }

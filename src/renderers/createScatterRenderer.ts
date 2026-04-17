@@ -215,6 +215,17 @@ export function createScatterRenderer(
   // Warning-once guard for function-based symbolSize evaluation failures.
   let warnedFunctionSymbolSize = false;
 
+  // Dirty-tracking for per-point size uploads. We re-fill+upload only when one of the
+  // inputs (symbolSize value/function ref, dpr, point count, sizes-buffer identity, and —
+  // for function-based sizing — the source data reference) actually changes. Without this,
+  // even constant `symbolSize` would trigger a full pointCount*4 byte writeBuffer every frame.
+  let lastSymbolSize: ResolvedScatterSeriesConfig["symbolSize"] | undefined =
+    undefined;
+  let lastSymbolSizeDataRef: ResolvedScatterSeriesConfig["data"] | null = null;
+  let lastSymbolSizePointCount = -1;
+  let lastSymbolSizeDpr = -1;
+  let lastSymbolSizeBuffer: GPUBuffer | null = null;
+
   // Bind group is cached by the current `(dataBuffer, sizesStorageBuffer)` pair. A new bind group
   // is built only when either buffer identity changes (e.g. DataStore reallocation, or sizes
   // buffer geometric growth in `ensureSizesStorageBuffer`). Per-frame `queue.writeBuffer` updates
@@ -277,15 +288,17 @@ export function createScatterRenderer(
    * Ensure the per-instance sizes storage buffer has capacity for `pointCount` f32 entries.
    * Grow-only geometric growth mirroring DataStore/candlestick-renderer conventions.
    *
-   * Returns `true` when the buffer was (re)created and the bind group must be rebuilt.
+   * Bind-group invalidation is detected separately by reference comparison
+   * (`boundSizesBuffer !== sizesStorageBuffer`) in `prepare()`, so this function does not
+   * need to return a "did it grow?" signal.
    */
-  const ensureSizesStorageBuffer = (pointCount: number): boolean => {
+  const ensureSizesStorageBuffer = (pointCount: number): void => {
     // WebGPU requires buffer sizes to be a multiple of 4 and > 0. A single f32 already is.
     const requiredBytes = Math.max(
       SIZES_BUFFER_MIN_BYTES,
       Math.max(1, pointCount) * 4,
     );
-    if (sizesStorageBuffer && sizesCapacityBytes >= requiredBytes) return false;
+    if (sizesStorageBuffer && sizesCapacityBytes >= requiredBytes) return;
 
     const grownBytes = Math.max(
       Math.max(SIZES_BUFFER_MIN_BYTES, nextPow2(requiredBytes)),
@@ -313,8 +326,6 @@ export function createScatterRenderer(
     if (sizesStaging.length * 4 < grownBytes) {
       sizesStaging = new Float32Array(grownBytes / 4);
     }
-
-    return true;
   };
 
   const safeCallSymbolSize = (
@@ -348,6 +359,23 @@ export function createScatterRenderer(
 
     const effectiveDpr = dpr > 0 && Number.isFinite(dpr) ? dpr : 1;
     const seriesSymbolSize = seriesConfig.symbolSize;
+
+    // Skip the upload when nothing affecting per-point sizes has changed since the last frame.
+    // The sizes-buffer identity is part of the cache key because a freshly grown buffer is
+    // zero-initialized — we MUST refill it, even if all other inputs match.
+    // For function-based sizing, the source data reference is also part of the key because
+    // the function's output depends on it; for constant sizing, data ref is irrelevant.
+    const isFunctionSize = typeof seriesSymbolSize === "function";
+    if (
+      sizesStorageBuffer === lastSymbolSizeBuffer &&
+      seriesSymbolSize === lastSymbolSize &&
+      pointCount === lastSymbolSizePointCount &&
+      effectiveDpr === lastSymbolSizeDpr &&
+      (!isFunctionSize || seriesConfig.data === lastSymbolSizeDataRef)
+    ) {
+      return;
+    }
+
     const defaultSizePx = DEFAULT_SCATTER_RADIUS_CSS_PX * effectiveDpr;
 
     const scratch = sizesStaging;
@@ -399,6 +427,12 @@ export function createScatterRenderer(
       scratch.byteOffset,
       byteLength,
     );
+
+    lastSymbolSize = seriesSymbolSize;
+    lastSymbolSizeDataRef = isFunctionSize ? seriesConfig.data : null;
+    lastSymbolSizePointCount = pointCount;
+    lastSymbolSizeDpr = effectiveDpr;
+    lastSymbolSizeBuffer = sizesStorageBuffer;
   };
 
   const writeVsUniforms = (
@@ -560,6 +594,12 @@ export function createScatterRenderer(
       sizesStorageBuffer = null;
       sizesCapacityBytes = 0;
     }
+
+    lastSymbolSize = undefined;
+    lastSymbolSizeDataRef = null;
+    lastSymbolSizePointCount = -1;
+    lastSymbolSizeDpr = -1;
+    lastSymbolSizeBuffer = null;
 
     lastCanvasWidth = 0;
     lastCanvasHeight = 0;
