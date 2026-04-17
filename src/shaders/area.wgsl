@@ -34,6 +34,16 @@ fn vsMain(@builtin(vertex_index) vertexIndex: u32) -> VSOut {
   let dataIdx = vertexIndex / 2u;
   let isBaseline = (vertexIndex & 1u) == 1u;
   let point = dataBuffer[dataIdx];
+
+  // NaN gap detection: WGSL has no isnan(); use the IEEE 754 property that NaN != NaN.
+  // Emit a clip-space position guaranteed to be culled by fixed-function clipping
+  // ((2,2) with w=1 lies outside the [-1,1] clip volume) to avoid implementation-defined
+  // behavior when NaN coordinates would otherwise flow through the transform.
+  if (point.x != point.x || point.y != point.y) {
+    out.clipPosition = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+    return out;
+  }
+
   let y = select(point.y, vsUniforms.baseline, isBaseline);
   let pos = vec2<f32>(point.x, y);
   out.clipPosition = vsUniforms.transform * vec4<f32>(pos, 0.0, 1.0);

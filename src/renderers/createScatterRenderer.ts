@@ -1,7 +1,9 @@
 import scatterWgsl from "../shaders/scatter.wgsl?raw";
 import type { ResolvedScatterSeriesConfig } from "../config/OptionResolver";
+import type { ScatterPointTuple } from "../config/types";
 import type { LinearScale } from "../utils/scales";
 import { parseCssColorToRgba01 } from "../utils/colors";
+import { getPointCount, getSize, getX, getY } from "../data/cartesianData";
 import type { GridArea } from "./createGridRenderer";
 import {
   createRenderPipeline,
@@ -48,6 +50,13 @@ type Rgba = readonly [r: number, g: number, b: number, a: number];
 
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = "bgra8unorm";
 const DEFAULT_SCATTER_RADIUS_CSS_PX = 4;
+const SIZES_BUFFER_MIN_BYTES = 16; // 4 f32 slots — WebGPU storage buffers must be >0, keep a small floor.
+
+const nextPow2 = (v: number): number => {
+  if (!Number.isFinite(v) || v <= 0) return 1;
+  const n = Math.ceil(v);
+  return 2 ** Math.ceil(Math.log2(n));
+};
 
 const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
 const clampInt = (v: number, lo: number, hi: number): number =>
@@ -177,6 +186,11 @@ export function createScatterRenderer(
         visibility: GPUShaderStage.VERTEX,
         buffer: { type: "read-only-storage" },
       },
+      {
+        binding: 3,
+        visibility: GPUShaderStage.VERTEX,
+        buffer: { type: "read-only-storage" },
+      },
     ],
   });
 
@@ -192,6 +206,14 @@ export function createScatterRenderer(
   const vsUniformScratchBuffer = new ArrayBuffer(80);
   const vsUniformScratchF32 = new Float32Array(vsUniformScratchBuffer);
   const fsUniformScratchF32 = new Float32Array(4);
+
+  // Per-point size storage buffer (binding 3). Grows geometrically to amortize reallocation costs.
+  let sizesStorageBuffer: GPUBuffer | null = null;
+  let sizesCapacityBytes = 0;
+  // Reusable CPU-side staging array for size uploads. Grown lazily alongside the GPU buffer.
+  let sizesStaging: Float32Array = new Float32Array(0);
+  // Warning-once guard for function-based symbolSize evaluation failures.
+  let warnedFunctionSymbolSize = false;
 
   // Bind group is recreated per-frame because the storage buffer (data buffer) changes per series.
   let currentBindGroup: GPUBindGroup | null = null;
@@ -246,6 +268,134 @@ export function createScatterRenderer(
     if (disposed) throw new Error("ScatterRenderer is disposed.");
   };
 
+  /**
+   * Ensure the per-instance sizes storage buffer has capacity for `pointCount` f32 entries.
+   * Grow-only geometric growth mirroring DataStore/candlestick-renderer conventions.
+   *
+   * Returns `true` when the buffer was (re)created and the bind group must be rebuilt.
+   */
+  const ensureSizesStorageBuffer = (pointCount: number): boolean => {
+    // WebGPU requires buffer sizes to be a multiple of 4 and > 0. A single f32 already is.
+    const requiredBytes = Math.max(
+      SIZES_BUFFER_MIN_BYTES,
+      Math.max(1, pointCount) * 4,
+    );
+    if (sizesStorageBuffer && sizesCapacityBytes >= requiredBytes) return false;
+
+    const grownBytes = Math.max(
+      Math.max(SIZES_BUFFER_MIN_BYTES, nextPow2(requiredBytes)),
+      sizesCapacityBytes,
+    );
+
+    if (sizesStorageBuffer) {
+      try {
+        sizesStorageBuffer.destroy();
+      } catch {
+        // best-effort
+      }
+    }
+
+    sizesStorageBuffer = device.createBuffer({
+      label: "scatterRenderer/sizesStorageBuffer",
+      size: grownBytes,
+      usage:
+        GPUBufferUsage.STORAGE |
+        GPUBufferUsage.COPY_DST |
+        GPUBufferUsage.COPY_SRC,
+    });
+    sizesCapacityBytes = grownBytes;
+
+    if (sizesStaging.length * 4 < grownBytes) {
+      sizesStaging = new Float32Array(grownBytes / 4);
+    }
+
+    return true;
+  };
+
+  const safeCallSymbolSize = (
+    fn: (value: ScatterPointTuple) => number,
+    value: ScatterPointTuple,
+  ): number | null => {
+    try {
+      const v = fn(value);
+      return typeof v === "number" && Number.isFinite(v) ? v : null;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Populate `sizesStaging[0..pointCount)` with per-instance device-pixel radii, then upload
+   * the populated range to the sizes storage buffer.
+   *
+   * Size resolution order (mirrors existing hit-testing semantics in findNearestPoint.ts):
+   *   1. Function-based `symbolSize(tuple)` (when provided)
+   *   2. Numeric `symbolSize`
+   *   3. DEFAULT_SCATTER_RADIUS_CSS_PX
+   * The final value is then scaled by `dpr` to convert CSS px to device px.
+   */
+  const writeSizesForSeries = (
+    seriesConfig: ResolvedScatterSeriesConfig,
+    pointCount: number,
+    dpr: number,
+  ): void => {
+    if (!sizesStorageBuffer || pointCount <= 0) return;
+
+    const effectiveDpr = dpr > 0 && Number.isFinite(dpr) ? dpr : 1;
+    const seriesSymbolSize = seriesConfig.symbolSize;
+    const defaultSizePx = DEFAULT_SCATTER_RADIUS_CSS_PX * effectiveDpr;
+
+    const scratch = sizesStaging;
+
+    if (typeof seriesSymbolSize === "function") {
+      // Function-based per-point sizing. Evaluate once per point against the resolved series data.
+      const data = seriesConfig.data;
+      const dataPointCount = getPointCount(data);
+
+      for (let i = 0; i < pointCount; i++) {
+        if (i >= dataPointCount) {
+          scratch[i] = defaultSizePx;
+          continue;
+        }
+        const x = getX(data, i);
+        const y = getY(data, i);
+        const s = getSize(data, i);
+        const tuple: ScatterPointTuple =
+          typeof s === "number" ? [x, y, s] : [x, y];
+        const resolved = safeCallSymbolSize(seriesSymbolSize, tuple);
+        if (resolved == null) {
+          if (!warnedFunctionSymbolSize) {
+            warnedFunctionSymbolSize = true;
+            // One-time warning; subsequent failures silently fall back to the default size.
+            console.warn(
+              "[ChartGPU] scatter.symbolSize function returned a non-finite value or threw; falling back to default size.",
+            );
+          }
+          scratch[i] = defaultSizePx;
+        } else {
+          scratch[i] = Math.max(0, resolved) * effectiveDpr;
+        }
+      }
+    } else if (
+      typeof seriesSymbolSize === "number" &&
+      Number.isFinite(seriesSymbolSize)
+    ) {
+      const sizePx = Math.max(0, seriesSymbolSize) * effectiveDpr;
+      scratch.fill(sizePx, 0, pointCount);
+    } else {
+      scratch.fill(defaultSizePx, 0, pointCount);
+    }
+
+    const byteLength = pointCount * 4;
+    device.queue.writeBuffer(
+      sizesStorageBuffer,
+      0,
+      scratch.buffer,
+      scratch.byteOffset,
+      byteLength,
+    );
+  };
+
   const writeVsUniforms = (
     ax: number,
     bx: number,
@@ -283,20 +433,12 @@ export function createScatterRenderer(
     const { a: ax, b: bx } = computeClipAffineFromScale(xScale, 0, 1);
     const { a: ay, b: by } = computeClipAffineFromScale(yScale, 0, 1);
 
-    // Resolve symbol size to device pixels.
+    // Resolve device-pixel ratio for per-point size conversion.
     const dpr = gridArea?.devicePixelRatio ?? 1;
-    const hasValidDpr = dpr > 0 && Number.isFinite(dpr);
 
-    const seriesSymbolSize = seriesConfig.symbolSize;
-    // TODO: Function-based per-point symbolSize would need a separate GPU size buffer.
-    // For now, resolve to a constant: use the numeric value, or the default.
-    const sizeCss =
-      typeof seriesSymbolSize === "number" && Number.isFinite(seriesSymbolSize)
-        ? seriesSymbolSize
-        : DEFAULT_SCATTER_RADIUS_CSS_PX;
-    const symbolSizePx = hasValidDpr
-      ? Math.max(0, sizeCss) * dpr
-      : Math.max(0, sizeCss);
+    // symbolSizePx in the uniform struct is retained for layout stability but is no longer
+    // consumed by the shader — per-instance sizes are sourced from the sizes storage buffer.
+    const unusedSymbolSizePx = 0;
 
     if (gridArea) {
       lastCanvasWidth = gridArea.canvasWidth;
@@ -308,7 +450,7 @@ export function createScatterRenderer(
         by,
         gridArea.canvasWidth,
         gridArea.canvasHeight,
-        symbolSizePx,
+        unusedSymbolSizePx,
       );
       lastScissor = computePlotScissorDevicePx(gridArea);
     } else {
@@ -320,7 +462,7 @@ export function createScatterRenderer(
         by,
         lastViewportPx[0],
         lastViewportPx[1],
-        symbolSizePx,
+        unusedSymbolSizePx,
       );
       lastScissor = null;
     }
@@ -334,13 +476,20 @@ export function createScatterRenderer(
 
     currentPointCount = pointCount;
 
-    // Recreate bind group with the current data buffer.
+    // Ensure the sizes storage buffer is large enough, then upload per-point sizes.
+    // `sizesBufferGrew` is informational — the bind group is recreated every prepare() below
+    // to keep the data buffer binding in sync with the caller-provided `dataBuffer`.
+    ensureSizesStorageBuffer(pointCount);
+    writeSizesForSeries(seriesConfig, pointCount, dpr);
+
+    // Recreate bind group with the current data + sizes buffers.
     currentBindGroup = device.createBindGroup({
       layout: bindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: vsUniformBuffer } },
         { binding: 1, resource: { buffer: fsUniformBuffer } },
         { binding: 2, resource: { buffer: dataBuffer } },
+        { binding: 3, resource: { buffer: sizesStorageBuffer! } },
       ],
     });
   };
@@ -385,6 +534,15 @@ export function createScatterRenderer(
       fsUniformBuffer.destroy();
     } catch {
       // best-effort
+    }
+    if (sizesStorageBuffer) {
+      try {
+        sizesStorageBuffer.destroy();
+      } catch {
+        // best-effort
+      }
+      sizesStorageBuffer = null;
+      sizesCapacityBytes = 0;
     }
 
     lastCanvasWidth = 0;

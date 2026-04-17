@@ -4,11 +4,7 @@ import type { OHLCDataPoint, OHLCDataPointTuple } from "../config/types";
 import type { LinearScale } from "../utils/scales";
 import type { GridArea } from "./createGridRenderer";
 import { parseCssColorToRgba01 } from "../utils/colors";
-import {
-  createRenderPipeline,
-  createUniformBuffer,
-  writeUniformBuffer,
-} from "./rendererUtils";
+import { createRenderPipeline } from "./rendererUtils";
 import type { PipelineCache } from "../core/PipelineCache";
 
 export interface CandlestickRenderer {
@@ -50,16 +46,24 @@ type Rgba = readonly [r: number, g: number, b: number, a: number];
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = "bgra8unorm";
 const DEFAULT_WICK_WIDTH_CSS_PX = 1;
 
-/** Per-candle OHLC storage: [timestamp, open, close, low, high] = 5 floats = 20 bytes. */
+/**
+ * Per-candle storage: [xClip, openClip, closeClip, lowClip, highClip] =
+ * 5 floats = 20 bytes. Positions are pre-computed on the CPU in f64 and
+ * written as f32 clip-space values in the [-1, 1] range. Storing raw domain
+ * values (e.g. epoch-ms timestamps ~1.7e12) is not viable because f32 cannot
+ * represent 1-second increments at that magnitude: the ulp at 1.776e12 is
+ * 262144, collapsing adjacent timestamps to the same f32 and producing
+ * catastrophic cancellation when computing `a * t + b` in-shader.
+ */
 const OHLC_STRIDE_FLOATS = 5;
 const OHLC_STRIDE_BYTES = OHLC_STRIDE_FLOATS * 4;
 
 /**
  * Uniform buffer layout (112 bytes, 16-byte aligned):
- *   0: xScaleA     f32
- *   4: xScaleB     f32
- *   8: yScaleA     f32
- *  12: yScaleB     f32
+ *   0: xScaleA     f32  (identity: 1.0 — kept for shader struct compatibility)
+ *   4: xScaleB     f32  (identity: 0.0)
+ *   8: yScaleA     f32  (identity: 1.0)
+ *  12: yScaleB     f32  (identity: 0.0)
  *  16: bodyWidthClip  f32
  *  20: wickWidthClip  f32
  *  24: borderWidthClip f32
@@ -70,6 +74,19 @@ const OHLC_STRIDE_BYTES = OHLC_STRIDE_FLOATS * 4;
  *  80: downBorderColor vec4<f32>
  *  96: bgColor     vec4<f32>
  * Total: 112 bytes
+ *
+ * The buffer holds TWO consecutive records (each padded to
+ * `device.limits.minUniformBufferOffsetAlignment`) so we can switch the
+ * `hollowMode` value between two `draw()` calls in the same render pass via a
+ * dynamic-offset bind group. Record 0 is the "primary" pass (mode=0 or mode=1);
+ * record 1 is the hollow punch-out pass (mode=2). `queue.writeBuffer` cannot
+ * be used to mutate uniforms mid-pass because writes are queue-timeline
+ * operations, not command-buffer operations — they all collapse to the final
+ * value before the command buffer executes.
+ *
+ * The xScaleA/xScaleB/yScaleA/yScaleB fields are retained at identity so the
+ * WGSL `Uniforms` struct layout stays unchanged; the true affine transform is
+ * applied on the CPU when packing the storage buffer.
  */
 const UNIFORM_SIZE_BYTES = 112;
 
@@ -294,12 +311,25 @@ export function createCandlestickRenderer(
     : 1;
   const pipelineCache = options?.pipelineCache;
 
+  // Pad the uniform record to the device's minimum dynamic-offset alignment
+  // (typically 256). Two records are stored back-to-back in a single buffer so
+  // that `render()` can switch `hollowMode` between draws via a dynamic offset
+  // on the bind group instead of mutating the uniform mid-pass.
+  const minUniformOffsetAlignment =
+    device.limits.minUniformBufferOffsetAlignment;
+  const alignedRecordSize =
+    Math.ceil(UNIFORM_SIZE_BYTES / minUniformOffsetAlignment) *
+    minUniformOffsetAlignment;
+  const HOLLOW_FILL_OFFSET = 0;
+  const HOLLOW_PUNCH_OFFSET = alignedRecordSize;
+  const uniformBufferSize = alignedRecordSize * 2;
+
   const bindGroupLayout = device.createBindGroupLayout({
     entries: [
       {
         binding: 0,
         visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-        buffer: { type: "uniform" },
+        buffer: { type: "uniform", hasDynamicOffset: true },
       },
       {
         binding: 1,
@@ -309,8 +339,10 @@ export function createCandlestickRenderer(
     ],
   });
 
-  const uniformBuffer = createUniformBuffer(device, UNIFORM_SIZE_BYTES, {
+  const uniformBuffer = device.createBuffer({
     label: "candlestickRenderer/uniforms",
+    size: uniformBufferSize,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
   const uniformScratchBuffer = new ArrayBuffer(UNIFORM_SIZE_BYTES);
@@ -354,7 +386,18 @@ export function createCandlestickRenderer(
   let ohlcStorageBuffer: GPUBuffer | null = null;
   let lastDataRef: ResolvedCandlestickSeriesConfig["data"] | null = null;
   let lastDataLength = 0;
+  // Cheap O(1) fingerprint of the last OHLC element. Detects in-place
+  // mutation of the trailing candle (common for live tick streams) when the
+  // array reference and length are unchanged.
+  let lastDataFingerprint = 0;
   let candleCount = 0;
+  // Track last applied scale coefficients. The storage buffer contains
+  // clip-space positions (pre-baked affine), so any scale change (pan/zoom)
+  // requires re-packing and re-uploading.
+  let lastXA = Number.NaN;
+  let lastXB = Number.NaN;
+  let lastYA = Number.NaN;
+  let lastYB = Number.NaN;
 
   // Bind group (recreated when storage buffer changes)
   let bindGroup: GPUBindGroup | null = null;
@@ -373,6 +416,31 @@ export function createCandlestickRenderer(
 
   const assertNotDisposed = (): void => {
     if (disposed) throw new Error("CandlestickRenderer is disposed.");
+  };
+
+  /**
+   * Cheap O(1) fingerprint of the last OHLC point.
+   *
+   * Used as a fallback check when the array reference and length are unchanged
+   * to catch real-time callers that mutate the tail in place (e.g. updating
+   * the currently-forming candle on every tick). Combines all five OHLC fields
+   * with distinct multiplicative constants so any single-field change
+   * effectively always yields a different value; collisions would only delay
+   * the upload by one frame which is not a correctness issue beyond what the
+   * existing reference/length fast path already permits.
+   */
+  const computeTailFingerprint = (
+    data: ResolvedCandlestickSeriesConfig["data"],
+  ): number => {
+    if (data.length === 0) return 0;
+    const { timestamp, open, close, low, high } = getOHLC(data[data.length - 1]);
+    return (
+      timestamp * 1.0000001 +
+      open * 0.97 +
+      close * 1.13 +
+      low * 1.31 +
+      high * 1.71
+    );
   };
 
   /**
@@ -412,13 +480,23 @@ export function createCandlestickRenderer(
     bindGroup = device.createBindGroup({
       layout: bindGroupLayout,
       entries: [
-        { binding: 0, resource: { buffer: uniformBuffer } },
+        {
+          binding: 0,
+          resource: {
+            buffer: uniformBuffer,
+            offset: 0,
+            // Binding size must be the per-record size when using a dynamic
+            // offset; the offset is applied on top of this base in render().
+            size: UNIFORM_SIZE_BYTES,
+          },
+        },
         { binding: 1, resource: { buffer: ohlcStorageBuffer } },
       ],
     });
   };
 
   const writeUniformsForMode = (
+    bufferOffset: number,
     xA: number,
     xB: number,
     yA: number,
@@ -469,7 +547,13 @@ export function createCandlestickRenderer(
     uniformScratchF32[26] = bgColor[2];
     uniformScratchF32[27] = bgColor[3];
 
-    writeUniformBuffer(device, uniformBuffer, uniformScratchBuffer);
+    device.queue.writeBuffer(
+      uniformBuffer,
+      bufferOffset,
+      uniformScratchBuffer,
+      0,
+      UNIFORM_SIZE_BYTES,
+    );
   };
 
   const prepare: CandlestickRenderer["prepare"] = (
@@ -503,9 +587,42 @@ export function createCandlestickRenderer(
     lastCanvasHeight = gridArea.canvasHeight;
     lastScissor = computePlotScissorDevicePx(gridArea);
 
-    // ---- Upload OHLC data to storage buffer (only when data changes) ----
-    if (data !== lastDataRef || data.length !== lastDataLength) {
-      // Pack OHLC into Float32Array
+    // ---- Compute affine scale transforms ----
+    // Sample two well-separated domain values to extract linear coefficients.
+    // NOTE: These are only used for the dirty-check (to detect when the
+    // scale's range/domain has shifted). The actual clip-space packing below
+    // calls `scale.scale(value)` directly, which computes
+    // `(value - domainMin) / span` first — numerically stable even for
+    // epoch-ms timestamps (~1.776e12). Using the extracted affine form
+    // `a * t + b` here would suffer catastrophic cancellation: a tiny ~0.01%
+    // relative error in `a` gets amplified by ~1e12× when multiplied by the
+    // timestamp, producing clip values that are thousands of units off.
+    const { a: xA, b: xB } = computeClipAffineFromScale(xScale, 0, 1);
+    const { a: yA, b: yB } = computeClipAffineFromScale(yScale, 0, 1);
+
+    // ---- Upload clip-space data to storage buffer (on data OR scale change) ----
+    // Fast path: reference + length + scale coefficients all match. Only when
+    // the fast path would skip do we compute an O(1) fingerprint of the
+    // trailing element to catch in-place mutation (live tick updates).
+    let needsUpload =
+      data !== lastDataRef ||
+      data.length !== lastDataLength ||
+      xA !== lastXA ||
+      xB !== lastXB ||
+      yA !== lastYA ||
+      yB !== lastYB;
+    if (!needsUpload) {
+      const tailFingerprint = computeTailFingerprint(data);
+      if (tailFingerprint !== lastDataFingerprint) {
+        needsUpload = true;
+      }
+    }
+
+    if (needsUpload) {
+      // Pack pre-computed clip-space positions into Float32Array.
+      // We call `xScale.scale(t)` / `yScale.scale(v)` directly (not the
+      // extracted affine) because those perform `(value - domainMin) / span`
+      // first — numerically stable against large-magnitude domain values.
       const packedF32 = new Float32Array(data.length * OHLC_STRIDE_FLOATS);
       let validCount = 0;
 
@@ -520,12 +637,29 @@ export function createCandlestickRenderer(
         ) {
           continue;
         }
+
+        const xClip = xScale.scale(timestamp);
+        const openClip = yScale.scale(open);
+        const closeClip = yScale.scale(close);
+        const lowClip = yScale.scale(low);
+        const highClip = yScale.scale(high);
+
+        if (
+          !Number.isFinite(xClip) ||
+          !Number.isFinite(openClip) ||
+          !Number.isFinite(closeClip) ||
+          !Number.isFinite(lowClip) ||
+          !Number.isFinite(highClip)
+        ) {
+          continue;
+        }
+
         const off = validCount * OHLC_STRIDE_FLOATS;
-        packedF32[off + 0] = timestamp;
-        packedF32[off + 1] = open;
-        packedF32[off + 2] = close;
-        packedF32[off + 3] = low;
-        packedF32[off + 4] = high;
+        packedF32[off + 0] = xClip;
+        packedF32[off + 1] = openClip;
+        packedF32[off + 2] = closeClip;
+        packedF32[off + 3] = lowClip;
+        packedF32[off + 4] = highClip;
         validCount++;
       }
 
@@ -547,6 +681,11 @@ export function createCandlestickRenderer(
 
       lastDataRef = data;
       lastDataLength = data.length;
+      lastDataFingerprint = computeTailFingerprint(data);
+      lastXA = xA;
+      lastXB = xB;
+      lastYA = yA;
+      lastYB = yB;
     }
 
     if (candleCount === 0) return;
@@ -555,11 +694,6 @@ export function createCandlestickRenderer(
     if (!bindGroup) {
       rebuildBindGroup();
     }
-
-    // ---- Compute affine scale transforms ----
-    // Sample two well-separated domain values to extract linear coefficients
-    const { a: xA, b: xB } = computeClipAffineFromScale(xScale, 0, 1);
-    const { a: yA, b: yB } = computeClipAffineFromScale(yScale, 0, 1);
 
     // ---- Compute body and wick widths in clip space ----
     const categoryStep = computeCategoryStep(data);
@@ -610,17 +744,45 @@ export function createCandlestickRenderer(
 
     hollowMode = series.style === "hollow";
 
-    // Write uniforms for the initial pass
-    const mode = hollowMode ? 1 : 0;
+    // The shader's affine-transform uniforms are held at identity because the
+    // clip-space positions are pre-computed on the CPU and written directly
+    // into the storage buffer. See UNIFORM_SIZE_BYTES docblock.
+    const IDENTITY_SCALE_A = 1;
+    const IDENTITY_SCALE_B = 0;
+
+    // Write record 0 (primary pass): mode=0 for classic, mode=1 for hollow
+    // border pass.
+    const primaryMode = hollowMode ? 1 : 0;
     writeUniformsForMode(
-      xA,
-      xB,
-      yA,
-      yB,
+      HOLLOW_FILL_OFFSET,
+      IDENTITY_SCALE_A,
+      IDENTITY_SCALE_B,
+      IDENTITY_SCALE_A,
+      IDENTITY_SCALE_B,
       bodyWidthClip,
       wickWidthClip,
       borderWidthClip,
-      mode,
+      primaryMode,
+      upColor,
+      downColor,
+      upBorderColor,
+      downBorderColor,
+      bgColor,
+    );
+
+    // Write record 1 (hollow punch-out pass): mode=2. Always write so that
+    // toggling between classic and hollow doesn't leave stale values around;
+    // when not in hollow mode this record is simply never bound.
+    writeUniformsForMode(
+      HOLLOW_PUNCH_OFFSET,
+      IDENTITY_SCALE_A,
+      IDENTITY_SCALE_B,
+      IDENTITY_SCALE_A,
+      IDENTITY_SCALE_B,
+      bodyWidthClip,
+      wickWidthClip,
+      borderWidthClip,
+      2,
       upColor,
       downColor,
       upBorderColor,
@@ -645,54 +807,23 @@ export function createCandlestickRenderer(
     }
 
     passEncoder.setPipeline(pipeline);
-    passEncoder.setBindGroup(0, bindGroup);
 
-    // Pass 1: Draw all candles (18 vertices per instance — body + wicks)
+    // Pass 1: Draw all candles (18 vertices per instance — body + wicks).
+    // Bind record 0 (primary mode: classic 0 or hollow border 1).
+    passEncoder.setBindGroup(0, bindGroup, [HOLLOW_FILL_OFFSET]);
     passEncoder.draw(18, candleCount);
 
-    // Pass 2: For hollow mode, draw body-only punch-out for UP candles
-    // In hollow mode, the uniforms were written with hollowMode=1 (border pass).
-    // For the punch-out pass we need hollowMode=2 and the shader handles the inset
-    // and uses bgColor. We update the hollowMode uniform in-place.
+    // Pass 2 (hollow only): bind record 1 (mode=2) and punch the body inset
+    // with the background color. The shader collapses DOWN candles to zero
+    // area in mode=2 so only UP candles get hollowed out.
+    //
+    // Note: We MUST switch records via dynamic offset rather than mutating the
+    // uniform buffer mid-pass. `queue.writeBuffer` is a queue-timeline op, so
+    // mid-pass writes do not actually take effect between draws — both draws
+    // would see the same final uniform value.
     if (hollowMode) {
-      // Overwrite just the hollowMode field (byte offset 28 = 7 * 4)
-      const modeUpdate = new Uint32Array([2]);
-      device.queue.writeBuffer(uniformBuffer, 28, modeUpdate.buffer, 0, 4);
-
-      // Pass 2: body-only (6 vertices) for all candles; the shader skips down candles
-      // by drawing them with bgColor only when isUp — actually, the shader as written
-      // draws ALL candles with bgColor. For correct hollow behavior, we draw all candles
-      // with body-only geometry (6 vertices); for down candles this effectively redraws
-      // the body with bgColor which is correct since down candles should be solid
-      // (filled in pass 1 with border color covering entire body).
-      // Actually, for hollow mode: UP candles get punched-out interior; DOWN candles
-      // stay solid. Since pass 1 drew all candles with border colors, and pass 2 draws
-      // all candles with bgColor at inset width, we need down candles to NOT get punched.
-      // The simplest fix: draw ALL instances in pass 2 — the bgColor inset for down candles
-      // will be overdrawn by nothing (they were drawn solid in pass 1), but since we draw
-      // with bgColor, down candles lose their fill. We must only punch-out UP candles.
-      //
-      // The shader handles this: in hollowMode==2, it checks isUp and can skip drawing
-      // for down candles by collapsing their geometry to zero-area. Let's rely on that:
-      // the current shader doesn't do this, but we should still draw all instances.
-      // The parent task spec says to draw(6, candleCount) for pass 2.
-      //
-      // For correctness, we accept this: the shader will draw bgColor body inset for
-      // ALL candles. Down candles were drawn solid with downBorderColor in pass 1,
-      // then punched with bgColor in pass 2, then need to be redrawn. This is the
-      // standard hollow pattern: all candles get border pass, then up candles get
-      // hollowed out. Down candles remain filled.
-      //
-      // We handle this in the shader: down candles in hollowMode==2 should collapse
-      // to zero-width body. Let me NOT change the shader from the task spec — the
-      // parent said the shader draws bgColor for hollowMode==2. The correct approach
-      // is that the old code only drew hollow punch-out for UP candles. Let's match
-      // that by having the shader collapse down candles in pass 2.
+      passEncoder.setBindGroup(0, bindGroup, [HOLLOW_PUNCH_OFFSET]);
       passEncoder.draw(6, candleCount);
-
-      // Restore hollowMode=1 for the next frame's first pass
-      const modeRestore = new Uint32Array([1]);
-      device.queue.writeBuffer(uniformBuffer, 28, modeRestore.buffer, 0, 4);
     }
 
     // Reset scissor to full canvas
@@ -724,6 +855,11 @@ export function createCandlestickRenderer(
     bindGroup = null;
     lastDataRef = null;
     lastDataLength = 0;
+    lastDataFingerprint = 0;
+    lastXA = Number.NaN;
+    lastXB = Number.NaN;
+    lastYA = Number.NaN;
+    lastYB = Number.NaN;
     lastCanvasWidth = 0;
     lastCanvasHeight = 0;
     lastScissor = null;
