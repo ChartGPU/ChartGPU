@@ -146,8 +146,11 @@ export function createAreaRenderer(
   const vsUniformScratchF32 = new Float32Array(vsUniformScratchBuffer);
   const fsUniformScratchF32 = new Float32Array(4);
 
-  // Bind group is recreated per-frame because the storage buffer (data buffer) changes per series.
+  // Bind group is cached by the current `dataBuffer` reference. A new bind group is created only
+  // when the buffer identity changes (e.g. DataStore reallocates on growth). `queue.writeBuffer`
+  // updates to the same buffer reuse the existing bind group — there is no per-frame churn.
   let currentBindGroup: GPUBindGroup | null = null;
+  let boundDataBuffer: GPUBuffer | null = null;
 
   const pipeline = createRenderPipeline(
     device,
@@ -247,15 +250,19 @@ export function createAreaRenderer(
     fsUniformScratchF32[3] = clamp01(a * opacity);
     writeUniformBuffer(device, fsUniformBuffer, fsUniformScratchF32);
 
-    // Recreate bind group with the current data buffer.
-    currentBindGroup = device.createBindGroup({
-      layout: bindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: vsUniformBuffer } },
-        { binding: 1, resource: { buffer: fsUniformBuffer } },
-        { binding: 2, resource: { buffer: dataBuffer } },
-      ],
-    });
+    // Rebuild the bind group only when the underlying data buffer reference changes.
+    // The uniform buffers are stable for the lifetime of the renderer.
+    if (currentBindGroup === null || boundDataBuffer !== dataBuffer) {
+      currentBindGroup = device.createBindGroup({
+        layout: bindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: vsUniformBuffer } },
+          { binding: 1, resource: { buffer: fsUniformBuffer } },
+          { binding: 2, resource: { buffer: dataBuffer } },
+        ],
+      });
+      boundDataBuffer = dataBuffer;
+    }
   };
 
   const render: AreaRenderer["render"] = (passEncoder) => {
@@ -274,6 +281,7 @@ export function createAreaRenderer(
     disposed = true;
 
     currentBindGroup = null;
+    boundDataBuffer = null;
     currentPointCount = 0;
 
     try {

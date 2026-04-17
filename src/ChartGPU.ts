@@ -976,7 +976,6 @@ export async function createChartGPU(
         runtimeRawDataByIndex[i] = cartesianDataToMutableColumns(raw);
         runtimeRawBoundsByIndex[i] =
           (s as unknown as { rawBounds?: Bounds | null }).rawBounds ??
-          null ??
           (computeRawBoundsFromCartesianData(raw) as Bounds | null);
       }
     }

@@ -12,6 +12,12 @@ export interface DataStore {
    *
    * - Reuses the same geometric growth policy as `setSeries`.
    * - When no reallocation is needed, writes only the appended byte range via `queue.writeBuffer(...)`.
+   * - When reallocation is needed (rare, amortized by geometric growth), performs a GPU-to-GPU
+   *   copy of the existing data onto the new buffer via a self-contained `queue.submit`, then
+   *   writes only the appended delta via `queue.writeBuffer`. This submit is outside the main
+   *   render frame submit and is intentionally standalone so the old buffer can be destroyed
+   *   safely immediately after the copy is submitted — batching into an external encoder would
+   *   require deferring destruction until after the external submit.
    * - Maintains `pointCount` for render path queries.
    *
    * Throws if the series has not been set yet.
@@ -297,7 +303,10 @@ export function createDataStore(device: GPUDevice): DataStore {
           GPUBufferUsage.COPY_SRC,
       });
 
-      // GPU-to-GPU copy of existing data (fast, no CPU round-trip)
+      // GPU-to-GPU copy of existing data (fast, no CPU round-trip).
+      // Self-contained submit so that the old buffer can be safely destroyed immediately below —
+      // deferring this copy into an external encoder would require pending-destroy tracking to
+      // avoid destroying the source buffer before its submit executes.
       const existingBytes = prevPointCount * 2 * 4;
       if (existingBytes > 0) {
         const encoder = device.createCommandEncoder();

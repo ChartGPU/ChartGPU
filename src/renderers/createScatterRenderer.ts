@@ -215,8 +215,13 @@ export function createScatterRenderer(
   // Warning-once guard for function-based symbolSize evaluation failures.
   let warnedFunctionSymbolSize = false;
 
-  // Bind group is recreated per-frame because the storage buffer (data buffer) changes per series.
+  // Bind group is cached by the current `(dataBuffer, sizesStorageBuffer)` pair. A new bind group
+  // is built only when either buffer identity changes (e.g. DataStore reallocation, or sizes
+  // buffer geometric growth in `ensureSizesStorageBuffer`). Per-frame `queue.writeBuffer` updates
+  // to the same buffer references reuse the existing bind group.
   let currentBindGroup: GPUBindGroup | null = null;
+  let boundDataBuffer: GPUBuffer | null = null;
+  let boundSizesBuffer: GPUBuffer | null = null;
 
   const pipeline = createRenderPipeline(
     device,
@@ -477,21 +482,30 @@ export function createScatterRenderer(
     currentPointCount = pointCount;
 
     // Ensure the sizes storage buffer is large enough, then upload per-point sizes.
-    // `sizesBufferGrew` is informational — the bind group is recreated every prepare() below
-    // to keep the data buffer binding in sync with the caller-provided `dataBuffer`.
     ensureSizesStorageBuffer(pointCount);
     writeSizesForSeries(seriesConfig, pointCount, dpr);
 
-    // Recreate bind group with the current data + sizes buffers.
-    currentBindGroup = device.createBindGroup({
-      layout: bindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: vsUniformBuffer } },
-        { binding: 1, resource: { buffer: fsUniformBuffer } },
-        { binding: 2, resource: { buffer: dataBuffer } },
-        { binding: 3, resource: { buffer: sizesStorageBuffer! } },
-      ],
-    });
+    // Rebuild the bind group only when either the dataBuffer or the internal sizes buffer
+    // identity changed. Both are cheap to compare by reference and the uniform buffers are
+    // stable for the lifetime of the renderer.
+    const sizesBuffer = sizesStorageBuffer!;
+    if (
+      currentBindGroup === null ||
+      boundDataBuffer !== dataBuffer ||
+      boundSizesBuffer !== sizesBuffer
+    ) {
+      currentBindGroup = device.createBindGroup({
+        layout: bindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: vsUniformBuffer } },
+          { binding: 1, resource: { buffer: fsUniformBuffer } },
+          { binding: 2, resource: { buffer: dataBuffer } },
+          { binding: 3, resource: { buffer: sizesBuffer } },
+        ],
+      });
+      boundDataBuffer = dataBuffer;
+      boundSizesBuffer = sizesBuffer;
+    }
   };
 
   const render: ScatterRenderer["render"] = (passEncoder) => {
@@ -523,6 +537,8 @@ export function createScatterRenderer(
     disposed = true;
 
     currentBindGroup = null;
+    boundDataBuffer = null;
+    boundSizesBuffer = null;
     currentPointCount = 0;
 
     try {
