@@ -162,15 +162,25 @@ export const extendBoundsWithOHLCDataPoints = (
 
 /**
  * Aggregates bounds across all series, handling pie/candlestick special cases.
- * Prefers precomputed rawBounds from OptionResolver when available to avoid O(n) scans.
+ *
+ * Bounds source preference (highest first):
+ *   1. `runtimeRawBoundsByIndex[s]` — incrementally maintained for streaming appends.
+ *   2. `seriesConfig.rawBounds` — precomputed by OptionResolver from the raw (unsampled) data.
+ *   3. `dataStoreBoundsByIndex[s]` — incrementally tracked inside `DataStore` from `setSeries()`
+ *      / `appendSeries()`. Provides a pre-tracked source for cartesian series that bypass
+ *      `OptionResolver.rawBounds` (e.g. tests or non-resolved series).
+ *   4. Fall through to an O(n) data scan (only reached for OHLC fall-back or genuinely empty
+ *      precomputed sources).
  *
  * @param series - Resolved series configurations
  * @param runtimeRawBoundsByIndex - Optional runtime bounds (used for streaming appends)
+ * @param dataStoreBoundsByIndex - Optional `DataStore`-tracked bounds (one entry per series index)
  * @returns Global bounds across all series, defaults to (0,1) x (0,1) if no finite data
  */
 export const computeGlobalBounds = (
   series: ResolvedChartGPUOptions["series"],
   runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null,
+  dataStoreBoundsByIndex?: ReadonlyArray<Bounds | null> | null,
 ): Bounds => {
   let xMin = Number.POSITIVE_INFINITY;
   let xMax = Number.NEGATIVE_INFINITY;
@@ -204,6 +214,25 @@ export const computeGlobalBounds = (
     const rawBoundsCandidate = seriesConfig.rawBounds;
     if (rawBoundsCandidate) {
       const b = rawBoundsCandidate;
+      if (
+        Number.isFinite(b.xMin) &&
+        Number.isFinite(b.xMax) &&
+        Number.isFinite(b.yMin) &&
+        Number.isFinite(b.yMax)
+      ) {
+        if (b.xMin < xMin) xMin = b.xMin;
+        if (b.xMax > xMax) xMax = b.xMax;
+        if (b.yMin < yMin) yMin = b.yMin;
+        if (b.yMax > yMax) yMax = b.yMax;
+        continue;
+      }
+    }
+
+    // Fall back to DataStore-tracked bounds (incrementally maintained on setSeries/appendSeries)
+    // before resorting to a raw data scan.
+    const dataStoreBoundsCandidate = dataStoreBoundsByIndex?.[s] ?? null;
+    if (dataStoreBoundsCandidate) {
+      const b = dataStoreBoundsCandidate;
       if (
         Number.isFinite(b.xMin) &&
         Number.isFinite(b.xMax) &&

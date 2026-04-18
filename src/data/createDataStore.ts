@@ -1,5 +1,15 @@
 import type { CartesianSeriesData } from "../config/types";
-import { getPointCount, packXYInto } from "./cartesianData";
+import { getPointCount, getX, getY, packXYInto } from "./cartesianData";
+
+/**
+ * Bounds tracked per series. Coordinates are in the original (pre-xOffset) domain.
+ */
+export type SeriesBounds = Readonly<{
+  xMin: number;
+  xMax: number;
+  yMin: number;
+  yMax: number;
+}>;
 
 export interface DataStore {
   setSeries(
@@ -31,6 +41,18 @@ export interface DataStore {
    * Throws if the series has not been set yet.
    */
   getSeriesPointCount(index: number): number;
+  /**
+   * Returns incrementally-tracked bounds (xMin/xMax/yMin/yMax) for the given series, or `null`
+   * when the series has no finite points. Bounds are updated on every `setSeries()` and merged
+   * incrementally on `appendSeries()` so consumers can avoid per-frame O(n) data scans.
+   *
+   * X coordinates are reported in the original (pre-xOffset) domain — i.e. the same domain
+   * the caller passed to `setSeries()` — so axis derivation does not need to compensate for
+   * the Float32 precision-preserving offset.
+   *
+   * Throws if the series has not been set yet.
+   */
+  getSeriesBounds(index: number): SeriesBounds | null;
   dispose(): void;
 }
 
@@ -49,6 +71,11 @@ type SeriesEntry = {
    * Maintained to enable efficient incremental append without repacking all data.
    */
   readonly stagingBuffer: Float32Array;
+  /**
+   * Incremental bounds over the original (pre-xOffset) x and y values. `null` when the series
+   * has zero finite points.
+   */
+  readonly bounds: SeriesBounds | null;
 };
 
 const MIN_BUFFER_BYTES = 4;
@@ -97,6 +124,67 @@ function hashFloat32ArrayBits(data: Float32Array): number {
     data.byteLength / 4,
   );
   return fnv1aUpdate(0x811c9dc5, u32); // FNV-1a offset basis
+}
+
+/**
+ * Computes bounds over a CartesianSeriesData input directly (no xOffset adjustment),
+ * skipping non-finite x or y values. Returns `null` if no finite points exist.
+ *
+ * Kept local to the DataStore so bounds tracking shares the same accessor semantics as
+ * `packXYInto` and stays cheap to update on `setSeries()` / `appendSeries()`.
+ */
+function computeBoundsFromCartesian(
+  data: CartesianSeriesData,
+  pointOffset: number,
+  pointCount: number,
+): SeriesBounds | null {
+  let xMin = Number.POSITIVE_INFINITY;
+  let xMax = Number.NEGATIVE_INFINITY;
+  let yMin = Number.POSITIVE_INFINITY;
+  let yMax = Number.NEGATIVE_INFINITY;
+
+  for (let i = 0; i < pointCount; i++) {
+    const idx = pointOffset + i;
+    const x = getX(data, idx);
+    const y = getY(data, idx);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    if (x < xMin) xMin = x;
+    if (x > xMax) xMax = x;
+    if (y < yMin) yMin = y;
+    if (y > yMax) yMax = y;
+  }
+
+  if (
+    !Number.isFinite(xMin) ||
+    !Number.isFinite(xMax) ||
+    !Number.isFinite(yMin) ||
+    !Number.isFinite(yMax)
+  ) {
+    return null;
+  }
+
+  return { xMin, xMax, yMin, yMax };
+}
+
+/**
+ * Merges two bounds (either of which may be `null`).
+ *
+ * Note: bounds returned here are the raw min/max over the seen data — no min===max widening.
+ * Consumers that need a non-degenerate domain should normalize at use-site (mirrors how
+ * `computeRawBoundsFromCartesianData` is consumed downstream).
+ */
+function mergeBounds(
+  a: SeriesBounds | null,
+  b: SeriesBounds | null,
+): SeriesBounds | null {
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    xMin: a.xMin < b.xMin ? a.xMin : b.xMin,
+    xMax: a.xMax > b.xMax ? a.xMax : b.xMax,
+    yMin: a.yMin < b.yMin ? a.yMin : b.yMin,
+    yMax: a.yMax > b.yMax ? a.yMax : b.yMax,
+  };
 }
 
 export function createDataStore(device: GPUDevice): DataStore {
@@ -150,6 +238,9 @@ export function createDataStore(device: GPUDevice): DataStore {
     const pointCount = getPointCount(data);
     const packed = packCartesianData(data, xOffset);
     const hash32 = hashFloat32ArrayBits(packed);
+    // Bounds are tracked in the original (pre-xOffset) domain so axis derivation does not need
+    // to undo the precision-preserving offset.
+    const bounds = computeBoundsFromCartesian(data, 0, pointCount);
 
     const requiredBytes = roundUpToMultipleOf4(packed.byteLength);
     const targetBytes = Math.max(MIN_BUFFER_BYTES, requiredBytes);
@@ -239,6 +330,7 @@ export function createDataStore(device: GPUDevice): DataStore {
       hash32,
       xOffset,
       stagingBuffer,
+      bounds,
     });
   };
 
@@ -339,6 +431,14 @@ export function createDataStore(device: GPUDevice): DataStore {
       // Compute hash over the full data in the staging buffer
       const fullPacked = newStagingBuffer.subarray(0, nextPointCount * 2);
 
+      // Merge incremental bounds: scan only the new range and combine with the prior bounds.
+      const appendedBounds = computeBoundsFromCartesian(
+        newPoints,
+        0,
+        newPointCount,
+      );
+      const mergedBounds = mergeBounds(existing.bounds, appendedBounds);
+
       series.set(index, {
         buffer,
         capacityBytes,
@@ -346,6 +446,7 @@ export function createDataStore(device: GPUDevice): DataStore {
         hash32: hashFloat32ArrayBits(fullPacked),
         xOffset: existing.xOffset,
         stagingBuffer: newStagingBuffer,
+        bounds: mergedBounds,
       });
       return;
     }
@@ -383,6 +484,14 @@ export function createDataStore(device: GPUDevice): DataStore {
     );
     const nextHash32 = fnv1aUpdate(existing.hash32, appendWords);
 
+    // Merge incremental bounds over only the new range.
+    const appendedBounds = computeBoundsFromCartesian(
+      newPoints,
+      0,
+      newPointCount,
+    );
+    const mergedBounds = mergeBounds(existing.bounds, appendedBounds);
+
     series.set(index, {
       buffer,
       capacityBytes,
@@ -390,6 +499,7 @@ export function createDataStore(device: GPUDevice): DataStore {
       hash32: nextHash32,
       xOffset: existing.xOffset,
       stagingBuffer,
+      bounds: mergedBounds,
     });
   };
 
@@ -415,6 +525,10 @@ export function createDataStore(device: GPUDevice): DataStore {
     return getSeriesEntry(index).pointCount;
   };
 
+  const getSeriesBounds = (index: number): SeriesBounds | null => {
+    return getSeriesEntry(index).bounds;
+  };
+
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
@@ -435,6 +549,7 @@ export function createDataStore(device: GPUDevice): DataStore {
     removeSeries,
     getSeriesBuffer,
     getSeriesPointCount,
+    getSeriesBounds,
     dispose,
   };
 }

@@ -14,7 +14,7 @@ import type {
   ResolvedAreaSeriesConfig,
   ResolvedPieSeriesConfig,
 } from "../../../config/OptionResolver";
-import type { DataPoint } from "../../../config/types";
+import type { CartesianSeriesData, DataPoint } from "../../../config/types";
 import type { LinearScale } from "../../../utils/scales";
 import type { GridArea } from "../../../renderers/createGridRenderer";
 import type { LineRenderer } from "../../../renderers/createLineRenderer";
@@ -50,6 +50,26 @@ export interface AnnotationRenderers {
   annotationMarkerRendererMsaa: AnnotationMarkerRenderer;
 }
 
+/**
+ * Per-series cache of the last `(data ref, xOffset)` we passed to `dataStore.setSeries()`.
+ *
+ * Used to short-circuit redundant `setSeries()` calls when the input data reference and
+ * xOffset are unchanged from the previous frame. This avoids the per-frame O(n) `packXYInto`
+ * + `hashFloat32ArrayBits` work inside `DataStore.setSeries` when nothing has actually
+ * changed (the dominant case in steady-state rendering).
+ *
+ * Reference identity is sufficient because the only legitimate ways `DataStore` contents
+ * fall out of sync with `data` are (a) replacing `data` (ref changes), or (b) streaming
+ * `appendData()` calls — and the latter route already sets `appendedGpuThisFrame[i]` so
+ * the call site skips `setSeries()` entirely on the same frame, while updating
+ * `DataStore` directly via `appendSeries()` to keep its internal state consistent. After
+ * that frame the cached ref still matches and skipping again is correct.
+ */
+export type LastSetSeriesCache = Map<
+  number,
+  Readonly<{ data: unknown; xOffset: number }>
+>;
+
 export interface SeriesPrepareContext {
   currentOptions: ResolvedChartGPUOptions;
   seriesForRender: ReadonlyArray<ResolvedSeriesConfig>;
@@ -59,6 +79,12 @@ export interface SeriesPrepareContext {
   dataStore: DataStore;
   appendedGpuThisFrame: Set<number>;
   gpuSeriesKindByIndex: Array<"fullRawLine" | "other" | "unknown">;
+  /**
+   * Persistent cache of the last `setSeries()` data reference + xOffset per series index.
+   * Owned by the render coordinator (cleared on series add/remove/dispose) and threaded
+   * here so `prepareSeries` can short-circuit redundant uploads.
+   */
+  lastSetSeriesCache: LastSetSeriesCache;
   zoomState: { getRange(): { start: number; end: number } | null } | null;
   visibleXDomain: { min: number; max: number };
   introPhase: "pending" | "running" | "done";
@@ -131,6 +157,7 @@ export function prepareSeries(
     dataStore,
     appendedGpuThisFrame,
     gpuSeriesKindByIndex,
+    lastSetSeriesCache,
     zoomState,
     visibleXDomain,
     introPhase,
@@ -138,6 +165,29 @@ export function prepareSeries(
     withAlpha,
     maxRadiusCss,
   } = context;
+
+  /**
+   * Calls `dataStore.setSeries` only when the `(data, xOffset)` pair changed from the
+   * previous frame for this series index. See `LastSetSeriesCache` docblock for the
+   * reference-identity rationale.
+   */
+  const setSeriesIfChanged = (
+    seriesIndex: number,
+    data: CartesianSeriesData,
+    options?: Readonly<{ xOffset?: number }>,
+  ): void => {
+    const xOffset = options?.xOffset ?? 0;
+    const cached = lastSetSeriesCache.get(seriesIndex);
+    if (cached && cached.data === data && cached.xOffset === xOffset) {
+      return;
+    }
+    if (options) {
+      dataStore.setSeries(seriesIndex, data, options);
+    } else {
+      dataStore.setSeries(seriesIndex, data);
+    }
+    lastSetSeriesCache.set(seriesIndex, { data, xOffset });
+  };
 
   const defaultBaseline =
     currentOptions.yAxis.min ?? currentOptions.yAxis.min ?? 0;
@@ -154,7 +204,7 @@ export function prepareSeries(
         // When connectNulls is true, strip null/NaN gap entries so the area draws through gaps.
         const areaData = s.connectNulls ? filterGaps(s.data) : s.data;
         if (!appendedGpuThisFrame.has(i)) {
-          dataStore.setSeries(i, areaData as ReadonlyArray<DataPoint>);
+          setSeriesIfChanged(i, areaData as ReadonlyArray<DataPoint>);
         }
         const areaBuffer = dataStore.getSeriesBuffer(i);
         const areaPointCount = dataStore.getSeriesPointCount(i);
@@ -189,7 +239,7 @@ export function prepareSeries(
         // may convert the data to MutableXYColumns (XYArraysData-like) with NaN gap markers.
         const uploadData = s.connectNulls ? filterGaps(s.data) : s.data;
         if (!appendedGpuThisFrame.has(i)) {
-          dataStore.setSeries(i, uploadData as ReadonlyArray<DataPoint>, {
+          setSeriesIfChanged(i, uploadData as ReadonlyArray<DataPoint>, {
             xOffset,
           });
         }
@@ -267,9 +317,10 @@ export function prepareSeries(
             visibleXDomain.max,
           );
 
-          // Upload full raw data for compute. DataStore hashing makes this a cheap no-op when unchanged.
+          // Upload full raw data for compute. setSeriesIfChanged is a no-op when the data
+          // reference (and xOffset) match the previous frame.
           if (!appendedGpuThisFrame.has(i)) {
-            dataStore.setSeries(i, rawData);
+            setSeriesIfChanged(i, rawData);
           }
           const buffer = dataStore.getSeriesBuffer(i);
           const pointCount = dataStore.getSeriesPointCount(i);
@@ -293,7 +344,7 @@ export function prepareSeries(
               ? ({ ...s, color: withAlpha(s.color, introP) } as const)
               : s;
           if (!appendedGpuThisFrame.has(i)) {
-            dataStore.setSeries(i, s.data as ReadonlyArray<DataPoint>);
+            setSeriesIfChanged(i, s.data as ReadonlyArray<DataPoint>);
           }
           const scatterBuffer = dataStore.getSeriesBuffer(i);
           const scatterPointCount = dataStore.getSeriesPointCount(i);

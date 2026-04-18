@@ -34,6 +34,160 @@ function lowerBoundX(data: CartesianSeriesData, xTarget: number): number {
   return lo;
 }
 
+/**
+ * Pre-built domain-space grid index over a non-monotonic series. Used to narrow the
+ * `findNearestPoint` candidate set from O(n) to roughly the local cell neighbourhood
+ * around the cursor.
+ *
+ * Built lazily and cached in {@link nonMonotonicGridIndexCache} keyed by the underlying
+ * data reference, so identical-data renders avoid rebuilding the index per frame.
+ */
+type NonMonotonicGridIndex = Readonly<{
+  xMin: number;
+  yMin: number;
+  cellSizeX: number;
+  cellSizeY: number;
+  cellsPerDim: number;
+  /** Flat cell key (`cx * cellsPerDim + cy`) → list of point indices in that cell. */
+  cells: ReadonlyMap<number, ReadonlyArray<number>>;
+}>;
+
+const nonMonotonicGridIndexCache = new WeakMap<
+  object,
+  NonMonotonicGridIndex | null
+>();
+
+const MAX_GRID_CELLS_PER_DIM = 256;
+const MIN_GRID_CELLS_PER_DIM = 4;
+
+function getOrBuildNonMonotonicGridIndex(
+  data: CartesianSeriesData,
+): NonMonotonicGridIndex | null {
+  // Only objects are valid WeakMap keys (covers arrays, typed arrays, XYArraysData objects).
+  if (typeof data !== "object" || data === null) return null;
+  const cacheKey = data as object;
+
+  if (nonMonotonicGridIndexCache.has(cacheKey)) {
+    return nonMonotonicGridIndexCache.get(cacheKey) ?? null;
+  }
+
+  const n = getPointCount(data);
+  if (n === 0) {
+    nonMonotonicGridIndexCache.set(cacheKey, null);
+    return null;
+  }
+
+  // Pass 1: compute axis-aligned bounds, skipping non-finite points.
+  let xMin = Number.POSITIVE_INFINITY;
+  let xMax = Number.NEGATIVE_INFINITY;
+  let yMin = Number.POSITIVE_INFINITY;
+  let yMax = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i < n; i++) {
+    const x = getX(data, i);
+    const y = getY(data, i);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    if (x < xMin) xMin = x;
+    if (x > xMax) xMax = x;
+    if (y < yMin) yMin = y;
+    if (y > yMax) yMax = y;
+  }
+
+  if (!Number.isFinite(xMin) || !Number.isFinite(yMin)) {
+    nonMonotonicGridIndexCache.set(cacheKey, null);
+    return null;
+  }
+
+  // Aim for ~sqrt(n) cells per dim → ~1 point/cell average. Clamp to keep memory reasonable
+  // and to avoid degenerate bucketing on tiny series.
+  const cellsPerDim = Math.max(
+    MIN_GRID_CELLS_PER_DIM,
+    Math.min(MAX_GRID_CELLS_PER_DIM, Math.ceil(Math.sqrt(n))),
+  );
+  // Guard against zero spans (single-value axis): use 1 unit so all points land in a single cell.
+  const xSpan = Math.max(xMax - xMin, Number.EPSILON);
+  const ySpan = Math.max(yMax - yMin, Number.EPSILON);
+  const cellSizeX = xSpan / cellsPerDim;
+  const cellSizeY = ySpan / cellsPerDim;
+
+  // Pass 2: bin each point by its (cellX, cellY) into a flat key.
+  const cells = new Map<number, number[]>();
+  for (let i = 0; i < n; i++) {
+    const x = getX(data, i);
+    const y = getY(data, i);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    const cx = Math.min(
+      cellsPerDim - 1,
+      Math.max(0, Math.floor((x - xMin) / cellSizeX)),
+    );
+    const cy = Math.min(
+      cellsPerDim - 1,
+      Math.max(0, Math.floor((y - yMin) / cellSizeY)),
+    );
+    const key = cx * cellsPerDim + cy;
+    let bucket = cells.get(key);
+    if (!bucket) {
+      bucket = [];
+      cells.set(key, bucket);
+    }
+    bucket.push(i);
+  }
+
+  const index: NonMonotonicGridIndex = {
+    xMin,
+    yMin,
+    cellSizeX,
+    cellSizeY,
+    cellsPerDim,
+    cells,
+  };
+  nonMonotonicGridIndexCache.set(cacheKey, index);
+  return index;
+}
+
+/**
+ * Returns the list of point indices in the grid cells overlapping the given domain rect,
+ * or `null` if the rect doesn't intersect the index.
+ */
+function collectGridCandidates(
+  index: NonMonotonicGridIndex,
+  xTargetMin: number,
+  xTargetMax: number,
+  yTargetMin: number,
+  yTargetMax: number,
+): ReadonlyArray<number> | null {
+  const { xMin, yMin, cellSizeX, cellSizeY, cellsPerDim, cells } = index;
+  if (cells.size === 0) return null;
+
+  const cxMin = Math.max(
+    0,
+    Math.min(cellsPerDim - 1, Math.floor((xTargetMin - xMin) / cellSizeX)),
+  );
+  const cxMax = Math.max(
+    0,
+    Math.min(cellsPerDim - 1, Math.floor((xTargetMax - xMin) / cellSizeX)),
+  );
+  const cyMin = Math.max(
+    0,
+    Math.min(cellsPerDim - 1, Math.floor((yTargetMin - yMin) / cellSizeY)),
+  );
+  const cyMax = Math.max(
+    0,
+    Math.min(cellsPerDim - 1, Math.floor((yTargetMax - yMin) / cellSizeY)),
+  );
+
+  const out: number[] = [];
+  for (let cx = cxMin; cx <= cxMax; cx++) {
+    const colBase = cx * cellsPerDim;
+    for (let cy = cyMin; cy <= cyMax; cy++) {
+      const bucket = cells.get(colBase + cy);
+      if (bucket) {
+        for (let i = 0; i < bucket.length; i++) out.push(bucket[i]!);
+      }
+    }
+  }
+  return out;
+}
+
 export type NearestPointMatch = Readonly<{
   seriesIndex: number;
   dataIndex: number;
@@ -764,15 +918,58 @@ export function findNearestPoint(
         }
       }
     } else {
-      // Fallback: linear scan for non-monotonic data
-      for (let i = 0; i < n; i++) {
+      // Non-monotonic data: try a cached domain-space grid index to limit the candidate set
+      // (built once per data reference; reused across frames). Falls back to a linear scan when
+      // the index can't be built or no candidates fall within the domain hit-test rect (e.g.
+      // degenerate scales).
+      const gridIndex = getOrBuildNonMonotonicGridIndex(data);
+
+      // Translate the screen-space hit radius back to domain units along each axis. Sampling at
+      // two screen points gives a tight per-axis radius without assuming the scale is the same
+      // in both dimensions.
+      let candidates: ReadonlyArray<number> | null = null;
+      if (gridIndex) {
+        const xCenterDomain = xScale.invert(x);
+        const yCenterDomain = yScale.invert(y);
+        if (
+          Number.isFinite(xCenterDomain) &&
+          Number.isFinite(yCenterDomain)
+        ) {
+          // Per-axis radius in domain units. Use absolute span across (x - md, x + md) since
+          // an inverted scale could be either direction.
+          const xPlusDomain = xScale.invert(x + md);
+          const xMinusDomain = xScale.invert(x - md);
+          const yPlusDomain = yScale.invert(y + md);
+          const yMinusDomain = yScale.invert(y - md);
+          if (
+            Number.isFinite(xPlusDomain) &&
+            Number.isFinite(xMinusDomain) &&
+            Number.isFinite(yPlusDomain) &&
+            Number.isFinite(yMinusDomain)
+          ) {
+            const xLo = Math.min(xMinusDomain, xPlusDomain);
+            const xHi = Math.max(xMinusDomain, xPlusDomain);
+            const yLo = Math.min(yMinusDomain, yPlusDomain);
+            const yHi = Math.max(yMinusDomain, yPlusDomain);
+            candidates = collectGridCandidates(
+              gridIndex,
+              xLo,
+              xHi,
+              yLo,
+              yHi,
+            );
+          }
+        }
+      }
+
+      const evalCandidate = (i: number): void => {
         const px = getX(data, i);
         const py = getY(data, i);
-        if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
+        if (!Number.isFinite(px) || !Number.isFinite(py)) return;
 
         const sx = xScale.scale(px);
         const sy = yScale.scale(py);
-        if (!Number.isFinite(sx) || !Number.isFinite(sy)) continue;
+        if (!Number.isFinite(sx) || !Number.isFinite(sy)) return;
 
         const dx = sx - x;
         const dy = sy - y;
@@ -788,7 +985,7 @@ export function findNearestPoint(
           allowedSq = allowed * allowed;
         }
 
-        if (distSq > allowedSq) continue;
+        if (distSq > allowedSq) return;
 
         const isBetter =
           distSq < bestDistSq ||
@@ -803,6 +1000,17 @@ export function findNearestPoint(
           bestDataIndex = i;
           const size = getSize(data, i);
           bestPoint = size !== undefined ? [px, py, size] : [px, py];
+        }
+      };
+
+      if (candidates !== null) {
+        for (let k = 0; k < candidates.length; k++) {
+          evalCandidate(candidates[k]!);
+        }
+      } else {
+        // Fallback: linear scan when the grid index isn't usable.
+        for (let i = 0; i < n; i++) {
+          evalCandidate(i);
         }
       }
     }

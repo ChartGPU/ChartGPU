@@ -56,6 +56,7 @@
     "benchmark:render": "tsx benchmarks/render-performance-benchmark.ts",
     "build": "tsc && vite build",
     "build:examples": "vite build --config examples/vite.config.ts",
+    "preview:examples": "vite preview --config examples/vite.config.ts",
     "format": "prettier --write src/",
     "format:check": "prettier --check src/",
     "lint": "eslint src/",

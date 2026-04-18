@@ -43,6 +43,7 @@ import {
   renderSeries as renderSeriesPass,
   renderAboveSeriesAnnotations,
 } from "./renderCoordinator/render/renderSeries";
+import type { LastSetSeriesCache } from "./renderCoordinator/render/renderSeries";
 import { createAxisRenderer } from "../renderers/createAxisRenderer";
 import { createGridRenderer } from "../renderers/createGridRenderer";
 import type { GridArea } from "../renderers/createGridRenderer";
@@ -381,6 +382,7 @@ const extendBoundsWithOHLCDataPoints = (
 const computeGlobalBounds = (
   series: ResolvedChartGPUOptions["series"],
   runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null,
+  dataStoreBoundsByIndex?: ReadonlyArray<Bounds | null> | null,
 ): Bounds => {
   let xMin = Number.POSITIVE_INFINITY;
   let xMax = Number.NEGATIVE_INFINITY;
@@ -414,6 +416,25 @@ const computeGlobalBounds = (
     const rawBoundsCandidate = seriesConfig.rawBounds;
     if (rawBoundsCandidate) {
       const b = rawBoundsCandidate;
+      if (
+        Number.isFinite(b.xMin) &&
+        Number.isFinite(b.xMax) &&
+        Number.isFinite(b.yMin) &&
+        Number.isFinite(b.yMax)
+      ) {
+        if (b.xMin < xMin) xMin = b.xMin;
+        if (b.xMax > xMax) xMax = b.xMax;
+        if (b.yMin < yMin) yMin = b.yMin;
+        if (b.yMax > yMax) yMax = b.yMax;
+        continue;
+      }
+    }
+
+    // Fall back to DataStore-tracked bounds (incrementally maintained on setSeries/appendSeries)
+    // before any raw data scan below.
+    const dataStoreBoundsCandidate = dataStoreBoundsByIndex?.[s] ?? null;
+    if (dataStoreBoundsCandidate) {
+      const b = dataStoreBoundsCandidate;
       if (
         Number.isFinite(b.xMin) &&
         Number.isFinite(b.xMax) &&
@@ -974,8 +995,13 @@ const computeAdaptiveTimeXAxisTicks = (params: {
 const computeBaseXDomain = (
   options: ResolvedChartGPUOptions,
   runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null,
+  dataStoreBoundsByIndex?: ReadonlyArray<Bounds | null> | null,
 ): { readonly min: number; readonly max: number } => {
-  const bounds = computeGlobalBounds(options.series, runtimeRawBoundsByIndex);
+  const bounds = computeGlobalBounds(
+    options.series,
+    runtimeRawBoundsByIndex,
+    dataStoreBoundsByIndex,
+  );
   const baseMin = finiteOrUndefined(options.xAxis.min) ?? bounds.xMin;
   const baseMax = finiteOrUndefined(options.xAxis.max) ?? bounds.xMax;
   return normalizeDomain(baseMin, baseMax);
@@ -1044,6 +1070,7 @@ const computeBaseYDomain = (
   options: ResolvedChartGPUOptions,
   runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null,
   visibleBoundsOverride?: Bounds | null,
+  dataStoreBoundsByIndex?: ReadonlyArray<Bounds | null> | null,
 ): { readonly min: number; readonly max: number } => {
   // Explicit min/max ALWAYS take precedence over auto-bounds
   const explicitMin = finiteOrUndefined(options.yAxis.min);
@@ -1063,7 +1090,11 @@ const computeBaseYDomain = (
     bounds = visibleBoundsOverride;
   } else {
     // Use global bounds from full dataset (pre-zoom behavior, computed from all raw data)
-    bounds = computeGlobalBounds(options.series, runtimeRawBoundsByIndex);
+    bounds = computeGlobalBounds(
+      options.series,
+      runtimeRawBoundsByIndex,
+      dataStoreBoundsByIndex,
+    );
   }
 
   // Merge explicit bounds with computed bounds (partial override support)
@@ -1711,6 +1742,12 @@ export function createRenderCoordinator(
   ).fill("unknown");
   const appendedGpuThisFrame = new Set<number>();
 
+  // Per-series cache of the last `(data ref, xOffset)` we asked the DataStore to upload, so
+  // `prepareSeries` can short-circuit redundant `setSeries(...)` calls when nothing changed.
+  // Cleared/invalidated when series are added, removed, or replaced (see series-mutation paths
+  // below — `removeSeries`, option resets, etc.).
+  const lastSetSeriesCache: LastSetSeriesCache = new Map();
+
   // Tooltip is a DOM overlay element; enable by default unless explicitly disabled.
   let tooltip: Tooltip | null =
     overlayContainer && currentOptions.tooltip?.show !== false
@@ -1721,6 +1758,32 @@ export function createRenderCoordinator(
   let lastTooltipContent: string | null = null;
   let lastTooltipX: number | null = null;
   let lastTooltipY: number | null = null;
+
+  // Throttle tooltip hit-testing to ~30 Hz. Per Phase 3b of the performance overhaul:
+  // `findNearestPoint` / `findPointsAtX` can run linear scans (e.g. non-monotonic scatter) on
+  // every render that has an active pointer — typically once per pointer event. Capping the
+  // recompute rate at 30 Hz preserves perceived responsiveness while halving the worst-case
+  // cost during fast cursor moves. When a render is suppressed, we schedule a follow-up render
+  // so the tooltip catches up once the throttle window elapses.
+  const TOOLTIP_HIT_TEST_THROTTLE_MS = 33;
+  let lastTooltipHitTestMs = -Infinity;
+  let pendingTooltipFollowupTimerId: ReturnType<typeof setTimeout> | null = null;
+
+  const cancelPendingTooltipFollowup = (): void => {
+    if (pendingTooltipFollowupTimerId !== null) {
+      clearTimeout(pendingTooltipFollowupTimerId);
+      pendingTooltipFollowupTimerId = null;
+    }
+  };
+
+  const schedulePendingTooltipFollowup = (delayMs: number): void => {
+    if (pendingTooltipFollowupTimerId !== null) return;
+    const wait = Math.max(0, delayMs);
+    pendingTooltipFollowupTimerId = setTimeout(() => {
+      pendingTooltipFollowupTimerId = null;
+      requestRender();
+    }, wait);
+  };
 
   // Helper functions for tooltip/legend management
   const showTooltipInternal = (
@@ -2637,6 +2700,9 @@ export function createRenderCoordinator(
     runtimeRawDataByIndex = new Array(count).fill(null);
     runtimeRawBoundsByIndex = new Array(count).fill(null);
     pendingAppendByIndex.clear();
+    // Runtime data references are about to be regenerated; invalidate the per-frame setSeries
+    // cache so the next render uploads the fresh references rather than short-circuiting.
+    lastSetSeriesCache.clear();
 
     for (let i = 0; i < count; i++) {
       const s = currentOptions.series[i]!;
@@ -3129,6 +3195,7 @@ export function createRenderCoordinator(
     if (nextCount < lastSeriesCount) {
       for (let i = nextCount; i < lastSeriesCount; i++) {
         dataStore.removeSeries(i);
+        lastSetSeriesCache.delete(i);
       }
     }
     lastSeriesCount = nextCount;
@@ -3613,11 +3680,35 @@ export function createRenderCoordinator(
 
     // Tooltip: on hover, find matches and render tooltip near cursor.
     // Note: Tooltips require HTMLCanvasElement (DOM-specific positioning).
-    if (
+    const tooltipPointerActive =
       effectivePointer.hasPointer &&
       effectivePointer.isInGrid &&
-      currentOptions.tooltip?.show !== false
-    ) {
+      currentOptions.tooltip?.show !== false;
+
+    // Throttle gate: suppress hit-testing within `TOOLTIP_HIT_TEST_THROTTLE_MS` of the previous
+    // computation. When suppressed, we leave the existing tooltip state alone and schedule a
+    // follow-up render so the tooltip refreshes once the window elapses. Hides (pointer leaving
+    // the grid) are NOT throttled — they always fire immediately below.
+    let tooltipHitTestAllowed = true;
+    if (tooltipPointerActive) {
+      const now = performance.now();
+      const elapsed = now - lastTooltipHitTestMs;
+      if (elapsed < TOOLTIP_HIT_TEST_THROTTLE_MS) {
+        tooltipHitTestAllowed = false;
+        schedulePendingTooltipFollowup(
+          TOOLTIP_HIT_TEST_THROTTLE_MS - elapsed,
+        );
+      } else {
+        lastTooltipHitTestMs = now;
+        cancelPendingTooltipFollowup();
+      }
+    } else {
+      // Pointer left the grid (or tooltip disabled): cancel any scheduled follow-up.
+      cancelPendingTooltipFollowup();
+    }
+
+    if (tooltipPointerActive) {
+     if (tooltipHitTestAllowed) {
       const canvas = gpuContext.canvas;
 
       if (interactionScales && canvas && isHTMLCanvasElement(canvas)) {
@@ -3942,6 +4033,9 @@ export function createRenderCoordinator(
       } else {
         hideTooltip();
       }
+     }
+     // else: throttled — leave the existing tooltip in place; a follow-up render is scheduled
+     // above to refresh it once the throttle window elapses.
     } else {
       hideTooltip();
     }
@@ -3972,6 +4066,7 @@ export function createRenderCoordinator(
       dataStore,
       appendedGpuThisFrame,
       gpuSeriesKindByIndex,
+      lastSetSeriesCache,
       zoomState,
       visibleXDomain,
       introPhase,
@@ -4223,6 +4318,7 @@ export function createRenderCoordinator(
 
     cancelScheduledFlush();
     cancelZoomResampleDebounce();
+    cancelPendingTooltipFollowup();
     zoomResampleDue = false;
 
     pendingAppendByIndex.clear();

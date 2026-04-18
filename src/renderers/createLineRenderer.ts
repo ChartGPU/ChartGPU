@@ -7,10 +7,7 @@ import {
   createUniformBuffer,
   writeUniformBuffer,
 } from "./rendererUtils";
-import {
-  getPointCount,
-  computeRawBoundsFromCartesianData,
-} from "../data/cartesianData";
+import { getPointCount } from "../data/cartesianData";
 import type { PipelineCache } from "../core/PipelineCache";
 
 export interface LineRenderer {
@@ -215,15 +212,12 @@ export function createLineRenderer(
 
     currentPointCount = getPointCount(seriesConfig.data);
 
-    const bounds = computeRawBoundsFromCartesianData(seriesConfig.data);
-    const { xMin, xMax, yMin, yMax } = bounds ?? {
-      xMin: 0,
-      xMax: 1,
-      yMin: 0,
-      yMax: 1,
-    };
-    const { a: ax, b: bx } = computeClipAffineFromScale(xScale, xMin, xMax);
-    const { a: ay, b: by } = computeClipAffineFromScale(yScale, yMin, yMax);
+    // The clip-space affine is `a*x + b` where `(a, b)` are derived from sampling the linear scale
+    // at any two distinct finite values. Scanning the data for `[xMin, xMax]` (the prior approach)
+    // produced an O(n) per-frame cost without changing the result for linear scales — match the
+    // other renderers (scatter / area / candlestick) by sampling at `(0, 1)`.
+    const { a: ax, b: bx } = computeClipAffineFromScale(xScale, 0, 1);
+    const { a: ay, b: by } = computeClipAffineFromScale(yScale, 0, 1);
 
     // When the vertex buffer packs x as (x - xOffset) (to preserve Float32 precision for large
     // domains like epoch-ms), fold the offset back into the affine's intercept in f64 on CPU:
