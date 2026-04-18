@@ -3606,6 +3606,15 @@ export function createRenderCoordinator(
           )
         : renderSeries;
 
+    // The interpolation cache reuses the same array reference across frames (mutating
+    // values in-place to avoid allocations). `setSeriesIfChanged` in prepareSeries
+    // short-circuits on reference identity, so it would skip GPU uploads for frames 2+.
+    // Clear the cache so every animation frame actually writes the new interpolated
+    // values to the GPU buffer.
+    if (updateTransition && updateP < 1) {
+      lastSetSeriesCache.clear();
+    }
+
     // Keep `interactionX` in sync with real pointer movement (domain units).
     if (
       pointerState.source === "mouse" &&
