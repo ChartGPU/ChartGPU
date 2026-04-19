@@ -334,6 +334,9 @@ export function createAxisRenderer(
 
   let vertexBuffer: GPUBuffer | null = null;
   let vertexCount = 0;
+  // Phase 4a: cached render bundle. Rebuilt lazily on first render() after any prepare()
+  // change, reused across frames when inputs are unchanged (see prepareOverlays memoization).
+  let bundle: GPURenderBundle | null = null;
 
   const assertNotDisposed = (): void => {
     if (disposed) throw new Error("AxisRenderer is disposed.");
@@ -353,6 +356,10 @@ export function createAxisRenderer(
     if (orientation !== "x" && orientation !== "y") {
       throw new Error("AxisRenderer.prepare: orientation must be 'x' or 'y'.");
     }
+
+    // Any change to vertex data or colors invalidates the cached bundle; it gets rebuilt
+    // lazily on the next render() call.
+    bundle = null;
 
     const vertices = generateAxisVertices(
       axisConfig,
@@ -420,22 +427,38 @@ export function createAxisRenderer(
     writeUniformBuffer(device, fsUniformBufferTick, tickColorBuffer);
   };
 
+  const encodeDraws = (
+    encoder: GPURenderPassEncoder | GPURenderBundleEncoder,
+  ): void => {
+    encoder.setPipeline(pipeline);
+    encoder.setVertexBuffer(0, vertexBuffer!);
+
+    // Baseline: first 2 vertices.
+    encoder.setBindGroup(0, bindGroupLine);
+    encoder.draw(Math.min(2, vertexCount));
+
+    // Ticks: remaining vertices.
+    if (vertexCount > 2) {
+      encoder.setBindGroup(0, bindGroupTick);
+      encoder.draw(vertexCount - 2, 1, 2, 0);
+    }
+  };
+
   const render: AxisRenderer["render"] = (passEncoder) => {
     assertNotDisposed();
     if (vertexCount === 0 || !vertexBuffer) return;
 
-    passEncoder.setPipeline(pipeline);
-    passEncoder.setVertexBuffer(0, vertexBuffer);
-
-    // Baseline: first 2 vertices.
-    passEncoder.setBindGroup(0, bindGroupLine);
-    passEncoder.draw(Math.min(2, vertexCount));
-
-    // Ticks: remaining vertices.
-    if (vertexCount > 2) {
-      passEncoder.setBindGroup(0, bindGroupTick);
-      passEncoder.draw(vertexCount - 2, 1, 2, 0);
+    if (!bundle) {
+      const bundleEncoder = device.createRenderBundleEncoder({
+        label: "axisRenderer/bundle",
+        colorFormats: [targetFormat],
+        sampleCount,
+      });
+      encodeDraws(bundleEncoder);
+      bundle = bundleEncoder.finish({ label: "axisRenderer/bundle" });
     }
+
+    passEncoder.executeBundles([bundle]);
   };
 
   const dispose: AxisRenderer["dispose"] = () => {
@@ -467,6 +490,7 @@ export function createAxisRenderer(
 
     vertexBuffer = null;
     vertexCount = 0;
+    bundle = null;
   };
 
   return { prepare, render, dispose };

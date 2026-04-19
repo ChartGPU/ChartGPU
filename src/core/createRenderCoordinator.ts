@@ -35,7 +35,10 @@ import {
 import type { CartesianSeriesData } from "../config/types";
 import { renderAxisLabels } from "./renderCoordinator/render/renderAxisLabels";
 import { renderAnnotationLabels } from "./renderCoordinator/render/renderAnnotationLabels";
-import { prepareOverlays } from "./renderCoordinator/render/renderOverlays";
+import {
+  prepareOverlays,
+  createOverlayPrepareMemo,
+} from "./renderCoordinator/render/renderOverlays";
 import { processAnnotations } from "./renderCoordinator/annotations/processAnnotations";
 import {
   prepareSeries,
@@ -1822,32 +1825,42 @@ export function createRenderCoordinator(
     sampleCount: MAIN_SCENE_MSAA_SAMPLE_COUNT,
     pipelineCache,
   });
-  // Axis and crosshair renderers draw into the top overlay pass (swapchain, single-sample) — keep sampleCount: 1.
+  // Phase 4b: axes, crosshair, and highlight draw into the MSAA annotation overlay pass
+  // (previously they had their own single-sample top overlay pass). MSAA smooths out their
+  // line-based geometry and saves one entire render pass per frame.
   const xAxisRenderer = createAxisRenderer(device, {
     targetFormat,
+    sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
     pipelineCache,
   });
   const yAxisRenderer = createAxisRenderer(device, {
     targetFormat,
+    sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
     pipelineCache,
   });
   const crosshairRenderer = createCrosshairRenderer(device, {
     targetFormat,
+    sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
     pipelineCache,
   });
   crosshairRenderer.setVisible(false);
-  // Highlight renders into the top overlay pass (swapchain, single-sample) — keep sampleCount: 1.
   const highlightRenderer = createHighlightRenderer(device, {
     targetFormat,
+    sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
     pipelineCache,
   });
   highlightRenderer.setVisible(false);
 
+  // Phase 4a: memoization state for grid+axis prepare() calls. Holding this across frames
+  // lets the grid/axis renderers keep their cached render bundles alive when nothing about
+  // the overlay inputs has changed.
+  const overlayPrepareMemo = createOverlayPrepareMemo();
+
   // MSAA for the *annotation overlay* (above-series) pass to reduce shimmer during zoom.
   // NOTE: In WebGPU, pipeline sampleCount must match the render pass attachment sampleCount.
   // The main scene renders into a 4x MSAA texture (resolved to a single-sample target), then:
-  // - MSAA overlay pass: blit resolved main scene into an MSAA target + draw above-series annotations, resolve to swapchain
-  // - Top overlay pass: draw crosshair/axes/highlight (single-sample) on top of the resolved swapchain
+  // - Combined overlay pass (MSAA 4x): blit resolved main scene into an MSAA target, draw
+  //   above-series annotations, axes, crosshair, and highlight, then resolve to the swapchain.
   // Below-series reference lines and annotation markers draw into the main MSAA pass.
   const referenceLineRenderer = createReferenceLineRenderer(device, {
     targetFormat,
@@ -3685,6 +3698,7 @@ export function createRenderCoordinator(
         seriesForRender,
         withAlpha,
       },
+      overlayPrepareMemo,
     );
 
     // Tooltip: on hover, find matches and render tooltip near cursor.
@@ -4247,28 +4261,17 @@ export function createRenderCoordinator(
       },
     );
 
-    overlayPass.end();
-
-    // Top overlays (single-sample): axes, highlights, crosshair.
-    const topOverlayPass = encoder.beginRenderPass({
-      label: "renderCoordinator/topOverlayPass",
-      colorAttachments: [
-        {
-          view: swapchainView,
-          loadOp: "load",
-          storeOp: "store",
-        },
-      ],
-    });
-
-    highlightRenderer.render(topOverlayPass);
+    // Phase 4b: draw axes, highlights, and crosshair into the same MSAA overlay pass
+    // (previously a separate single-sample top overlay pass). Ordering below matches the
+    // previous visual stack: above-series annotations → highlight → axes → crosshair.
+    highlightRenderer.render(overlayPass);
     if (hasCartesianSeries) {
-      xAxisRenderer.render(topOverlayPass);
-      yAxisRenderer.render(topOverlayPass);
+      xAxisRenderer.render(overlayPass);
+      yAxisRenderer.render(overlayPass);
     }
-    crosshairRenderer.render(topOverlayPass);
+    crosshairRenderer.render(overlayPass);
 
-    topOverlayPass.end();
+    overlayPass.end();
     device.queue.submit([encoder.finish()]);
 
     hasRenderedOnce = true;
