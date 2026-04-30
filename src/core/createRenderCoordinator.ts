@@ -2262,7 +2262,7 @@ export function createRenderCoordinator(
     const xScale = createLinearScale()
       .domain(domains.xDomain.min, domains.xDomain.max)
       .range(0, plotSize.plotWidthCss);
-    const yScale = (currentOptions.yAxis.type === "log" ? createLogScale() : createLinearScale())
+    const yScale = (currentOptions.yAxis.type === "log" ? createLogScale(currentOptions.yAxis.logBase) : createLinearScale())
       .domain(domains.yDomain.min, domains.yDomain.max)
       .range(plotSize.plotHeightCss, 0);
 
@@ -3416,7 +3416,7 @@ export function createRenderCoordinator(
     const xScale = createLinearScale()
       .domain(visibleXDomain.min, visibleXDomain.max)
       .range(plotClipRect.left, plotClipRect.right);
-    const yScale = (currentOptions.yAxis.type === "log" ? createLogScale() : createLinearScale())
+    const yScale = (currentOptions.yAxis.type === "log" ? createLogScale(currentOptions.yAxis.logBase) : createLinearScale())
       .domain(yBaseDomain.min, yBaseDomain.max)
       .range(plotClipRect.bottom, plotClipRect.top);
 

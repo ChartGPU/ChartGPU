@@ -104,6 +104,11 @@ export interface GridConfig {
 
 export interface AxisConfig {
   readonly type: AxisType;
+  /**
+   * The base of the logarithm when type is 'log'.
+   * Defaults to 10.
+   */
+  readonly logBase?: number;
   readonly min?: number;
   readonly max?: number;
   /** Tick length in CSS pixels (default: 6). */

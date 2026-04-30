@@ -106,8 +106,10 @@ export function prepareOverlays(
       };
       const yDomainMin = finiteOrUndefined(currentOptions.yAxis.min) ?? yScale.invert(plotClipRect.bottom);
       const yDomainMax = finiteOrUndefined(currentOptions.yAxis.max) ?? yScale.invert(plotClipRect.top);
-      const yTicks = generateTicks("log", yDomainMin, yDomainMax, gridLinesConfig.horizontal.count);
-      horizontalCount = yTicks.map(v => (Math.log10(v) - Math.log10(yDomainMin)) / (Math.log10(yDomainMax) - Math.log10(yDomainMin)));
+      const logBase = currentOptions.yAxis.logBase ?? 10;
+      const yTicks = generateTicks("log", yDomainMin, yDomainMax, gridLinesConfig.horizontal.count, logBase);
+      const logBaseVal = Math.log(logBase);
+      horizontalCount = yTicks.map(v => (Math.log(v) / logBaseVal - Math.log(yDomainMin) / logBaseVal) / (Math.log(yDomainMax) / logBaseVal - Math.log(yDomainMin) / logBaseVal));
     } else {
       horizontalCount = gridLinesConfig.horizontal.count;
     }

@@ -139,12 +139,14 @@ export function createLinearScale(): LinearScale {
 export type LogScale = LinearScale;
 
 /**
- * Creates a base-10 logarithmic scale for mapping a numeric domain to a numeric range.
+ * Creates a logarithmic scale for mapping a numeric domain to a numeric range.
  *
  * Domain values must be strictly positive. When setting a domain with min <= 0,
  * it will be clamped to a small positive number (1e-10) to avoid math errors.
+ * 
+ * @param base The logarithmic base (default: 10)
  */
-export function createLogScale(): LogScale {
+export function createLogScale(base: number = 10): LogScale {
   let domainMin = 1;
   let domainMax = 10;
   let rangeMin = 0;
@@ -179,9 +181,10 @@ export function createLogScale(): LogScale {
         return (rangeMin + rangeMax) / 2;
       }
 
-      const logMin = Math.log10(domainMin);
-      const logMax = Math.log10(domainMax);
-      const logVal = Math.log10(value);
+      const logBaseVal = Math.log(base);
+      const logMin = Math.log(domainMin) / logBaseVal;
+      const logMax = Math.log(domainMax) / logBaseVal;
+      const logVal = Math.log(value) / logBaseVal;
 
       const t = (logVal - logMin) / (logMax - logMin);
       return rangeMin + t * (rangeMax - rangeMin);
@@ -198,12 +201,13 @@ export function createLogScale(): LogScale {
         return (domainMin + domainMax) / 2;
       }
 
-      const logMin = Math.log10(domainMin);
-      const logMax = Math.log10(domainMax);
+      const logBaseVal = Math.log(base);
+      const logMin = Math.log(domainMin) / logBaseVal;
+      const logMax = Math.log(domainMax) / logBaseVal;
 
       const t = (pixel - rangeMin) / (rangeMax - rangeMin);
       const logVal = logMin + t * (logMax - logMin);
-      return Math.pow(10, logVal);
+      return Math.pow(base, logVal);
     },
   };
 

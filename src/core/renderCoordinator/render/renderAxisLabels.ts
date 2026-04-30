@@ -191,7 +191,7 @@ export function renderAxisLabels(
 
   const yTickFormatter = currentOptions.yAxis.tickFormatter;
   const isLog = currentOptions.yAxis.type === "log";
-  const yTicks = generateTicks(currentOptions.yAxis.type, yDomainMin, yDomainMax, yTickCount);
+  const yTicks = generateTicks(currentOptions.yAxis.type, yDomainMin, yDomainMax, yTickCount, currentOptions.yAxis.logBase);
   
   for (const v of yTicks) {
     const yClip = yScale.scale(v);
@@ -201,7 +201,7 @@ export function renderAxisLabels(
     if (yTickFormatter) {
       label = yTickFormatter(v);
     } else if (isLog) {
-      label = formatLogTick(v);
+      label = formatLogTick(v, currentOptions.yAxis.logBase);
     } else {
       label = formatTickValue(yFormatter, v);
     }
