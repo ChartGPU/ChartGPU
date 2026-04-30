@@ -45,4 +45,15 @@ describe("formatLogTick", () => {
     expect(formatLogTick(50)).toBe("50");
     expect(formatLogTick(500)).toBe("500");
   });
+
+  it("formats powers of 2 correctly", () => {
+    expect(formatLogTick(2, 2)).toBe("2¹");
+    expect(formatLogTick(4, 2)).toBe("2²");
+    expect(formatLogTick(8, 2)).toBe("2³");
+  });
+
+  it("formats powers of e correctly", () => {
+    expect(formatLogTick(Math.E, Math.E)).toBe("e¹");
+    expect(formatLogTick(Math.exp(2), Math.E)).toBe("e²");
+  });
 });

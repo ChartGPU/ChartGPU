@@ -30,10 +30,13 @@ function createContext(
   const xScale = createLinearScale().domain(0, 100).range(-1, 1);
   const yScale = createLinearScale().domain(0, 100).range(1, -1);
 
+  const yScales = new Map<string, ReturnType<typeof createLinearScale>>();
+  yScales.set("primary", yScale);
+
   return {
     annotations,
     xScale,
-    yScale,
+    yScales,
     plotBounds: {
       leftCss: 60,
       rightCss: 20,

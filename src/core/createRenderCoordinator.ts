@@ -2264,7 +2264,7 @@ export function createRenderCoordinator(
     const yScales = new Map<string, LinearScale | LogScale>();
     for (const [id, dom] of domains.yDomains) {
       const axisConfig = currentOptions.yAxes.find((a) => a.id === id);
-      const scale = axisConfig?.type === "log" ? createLogScale() : createLinearScale();
+      const scale = axisConfig?.type === "log" ? createLogScale(axisConfig.logBase) : createLinearScale();
       yScales.set(id, scale.domain(dom.min, dom.max).range(plotSize.plotHeightCss, 0));
     }
 
@@ -3442,7 +3442,7 @@ export function createRenderCoordinator(
         );
       }
       currentYDomains.set(axisId, dom);
-      const scale = ax.type === "log" ? createLogScale() : createLinearScale();
+      const scale = ax.type === "log" ? createLogScale(ax.logBase) : createLinearScale();
       currentYScales.set(
         axisId,
         scale

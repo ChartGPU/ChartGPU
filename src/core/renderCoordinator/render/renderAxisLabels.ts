@@ -175,6 +175,7 @@ export function renderAxisLabels(
     styleAxisLabelSpan(span, false, currentOptions.theme);
   }
 
+
   // X-axis title
   const axisNameFontSize = getAxisTitleFontSize(currentOptions.theme.fontSize);
   const xAxisName = currentOptions.xAxis.name?.trim() ?? "";
@@ -248,7 +249,7 @@ export function renderYAxisLabels(ctx: YAxisLabelRenderContext): void {
   const ySpans: HTMLSpanElement[] = [];
   const yTickFormatter = yAxisConfig.tickFormatter;
   const isLog = yAxisConfig.type === "log";
-  const yTicks = generateTicks(yAxisConfig.type as AxisType, yDomainMin, yDomainMax, yTickCount);
+  const yTicks = generateTicks(yAxisConfig.type as AxisType, yDomainMin, yDomainMax, yTickCount, yAxisConfig.logBase);
 
   for (const v of yTicks) {
     const yClip = yScale.scale(v);
@@ -258,7 +259,7 @@ export function renderYAxisLabels(ctx: YAxisLabelRenderContext): void {
     if (yTickFormatter) {
       label = yTickFormatter(v);
     } else if (isLog) {
-      label = formatLogTick(v);
+      label = formatLogTick(v, yAxisConfig.logBase);
     } else {
       label = formatTickValue(yFormatter, v);
     }
