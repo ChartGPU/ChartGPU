@@ -74,6 +74,20 @@ export function getYAxisLabelX(
 }
 
 /**
+ * Calculates the X position for right y-axis labels.
+ *
+ * @param plotRightCss - Right edge of plot area in CSS pixels
+ * @param tickLengthCssPx - Length of tick marks
+ * @returns X position in CSS pixels (canvas-local)
+ */
+export function getRightYAxisLabelX(
+  plotRightCss: number,
+  tickLengthCssPx: number,
+): number {
+  return plotRightCss + tickLengthCssPx + LABEL_PADDING_CSS_PX;
+}
+
+/**
  * Calculates the Y position for the x-axis title.
  *
  * The title is centered vertically between the tick labels and the bottom edge
@@ -123,6 +137,25 @@ export function getYAxisTitleX(
 ): number {
   const yTickLabelLeft = yLabelX - maxTickLabelWidth;
   return yTickLabelLeft - LABEL_PADDING_CSS_PX - titleFontSize * 0.5;
+}
+
+/**
+ * Calculates the X position for the right y-axis title.
+ *
+ * The title is positioned to the right of the tick labels, accounting for their width.
+ *
+ * @param yLabelX - X position of right y-axis tick labels
+ * @param maxTickLabelWidth - Maximum width of tick labels in CSS pixels
+ * @param titleFontSize - Font size for axis title
+ * @returns X position for y-axis title in CSS pixels
+ */
+export function getRightYAxisTitleX(
+  yLabelX: number,
+  maxTickLabelWidth: number,
+  titleFontSize: number,
+): number {
+  const yTickLabelRight = yLabelX + maxTickLabelWidth;
+  return yTickLabelRight + LABEL_PADDING_CSS_PX + titleFontSize * 0.5;
 }
 
 /**
