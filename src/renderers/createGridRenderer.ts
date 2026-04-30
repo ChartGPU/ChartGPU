@@ -34,8 +34,8 @@ export interface GridArea {
 }
 
 export interface GridLineCount {
-  readonly horizontal?: number; // Default: 5
-  readonly vertical?: number; // Default: 6
+  readonly horizontal?: number | number[]; // Default: 5. If array, normalized [0..1] positions.
+  readonly vertical?: number | number[]; // Default: 6. If array, normalized [0..1] positions.
 }
 
 export interface GridPrepareOptions {
@@ -112,8 +112,8 @@ const createIdentityMat4Buffer = (): ArrayBuffer => {
 
 const generateGridVertices = (
   gridArea: GridArea,
-  horizontal: number,
-  vertical: number,
+  horizontal: number | number[],
+  vertical: number | number[],
 ): Float32Array => {
   const { left, right, top, bottom, canvasWidth, canvasHeight } = gridArea;
   // Be resilient: older call sites may omit/incorrectly pass DPR. Defaulting avoids hard crashes.
@@ -131,16 +131,21 @@ const generateGridVertices = (
   const plotWidth = plotRight - plotLeft;
   const plotHeight = plotBottom - plotTop;
 
-  // Total vertices: (horizontal + vertical) * 2 vertices per line
-  const totalLines = horizontal + vertical;
+  const horizontalPositions = Array.isArray(horizontal)
+    ? horizontal
+    : Array.from({ length: horizontal }, (_, i) => horizontal === 1 ? 0.5 : i / (horizontal - 1));
+
+  const verticalPositions = Array.isArray(vertical)
+    ? vertical
+    : Array.from({ length: vertical }, (_, i) => vertical === 1 ? 0.5 : i / (vertical - 1));
+
+  const totalLines = horizontalPositions.length + verticalPositions.length;
   const vertices = new Float32Array(totalLines * 2 * 2); // 2 vertices * 2 floats per vertex
 
   let idx = 0;
 
   // Generate horizontal lines (constant Y, varying X)
-  for (let i = 0; i < horizontal; i++) {
-    // Calculate t parameter for even spacing
-    const t = horizontal === 1 ? 0.5 : i / (horizontal - 1);
+  for (const t of horizontalPositions) {
     const yDevice = plotTop + t * plotHeight;
 
     // Convert to clip space
@@ -158,9 +163,7 @@ const generateGridVertices = (
   }
 
   // Generate vertical lines (constant X, varying Y)
-  for (let i = 0; i < vertical; i++) {
-    // Calculate t parameter for even spacing
-    const t = vertical === 1 ? 0.5 : i / (vertical - 1);
+  for (const t of verticalPositions) {
     const xDevice = plotLeft + t * plotWidth;
 
     // Convert to clip space
@@ -299,8 +302,11 @@ export function createGridRenderer(
     const colorString = options?.color ?? DEFAULT_GRID_COLOR;
     const append = options?.append === true;
 
+    const horizontalCount = Array.isArray(horizontal) ? horizontal.length : horizontal;
+    const verticalCount = Array.isArray(vertical) ? vertical.length : vertical;
+
     // Validate inputs
-    if (horizontal < 0 || vertical < 0) {
+    if (horizontalCount < 0 || verticalCount < 0) {
       throw new Error(
         "GridRenderer.prepare: line counts must be non-negative.",
       );
@@ -325,7 +331,7 @@ export function createGridRenderer(
 
     // Early return if no lines to draw. If we're not appending, also clear any
     // previously prepared geometry so subsequent renders draw nothing.
-    if (horizontal === 0 && vertical === 0) {
+    if (horizontalCount === 0 && verticalCount === 0) {
       if (!append) {
         combinedVertices = null;
         batches = [];
@@ -335,7 +341,7 @@ export function createGridRenderer(
 
     // Generate vertices for this batch
     const vertices = generateGridVertices(gridArea, horizontal, vertical);
-    const newBatchVertexCount = (horizontal + vertical) * 2;
+    const newBatchVertexCount = (horizontalCount + verticalCount) * 2;
 
     // Parse color for this batch (fallbacks to internal default)
     const rgba = parseCssColorToRgba01(colorString) ?? DEFAULT_GRID_RGBA;

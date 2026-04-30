@@ -71,8 +71,8 @@ import {
   findCandlestick,
 } from "../interaction/findCandlestick";
 import { findPieSlice } from "../interaction/findPieSlice";
-import { createLinearScale } from "../utils/scales";
-import type { LinearScale } from "../utils/scales";
+import { createLinearScale, createLogScale } from "../utils/scales";
+import type { LinearScale, LogScale } from "../utils/scales";
 import {
   parseCssColorToGPUColor,
   parseCssColorToRgba01,
@@ -2248,7 +2248,7 @@ export function createRenderCoordinator(
     },
   ): {
     readonly xScale: LinearScale;
-    readonly yScales: Map<string, LinearScale>;
+    readonly yScales: Map<string, LinearScale | LogScale>;
     readonly plotWidthCss: number;
     readonly plotHeightCss: number;
   } | null => {
@@ -2261,9 +2261,11 @@ export function createRenderCoordinator(
     const xScale = createLinearScale()
       .domain(domains.xDomain.min, domains.xDomain.max)
       .range(0, plotSize.plotWidthCss);
-    const yScales = new Map<string, LinearScale>();
+    const yScales = new Map<string, LinearScale | LogScale>();
     for (const [id, dom] of domains.yDomains) {
-      yScales.set(id, createLinearScale().domain(dom.min, dom.max).range(plotSize.plotHeightCss, 0));
+      const axisConfig = currentOptions.yAxes.find((a) => a.id === id);
+      const scale = axisConfig?.type === "log" ? createLogScale() : createLinearScale();
+      yScales.set(id, scale.domain(dom.min, dom.max).range(plotSize.plotHeightCss, 0));
     }
 
     return {
@@ -3421,9 +3423,8 @@ export function createRenderCoordinator(
     const xScale = createLinearScale()
       .domain(visibleXDomain.min, visibleXDomain.max)
       .range(plotClipRect.left, plotClipRect.right);
-
     // Compute per-axis y domains (with transition interpolation if active)
-    const currentYScales = new Map<string, LinearScale>();
+    const currentYScales = new Map<string, LinearScale | LogScale>();
     const currentYDomains = new Map<string, { readonly min: number; readonly max: number }>();
     for (const ax of currentOptions.yAxes) {
       const axisId = ax.id!;
@@ -3441,9 +3442,10 @@ export function createRenderCoordinator(
         );
       }
       currentYDomains.set(axisId, dom);
+      const scale = ax.type === "log" ? createLogScale() : createLinearScale();
       currentYScales.set(
         axisId,
-        createLinearScale()
+        scale
           .domain(dom.min, dom.max)
           .range(plotClipRect.bottom, plotClipRect.top),
       );

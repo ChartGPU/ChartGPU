@@ -18,7 +18,9 @@ import type {
 import { getCanvasCssWidth, getCanvasCssHeight } from "../utils/canvasUtils";
 import { formatTimeTickValue } from "../utils/timeAxisUtils";
 import { formatTickValue, createTickFormatter } from "../axis/computeAxisTicks";
+import { generateTicks, formatLogTick } from "../../../utils/tickHelpers";
 import { finiteOrUndefined } from "../utils/dataPointUtils";
+import { AxisType } from "../../../config/types";
 import { getAxisTitleFontSize } from "../../../utils/axisLabelStyling";
 import {
   getRightYAxisLabelX,
@@ -228,7 +230,6 @@ export function renderYAxisLabels(ctx: YAxisLabelRenderContext): void {
 
   const isRight = yAxisConfig.position === "right";
   const yTickLengthCssPx = yAxisConfig.tickLength ?? DEFAULT_TICK_LENGTH_CSS_PX;
-
   const yTickCount = (yAxisConfig as any).tickCount ?? DEFAULT_TICK_COUNT;
   const yDomainMin =
     finiteOrUndefined(yAxisConfig.min) ??
@@ -246,16 +247,22 @@ export function renderYAxisLabels(ctx: YAxisLabelRenderContext): void {
 
   const ySpans: HTMLSpanElement[] = [];
   const yTickFormatter = yAxisConfig.tickFormatter;
+  const isLog = yAxisConfig.type === "log";
+  const yTicks = generateTicks(yAxisConfig.type as AxisType, yDomainMin, yDomainMax, yTickCount);
 
-  for (let i = 0; i < yTickCount; i++) {
-    const t = yTickCount <= 1 ? 0.5 : i / (yTickCount - 1);
-    const v = yDomainMin + t * (yDomainMax - yDomainMin);
+  for (const v of yTicks) {
     const yClip = yScale.scale(v);
     const yCss = clipYToCanvasCssPx(yClip, canvasCssHeight);
 
-    const label = yTickFormatter
-      ? yTickFormatter(v)
-      : formatTickValue(yFormatter, v);
+    let label: string | null = null;
+    if (yTickFormatter) {
+      label = yTickFormatter(v);
+    } else if (isLog) {
+      label = formatLogTick(v);
+    } else {
+      label = formatTickValue(yFormatter, v);
+    }
+    
     if (label == null) continue;
 
     const span = axisLabelOverlay.addLabel(
@@ -272,7 +279,6 @@ export function renderYAxisLabels(ctx: YAxisLabelRenderContext): void {
     ySpans.push(span);
   }
 
-  // Y-axis title
   const axisNameFontSize = getAxisTitleFontSize(theme.fontSize);
   const yAxisName = yAxisConfig.name?.trim() ?? "";
   if (yAxisName.length > 0) {

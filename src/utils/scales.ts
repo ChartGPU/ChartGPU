@@ -136,6 +136,80 @@ export function createLinearScale(): LinearScale {
   return self;
 }
 
+export type LogScale = LinearScale;
+
+/**
+ * Creates a base-10 logarithmic scale for mapping a numeric domain to a numeric range.
+ *
+ * Domain values must be strictly positive. When setting a domain with min <= 0,
+ * it will be clamped to a small positive number (1e-10) to avoid math errors.
+ */
+export function createLogScale(): LogScale {
+  let domainMin = 1;
+  let domainMax = 10;
+  let rangeMin = 0;
+  let rangeMax = 1;
+
+  const self: LogScale = {
+    domain(min: number, max: number) {
+      assertFinite("domain min", min);
+      assertFinite("domain max", max);
+      domainMin = Math.max(1e-10, min);
+      domainMax = Math.max(1e-10, max);
+      if (domainMin > domainMax) {
+        const t = domainMin;
+        domainMin = domainMax;
+        domainMax = t;
+      }
+      return self;
+    },
+
+    range(min: number, max: number) {
+      assertFinite("range min", min);
+      assertFinite("range max", max);
+      rangeMin = min;
+      rangeMax = max;
+      return self;
+    },
+
+    scale(value: number) {
+      if (!Number.isFinite(value) || value <= 0) return Number.NaN;
+
+      if (domainMin === domainMax) {
+        return (rangeMin + rangeMax) / 2;
+      }
+
+      const logMin = Math.log10(domainMin);
+      const logMax = Math.log10(domainMax);
+      const logVal = Math.log10(value);
+
+      const t = (logVal - logMin) / (logMax - logMin);
+      return rangeMin + t * (rangeMax - rangeMin);
+    },
+
+    invert(pixel: number) {
+      if (!Number.isFinite(pixel)) return Number.NaN;
+
+      if (domainMin === domainMax) {
+        return domainMin;
+      }
+
+      if (rangeMin === rangeMax) {
+        return (domainMin + domainMax) / 2;
+      }
+
+      const logMin = Math.log10(domainMin);
+      const logMax = Math.log10(domainMax);
+
+      const t = (pixel - rangeMin) / (rangeMax - rangeMin);
+      const logVal = logMin + t * (logMax - logMin);
+      return Math.pow(10, logVal);
+    },
+  };
+
+  return self;
+}
+
 /**
  * Creates a category scale for mapping string categories to evenly spaced
  * x-positions across a numeric range.

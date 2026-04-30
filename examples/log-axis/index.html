@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Logarithmic Axis - ChartGPU</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; margin: 0; padding: 0; background: #121212; color: #fff; font-family: sans-serif; }
+    #app { display: flex; flex-direction: column; height: 100%; padding: 24px; box-sizing: border-box; }
+    #chart-container { flex: 1; border-radius: 8px; border: 1px solid #333; overflow: hidden; background: #000; box-shadow: 0 4px 16px rgba(0,0,0,0.5); }
+    h1 { margin-top: 0; margin-bottom: 8px; font-weight: 500; }
+    p { margin-top: 0; margin-bottom: 16px; color: #999; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <h1>Logarithmic Y-Axis</h1>
+    <p>A logarithmic scale maps values across several orders of magnitude (e.g., 10 to 100,000).</p>
+    <div id="chart-container"></div>
+  </div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

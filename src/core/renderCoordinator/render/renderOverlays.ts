@@ -8,7 +8,7 @@
  */
 
 import type { ResolvedChartGPUOptions } from "../../../config/OptionResolver";
-import type { LinearScale } from "../../../utils/scales";
+import type { LinearScale, LogScale } from "../../../utils/scales";
 import type { GridRenderer } from "../../../renderers/createGridRenderer";
 import type { AxisRenderer } from "../../../renderers/createAxisRenderer";
 import type {
@@ -21,8 +21,9 @@ import type {
 } from "../../../renderers/createHighlightRenderer";
 import type { GridArea } from "../../../renderers/createGridRenderer";
 import { findNearestPoint } from "../../../interaction/findNearestPoint";
-import { getPointXY } from "../utils/dataPointUtils";
+import { getPointXY, finiteOrUndefined } from "../utils/dataPointUtils";
 import { computePlotScissorDevicePx } from "../utils/axisUtils";
+import { generateTicks } from "../../../utils/tickHelpers";
 
 const DEFAULT_TICK_COUNT = 5;
 const DEFAULT_CROSSHAIR_LINE_WIDTH_CSS_PX = 1;
@@ -39,7 +40,7 @@ export interface OverlayRenderers {
 export interface OverlayPrepareContext {
   currentOptions: ResolvedChartGPUOptions;
   xScale: LinearScale;
-  yScales: Map<string, LinearScale>;
+  yScales: Map<string, LinearScale | LogScale>;
   gridArea: GridArea;
   xTickCount: number;
   hasCartesianSeries: boolean;
@@ -54,7 +55,7 @@ export interface OverlayPrepareContext {
   };
   interactionScales: {
     xScale: LinearScale;
-    yScales: Map<string, LinearScale>;
+    yScales: Map<string, LinearScale | LogScale>;
   } | null;
   seriesForRender: ReadonlyArray<any>;
   withAlpha: (color: string, alpha: number) => string;
@@ -94,23 +95,43 @@ export function prepareOverlays(
 
   // Grid preparation - always prepare so hidden grids don't render stale geometry.
   const gridLinesConfig = currentOptions.gridLines;
-  const horizontalCount =
-    gridLinesConfig.show && gridLinesConfig.horizontal.show
-      ? gridLinesConfig.horizontal.count
-      : 0;
+  
+  let horizontalCount: number | number[] = 0;
+  if (gridLinesConfig.show && gridLinesConfig.horizontal.show) {
+    const primaryYAxis = currentOptions.yAxes[0];
+    if (primaryYAxis && primaryYAxis.type === "log") {
+      const plotClipRect = {
+        left: gridArea.left,
+        right: gridArea.canvasWidth - gridArea.right,
+        top: gridArea.top,
+        bottom: gridArea.canvasHeight - gridArea.bottom,
+      };
+      const primaryScale = yScales.values().next().value!;
+      const yDomainMin = finiteOrUndefined(primaryYAxis.min) ?? primaryScale.invert(plotClipRect.bottom);
+      const yDomainMax = finiteOrUndefined(primaryYAxis.max) ?? primaryScale.invert(plotClipRect.top);
+      const yTicks = generateTicks("log", yDomainMin, yDomainMax, gridLinesConfig.horizontal.count);
+      horizontalCount = yTicks.map(v => (Math.log10(v) - Math.log10(yDomainMin)) / (Math.log10(yDomainMax) - Math.log10(yDomainMin)));
+    } else {
+      horizontalCount = gridLinesConfig.horizontal.count;
+    }
+  }
+
   const verticalCount =
     gridLinesConfig.show && gridLinesConfig.vertical.show
       ? gridLinesConfig.vertical.count
       : 0;
 
+  const hasHorizontal = Array.isArray(horizontalCount) ? horizontalCount.length > 0 : horizontalCount > 0;
+  const hasVertical = Array.isArray(verticalCount) ? verticalCount.length > 0 : verticalCount > 0;
+
   // Clear grid when hidden (or when both counts are zero).
-  if (horizontalCount === 0 && verticalCount === 0) {
+  if (!hasHorizontal && !hasVertical) {
     renderers.gridRenderer.prepare(gridArea, {
       lineCount: { horizontal: 0, vertical: 0 },
     });
   } else if (
-    horizontalCount > 0 &&
-    verticalCount > 0 &&
+    hasHorizontal &&
+    hasVertical &&
     gridLinesConfig.horizontal.color !== gridLinesConfig.vertical.color
   ) {
     // Per-direction colors: render two batches (horizontal then vertical).
@@ -126,7 +147,7 @@ export function prepareOverlays(
   } else {
     // Single color (either both directions share a color, or only one direction is enabled).
     const color =
-      horizontalCount > 0
+      hasHorizontal
         ? gridLinesConfig.horizontal.color
         : gridLinesConfig.vertical.color;
     renderers.gridRenderer.prepare(gridArea, {
