@@ -34,14 +34,11 @@ export default defineConfig({
     lib: {
       entry: resolve(__dirname, 'src/index.ts'),
       name: 'ChartGPU',
-      fileName: () => 'index.js',
-      formats: ['es']
+      fileName: (format) => format === 'es' ? 'index.js' : `chartgpu.${format}.js`,
+      formats: ['es', 'iife']
     },
     rollupOptions: {
       external: isExternal,
-      output: {
-        entryFileNames: 'index.js'
-      }
     }
   },
   server: {
