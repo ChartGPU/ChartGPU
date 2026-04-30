@@ -71,8 +71,8 @@ import {
   findCandlestick,
 } from "../interaction/findCandlestick";
 import { findPieSlice } from "../interaction/findPieSlice";
-import { createLinearScale } from "../utils/scales";
-import type { LinearScale } from "../utils/scales";
+import { createLinearScale, createLogScale } from "../utils/scales";
+import type { LinearScale, LogScale } from "../utils/scales";
 import {
   parseCssColorToGPUColor,
   parseCssColorToRgba01,
@@ -2248,7 +2248,7 @@ export function createRenderCoordinator(
     },
   ): {
     readonly xScale: LinearScale;
-    readonly yScale: LinearScale;
+    readonly yScale: LinearScale | LogScale;
     readonly plotWidthCss: number;
     readonly plotHeightCss: number;
   } | null => {
@@ -2262,7 +2262,7 @@ export function createRenderCoordinator(
     const xScale = createLinearScale()
       .domain(domains.xDomain.min, domains.xDomain.max)
       .range(0, plotSize.plotWidthCss);
-    const yScale = createLinearScale()
+    const yScale = (currentOptions.yAxis.type === "log" ? createLogScale() : createLinearScale())
       .domain(domains.yDomain.min, domains.yDomain.max)
       .range(plotSize.plotHeightCss, 0);
 
@@ -3416,7 +3416,7 @@ export function createRenderCoordinator(
     const xScale = createLinearScale()
       .domain(visibleXDomain.min, visibleXDomain.max)
       .range(plotClipRect.left, plotClipRect.right);
-    const yScale = createLinearScale()
+    const yScale = (currentOptions.yAxis.type === "log" ? createLogScale() : createLinearScale())
       .domain(yBaseDomain.min, yBaseDomain.max)
       .range(plotClipRect.bottom, plotClipRect.top);
 
