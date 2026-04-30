@@ -4,7 +4,7 @@
 
 import type { ThemeConfig } from "../themes/types";
 
-export type AxisType = "value" | "time" | "category";
+export type AxisType = "value" | "time" | "category" | "log";
 export type SeriesType =
   | "line"
   | "area"
