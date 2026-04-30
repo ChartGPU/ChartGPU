@@ -95,7 +95,12 @@ Notes (density mode):
 
 ## Axis Configuration
 
-- **`AxisConfig`**: configuration for `xAxis` / `yAxis`. See [`types.ts`](../../src/config/types.ts).
+- **`AxisConfig`**: configuration for `xAxis` / `yAxes`. See [`types.ts`](../../src/config/types.ts).
+- **Multiple Y-Axes**:
+  - Instead of a single `yAxis` object, ChartGPU supports an array of `yAxes` objects for independent scales (e.g. Price vs Volume).
+  - Each `yAxis` in the `yAxes` array must specify an `id: string` (default is `"primary"` for the first axis).
+  - Series map to a specific axis via `yAxisIndex` in their config.
+  - Axes can be positioned on the right using `position: "right"` (default is `"left"`).
 - **Explicit domains (override auto-bounds)**:
   - **`AxisConfig.min?: number` / `AxisConfig.max?: number`**: when set, ChartGPU uses these explicit axis bounds and does **not** auto-derive bounds from data for that axis.
   - **Precedence**: explicit `min`/`max` always override any auto-bounds behavior.
