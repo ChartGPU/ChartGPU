@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Multi-axis Y-scaling** - Introduced robust support for multiple independent Y-axes via `yAxes` configuration array. Allows rendering multiple datasets with distinct numerical ranges (e.g., Price vs Volume) on the same chart, mapped via `yAxisIndex` on the series configuration. Features independent tick generation, dynamic right-left layouts via `position: "right"`, and precise hit-testing alignments.
+- **Logarithmic axes** - Added `type: "log"` support to `yAxis` config for datasets spanning multiple orders of magnitude. Features arbitrary logarithm bases via `logBase` (defaults to 10), automated mathematically precise exponential ticks (e.g., $10^2$, $e^5$), safe handling of zero/negative domains, and normalized grid lines.
 - **Shared GPUDevice support** - Multiple `ChartGPU` instances can share a single, pre-initialized `GPUDevice` (via injected `adapter` + `device`) to reduce redundant initialization and improve dashboard ergonomics.
 - **`deviceLost` event (shared device mode)** - When using an injected/shared device, charts emit a `deviceLost` event so apps can recreate chart instances without ChartGPU destroying the shared device.
 - **Shared Pipeline Cache** - Opt-in `createPipelineCache(device)` deduplicates `GPUShaderModule`, `GPURenderPipeline`, and `GPUComputePipeline` across charts on the same device, reducing shader compilation overhead in multi-chart dashboards.

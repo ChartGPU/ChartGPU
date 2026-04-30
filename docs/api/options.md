@@ -104,6 +104,9 @@ Notes (density mode):
 - **Explicit domains (override auto-bounds)**:
   - **`AxisConfig.min?: number` / `AxisConfig.max?: number`**: when set, ChartGPU uses these explicit axis bounds and does **not** auto-derive bounds from data for that axis.
   - **Precedence**: explicit `min`/`max` always override any auto-bounds behavior.
+- **Logarithmic Axes**:
+  - **`AxisConfig.type: 'log'`**: enables a mathematically precise logarithmic scale. When enabled, domain values $\le 0$ are aggressively clamped to `1e-10` to avoid mathematical errors.
+  - **`AxisConfig.logBase?: number`**: sets the base of the logarithm. Default: `10`. You can specify `2`, `Math.E`, or any arbitrary positive number to map the scale and ticks against that base (e.g. `logBase: Math.E` renders $e^x$ ticks).
 - **Y-axis auto-bounds during x-zoom (new default)**:
   - **`yAxis.autoBounds?: 'visible' | 'global'`** controls how ChartGPU derives the **y-axis** domain when `yAxis.min`/`yAxis.max` are not set.
     - **`'visible'` (default)**: when x-axis data zoom is active, ChartGPU derives y-bounds from the **visible** (zoomed) x-range.
@@ -112,8 +115,9 @@ Notes (density mode):
 - **`AxisConfig.tickFormatter?: (value: number) => string | null`**: custom formatter for axis tick labels. When provided, replaces the built-in tick label formatting for that axis.
   - For `type: 'value'` axes, `value` is the numeric tick value.
   - For `type: 'time'` axes, `value` is a timestamp in milliseconds (epoch-ms, same unit as `new Date(ms)`).
+  - For `type: 'log'` axes, built-in formatting renders exact exponential superscripts (e.g. $10^2$, $e^5$, $2^3$) or falls back to value strings for intermediate ranges.
   - Return a `string` to display as the label, or `null` to suppress that specific tick label.
-  - When omitted, ChartGPU uses its built-in formatting: `Intl.NumberFormat` for value axes, adaptive tier-based date formatting for time axes.
+  - When omitted, ChartGPU uses its built-in formatting: `Intl.NumberFormat` for value axes, adaptive tier-based date formatting for time axes, and exponential superscripts for log axes.
   - The formatter is also used for label width measurement in the adaptive time x-axis tick count algorithm, ensuring overlap avoidance uses the correct label widths.
 
 #### Tick Formatter Examples
