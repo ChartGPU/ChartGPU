@@ -97,14 +97,10 @@ export type ResolvedLineSeriesConfig = Readonly<
     readonly areaStyle?: ResolvedAreaStyleConfig;
     readonly sampling: SeriesSampling;
     readonly samplingThreshold: number;
-    /**
-     * Original (unsampled) series data.
-     *
-     * Used at runtime for zoom-aware re-sampling so we can increase detail when zoomed-in without
-     * losing outliers or permanently discarding points.
-     */
+    /** Original (unsampled) series data. */
     readonly rawData: Readonly<LineSeriesConfig["data"]>;
     readonly data: Readonly<LineSeriesConfig["data"]>;
+    readonly yAxis: string;
     /**
      * Bounds computed from the original (unsampled) data. Used for axis auto-bounds so sampling
      * cannot clip outliers.
@@ -131,6 +127,7 @@ export type ResolvedAreaSeriesConfig = Readonly<
     /** Original (unsampled) series data (see `ResolvedLineSeriesConfig.rawData`). */
     readonly rawData: Readonly<AreaSeriesConfig["data"]>;
     readonly data: Readonly<AreaSeriesConfig["data"]>;
+    readonly yAxis: string;
     /**
      * Bounds computed from the original (unsampled) data. Used for axis auto-bounds so sampling
      * cannot clip outliers.
@@ -147,6 +144,7 @@ export type ResolvedBarSeriesConfig = Readonly<
     /** Original (unsampled) series data (see `ResolvedLineSeriesConfig.rawData`). */
     readonly rawData: Readonly<BarSeriesConfig["data"]>;
     readonly data: Readonly<BarSeriesConfig["data"]>;
+    readonly yAxis: string;
     /**
      * Bounds computed from the original (unsampled) data. Used for axis auto-bounds so sampling
      * cannot clip outliers.
@@ -181,6 +179,7 @@ export type ResolvedScatterSeriesConfig = Readonly<
     /** Original (unsampled) series data (see `ResolvedLineSeriesConfig.rawData`). */
     readonly rawData: Readonly<ScatterSeriesConfig["data"]>;
     readonly data: Readonly<ScatterSeriesConfig["data"]>;
+    readonly yAxis: string;
     /**
      * Bounds computed from the original (unsampled) data. Used for axis auto-bounds so sampling
      * cannot clip outliers.
@@ -231,6 +230,7 @@ export type ResolvedCandlestickSeriesConfig = Readonly<
     /** Original (unsampled) series data. */
     readonly rawData: Readonly<CandlestickSeriesConfig["data"]>;
     readonly data: Readonly<CandlestickSeriesConfig["data"]>;
+    readonly yAxis: string;
     /**
      * Bounds computed from the original (unsampled) data. Used for axis auto-bounds so sampling
      * cannot clip outliers.
@@ -253,6 +253,7 @@ export interface ResolvedChartGPUOptions extends Omit<
   | "gridLines"
   | "xAxis"
   | "yAxis"
+  | "axes"
   | "theme"
   | "palette"
   | "series"
@@ -261,7 +262,7 @@ export interface ResolvedChartGPUOptions extends Omit<
   readonly grid: ResolvedGridConfig;
   readonly gridLines: ResolvedGridLinesConfig;
   readonly xAxis: AxisConfig;
-  readonly yAxis: AxisConfig;
+  readonly yAxes: ReadonlyArray<AxisConfig>;
   readonly autoScroll: boolean;
   readonly theme: ThemeConfig;
   readonly palette: ReadonlyArray<string>;
@@ -1010,21 +1011,45 @@ export function resolveOptions(
       }
     : { ...defaultOptions.xAxis };
 
-  const yAxis: AxisConfig = userOptions.yAxis
-    ? {
+  const yAxes: AxisConfig[] = [];
+  if (userOptions.axes?.y && userOptions.axes.y.length > 0) {
+    for (let index = 0; index < userOptions.axes.y.length; index++) {
+      const yConfig = userOptions.axes.y[index]!;
+      yAxes.push({
         ...defaultOptions.yAxis,
-        ...userOptions.yAxis,
-        // runtime safety for JS callers
-        type:
-          (userOptions.yAxis as unknown as Partial<AxisConfig>).type ??
-          defaultOptions.yAxis.type,
+        ...yConfig,
+        id: yConfig.id ?? (index === 0 ? "y" : `y${index}`),
+        position: yConfig.position ?? "left",
+        type: yConfig.type ?? defaultOptions.yAxis.type,
         autoBounds:
           normalizeAxisAutoBounds(
-            (userOptions.yAxis as unknown as { readonly autoBounds?: unknown })
+            (yConfig as unknown as { readonly autoBounds?: unknown })
               .autoBounds,
           ) ?? defaultOptions.yAxis.autoBounds,
-      }
-    : { ...defaultOptions.yAxis };
+      });
+    }
+  } else {
+    yAxes.push(
+      userOptions.yAxis
+        ? {
+            ...defaultOptions.yAxis,
+            ...userOptions.yAxis,
+            id: userOptions.yAxis.id ?? "y",
+            position: userOptions.yAxis.position ?? "left",
+            type:
+              (userOptions.yAxis as unknown as Partial<AxisConfig>).type ??
+              defaultOptions.yAxis.type,
+            autoBounds:
+              normalizeAxisAutoBounds(
+                (userOptions.yAxis as unknown as { readonly autoBounds?: unknown })
+                  .autoBounds,
+              ) ?? defaultOptions.yAxis.autoBounds,
+          }
+        : { ...defaultOptions.yAxis, id: "y", position: "left" },
+    );
+  }
+
+  const defaultYAxisId = yAxes[0]!.id ?? "y";
 
   const series: ReadonlyArray<ResolvedSeriesConfig> = (
     userOptions.series ?? []
@@ -1043,6 +1068,8 @@ export function resolveOptions(
       normalizeSamplingThreshold(
         (s as unknown as { samplingThreshold?: unknown }).samplingThreshold,
       ) ?? 5000;
+      
+    const yAxis = s.yAxis ?? defaultYAxisId;
 
     switch (s.type) {
       case "area": {
@@ -1073,6 +1100,7 @@ export function resolveOptions(
           samplingThreshold,
           rawBounds,
           connectNulls: s.connectNulls ?? false,
+          yAxis,
         };
       }
       case "line": {
@@ -1118,6 +1146,7 @@ export function resolveOptions(
           samplingThreshold,
           rawBounds,
           connectNulls: s.connectNulls ?? false,
+          yAxis,
         };
       }
       case "bar": {
@@ -1132,6 +1161,7 @@ export function resolveOptions(
           sampling,
           samplingThreshold,
           rawBounds,
+          yAxis,
         };
       }
       case "scatter": {
@@ -1168,6 +1198,7 @@ export function resolveOptions(
           sampling,
           samplingThreshold,
           rawBounds,
+          yAxis,
         };
       }
       case "pie": {
@@ -1254,6 +1285,7 @@ export function resolveOptions(
           sampling: resolvedSampling,
           samplingThreshold: resolvedSamplingThreshold,
           rawBounds,
+          yAxis,
         };
       }
       default: {
@@ -1266,7 +1298,7 @@ export function resolveOptions(
     grid,
     gridLines,
     xAxis,
-    yAxis,
+    yAxes,
     autoScroll,
     dataZoom: sanitizeDataZoom((userOptions as ChartGPUOptions).dataZoom),
     annotations: sanitizeAnnotations(
