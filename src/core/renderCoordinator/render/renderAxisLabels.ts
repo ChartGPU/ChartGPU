@@ -17,6 +17,7 @@ import type {
 import { getCanvasCssWidth, getCanvasCssHeight } from "../utils/canvasUtils";
 import { formatTimeTickValue } from "../utils/timeAxisUtils";
 import { formatTickValue, createTickFormatter } from "../axis/computeAxisTicks";
+import { generateTicks, formatLogTick } from "../../../utils/tickHelpers";
 import { finiteOrUndefined } from "../utils/dataPointUtils";
 import { getAxisTitleFontSize } from "../../../utils/axisLabelStyling";
 
@@ -189,15 +190,22 @@ export function renderAxisLabels(
   const ySpans: HTMLSpanElement[] = [];
 
   const yTickFormatter = currentOptions.yAxis.tickFormatter;
-  for (let i = 0; i < yTickCount; i++) {
-    const t = yTickCount <= 1 ? 0.5 : i / (yTickCount - 1);
-    const v = yDomainMin + t * (yDomainMax - yDomainMin);
+  const isLog = currentOptions.yAxis.type === "log";
+  const yTicks = generateTicks(currentOptions.yAxis.type, yDomainMin, yDomainMax, yTickCount);
+  
+  for (const v of yTicks) {
     const yClip = yScale.scale(v);
     const yCss = clipYToCanvasCssPx(yClip, canvasCssHeight);
 
-    const label = yTickFormatter
-      ? yTickFormatter(v)
-      : formatTickValue(yFormatter, v);
+    let label: string | null = null;
+    if (yTickFormatter) {
+      label = yTickFormatter(v);
+    } else if (isLog) {
+      label = formatLogTick(v);
+    } else {
+      label = formatTickValue(yFormatter, v);
+    }
+    
     if (label == null) continue;
 
     const span = axisLabelOverlay.addLabel(
