@@ -57,7 +57,7 @@ export interface PlotBounds {
 export interface AnnotationContext {
   readonly annotations: ReadonlyArray<AnnotationConfig>;
   readonly xScale: LinearScale;
-  readonly yScale: LinearScale;
+  readonly yScales: Map<string, LinearScale>;
   readonly plotBounds: PlotBounds;
   readonly canvasCssWidth: number;
   readonly canvasCssHeight: number;
@@ -203,7 +203,7 @@ export function processAnnotations(
   const {
     annotations,
     xScale,
-    yScale,
+    yScales,
     plotBounds,
     canvasCssWidth,
     canvasCssHeight,
@@ -211,6 +211,10 @@ export function processAnnotations(
     offsetX = 0,
     offsetY = 0,
   } = context;
+
+  // Use the primary y-axis scale (first entry) for annotation positioning.
+  // Future work: support per-annotation yAxis binding.
+  const yScale = yScales.values().next().value ?? xScale;
 
   const {
     leftCss: plotLeftCss,
