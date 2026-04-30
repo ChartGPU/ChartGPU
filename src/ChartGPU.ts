@@ -613,6 +613,7 @@ const extendBoundsWithOHLCDataPoints = (
 const computeGlobalBounds = (
   series: ResolvedChartGPUOptions["series"],
   runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null,
+  clampYToPositive: boolean = false,
 ): Bounds => {
   let xMin = Number.POSITIVE_INFINITY;
   let xMax = Number.NEGATIVE_INFINITY;
@@ -707,6 +708,11 @@ const computeGlobalBounds = (
 
   if (xMin === xMax) xMax = xMin + 1;
   if (yMin === yMax) yMax = yMin + 1;
+
+  if (clampYToPositive) {
+    if (yMin <= 0) yMin = 1e-10;
+    if (yMax <= 0) yMax = 1;
+  }
 
   return { xMin, xMax, yMin, yMax };
 };
@@ -975,7 +981,6 @@ export async function createChartGPU(
         runtimeRawDataByIndex[i] = cartesianDataToMutableColumns(raw);
         runtimeRawBoundsByIndex[i] =
           (s as unknown as { rawBounds?: Bounds | null }).rawBounds ??
-          null ??
           (computeRawBoundsFromCartesianData(raw) as Bounds | null);
       }
     }
@@ -1007,6 +1012,7 @@ export async function createChartGPU(
   let cachedGlobalBounds: Bounds = computeGlobalBounds(
     resolvedOptions.series,
     runtimeRawBoundsByIndex,
+    resolvedOptions.yAxis.type === "log",
   );
   let interactionScalesCache: InteractionScalesCache | null = null;
 
@@ -2059,6 +2065,7 @@ export async function createChartGPU(
       cachedGlobalBounds = computeGlobalBounds(
         resolvedOptions.series,
         runtimeRawBoundsByIndex,
+        resolvedOptions.yAxis.type === "log",
       );
       interactionScalesCache = null;
       syncDataZoomUi();
@@ -2240,6 +2247,7 @@ export async function createChartGPU(
       cachedGlobalBounds = computeGlobalBounds(
         resolvedOptions.series,
         runtimeRawBoundsByIndex,
+        resolvedOptions.yAxis.type === "log",
       );
 
       runtimeHitTestSeriesCache = null;
