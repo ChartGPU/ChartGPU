@@ -113,6 +113,8 @@ export interface AxisConfig {
   readonly logBase?: number;
   readonly min?: number;
   readonly max?: number;
+  /** Number of ticks to display (approximate for linear/log scales). */
+  readonly tickCount?: number;
   /** Tick length in CSS pixels (default: 6). */
   readonly tickLength?: number;
   readonly name?: string;
