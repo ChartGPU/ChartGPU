@@ -21,7 +21,7 @@ import { assertUnreachable } from "../utils/dataPointUtils";
 export interface AnnotationLabelRenderContext {
   currentOptions: ResolvedChartGPUOptions;
   xScale: LinearScale;
-  yScale: LinearScale;
+  yScales: Map<string, LinearScale>;
   canvasCssWidthForAnnotations: number;
   canvasCssHeightForAnnotations: number;
   plotLeftCss: number;
@@ -124,7 +124,7 @@ export function renderAnnotationLabels(
   const {
     currentOptions,
     xScale,
-    yScale,
+    yScales,
     canvasCssWidthForAnnotations,
     canvasCssHeightForAnnotations,
     plotLeftCss,
@@ -133,6 +133,9 @@ export function renderAnnotationLabels(
     plotHeightCss,
     canvas,
   } = context;
+
+  // Use primary y-axis scale for annotation positioning
+  const yScale = yScales.values().next().value ?? xScale;
 
   const hasCartesianSeries = currentOptions.series.some(
     (s) => s.type !== "pie",

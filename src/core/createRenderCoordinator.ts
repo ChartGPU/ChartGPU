@@ -33,7 +33,7 @@ import {
   computeRawBoundsFromCartesianData,
 } from "../data/cartesianData";
 import type { CartesianSeriesData } from "../config/types";
-import { renderAxisLabels } from "./renderCoordinator/render/renderAxisLabels";
+import { renderAxisLabels, renderYAxisLabels } from "./renderCoordinator/render/renderAxisLabels";
 import { renderAnnotationLabels } from "./renderCoordinator/render/renderAnnotationLabels";
 import { prepareOverlays } from "./renderCoordinator/render/renderOverlays";
 import { processAnnotations } from "./renderCoordinator/annotations/processAnnotations";
@@ -118,13 +118,21 @@ function getCanvasCssWidth(canvas: HTMLCanvasElement | null): number {
   return canvas.clientWidth;
 }
 
+/** Gets canvas CSS height - clientHeight for HTMLCanvasElement */
+function getCanvasCssHeight(canvas: HTMLCanvasElement | null): number {
+  if (!canvas) {
+    return 0;
+  }
+  return canvas.clientHeight;
+}
+
 /**
  * Gets canvas CSS size derived strictly from device-pixel dimensions and DPR.
  *
  * This is intentionally different from `getCanvasCssWidth/Height(...)`:
  * - HTMLCanvasElement: `clientWidth/clientHeight` reflect DOM layout and can diverge (rounding, zoom, async resize)
  *   from the WebGPU render target size (`canvas.width/height` in device pixels).
- * - For GPU overlays that round-trip CSS↔device pixels in-shader, we must derive CSS size from
+ * - For GPU overlays that round-trip CSSÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Âdevice pixels in-shader, we must derive CSS size from
  *   `canvas.width/height` + DPR to keep transforms consistent with the render target.
  *
  * NOTE: Use this for GPU overlay coordinate conversion only (reference lines, markers).
@@ -145,7 +153,7 @@ function getCanvasCssSizeFromDevicePixels(
 export interface RenderCoordinator {
   setOptions(resolvedOptions: ResolvedChartGPUOptions): void;
   /**
-   * Appends new points to a cartesian series’ runtime data without requiring a full `setOptions(...)`
+   * Appends new points to a cartesian seriesÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ runtime data without requiring a full `setOptions(...)`
    * resolver pass.
    *
    * Appends are coalesced and flushed once per render frame.
@@ -155,14 +163,14 @@ export interface RenderCoordinator {
     newPoints: CartesianSeriesData | ReadonlyArray<OHLCDataPoint>,
   ): void;
   /**
-   * Gets the current “interaction x” in domain units (or `null` when inactive).
+   * Gets the current ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œinteraction xÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â in domain units (or `null` when inactive).
    *
    * This is derived from pointer movement inside the plot grid and can also be driven
    * externally via `setInteractionX(...)` (e.g. chart sync).
    */
   getInteractionX(): number | null;
   /**
-   * Drives the chart’s crosshair + tooltip from a domain-space x value.
+   * Drives the chartÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢s crosshair + tooltip from a domain-space x value.
    *
    * Passing `null` clears the interaction (hides crosshair/tooltip).
    */
@@ -378,131 +386,129 @@ const extendBoundsWithOHLCDataPoints = (
   return { xMin, xMax, yMin, yMax };
 };
 
-const computeGlobalBounds = (
+const computeGlobalXBounds = (
   series: ResolvedChartGPUOptions["series"],
   runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null,
-): Bounds => {
+): { xMin: number; xMax: number } => {
   let xMin = Number.POSITIVE_INFINITY;
   let xMax = Number.NEGATIVE_INFINITY;
-  let yMin = Number.POSITIVE_INFINITY;
-  let yMax = Number.NEGATIVE_INFINITY;
 
   for (let s = 0; s < series.length; s++) {
     const seriesConfig = series[s];
-    // Pie series are non-cartesian; they don't participate in x/y bounds.
     if (seriesConfig.type === "pie") continue;
 
     const runtimeBoundsCandidate = runtimeRawBoundsByIndex?.[s] ?? null;
     if (runtimeBoundsCandidate) {
       const b = runtimeBoundsCandidate;
-      if (
-        Number.isFinite(b.xMin) &&
-        Number.isFinite(b.xMax) &&
-        Number.isFinite(b.yMin) &&
-        Number.isFinite(b.yMax)
-      ) {
+      if (Number.isFinite(b.xMin) && Number.isFinite(b.xMax)) {
         if (b.xMin < xMin) xMin = b.xMin;
         if (b.xMax > xMax) xMax = b.xMax;
-        if (b.yMin < yMin) yMin = b.yMin;
-        if (b.yMax > yMax) yMax = b.yMax;
         continue;
       }
     }
 
-    // Prefer precomputed bounds from the original (unsampled) data when available.
-    // This ensures sampling cannot affect axis auto-bounds and avoids per-render O(n) scans.
     const rawBoundsCandidate = seriesConfig.rawBounds;
     if (rawBoundsCandidate) {
       const b = rawBoundsCandidate;
-      if (
-        Number.isFinite(b.xMin) &&
-        Number.isFinite(b.xMax) &&
-        Number.isFinite(b.yMin) &&
-        Number.isFinite(b.yMax)
-      ) {
+      if (Number.isFinite(b.xMin) && Number.isFinite(b.xMax)) {
         if (b.xMin < xMin) xMin = b.xMin;
         if (b.xMax > xMax) xMax = b.xMax;
-        if (b.yMin < yMin) yMin = b.yMin;
-        if (b.yMax > yMax) yMax = b.yMax;
         continue;
       }
     }
 
-    // Candlestick series: bounds should be precomputed in OptionResolver from timestamp/low/high.
-    // If we reach here, `rawBounds` was undefined; fall back to a raw OHLC scan so axes don't break.
     if (seriesConfig.type === "candlestick") {
-      const rawOHLC = (seriesConfig.rawData ??
-        seriesConfig.data) as ReadonlyArray<OHLCDataPoint>;
+      const rawOHLC = (seriesConfig.rawData ?? seriesConfig.data) as ReadonlyArray<OHLCDataPoint>;
       for (let i = 0; i < rawOHLC.length; i++) {
         const p = rawOHLC[i]!;
-        if (isTupleOHLCDataPoint(p)) {
-          const timestamp = p[0];
-          const low = p[3];
-          const high = p[4];
-          if (
-            !Number.isFinite(timestamp) ||
-            !Number.isFinite(low) ||
-            !Number.isFinite(high)
-          )
-            continue;
-
-          const yLow = Math.min(low, high);
-          const yHigh = Math.max(low, high);
-
-          if (timestamp < xMin) xMin = timestamp;
-          if (timestamp > xMax) xMax = timestamp;
-          if (yLow < yMin) yMin = yLow;
-          if (yHigh > yMax) yMax = yHigh;
-        } else {
-          const timestamp = p.timestamp;
-          const low = p.low;
-          const high = p.high;
-          if (
-            !Number.isFinite(timestamp) ||
-            !Number.isFinite(low) ||
-            !Number.isFinite(high)
-          )
-            continue;
-
-          const yLow = Math.min(low, high);
-          const yHigh = Math.max(low, high);
-
-          if (timestamp < xMin) xMin = timestamp;
-          if (timestamp > xMax) xMax = timestamp;
-          if (yLow < yMin) yMin = yLow;
-          if (yHigh > yMax) yMax = yHigh;
-        }
+        const timestamp = isTupleOHLCDataPoint(p) ? p[0] : p.timestamp;
+        if (!Number.isFinite(timestamp)) continue;
+        if (timestamp < xMin) xMin = timestamp;
+        if (timestamp > xMax) xMax = timestamp;
       }
       continue;
     }
 
-    // Cartesian series (line, area, bar, scatter): use CartesianSeriesData accessors
     const data = seriesConfig.data as CartesianSeriesData;
     const n = getPointCount(data);
     for (let i = 0; i < n; i++) {
       const x = getX(data, i);
-      const y = getY(data, i);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (!Number.isFinite(x)) continue;
       if (x < xMin) xMin = x;
       if (x > xMax) xMax = x;
+    }
+  }
+
+  if (!Number.isFinite(xMin) || !Number.isFinite(xMax)) {
+    return { xMin: 0, xMax: 1 };
+  }
+  if (xMin === xMax) xMax = xMin + 1;
+  return { xMin, xMax };
+};
+
+const computeGlobalYBoundsForAxis = (
+  series: ResolvedChartGPUOptions["series"],
+  axisId: string,
+  runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null,
+): { yMin: number; yMax: number } => {
+  let yMin = Number.POSITIVE_INFINITY;
+  let yMax = Number.NEGATIVE_INFINITY;
+
+  for (let s = 0; s < series.length; s++) {
+    const seriesConfig = series[s];
+    if (seriesConfig.type === "pie") continue;
+    if (seriesConfig.yAxis !== axisId) continue;
+
+    const runtimeBoundsCandidate = runtimeRawBoundsByIndex?.[s] ?? null;
+    if (runtimeBoundsCandidate) {
+      const b = runtimeBoundsCandidate;
+      if (Number.isFinite(b.yMin) && Number.isFinite(b.yMax)) {
+        if (b.yMin < yMin) yMin = b.yMin;
+        if (b.yMax > yMax) yMax = b.yMax;
+        continue;
+      }
+    }
+
+    const rawBoundsCandidate = seriesConfig.rawBounds;
+    if (rawBoundsCandidate) {
+      const b = rawBoundsCandidate;
+      if (Number.isFinite(b.yMin) && Number.isFinite(b.yMax)) {
+        if (b.yMin < yMin) yMin = b.yMin;
+        if (b.yMax > yMax) yMax = b.yMax;
+        continue;
+      }
+    }
+
+    if (seriesConfig.type === "candlestick") {
+      const rawOHLC = (seriesConfig.rawData ?? seriesConfig.data) as ReadonlyArray<OHLCDataPoint>;
+      for (let i = 0; i < rawOHLC.length; i++) {
+        const p = rawOHLC[i]!;
+        const low = isTupleOHLCDataPoint(p) ? p[3] : p.low;
+        const high = isTupleOHLCDataPoint(p) ? p[4] : p.high;
+        if (!Number.isFinite(low) || !Number.isFinite(high)) continue;
+        const yLow = Math.min(low, high);
+        const yHigh = Math.max(low, high);
+        if (yLow < yMin) yMin = yLow;
+        if (yHigh > yMax) yMax = yHigh;
+      }
+      continue;
+    }
+
+    const data = seriesConfig.data as CartesianSeriesData;
+    const n = getPointCount(data);
+    for (let i = 0; i < n; i++) {
+      const y = getY(data, i);
+      if (!Number.isFinite(y)) continue;
       if (y < yMin) yMin = y;
       if (y > yMax) yMax = y;
     }
   }
 
-  if (
-    !Number.isFinite(xMin) ||
-    !Number.isFinite(xMax) ||
-    !Number.isFinite(yMin) ||
-    !Number.isFinite(yMax)
-  ) {
-    return { xMin: 0, xMax: 1, yMin: 0, yMax: 1 };
+  if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) {
+    return { yMin: 0, yMax: 1 };
   }
-
-  if (xMin === xMax) xMax = xMin + 1;
   if (yMin === yMax) yMax = yMin + 1;
-
-  return { xMin, xMax, yMin, yMax };
+  return { yMin, yMax };
 };
 
 const normalizeDomain = (
@@ -820,12 +826,12 @@ const formatTimeTickValue = (
   if (visibleRangeMs < MS_PER_DAY) {
     return `${pad2(hh)}:${pad2(min)}`;
   }
-  // Treat the 7-day boundary as inclusive for the “1–7 days” tier.
+  // Treat the 7-day boundary as inclusive for the ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ1ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“7 daysÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â tier.
   if (visibleRangeMs <= 7 * MS_PER_DAY) {
     return `${pad2(mm)}/${pad2(dd)} ${pad2(hh)}:${pad2(min)}`;
   }
   // Keep short calendar dates until the visible range reaches ~3 months.
-  // (This covers the 1–12 week requirement, plus the small 12w→3m gap.)
+  // (This covers the 1ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“12 week requirement, plus the small 12wÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢3m gap.)
   if (visibleRangeMs < 3 * MS_PER_MONTH_APPROX) {
     return `${pad2(mm)}/${pad2(dd)}`;
   }
@@ -975,7 +981,7 @@ const computeBaseXDomain = (
   options: ResolvedChartGPUOptions,
   runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null,
 ): { readonly min: number; readonly max: number } => {
-  const bounds = computeGlobalBounds(options.series, runtimeRawBoundsByIndex);
+  const bounds = computeGlobalXBounds(options.series, runtimeRawBoundsByIndex);
   const baseMin = finiteOrUndefined(options.xAxis.min) ?? bounds.xMin;
   const baseMax = finiteOrUndefined(options.xAxis.max) ?? bounds.xMax;
   return normalizeDomain(baseMin, baseMax);
@@ -988,18 +994,18 @@ const computeBaseXDomain = (
  * Performance: O(n) where n = total points across all visible series data.
  * This is called only when renderSeries changes (zoom/pan/data updates), not per-frame.
  */
-const computeVisibleYBounds = (
+const computeVisibleYBoundsForAxis = (
   series: ResolvedChartGPUOptions["series"],
-): Bounds => {
+  axisId: string,
+): { yMin: number; yMax: number } => {
   let yMin = Number.POSITIVE_INFINITY;
   let yMax = Number.NEGATIVE_INFINITY;
 
   for (let s = 0; s < series.length; s++) {
     const seriesConfig = series[s];
-    // Pie series are non-cartesian; they don't participate in y bounds.
     if (seriesConfig.type === "pie") continue;
+    if (seriesConfig.yAxis !== axisId) continue;
 
-    // Candlestick series: scan low/high from visible data
     if (seriesConfig.type === "candlestick") {
       const visibleOHLC = seriesConfig.data as ReadonlyArray<OHLCDataPoint>;
       for (let i = 0; i < visibleOHLC.length; i++) {
@@ -1008,7 +1014,6 @@ const computeVisibleYBounds = (
         const high = isTupleOHLCDataPoint(p) ? p[4] : p.high;
         if (!Number.isFinite(low) || !Number.isFinite(high)) continue;
 
-        // Use Math.min/max to handle inverted low/high gracefully
         const yLow = Math.min(low, high);
         const yHigh = Math.max(low, high);
 
@@ -1018,7 +1023,6 @@ const computeVisibleYBounds = (
       continue;
     }
 
-    // Cartesian series (line, area, bar, scatter): scan y from visible data
     const data = seriesConfig.data as CartesianSeriesData;
     const n = getPointCount(data);
     for (let i = 0; i < n; i++) {
@@ -1029,44 +1033,38 @@ const computeVisibleYBounds = (
     }
   }
 
-  // Fallback for empty/invalid data: return safe default bounds
   if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) {
-    return { xMin: 0, xMax: 1, yMin: 0, yMax: 1 };
+    return { yMin: 0, yMax: 1 };
   }
 
-  // Degenerate domain: add unit span to avoid zero-width range
   if (yMin === yMax) yMax = yMin + 1;
 
-  return { xMin: 0, xMax: 1, yMin, yMax };
+  return { yMin, yMax };
 };
 
-const computeBaseYDomain = (
+const computeBaseYDomainForAxis = (
   options: ResolvedChartGPUOptions,
+  axisId: string,
   runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null,
-  visibleBoundsOverride?: Bounds | null,
+  visibleBoundsOverride?: { yMin: number; yMax: number } | null,
 ): { readonly min: number; readonly max: number } => {
-  // Explicit min/max ALWAYS take precedence over auto-bounds
-  const explicitMin = finiteOrUndefined(options.yAxis.min);
-  const explicitMax = finiteOrUndefined(options.yAxis.max);
+  const yAxisConfig = options.yAxes.find((ax) => ax.id === axisId) || options.yAxes[0]!;
+  const explicitMin = finiteOrUndefined(yAxisConfig.min);
+  const explicitMax = finiteOrUndefined(yAxisConfig.max);
 
-  // If both min and max are explicit, use them directly (no auto-bounds needed)
   if (explicitMin !== undefined && explicitMax !== undefined) {
     return normalizeDomain(explicitMin, explicitMax);
   }
 
-  // Determine which bounds to use based on autoBounds mode
-  const autoBoundsMode = options.yAxis.autoBounds ?? "visible";
-  let bounds: Bounds;
+  const autoBoundsMode = yAxisConfig.autoBounds ?? "visible";
+  let bounds: { yMin: number; yMax: number };
 
   if (autoBoundsMode === "visible" && visibleBoundsOverride) {
-    // Use visible bounds from renderSeries (zoom-aware, computed from visible data only)
     bounds = visibleBoundsOverride;
   } else {
-    // Use global bounds from full dataset (pre-zoom behavior, computed from all raw data)
-    bounds = computeGlobalBounds(options.series, runtimeRawBoundsByIndex);
+    bounds = computeGlobalYBoundsForAxis(options.series, axisId, runtimeRawBoundsByIndex);
   }
 
-  // Merge explicit bounds with computed bounds (partial override support)
   const yMin = explicitMin ?? bounds.yMin;
   const yMax = explicitMax ?? bounds.yMax;
   return normalizeDomain(yMin, yMax);
@@ -1142,16 +1140,16 @@ const resolveUpdateAnimationConfig = (
  *
  * Coordinate transformations:
  * 1. Domain values (timestamp, open, close) from CandlestickMatch
- * 2. → xScale/yScale transform to grid-local CSS pixels
- * 3. → Add gridArea offset to get canvas-local CSS pixels
- * 4. → Add canvas offset to get container-local CSS pixels
+ * 2. ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ xScale/yScale transform to grid-local CSS pixels
+ * 3. ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ Add gridArea offset to get canvas-local CSS pixels
+ * 4. ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ Add canvas offset to get container-local CSS pixels
  *
  * Returns null if any coordinate computation fails (non-finite values).
  */
 const computeCandlestickTooltipAnchor = (
   match: { readonly point: OHLCDataPoint },
   xScale: LinearScale,
-  yScale: LinearScale,
+  yScales: Map<string, LinearScale>,
   gridArea: GridArea,
   canvas: HTMLCanvasElement,
 ): Readonly<{ x: number; y: number }> | null => {
@@ -1174,7 +1172,8 @@ const computeCandlestickTooltipAnchor = (
 
   // Transform to grid-local CSS pixels
   const xGridCss = xScale.scale(timestamp);
-  const yGridCss = yScale.scale(bodyMidY);
+  const yScale = yScales.values().next().value;
+  const yGridCss = yScale ? yScale.scale(bodyMidY) : 0;
 
   if (!Number.isFinite(xGridCss) || !Number.isFinite(yGridCss)) {
     return null;
@@ -1399,7 +1398,7 @@ export function createRenderCoordinator(
   type UpdateTransitionSnapshot = Readonly<{
     readonly xBaseDomain: { readonly min: number; readonly max: number };
     readonly xVisibleDomain: { readonly min: number; readonly max: number };
-    readonly yBaseDomain: { readonly min: number; readonly max: number };
+    readonly yBaseDomains: Map<string, { readonly min: number; readonly max: number }>;
     readonly series: ResolvedChartGPUOptions["series"];
   }>;
 
@@ -1608,11 +1607,13 @@ export function createRenderCoordinator(
       t01,
     );
     const xVisible = computeVisibleXDomain(xBase, zoomRange);
-    const yBase = lerpDomain(
-      transition.from.yBaseDomain,
-      transition.to.yBaseDomain,
-      t01,
-    );
+    const yBaseDomains = new Map<string, { readonly min: number; readonly max: number }>();
+    for (const ax of transition.from.series[0] ? currentOptions.yAxes : []) {
+        const axId = ax.id!;
+        const fromY = transition.from.yBaseDomains.get(axId) || { min: 0, max: 1 };
+        const toY = transition.to.yBaseDomains.get(axId) || { min: 0, max: 1 };
+        yBaseDomains.set(axId, lerpDomain(fromY, toY, t01));
+    }
     const series = interpolateSeriesForUpdate(
       transition.from.series,
       transition.to.series,
@@ -1622,7 +1623,7 @@ export function createRenderCoordinator(
     return {
       xBaseDomain: xBase,
       xVisibleDomain: { min: xVisible.min, max: xVisible.max },
-      yBaseDomain: yBase,
+      yBaseDomains,
       series,
     };
   };
@@ -1642,7 +1643,7 @@ export function createRenderCoordinator(
     options.series.length,
   ).fill(null);
 
-  // Baseline sampled series list derived from runtime raw data (used as the “full span” baseline).
+  // Baseline sampled series list derived from runtime raw data (used as the ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œfull spanÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â baseline).
   // Zoom-visible resampling is derived from this baseline + runtime raw as needed.
   let runtimeBaseSeries: ResolvedChartGPUOptions["series"] =
     currentOptions.series;
@@ -1653,24 +1654,26 @@ export function createRenderCoordinator(
 
   // Cache for visible y-bounds computed from renderSeries (for yAxis.autoBounds === 'visible').
   // Recomputed whenever renderSeries changes (zoom/pan/data updates).
-  let cachedVisibleYBounds: Bounds | null = null;
+  let cachedVisibleYBoundsByAxis: Map<string, { yMin: number; yMax: number }> = new Map();
 
-  const shouldComputeVisibleYBounds = (
+  const shouldComputeVisibleYBoundsForAxis = (
     opts: ResolvedChartGPUOptions,
+    axisId: string,
   ): boolean => {
-    const autoBoundsMode = opts.yAxis.autoBounds ?? "visible";
+    const yAxisConfig = opts.yAxes.find((ax) => ax.id === axisId) || opts.yAxes[0]!;
+    const autoBoundsMode = yAxisConfig.autoBounds ?? "visible";
     if (autoBoundsMode !== "visible") return false;
-    // If both bounds are explicit, auto-bounds (including visible) are never consulted.
-    const explicitMin = finiteOrUndefined(opts.yAxis.min);
-    const explicitMax = finiteOrUndefined(opts.yAxis.max);
+    const explicitMin = finiteOrUndefined(yAxisConfig.min);
+    const explicitMax = finiteOrUndefined(yAxisConfig.max);
     return !(explicitMin !== undefined && explicitMax !== undefined);
   };
 
   const recomputeCachedVisibleYBoundsIfNeeded = (): void => {
-    if (shouldComputeVisibleYBounds(currentOptions)) {
-      cachedVisibleYBounds = computeVisibleYBounds(renderSeries);
-    } else {
-      cachedVisibleYBounds = null;
+    cachedVisibleYBoundsByAxis.clear();
+    for (const ax of currentOptions.yAxes) {
+      if (shouldComputeVisibleYBoundsForAxis(currentOptions, ax.id!)) {
+        cachedVisibleYBoundsByAxis.set(ax.id!, computeVisibleYBoundsForAxis(renderSeries, ax.id!));
+      }
     }
   };
 
@@ -1759,21 +1762,18 @@ export function createRenderCoordinator(
     sampleCount: MAIN_SCENE_MSAA_SAMPLE_COUNT,
     pipelineCache,
   });
-  // Axis and crosshair renderers draw into the top overlay pass (swapchain, single-sample) — keep sampleCount: 1.
+  // Axis and crosshair renderers draw into the top overlay pass (swapchain, single-sample) ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â keep sampleCount: 1.
   const xAxisRenderer = createAxisRenderer(device, {
     targetFormat,
     pipelineCache,
   });
-  const yAxisRenderer = createAxisRenderer(device, {
-    targetFormat,
-    pipelineCache,
-  });
+  const yAxisRenderers = new Map<string, ReturnType<typeof createAxisRenderer>>();
   const crosshairRenderer = createCrosshairRenderer(device, {
     targetFormat,
     pipelineCache,
   });
   crosshairRenderer.setVisible(false);
-  // Highlight renders into the top overlay pass (swapchain, single-sample) — keep sampleCount: 1.
+  // Highlight renders into the top overlay pass (swapchain, single-sample) ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â keep sampleCount: 1.
   const highlightRenderer = createHighlightRenderer(device, {
     targetFormat,
     pipelineCache,
@@ -1852,7 +1852,7 @@ export function createRenderCoordinator(
   // Cached interaction scales from the last render (used for pointer -> domain-x mapping).
   let lastInteractionScales: {
     readonly xScale: LinearScale;
-    readonly yScale: LinearScale;
+    readonly yScales: Map<string, LinearScale>;
     readonly plotWidthCss: number;
     readonly plotHeightCss: number;
   } | null = null;
@@ -1919,7 +1919,7 @@ export function createRenderCoordinator(
       currentOptions.xAxis.min == null &&
       currentOptions.xAxis.max == null;
 
-    // Capture the pre-append visible domain so we can preserve it for “panned away” behavior.
+    // Capture the pre-append visible domain so we can preserve it for ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œpanned awayÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â behavior.
     const prevBaseXDomain = computeBaseXDomain(
       currentOptions,
       runtimeRawBoundsByIndex,
@@ -2244,11 +2244,11 @@ export function createRenderCoordinator(
     gridArea: GridArea,
     domains: {
       readonly xDomain: { readonly min: number; readonly max: number };
-      readonly yDomain: { readonly min: number; readonly max: number };
+      readonly yDomains: Map<string, { readonly min: number; readonly max: number }>;
     },
   ): {
     readonly xScale: LinearScale;
-    readonly yScale: LinearScale;
+    readonly yScales: Map<string, LinearScale>;
     readonly plotWidthCss: number;
     readonly plotHeightCss: number;
   } | null => {
@@ -2258,22 +2258,20 @@ export function createRenderCoordinator(
     const plotSize = getPlotSizeCssPx(canvas, gridArea);
     if (!plotSize) return null;
 
-    // IMPORTANT: grid-local CSS px ranges (0..plotWidth/Height), for interaction hit-testing.
     const xScale = createLinearScale()
       .domain(domains.xDomain.min, domains.xDomain.max)
       .range(0, plotSize.plotWidthCss);
-    const yScale = createLinearScale()
-      .domain(domains.yDomain.min, domains.yDomain.max)
-      .range(plotSize.plotHeightCss, 0);
+    const yScales = new Map<string, LinearScale>();
+    for (const [id, dom] of domains.yDomains) {
+      yScales.set(id, createLinearScale().domain(dom.min, dom.max).range(plotSize.plotHeightCss, 0));
+    }
 
-    const result = {
+    return {
       xScale,
-      yScale,
+      yScales,
       plotWidthCss: plotSize.plotWidthCss,
       plotHeightCss: plotSize.plotHeightCss,
     };
-
-    return result;
   };
 
   const buildTooltipParams = (
@@ -2383,18 +2381,18 @@ export function createRenderCoordinator(
       const barWidthClip = computeCandlestickBodyWidthRange(
         cs,
         cs.data,
-        interactionScales.xScale,
-        interactionScales.plotWidthCss,
-      );
-
-      const m = findCandlestick(
-        [cs],
-        gridX,
-        gridY,
-        interactionScales.xScale,
-        interactionScales.yScale,
-        barWidthClip,
-      );
+            interactionScales.xScale,
+            interactionScales.plotWidthCss,
+          );
+          
+          const m = findCandlestick(
+            [cs],
+            gridX,
+            gridY,
+            interactionScales.xScale,
+            interactionScales.yScales.get((s as any).yAxis || "y")!,
+            barWidthClip,
+          );
       if (!m) continue;
 
       const params = buildCandlestickTooltipParams(i, m.dataIndex, m.point);
@@ -2423,7 +2421,7 @@ export function createRenderCoordinator(
         "mouse",
       );
     } else if (!payload.isInGrid) {
-      // Clear interaction-x when leaving the plot area (keeps synced charts from “sticking”).
+      // Clear interaction-x when leaving the plot area (keeps synced charts from ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œstickingÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â).
       setInteractionXInternal(null, "mouse");
     }
 
@@ -2449,7 +2447,7 @@ export function createRenderCoordinator(
     eventManager.on("mouseleave", onMouseLeave);
   }
 
-  // Optional internal “inside zoom” (wheel zoom + drag pan).
+  // Optional internal ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œinside zoomÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â (wheel zoom + drag pan).
   let zoomState: ZoomState | null = null;
   let insideZoom: ReturnType<typeof createInsideZoom> | null = null;
   let unsubscribeZoom: (() => void) | null = null;
@@ -2812,7 +2810,7 @@ export function createRenderCoordinator(
     );
     const visibleX = computeVisibleXDomain(baseXDomain, zoomRange);
 
-    // Add buffer zone (±10% beyond visible range) for caching
+    // Add buffer zone (ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±10% beyond visible range) for caching
     const bufferFactor = 0.1;
     const visibleSpan = visibleX.max - visibleX.min;
     const bufferSize = visibleSpan * bufferFactor;
@@ -3057,15 +3055,22 @@ export function createRenderCoordinator(
         runtimeRawBoundsByIndex,
       );
       const fromXVisible = computeVisibleXDomain(fromXBase, fromZoomRange);
-      const fromYBase = computeBaseYDomain(
-        currentOptions,
-        runtimeRawBoundsByIndex,
-        cachedVisibleYBounds,
-      );
+      const fromYBaseDomains = new Map<string, { min: number; max: number }>();
+      for (const ax of currentOptions.yAxes) {
+        fromYBaseDomains.set(
+          ax.id!,
+          computeBaseYDomainForAxis(
+            currentOptions,
+            ax.id!,
+            runtimeRawBoundsByIndex,
+            cachedVisibleYBoundsByAxis.get(ax.id!) ?? null,
+          ),
+        );
+      }
       return {
         xBaseDomain: fromXBase,
         xVisibleDomain: { min: fromXVisible.min, max: fromXVisible.max },
-        yBaseDomain: fromYBase,
+        yBaseDomains: fromYBaseDomains,
         series: renderSeries,
       };
     })();
@@ -3080,7 +3085,7 @@ export function createRenderCoordinator(
     currentOptions = resolvedOptions;
 
     if (likelyDataChanged) {
-      // Series data or structure changed — full reset of runtime data state.
+      // Series data or structure changed ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â full reset of runtime data state.
       runtimeBaseSeries = resolvedOptions.series;
       renderSeries = resolvedOptions.series;
       gpuSeriesKindByIndex = new Array(resolvedOptions.series.length).fill(
@@ -3094,7 +3099,7 @@ export function createRenderCoordinator(
     }
 
     // Always refresh: annotations, themes, tooltip config, etc. may have changed.
-    cachedVisibleYBounds = null;
+    cachedVisibleYBoundsByAxis.clear();
     legend?.update(resolvedOptions.series, resolvedOptions.theme);
     recomputeRuntimeBaseSeries();
     updateZoom();
@@ -3153,16 +3158,27 @@ export function createRenderCoordinator(
     const toZoomRange = zoomState?.getRange() ?? null;
     const toXBase = computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
     const toXVisible = computeVisibleXDomain(toXBase, toZoomRange);
-    const toYBase = computeBaseYDomain(
-      currentOptions,
-      runtimeRawBoundsByIndex,
-      cachedVisibleYBounds,
-    );
+    const toYBaseDomains = new Map<string, { min: number; max: number }>();
+    for (const ax of currentOptions.yAxes) {
+      toYBaseDomains.set(
+        ax.id!,
+        computeBaseYDomainForAxis(
+          currentOptions,
+          ax.id!,
+          runtimeRawBoundsByIndex,
+          cachedVisibleYBoundsByAxis.get(ax.id!) ?? null,
+        ),
+      );
+    }
     const toSeriesForTransition = renderSeries;
 
+    // Compare primary axis domain for change detection
+    const primaryAxisId = currentOptions.yAxes[0]?.id ?? "y";
+    const fromPrimaryY = fromSnapshot.yBaseDomains.get(primaryAxisId) ?? { min: 0, max: 1 };
+    const toPrimaryY = toYBaseDomains.get(primaryAxisId) ?? { min: 0, max: 1 };
     const domainChanged =
       !isDomainEqual(fromSnapshot.xBaseDomain, toXBase) ||
-      !isDomainEqual(fromSnapshot.yBaseDomain, toYBase);
+      !isDomainEqual(fromPrimaryY, toPrimaryY);
 
     const shouldAnimateUpdate =
       hasRenderedOnce && (domainChanged || likelyDataChanged);
@@ -3179,13 +3195,13 @@ export function createRenderCoordinator(
       from: {
         xBaseDomain: fromSnapshot.xBaseDomain,
         xVisibleDomain: fromSnapshot.xVisibleDomain,
-        yBaseDomain: fromSnapshot.yBaseDomain,
+        yBaseDomains: fromSnapshot.yBaseDomains,
         series: fromSnapshot.series,
       },
       to: {
         xBaseDomain: toXBase,
         xVisibleDomain: { min: toXVisible.min, max: toXVisible.max },
-        yBaseDomain: toYBase,
+        yBaseDomains: toYBaseDomains,
         series: toSeriesForTransition,
       },
     };
@@ -3397,17 +3413,6 @@ export function createRenderCoordinator(
           updateP,
         )
       : computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
-    const yBaseDomain = updateTransition
-      ? lerpDomain(
-          updateTransition.from.yBaseDomain,
-          updateTransition.to.yBaseDomain,
-          updateP,
-        )
-      : computeBaseYDomain(
-          currentOptions,
-          runtimeRawBoundsByIndex,
-          cachedVisibleYBounds,
-        );
     const visibleXDomain = computeVisibleXDomain(baseXDomain, zoomRange);
 
     const plotClipRect = computePlotClipRect(gridArea);
@@ -3416,9 +3421,35 @@ export function createRenderCoordinator(
     const xScale = createLinearScale()
       .domain(visibleXDomain.min, visibleXDomain.max)
       .range(plotClipRect.left, plotClipRect.right);
-    const yScale = createLinearScale()
-      .domain(yBaseDomain.min, yBaseDomain.max)
-      .range(plotClipRect.bottom, plotClipRect.top);
+
+    // Compute per-axis y domains (with transition interpolation if active)
+    const currentYScales = new Map<string, LinearScale>();
+    const currentYDomains = new Map<string, { readonly min: number; readonly max: number }>();
+    for (const ax of currentOptions.yAxes) {
+      const axisId = ax.id!;
+      let dom: { min: number; max: number };
+      if (updateTransition && updateP < 1) {
+        const fromY = updateTransition.from.yBaseDomains.get(axisId) ?? { min: 0, max: 1 };
+        const toY = updateTransition.to.yBaseDomains.get(axisId) ?? { min: 0, max: 1 };
+        dom = lerpDomain(fromY, toY, updateP);
+      } else {
+        dom = computeBaseYDomainForAxis(
+          currentOptions,
+          axisId,
+          runtimeRawBoundsByIndex,
+          cachedVisibleYBoundsByAxis.get(axisId) ?? null,
+        );
+      }
+      currentYDomains.set(axisId, dom);
+      currentYScales.set(
+        axisId,
+        createLinearScale()
+          .domain(dom.min, dom.max)
+          .range(plotClipRect.bottom, plotClipRect.top),
+      );
+    }
+    // Primary y scale (for bars, highlight, single-axis usage)
+    const yScale = currentYScales.values().next().value!;
 
     // PERFORMANCE: Cache canvas CSS dimensions (used for both GPU overlays and label processing)
     // Annotations (GPU overlays) are specified in data-space and converted to CANVAS-LOCAL CSS pixels.
@@ -3455,7 +3486,7 @@ export function createRenderCoordinator(
     const annotationResult = processAnnotations({
       annotations,
       xScale,
-      yScale,
+      yScales: currentYScales,
       plotBounds: {
         leftCss: plotLeftCss,
         rightCss: plotRightCss,
@@ -3524,7 +3555,7 @@ export function createRenderCoordinator(
 
     const interactionScales = computeInteractionScalesGridCssPx(gridArea, {
       xDomain: { min: visibleXDomain.min, max: visibleXDomain.max },
-      yDomain: yBaseDomain,
+      yDomains: currentYDomains,
     });
     lastInteractionScales = interactionScales;
 
@@ -3593,14 +3624,14 @@ export function createRenderCoordinator(
       {
         gridRenderer,
         xAxisRenderer,
-        yAxisRenderer,
+        yAxisRenderers,
         crosshairRenderer,
         highlightRenderer,
       },
       {
         currentOptions,
         xScale,
-        yScale,
+        yScales: currentYScales,
         gridArea,
         xTickCount,
         hasCartesianSeries,
@@ -3753,7 +3784,7 @@ export function createRenderCoordinator(
                   const anchor = computeCandlestickTooltipAnchor(
                     candlestickResult.match,
                     interactionScales.xScale,
-                    interactionScales.yScale,
+                    interactionScales.yScales,
                     gridArea,
                     canvas,
                   );
@@ -3798,7 +3829,7 @@ export function createRenderCoordinator(
                   const anchor = computeCandlestickTooltipAnchor(
                     candlestickResult.match,
                     interactionScales.xScale,
-                    interactionScales.yScale,
+                    interactionScales.yScales,
                     gridArea,
                     canvas,
                   );
@@ -3878,7 +3909,7 @@ export function createRenderCoordinator(
                 const anchor = computeCandlestickTooltipAnchor(
                   candlestickResult.match,
                   interactionScales.xScale,
-                  interactionScales.yScale,
+                  interactionScales.yScales,
                   gridArea,
                   canvas,
                 );
@@ -3910,7 +3941,7 @@ export function createRenderCoordinator(
               effectivePointer.gridX,
               effectivePointer.gridY,
               interactionScales.xScale,
-              interactionScales.yScale,
+              interactionScales.yScales.values().next().value!,
             );
             if (!match) {
               hideTooltip();
@@ -3967,7 +3998,7 @@ export function createRenderCoordinator(
       currentOptions,
       seriesForRender,
       xScale,
-      yScale,
+      yScales: currentYScales,
       gridArea,
       dataStore,
       appendedGpuThisFrame,
@@ -4003,7 +4034,7 @@ export function createRenderCoordinator(
 
     // Prepare annotation GPU overlays (reference lines + point markers).
     // Note: these renderers expect CANVAS-LOCAL CSS pixel coordinates; the coordinator owns
-    // data-space → canvas-space conversion and plot scissor state.
+    // data-space ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ canvas-space conversion and plot scissor state.
     if (hasCartesianSeries) {
       referenceLineRenderer.prepare(gridArea, combinedReferenceLines);
       referenceLineRendererMsaa.prepare(gridArea, combinedReferenceLines);
@@ -4105,7 +4136,7 @@ export function createRenderCoordinator(
 
     mainPass.end();
 
-    // MSAA annotation overlay pass: blit main color → MSAA target, then draw above-series annotations.
+    // MSAA annotation overlay pass: blit main color ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ MSAA target, then draw above-series annotations.
     const overlayPass = encoder.beginRenderPass({
       label: "renderCoordinator/annotationOverlayMsaaPass",
       colorAttachments: [
@@ -4160,7 +4191,9 @@ export function createRenderCoordinator(
     highlightRenderer.render(topOverlayPass);
     if (hasCartesianSeries) {
       xAxisRenderer.render(topOverlayPass);
-      yAxisRenderer.render(topOverlayPass);
+      for (const r of yAxisRenderers.values()) {
+        r.render(topOverlayPass);
+      }
     }
     crosshairRenderer.render(topOverlayPass);
 
@@ -4174,17 +4207,42 @@ export function createRenderCoordinator(
       gpuContext,
       currentOptions,
       xScale,
-      yScale,
       xTickValues,
       plotClipRect,
       visibleXRangeMs,
     });
 
+    // Generate Y-axis labels for each axis
+    const canvas2 = gpuContext.canvas as HTMLCanvasElement | null;
+    if (canvas2) {
+      const canvasCssW = getCanvasCssWidth(canvas2);
+      const canvasCssH = getCanvasCssHeight(canvas2);
+      const offX = canvas2.offsetLeft || 0;
+      const offY = canvas2.offsetTop || 0;
+      for (const yAxisConfig of currentOptions.yAxes) {
+        const axisId = yAxisConfig.id!;
+        const yScaleForAxis = currentYScales.get(axisId);
+        if (!yScaleForAxis) continue;
+        renderYAxisLabels({
+          axisLabelOverlay,
+          overlayContainer,
+          yAxisConfig,
+          yScale: yScaleForAxis,
+          plotClipRect,
+          canvasCssWidth: canvasCssW,
+          canvasCssHeight: canvasCssH,
+          offsetX: offX,
+          offsetY: offY,
+          theme: currentOptions.theme,
+        });
+      }
+    }
+
     // Generate annotation labels (DOM overlay)
     renderAnnotationLabels(annotationOverlay, overlayContainer, {
       currentOptions,
       xScale,
-      yScale,
+      yScales: currentYScales,
       canvasCssWidthForAnnotations,
       canvasCssHeightForAnnotations,
       plotLeftCss,
@@ -4243,7 +4301,8 @@ export function createRenderCoordinator(
 
     gridRenderer.dispose();
     xAxisRenderer.dispose();
-    yAxisRenderer.dispose();
+    for (const r of yAxisRenderers.values()) r.dispose();
+yAxisRenderers.clear();
     referenceLineRenderer.dispose();
     annotationMarkerRenderer.dispose();
     referenceLineRendererMsaa.dispose();
@@ -4268,7 +4327,7 @@ export function createRenderCoordinator(
     assertNotDisposed();
     const normalized = x !== null && Number.isFinite(x) ? x : null;
 
-    // External interaction should not depend on y, so we treat it as “sync” mode.
+    // External interaction should not depend on y, so we treat it as ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œsyncÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â mode.
     pointerState = {
       ...pointerState,
       source: normalized === null ? "mouse" : "sync",

@@ -214,15 +214,18 @@ const generateAxisVertices = (
       vertices[idx++] = y1;
     }
   } else {
-    // Baseline along left edge of plot rect.
-    vertices[idx++] = plotLeftClip;
+    const isRight = axisConfig.position === "right";
+    const baselineX = isRight ? plotRightClip : plotLeftClip;
+
+    // Baseline along edge of plot rect.
+    vertices[idx++] = baselineX;
     vertices[idx++] = plotBottomClip;
-    vertices[idx++] = plotLeftClip;
+    vertices[idx++] = baselineX;
     vertices[idx++] = plotTopClip;
 
-    // Ticks extend left (outside plot).
-    const x0 = plotLeftClip;
-    const x1 = x0 - tickDeltaClipX;
+    // Ticks extend outward (outside plot).
+    const x0 = baselineX;
+    const x1 = isRight ? x0 + tickDeltaClipX : x0 - tickDeltaClipX;
 
     for (let i = 0; i < tickCount; i++) {
       const t = tickCount === 1 ? 0.5 : i / (tickCount - 1);

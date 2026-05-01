@@ -975,7 +975,6 @@ export async function createChartGPU(
         runtimeRawDataByIndex[i] = cartesianDataToMutableColumns(raw);
         runtimeRawBoundsByIndex[i] =
           (s as unknown as { rawBounds?: Bounds | null }).rawBounds ??
-          null ??
           (computeRawBoundsFromCartesianData(raw) as Bounds | null);
       }
     }
@@ -1512,8 +1511,8 @@ export async function createChartGPU(
 
     const xMin = resolvedOptions.xAxis.min ?? cachedGlobalBounds.xMin;
     const xMax = resolvedOptions.xAxis.max ?? cachedGlobalBounds.xMax;
-    const yMin = resolvedOptions.yAxis.min ?? cachedGlobalBounds.yMin;
-    const yMax = resolvedOptions.yAxis.max ?? cachedGlobalBounds.yMax;
+    const yMin = resolvedOptions.yAxes[0]?.min ?? cachedGlobalBounds.yMin;
+    const yMax = resolvedOptions.yAxes[0]?.max ?? cachedGlobalBounds.yMax;
 
     // Make hit-testing zoom-aware (mirror coordinator percent->domain mapping).
     const baseXDomain = normalizeDomain(xMin, xMax);
@@ -2448,8 +2447,8 @@ export async function createChartGPU(
       // Compute domain and scales for hit-testing
       const xMin = resolvedOptions.xAxis.min ?? cachedGlobalBounds.xMin;
       const xMax = resolvedOptions.xAxis.max ?? cachedGlobalBounds.xMax;
-      const yMin = resolvedOptions.yAxis.min ?? cachedGlobalBounds.yMin;
-      const yMax = resolvedOptions.yAxis.max ?? cachedGlobalBounds.yMax;
+      const yMin = resolvedOptions.yAxes[0]?.min ?? cachedGlobalBounds.yMin;
+      const yMax = resolvedOptions.yAxes[0]?.max ?? cachedGlobalBounds.yMax;
 
       const baseXDomain = normalizeDomain(xMin, xMax);
       const zoomRange = coordinator?.getZoomRange() ?? null;

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   renderAxisLabels,
+  renderYAxisLabels,
   type AxisLabelRenderContext,
+  type YAxisLabelRenderContext,
 } from "../renderAxisLabels";
 
 /**
@@ -67,7 +69,7 @@ function createMinimalContext(
     currentOptions: {
       series: [{ type: "line", data: [], color: "#fff", visible: true }],
       xAxis: { type: "value" },
-      yAxis: { type: "value" },
+      yAxes: [{ id: "primary", type: "value" }],
       theme: {
         fontSize: 12,
         textColor: "#ffffff",
@@ -83,10 +85,10 @@ function createMinimalContext(
       scale: (v: number) => -1 + (v / 100) * 2, // maps 0-100 to -1..+1
       invert: (c: number) => ((c + 1) / 2) * 100,
     } as any,
-    yScale: {
+    yScales: new Map([["primary", {
       scale: (v: number) => -1 + (v / 100) * 2,
       invert: (c: number) => ((c + 1) / 2) * 100,
-    } as any,
+    } as any]]),
     xTickValues: [0, 25, 50, 75, 100],
     plotClipRect: { left: -0.85, right: 0.95, top: 0.8, bottom: -0.8 },
     visibleXRangeMs: 0,
@@ -169,14 +171,28 @@ describe("renderAxisLabels", () => {
       const context = createMinimalContext({
         currentOptions: {
           ...createMinimalContext().currentOptions,
-          yAxis: {
+          yAxes: [{
+            id: "primary",
             type: "value" as const,
             tickFormatter: (v: number) => `${(v * 100).toFixed(0)}%`,
-          },
+          }],
         } as any,
       });
 
-      renderAxisLabels(overlay as any, container, context);
+      const yCtx: YAxisLabelRenderContext = {
+        axisLabelOverlay: overlay as any,
+        overlayContainer: container,
+        yAxisConfig: context.currentOptions.yAxes[0],
+        yScale: context.yScales.values().next().value!,
+        plotClipRect: context.plotClipRect,
+        canvasCssWidth: context.gpuContext.canvas.clientWidth,
+        canvasCssHeight: context.gpuContext.canvas.clientHeight,
+        offsetX: 0,
+        offsetY: 0,
+        theme: context.currentOptions.theme,
+      };
+
+      renderYAxisLabels(yCtx);
 
       const yLabels = labels.filter((l) => l.text.endsWith("%"));
       expect(yLabels.length).toBeGreaterThan(0);
@@ -189,22 +205,32 @@ describe("renderAxisLabels", () => {
       const context = createMinimalContext({
         currentOptions: {
           ...createMinimalContext().currentOptions,
-          yAxis: {
+          yAxes: [{
+            id: "primary",
             type: "value" as const,
             tickFormatter: () => null,
-          },
+          }],
         } as any,
       });
 
-      renderAxisLabels(overlay as any, container, context);
+      const yCtx: YAxisLabelRenderContext = {
+        axisLabelOverlay: overlay as any,
+        overlayContainer: container,
+        yAxisConfig: context.currentOptions.yAxes[0],
+        yScale: context.yScales.values().next().value!,
+        plotClipRect: context.plotClipRect,
+        canvasCssWidth: context.gpuContext.canvas.clientWidth,
+        canvasCssHeight: context.gpuContext.canvas.clientHeight,
+        offsetX: 0,
+        offsetY: 0,
+        theme: context.currentOptions.theme,
+      };
+
+      renderYAxisLabels(yCtx);
 
       // No y-axis labels should be rendered (all suppressed)
-      // x-axis labels still render (5 ticks), plus no y-axis labels
       const allLabels = labels.map((l) => l.text);
-      // Y-labels would normally be 5 ticks of values 0-100 range
-      // With null formatter, none should appear
-      // Only x-axis labels should be present
-      expect(allLabels.length).toBe(5); // only x-axis labels
+      expect(allLabels.length).toBe(0); // only Y-labels tested here
     });
   });
 });

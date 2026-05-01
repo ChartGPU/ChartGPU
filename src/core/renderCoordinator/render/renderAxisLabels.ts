@@ -9,6 +9,7 @@
  */
 
 import type { ResolvedChartGPUOptions } from "../../../config/OptionResolver";
+import type { AxisConfig } from "../../../config/types";
 import type { LinearScale } from "../../../utils/scales";
 import type {
   TextOverlay,
@@ -19,26 +20,39 @@ import { formatTimeTickValue } from "../utils/timeAxisUtils";
 import { formatTickValue, createTickFormatter } from "../axis/computeAxisTicks";
 import { finiteOrUndefined } from "../utils/dataPointUtils";
 import { getAxisTitleFontSize } from "../../../utils/axisLabelStyling";
+import {
+  getRightYAxisLabelX,
+  getYAxisLabelX,
+  getRightYAxisTitleX,
+  getYAxisTitleX,
+} from "../axis/axisLabelHelpers";
 
 const DEFAULT_TICK_LENGTH_CSS_PX = 6;
 const LABEL_PADDING_CSS_PX = 4;
 const DEFAULT_TICK_COUNT = 5;
 
+/** Context for rendering X-axis labels and titles. */
 export interface AxisLabelRenderContext {
-  gpuContext: {
-    canvas: HTMLCanvasElement | null;
-  };
-  currentOptions: ResolvedChartGPUOptions;
-  xScale: LinearScale;
-  yScale: LinearScale;
-  xTickValues: ReadonlyArray<number>;
-  plotClipRect: {
-    left: number;
-    right: number;
-    top: number;
-    bottom: number;
-  };
-  visibleXRangeMs: number;
+  readonly gpuContext: { readonly canvas: HTMLCanvasElement | null };
+  readonly currentOptions: ResolvedChartGPUOptions;
+  readonly xScale: LinearScale;
+  readonly xTickValues: readonly number[];
+  readonly plotClipRect: { left: number; right: number; top: number; bottom: number };
+  readonly visibleXRangeMs: number;
+}
+
+/** Context for rendering a single Y-axis's tick labels and title. */
+export interface YAxisLabelRenderContext {
+  readonly axisLabelOverlay: TextOverlay | null;
+  readonly overlayContainer: HTMLElement | null;
+  readonly yAxisConfig: AxisConfig;
+  readonly yScale: LinearScale;
+  readonly plotClipRect: { left: number; right: number; top: number; bottom: number };
+  readonly canvasCssWidth: number;
+  readonly canvasCssHeight: number;
+  readonly offsetX: number;
+  readonly offsetY: number;
+  readonly theme: ResolvedChartGPUOptions["theme"];
 }
 
 function clipXToCanvasCssPx(xClip: number, canvasCssWidth: number): number {
@@ -61,14 +75,8 @@ function styleAxisLabelSpan(
 }
 
 /**
- * Renders axis labels and titles to the text overlay.
- *
- * Generates X and Y axis tick labels with appropriate formatting,
- * and renders axis titles if configured.
- *
- * @param axisLabelOverlay - Text overlay for rendering labels
- * @param overlayContainer - DOM container for overlay positioning
- * @param context - Rendering context with scales, options, and layout
+ * Renders X-axis tick labels, titles and clears the overlay for re-use.
+ * Y-axis labels are handled separately by renderYAxisLabels().
  */
 export function renderAxisLabels(
   axisLabelOverlay: TextOverlay | null,
@@ -79,7 +87,6 @@ export function renderAxisLabels(
     gpuContext,
     currentOptions,
     xScale,
-    yScale,
     xTickValues,
     plotClipRect,
     visibleXRangeMs,
@@ -95,24 +102,18 @@ export function renderAxisLabels(
   const canvas = gpuContext.canvas;
   if (!canvas) return;
 
-  // Get canvas dimensions
   const canvasCssWidth = getCanvasCssWidth(canvas as HTMLCanvasElement);
   const canvasCssHeight = getCanvasCssHeight(canvas as HTMLCanvasElement);
   if (canvasCssWidth <= 0 || canvasCssHeight <= 0) return;
 
-  // Calculate offsets (only for HTMLCanvasElement with DOM)
   const offsetX = (canvas as HTMLCanvasElement).offsetLeft || 0;
   const offsetY = (canvas as HTMLCanvasElement).offsetTop || 0;
 
   const plotLeftCss = clipXToCanvasCssPx(plotClipRect.left, canvasCssWidth);
   const plotRightCss = clipXToCanvasCssPx(plotClipRect.right, canvasCssWidth);
-  const plotTopCss = clipYToCanvasCssPx(plotClipRect.top, canvasCssHeight);
-  const plotBottomCss = clipYToCanvasCssPx(
-    plotClipRect.bottom,
-    canvasCssHeight,
-  );
+  const plotBottomCss = clipYToCanvasCssPx(plotClipRect.bottom, canvasCssHeight);
 
-  // Clear axis label overlay
+  // Clear axis label overlay (Y-axis labels will be re-added by renderYAxisLabels)
   axisLabelOverlay.clear();
 
   // X-axis tick labels
@@ -172,48 +173,6 @@ export function renderAxisLabels(
     styleAxisLabelSpan(span, false, currentOptions.theme);
   }
 
-  // Y-axis tick labels
-  const yTickCount = DEFAULT_TICK_COUNT;
-  const yTickLengthCssPx =
-    currentOptions.yAxis.tickLength ?? DEFAULT_TICK_LENGTH_CSS_PX;
-  const yDomainMin =
-    finiteOrUndefined(currentOptions.yAxis.min) ??
-    yScale.invert(plotClipRect.bottom);
-  const yDomainMax =
-    finiteOrUndefined(currentOptions.yAxis.max) ??
-    yScale.invert(plotClipRect.top);
-  const yTickStep =
-    yTickCount <= 1 ? 0 : (yDomainMax - yDomainMin) / (yTickCount - 1);
-  const yFormatter = createTickFormatter(yTickStep);
-  const yLabelX = plotLeftCss - yTickLengthCssPx - LABEL_PADDING_CSS_PX;
-  const ySpans: HTMLSpanElement[] = [];
-
-  const yTickFormatter = currentOptions.yAxis.tickFormatter;
-  for (let i = 0; i < yTickCount; i++) {
-    const t = yTickCount <= 1 ? 0.5 : i / (yTickCount - 1);
-    const v = yDomainMin + t * (yDomainMax - yDomainMin);
-    const yClip = yScale.scale(v);
-    const yCss = clipYToCanvasCssPx(yClip, canvasCssHeight);
-
-    const label = yTickFormatter
-      ? yTickFormatter(v)
-      : formatTickValue(yFormatter, v);
-    if (label == null) continue;
-
-    const span = axisLabelOverlay.addLabel(
-      label,
-      offsetX + yLabelX,
-      offsetY + yCss,
-      {
-        fontSize: currentOptions.theme.fontSize,
-        color: currentOptions.theme.textColor,
-        anchor: "end",
-      },
-    );
-    styleAxisLabelSpan(span, false, currentOptions.theme);
-    ySpans.push(span);
-  }
-
   // X-axis title
   const axisNameFontSize = getAxisTitleFontSize(currentOptions.theme.fontSize);
   const xAxisName = currentOptions.xAxis.name?.trim() ?? "";
@@ -240,11 +199,83 @@ export function renderAxisLabels(
     );
     styleAxisLabelSpan(span, true, currentOptions.theme);
   }
+}
+
+/**
+ * Renders tick labels and a title for a single Y-axis into the shared overlay.
+ * Called once per Y-axis after renderAxisLabels() has cleared the overlay.
+ */
+export function renderYAxisLabels(ctx: YAxisLabelRenderContext): void {
+  const {
+    axisLabelOverlay,
+    overlayContainer,
+    yAxisConfig,
+    yScale,
+    plotClipRect,
+    canvasCssWidth,
+    canvasCssHeight,
+    offsetX,
+    offsetY,
+    theme,
+  } = ctx;
+  if (!axisLabelOverlay || !overlayContainer) return;
+  if (canvasCssWidth <= 0 || canvasCssHeight <= 0) return;
+
+  const plotLeftCss = clipXToCanvasCssPx(plotClipRect.left, canvasCssWidth);
+  const plotRightCss = clipXToCanvasCssPx(plotClipRect.right, canvasCssWidth);
+  const plotTopCss = clipYToCanvasCssPx(plotClipRect.top, canvasCssHeight);
+  const plotBottomCss = clipYToCanvasCssPx(plotClipRect.bottom, canvasCssHeight);
+
+  const isRight = yAxisConfig.position === "right";
+  const yTickLengthCssPx = yAxisConfig.tickLength ?? DEFAULT_TICK_LENGTH_CSS_PX;
+
+  const yTickCount = (yAxisConfig as any).tickCount ?? DEFAULT_TICK_COUNT;
+  const yDomainMin =
+    finiteOrUndefined(yAxisConfig.min) ??
+    yScale.invert(plotClipRect.bottom);
+  const yDomainMax =
+    finiteOrUndefined(yAxisConfig.max) ??
+    yScale.invert(plotClipRect.top);
+  const yTickStep =
+    yTickCount <= 1 ? 0 : (yDomainMax - yDomainMin) / (yTickCount - 1);
+  const yFormatter = createTickFormatter(yTickStep);
+
+  const yLabelX = isRight
+    ? getRightYAxisLabelX(plotRightCss, yTickLengthCssPx)
+    : getYAxisLabelX(plotLeftCss, yTickLengthCssPx);
+
+  const ySpans: HTMLSpanElement[] = [];
+  const yTickFormatter = yAxisConfig.tickFormatter;
+
+  for (let i = 0; i < yTickCount; i++) {
+    const t = yTickCount <= 1 ? 0.5 : i / (yTickCount - 1);
+    const v = yDomainMin + t * (yDomainMax - yDomainMin);
+    const yClip = yScale.scale(v);
+    const yCss = clipYToCanvasCssPx(yClip, canvasCssHeight);
+
+    const label = yTickFormatter
+      ? yTickFormatter(v)
+      : formatTickValue(yFormatter, v);
+    if (label == null) continue;
+
+    const span = axisLabelOverlay.addLabel(
+      label,
+      offsetX + yLabelX,
+      offsetY + yCss,
+      {
+        fontSize: theme.fontSize,
+        color: theme.textColor,
+        anchor: isRight ? "start" : "end",
+      },
+    );
+    styleAxisLabelSpan(span, false, theme);
+    ySpans.push(span);
+  }
 
   // Y-axis title
-  const yAxisName = currentOptions.yAxis.name?.trim() ?? "";
+  const axisNameFontSize = getAxisTitleFontSize(theme.fontSize);
+  const yAxisName = yAxisConfig.name?.trim() ?? "";
   if (yAxisName.length > 0) {
-    // Measure actual rendered label widths from DOM
     const maxTickLabelWidth =
       ySpans.length === 0
         ? 0
@@ -254,9 +285,10 @@ export function renderAxisLabels(
           );
 
     const yCenter = (plotTopCss + plotBottomCss) / 2;
-    const yTickLabelLeft = yLabelX - maxTickLabelWidth;
-    const yTitleX =
-      yTickLabelLeft - LABEL_PADDING_CSS_PX - axisNameFontSize * 0.5;
+
+    const yTitleX = isRight
+      ? getRightYAxisTitleX(yLabelX, maxTickLabelWidth, axisNameFontSize)
+      : getYAxisTitleX(yLabelX, maxTickLabelWidth, axisNameFontSize);
 
     const span = axisLabelOverlay.addLabel(
       yAxisName,
@@ -264,11 +296,11 @@ export function renderAxisLabels(
       offsetY + yCenter,
       {
         fontSize: axisNameFontSize,
-        color: currentOptions.theme.textColor,
+        color: theme.textColor,
         anchor: "middle",
-        rotation: -90,
+        rotation: isRight ? 90 : -90,
       },
     );
-    styleAxisLabelSpan(span, true, currentOptions.theme);
+    styleAxisLabelSpan(span, true, theme);
   }
 }

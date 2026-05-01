@@ -79,7 +79,7 @@ export function computeMaxFractionDigitsFromStep(
  */
 export function createTickFormatter(tickStep: number): Intl.NumberFormat {
   const maximumFractionDigits = computeMaxFractionDigitsFromStep(tickStep);
-  return new Intl.NumberFormat(undefined, { maximumFractionDigits });
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits });
 }
 
 /**

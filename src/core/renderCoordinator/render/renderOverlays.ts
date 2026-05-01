@@ -31,7 +31,7 @@ const DEFAULT_HIGHLIGHT_SIZE_CSS_PX = 4;
 export interface OverlayRenderers {
   gridRenderer: GridRenderer;
   xAxisRenderer: AxisRenderer;
-  yAxisRenderer: AxisRenderer;
+  yAxisRenderers: Map<string, AxisRenderer>;
   crosshairRenderer: CrosshairRenderer;
   highlightRenderer: HighlightRenderer;
 }
@@ -39,7 +39,7 @@ export interface OverlayRenderers {
 export interface OverlayPrepareContext {
   currentOptions: ResolvedChartGPUOptions;
   xScale: LinearScale;
-  yScale: LinearScale;
+  yScales: Map<string, LinearScale>;
   gridArea: GridArea;
   xTickCount: number;
   hasCartesianSeries: boolean;
@@ -54,7 +54,7 @@ export interface OverlayPrepareContext {
   };
   interactionScales: {
     xScale: LinearScale;
-    yScale: LinearScale;
+    yScales: Map<string, LinearScale>;
   } | null;
   seriesForRender: ReadonlyArray<any>;
   withAlpha: (color: string, alpha: number) => string;
@@ -81,7 +81,7 @@ export function prepareOverlays(
   const {
     currentOptions,
     xScale,
-    yScale,
+    yScales,
     gridArea,
     xTickCount,
     hasCartesianSeries,
@@ -90,6 +90,7 @@ export function prepareOverlays(
     seriesForRender,
     withAlpha,
   } = context;
+
 
   // Grid preparation - always prepare so hidden grids don't render stale geometry.
   const gridLinesConfig = currentOptions.gridLines;
@@ -145,15 +146,21 @@ export function prepareOverlays(
       currentOptions.theme.axisTickColor,
       xTickCount,
     );
-    renderers.yAxisRenderer.prepare(
-      currentOptions.yAxis,
-      yScale,
-      "y",
-      gridArea,
-      currentOptions.theme.axisLineColor,
-      currentOptions.theme.axisTickColor,
-      DEFAULT_TICK_COUNT,
-    );
+    for (const yAxisConfig of currentOptions.yAxes) {
+      const axisId = yAxisConfig.id!;
+      const yAxisRenderer = renderers.yAxisRenderers.get(axisId);
+      if (!yAxisRenderer) continue;
+      const axisYScale = yScales.get(axisId) ?? yScales.values().next().value!;
+      yAxisRenderer.prepare(
+        yAxisConfig,
+        axisYScale,
+        "y",
+        gridArea,
+        currentOptions.theme.axisLineColor,
+        currentOptions.theme.axisTickColor,
+        (yAxisConfig as any).tickCount ?? DEFAULT_TICK_COUNT,
+      );
+    }
   }
 
   // Crosshair preparation (when pointer is in grid)
@@ -189,13 +196,17 @@ export function prepareOverlays(
         effectivePointer.gridX,
         effectivePointer.gridY,
         interactionScales.xScale,
-        interactionScales.yScale,
+        interactionScales.yScales.values().next().value!,
       );
 
       if (match) {
         const { x, y } = getPointXY(match.point);
         const xGridCss = interactionScales.xScale.scale(x);
-        const yGridCss = interactionScales.yScale.scale(y);
+        const matchedSeriesCfg = seriesForRender[match.seriesIndex] as any;
+        const matchedAxisId = matchedSeriesCfg?.yAxis || "y";
+        const matchedYScale = interactionScales.yScales.get(matchedAxisId)
+          ?? interactionScales.yScales.values().next().value!;
+        const yGridCss = matchedYScale.scale(y);
 
         if (Number.isFinite(xGridCss) && Number.isFinite(yGridCss)) {
           const centerCssX = gridArea.left + xGridCss;
@@ -257,7 +268,9 @@ export function renderOverlays(
   renderers.highlightRenderer.render(topOverlayPass);
   if (hasCartesianSeries) {
     renderers.xAxisRenderer.render(topOverlayPass);
-    renderers.yAxisRenderer.render(topOverlayPass);
+    for (const r of renderers.yAxisRenderers.values()) {
+      r.render(topOverlayPass);
+    }
   }
   renderers.crosshairRenderer.render(topOverlayPass);
 }

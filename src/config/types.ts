@@ -103,6 +103,8 @@ export interface GridConfig {
 }
 
 export interface AxisConfig {
+  readonly id?: string;
+  readonly position?: "left" | "right";
   readonly type: AxisType;
   readonly min?: number;
   readonly max?: number;
@@ -151,6 +153,7 @@ export interface AreaStyleConfig {
 
 export interface SeriesConfigBase {
   readonly name?: string;
+  readonly yAxis?: string;
   readonly data: CartesianSeriesData;
   readonly color?: string;
   /**
@@ -685,6 +688,9 @@ export interface GridLinesConfig {
 }
 
 export interface ChartGPUOptions {
+  readonly axes?: {
+    readonly y?: ReadonlyArray<AxisConfig>;
+  };
   readonly grid?: GridConfig;
   /**
    * Grid lines configuration controlling visibility, count, and appearance.

@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Multi-Axes - ChartGPU</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; padding: 0;
+      background-color: #0a0a0a;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    .page {
+      min-height: 100%;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 16px;
+      padding: 20px;
+      box-sizing: border-box;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    header h1 { margin: 0; font-size: 1.4rem; color: #fff; }
+    header p  { margin: 8px 0 0; color: #aaa; line-height: 1.4; }
+    .chart-shell {
+      border: 1px solid #333;
+      border-radius: 12px;
+      background: #0f0f14;
+      overflow: hidden;
+      min-height: 420px;
+      height: min(70vh, 720px);
+    }
+    .chart { width: 100%; height: 100%; }
+    .error { padding: 16px; color: #ffb4b4; white-space: pre-wrap; }
+    .back { display: inline-block; margin-top: 10px; color: #aaa; text-decoration: none; }
+    .back:hover { color: #fff; }
+    header { position: relative; }
+
+    /* Legend / info panel */
+    .info {
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+      padding: 12px 0 0;
+      font-size: 0.85rem;
+      color: #aaa;
+    }
+    .legend-dot {
+      display: inline-block;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    .info span { white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1>Multi-Axis Chart</h1>
+      <p>
+        Two independent Y-axes with different scales on left and right —
+        <strong style="color:#4a9eff">Temperature (°C)</strong> on the left axis and
+        <strong style="color:#ff9f40">Humidity (%)</strong> / <strong style="color:#9b59b6">Wind speed (km/h)</strong>
+        on the right axis. Each axis is scaled independently.
+      </p>
+      <a class="back" href="../index.html">← Back to examples</a>
+    </header>
+
+    <div class="chart-shell">
+      <div id="chart" class="chart"></div>
+      <div id="error" class="error" style="display:none;"></div>
+    </div>
+
+    <div class="info">
+      <span><span class="legend-dot" style="background:#4a9eff"></span>Temperature °C (left axis, −5 → 40)</span>
+      <span><span class="legend-dot" style="background:#ff9f40"></span>Humidity % (right axis, 0 → 100)</span>
+      <span><span class="legend-dot" style="background:#9b59b6"></span>Wind speed km/h (right axis, 0 → 100)</span>
+    </div>
+  </div>
+
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

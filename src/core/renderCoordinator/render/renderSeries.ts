@@ -54,7 +54,7 @@ export interface SeriesPrepareContext {
   currentOptions: ResolvedChartGPUOptions;
   seriesForRender: ReadonlyArray<ResolvedSeriesConfig>;
   xScale: LinearScale;
-  yScale: LinearScale;
+  yScales: Map<string, LinearScale>;
   gridArea: GridArea;
   dataStore: DataStore;
   appendedGpuThisFrame: Set<number>;
@@ -126,7 +126,7 @@ export function prepareSeries(
     currentOptions,
     seriesForRender,
     xScale,
-    yScale,
+    yScales,
     gridArea,
     dataStore,
     appendedGpuThisFrame,
@@ -139,8 +139,14 @@ export function prepareSeries(
     maxRadiusCss,
   } = context;
 
+  // Helper: get the y-scale for a series by its yAxis binding
+  const getYScale = (s: ResolvedSeriesConfig): LinearScale => {
+    const axisId = (s as any).yAxis || "y";
+    return yScales.get(axisId) ?? yScales.values().next().value!;
+  };
+
   const defaultBaseline =
-    currentOptions.yAxis.min ?? currentOptions.yAxis.min ?? 0;
+    currentOptions.yAxes[0]?.min ?? 0;
   const barSeriesConfigs: ResolvedBarSeriesConfig[] = [];
 
   const introP = introPhase === "running" ? clamp01(introProgress01) : 1;
@@ -160,7 +166,7 @@ export function prepareSeries(
           s,
           areaData,
           xScale,
-          yScale,
+          getYScale(s),
           baseline,
         );
         break;
@@ -198,7 +204,7 @@ export function prepareSeries(
           lineSeriesForRenderer,
           buffer,
           xScale,
-          yScale,
+          getYScale(s),
           xOffset,
           gridArea.devicePixelRatio,
           gridArea.canvasWidth,
@@ -231,13 +237,14 @@ export function prepareSeries(
             sampling: s.sampling,
             samplingThreshold: s.samplingThreshold,
             connectNulls: s.connectNulls,
+            yAxis: (s as any).yAxis ?? "y",
           };
 
           renderers.areaRenderers[i].prepare(
             areaLike,
             areaLike.data,
             xScale,
-            yScale,
+            getYScale(s),
             defaultBaseline,
           );
         }
@@ -274,7 +281,7 @@ export function prepareSeries(
             visible.start,
             visible.end,
             xScale,
-            yScale,
+            getYScale(s),
             gridArea,
             s.rawBounds,
           );
@@ -289,7 +296,7 @@ export function prepareSeries(
             animated,
             s.data,
             xScale,
-            yScale,
+            getYScale(s),
             gridArea,
           );
         }
@@ -317,7 +324,7 @@ export function prepareSeries(
           s,
           s.data,
           xScale,
-          yScale,
+          getYScale(s),
           gridArea,
           currentOptions.theme.backgroundColor,
         );
