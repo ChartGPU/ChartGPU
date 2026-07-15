@@ -1,0 +1,182 @@
+{
+  "schemaVersion": 1,
+  "kind": "chartgpu-performance-baseline",
+  "generatedAt": "2026-07-15T18:06:41.927Z",
+  "commit": null,
+  "environment": {
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+    "language": "en-US",
+    "hardwareConcurrency": 10,
+    "devicePixelRatio": 2,
+    "canvasCssWidth": 1280,
+    "canvasCssHeight": 720,
+    "webgpuAdapter": "apple / metal-3 / 0x0000",
+    "preferredFormat": "bgra8unorm"
+  },
+  "config": {
+    "warmupFrames": 90,
+    "measureFrames": 300
+  },
+  "scenarios": [
+    {
+      "id": "static-1m-lttb",
+      "description": "1M points, sampling=lttb. Forces a full dirty render every frame via tiny interaction-x oscillation (crosshair path).",
+      "pointCount": 1000000,
+      "sampling": "lttb",
+      "warmupFrames": 90,
+      "measureFrames": 300,
+      "measuredFrames": 300,
+      "durationMs": 2499.100000023842,
+      "fps": {
+        "mean": 120.25788677504231,
+        "p50": 120.48192771084074,
+        "p95": 130.04101161996104,
+        "p99": 135.17215845983205,
+        "min": 107.52688172042801,
+        "max": 136.98630136986387
+      },
+      "cpuMs": {
+        "mean": 0.7310000002384186,
+        "p50": 0.6999999284744263,
+        "p95": 1.2999999523162842,
+        "p99": 1.5,
+        "min": 0.3999999761581421,
+        "max": 1.600000023841858
+      },
+      "libraryFps": 120.09284487692709,
+      "libraryFrameTimeMs": 8.326890757103929,
+      "droppedFrames": 0,
+      "notes": [
+        "Forces dirty via alternating interaction-x (two domain samples) so renderFrame always runs."
+      ]
+    },
+    {
+      "id": "hover-1m-lttb",
+      "description": "1M points, sampling=lttb. Sweeps setInteractionX across the domain each frame (tooltip/highlight path).",
+      "pointCount": 1000000,
+      "sampling": "lttb",
+      "warmupFrames": 90,
+      "measureFrames": 300,
+      "measuredFrames": 300,
+      "durationMs": 2499.5,
+      "fps": {
+        "mean": 120.26111955429272,
+        "p50": 120.48192771084074,
+        "p95": 133.33333333333334,
+        "p99": 135.13513513514178,
+        "min": 105.26315789473684,
+        "max": 136.98630136987666
+      },
+      "cpuMs": {
+        "mean": 1.5583333305517832,
+        "p50": 1.5499999523162842,
+        "p95": 2.600000023841858,
+        "p99": 2.799999953508377,
+        "min": 0.5,
+        "max": 2.9000000953674316
+      },
+      "libraryFps": 120.00806776637634,
+      "libraryFrameTimeMs": 8.33277310944405,
+      "droppedFrames": 0,
+      "notes": [
+        "Sweeps interaction-x across full domain each measure frame."
+      ]
+    },
+    {
+      "id": "zoom-pan-1m",
+      "description": "1M points, sampling=lttb. Cycles percent zoom windows to exercise resample + re-upload.",
+      "pointCount": 1000000,
+      "sampling": "lttb",
+      "warmupFrames": 90,
+      "measureFrames": 300,
+      "measuredFrames": 300,
+      "durationMs": 2499.899999976158,
+      "fps": {
+        "mean": 120.16426244403327,
+        "p50": 120.48192771082753,
+        "p95": 129.8701298701176,
+        "p99": 135.13513513514178,
+        "min": 106.38297872340837,
+        "max": 136.98630136987666
+      },
+      "cpuMs": {
+        "mean": 0.9806666684150696,
+        "p50": 0.9000000357627869,
+        "p95": 1.600000023841858,
+        "p99": 1.899999977350235,
+        "min": 0.3999999761581421,
+        "max": 2
+      },
+      "libraryFps": 119.99596651636396,
+      "libraryFrameTimeMs": 8.333613445778855,
+      "droppedFrames": 0,
+      "notes": [
+        "Cycles zoom windows: full → 20% → 5% → pan → full."
+      ]
+    },
+    {
+      "id": "stream-append-lttb",
+      "description": "Seed 50k, sampling=lttb, append 64 pts/frame (full resample path).",
+      "pointCount": 50000,
+      "sampling": "lttb",
+      "warmupFrames": 90,
+      "measureFrames": 300,
+      "measuredFrames": 300,
+      "durationMs": 2500.7999999523163,
+      "fps": {
+        "mean": 120.0985569681108,
+        "p50": 120.48192771082753,
+        "p95": 128.20512820514017,
+        "p99": 133.33333333333334,
+        "min": 106.38297872340837,
+        "max": 133.33333333333334
+      },
+      "cpuMs": {
+        "mean": 1.715666667620341,
+        "p50": 1.7000000476837158,
+        "p95": 2.099999910593033,
+        "p99": 2.2010000479221334,
+        "min": 1.2000000476837158,
+        "max": 2.899999976158142
+      },
+      "libraryFps": 119.98386772103375,
+      "libraryFrameTimeMs": 8.334453781111902,
+      "droppedFrames": 0,
+      "notes": [
+        "Appends 64 points/frame via appendData only (autoScroll=true); seed 50000 points."
+      ]
+    },
+    {
+      "id": "stream-append-none",
+      "description": "Seed 50k, sampling=none, append 64 pts/frame (incremental append fast path).",
+      "pointCount": 50000,
+      "sampling": "none",
+      "warmupFrames": 90,
+      "measureFrames": 300,
+      "measuredFrames": 300,
+      "durationMs": 2500,
+      "fps": {
+        "mean": 120.5239514903448,
+        "p50": 120.48192771085394,
+        "p95": 135.1351351351451,
+        "p99": 136.98630136987666,
+        "min": 106.38297872338778,
+        "max": 136.98630136987666
+      },
+      "cpuMs": {
+        "mean": 1.0133333321412403,
+        "p50": 1,
+        "p95": 1.600000023841858,
+        "p99": 2.1010000240802755,
+        "min": 0.3999999761581421,
+        "max": 2.700000047683716
+      },
+      "libraryFps": 119.87508813768903,
+      "libraryFrameTimeMs": 8.342016807123393,
+      "droppedFrames": 0,
+      "notes": [
+        "Appends 64 points/frame via appendData only (autoScroll=true); seed 50000 points."
+      ]
+    }
+  ]
+}
