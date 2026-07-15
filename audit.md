@@ -475,7 +475,7 @@ requestRender (rAF)
 ## How to verify fixes
 
 1. **Production build:** `bun run build:examples && bun run preview:examples` (port 4173).
-2. **Performance baseline harness (preferred):** [`examples/performance-baseline/`](examples/performance-baseline/) — fixed scenarios, FPS + CPU percentiles, JSON report. Establish `benchmarks/baselines/main.json` before changes; compare with `bun run benchmark:baseline:compare`. See [`benchmarks/baseline/README.md`](benchmarks/baseline/README.md).
+2. **Performance baseline harness (preferred):** [`examples/performance-baseline/`](examples/performance-baseline/) — fixed scenarios, FPS + CPU percentiles, JSON report. Establish `benchmarks/baselines/main.json` before changes; compare with `bun run benchmark:baseline:compare`. **Goals + autonomous verification:** [`docs/PERFORMANCE_GOALS.md`](docs/PERFORMANCE_GOALS.md). Operator docs: [`benchmarks/baseline/README.md`](benchmarks/baseline/README.md).
 3. **Million-points / ultimate benchmark:** interactive FPS UI for exploratory checks.
 4. **Regression matrix:**
    - Static large line, hover only

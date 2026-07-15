@@ -722,14 +722,30 @@ async function main(): Promise<void> {
   const publishReport = (report: BaselineReport, alsoDownload: boolean): void => {
     lastReport = report;
     const json = JSON.stringify(report, null, 2);
+    const jsonCompact = JSON.stringify(report);
     if (reportEl) reportEl.textContent = json;
     setText(statusEl, summarize(report));
     enableExport(true);
-    // Expose for automation (Playwright / console).
-    (window as unknown as { __CHARTGPU_BASELINE_REPORT__?: BaselineReport }).__CHARTGPU_BASELINE_REPORT__ =
-      report;
-    (window as unknown as { __CHARTGPU_BASELINE_DONE__?: boolean }).__CHARTGPU_BASELINE_DONE__ =
-      true;
+    // Expose for automation (Playwright / agent-browser / DevTools).
+    const w = window as unknown as {
+      __CHARTGPU_BASELINE_REPORT__?: BaselineReport;
+      __CHARTGPU_BASELINE_JSON__?: string;
+      __CHARTGPU_BASELINE_DONE__?: boolean;
+    };
+    w.__CHARTGPU_BASELINE_REPORT__ = report;
+    w.__CHARTGPU_BASELINE_JSON__ = jsonCompact;
+    w.__CHARTGPU_BASELINE_DONE__ = true;
+
+    // Machine-readable markers for autonomous log scraping (one line each).
+    // Agents should wait for BASELINE_DONE then parse BASELINE_JSON_BEGIN…END or window globals.
+    console.log("CHARTGPU_BASELINE_DONE");
+    console.log("CHARTGPU_BASELINE_JSON_BEGIN");
+    console.log(jsonCompact);
+    console.log("CHARTGPU_BASELINE_JSON_END");
+    console.info("[ChartGPU baseline] report ready", {
+      scenarios: report.scenarios.map((s) => s.id),
+      adapter: report.environment.webgpuAdapter,
+    });
 
     if (alsoDownload) {
       const blob = new Blob([json], { type: "application/json" });

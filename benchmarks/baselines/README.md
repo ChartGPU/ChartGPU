@@ -42,6 +42,23 @@ Optional gate:
 bun run benchmark:baseline:compare -- benchmarks/baselines/main.json /path/to/candidate.json --fail-on-regression
 ```
 
+## Autonomous capture (console / agents)
+
+When a run completes, the page:
+
+1. Sets `window.__CHARTGPU_BASELINE_DONE__ = true`
+2. Sets `window.__CHARTGPU_BASELINE_REPORT__` (object) and `window.__CHARTGPU_BASELINE_JSON__` (string)
+3. Logs markers for log scraping:
+
+```text
+CHARTGPU_BASELINE_DONE
+CHARTGPU_BASELINE_JSON_BEGIN
+{...compact JSON...}
+CHARTGPU_BASELINE_JSON_END
+```
+
+See [`docs/PERFORMANCE_GOALS.md`](../../docs/PERFORMANCE_GOALS.md) for the full agent loop.
+
 ## Schema
 
 See `kind: "chartgpu-performance-baseline"` and `schemaVersion: 1` in the report JSON.
