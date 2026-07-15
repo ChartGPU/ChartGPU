@@ -57,8 +57,6 @@ CHARTGPU_BASELINE_JSON_BEGIN
 CHARTGPU_BASELINE_JSON_END
 ```
 
-See [`docs/PERFORMANCE_GOALS.md`](../../docs/PERFORMANCE_GOALS.md) for the full agent loop.
-
 ## Schema
 
 See `kind: "chartgpu-performance-baseline"` and `schemaVersion: 1` in the report JSON.
