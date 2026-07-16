@@ -86,4 +86,31 @@ describe('resolveUploadPolicy (issue 3.4)', () => {
       })
     ).toBe('fullRewrite');
   });
+
+  it('returns yOnlyRewrite when equal-N y path is flagged (issue 2.2)', () => {
+    expect(
+      resolveUploadPolicy({
+        residency: baseResidency({ kind: 'privateInstance', lastRef: null }),
+        dataRef: [[0, 2]],
+        geometryCacheHit: false,
+        appendedThisFrame: false,
+        needsGrowth: false,
+        yOnlyRewrite: true,
+      })
+    ).toBe('yOnlyRewrite');
+  });
+
+  it('prefers skip over yOnlyRewrite when geometry identity hits', () => {
+    const data = [[0, 1]] as const;
+    expect(
+      resolveUploadPolicy({
+        residency: baseResidency({ kind: 'privateInstance', lastRef: data }),
+        dataRef: data,
+        geometryCacheHit: true,
+        appendedThisFrame: false,
+        needsGrowth: false,
+        yOnlyRewrite: true,
+      })
+    ).toBe('skip');
+  });
 });

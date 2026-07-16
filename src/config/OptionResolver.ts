@@ -26,6 +26,7 @@ import type {
   ScatterSymbol,
   SeriesSampling,
   SeriesType,
+  CartesianSeriesData,
 } from './types';
 import {
   candlestickDefaults,
@@ -47,7 +48,12 @@ import {
   hasNullGaps,
 } from '../data/cartesianData';
 import { cheapCartesianContentStamp, cheapOHLCContentStamp } from '../data/seriesContentHash';
-import { isIndexSortedX } from '../data/seriesRewriteDetect';
+import {
+  classifyEqualNYOnlyRewrite,
+  isIndexSortedX,
+  remapIndexSortedSampleY,
+  sampleLooksIndexSortedX,
+} from '../data/seriesRewriteDetect';
 import { parseCssColorToRgba01 } from '../utils/colors';
 
 export type ResolvedGridConfig = Readonly<Required<GridConfig>>;
@@ -181,6 +187,13 @@ export type ResolvedScatterSeriesConfig = Readonly<
      * cannot clip outliers.
      */
     readonly rawBounds?: RawBounds;
+    /**
+     * @internal Full O(n) proved that raw data is x=i at {@link indexSortedPointCount}.
+     * Sticky across equal-N y-only rewrites so subsequent frames skip re-proving.
+     */
+    readonly indexSortedProven?: boolean;
+    /** @internal Point count when {@link indexSortedProven} was set. */
+    readonly indexSortedPointCount?: number;
     /** @internal How rawBounds was derived (synthetic / xDataYAxis / data). */
     readonly rawBoundsMode?: RawBoundsMode;
   }
@@ -1041,8 +1054,12 @@ export function resolveOptions(
       | null
       | undefined,
     data: import('../config/types').CartesianSeriesData,
-    sampleReusable: boolean
-  ): { bounds: RawBounds | undefined; mode: RawBoundsMode } => {
+    sampleReusable: boolean,
+    opts?: Readonly<{
+      /** Skip full isIndexSortedX — caller already sticky/full-proved x=i at this N. */
+      readonly trustIndexSorted?: boolean;
+    }>
+  ): { bounds: RawBounds | undefined; mode: RawBoundsMode; indexSortedHit?: boolean } => {
     if (syntheticAxisBounds) {
       return { bounds: syntheticAxisBounds, mode: 'synthetic' };
     }
@@ -1059,14 +1076,16 @@ export function resolveOptions(
           mode: 'xDataYAxis',
         };
       }
-      // Index-sorted x (x=i, SciChart group 4): O(n) verify then O(1) extent.
+      // Index-sorted x (x=i, SciChart group 4): full O(n) once, or sticky trust.
       // Fail-fast on non-index data, then full x scan.
       let xMin: number;
       let xMax: number;
-      if (isIndexSortedX(data)) {
+      let indexSortedHit = false;
+      if (opts?.trustIndexSorted || isIndexSortedX(data)) {
         const n = getPointCount(data);
         xMin = 0;
         xMax = Math.max(1, n - 1);
+        indexSortedHit = true;
       } else {
         const xExt = computeRawXExtentFromCartesianData(data);
         if (!xExt) return { bounds: undefined, mode: 'xDataYAxis' };
@@ -1081,6 +1100,7 @@ export function resolveOptions(
           yMax: yAxisSynthetic.yMax,
         },
         mode: 'xDataYAxis',
+        indexSortedHit,
       };
     }
     // Full data-driven: only reuse when prior mode was also data-driven.
@@ -1275,13 +1295,79 @@ export function resolveOptions(
           undefined,
           contentHash
         );
+        const prevScatterResolved =
+          prevResolved?.type === 'scatter' ? (prevResolved as ResolvedScatterSeriesConfig) : null;
         const prevScatter = reuseSample
           ? (prevResolved as ResolvedScatterSeriesConfig & {
               contentHash?: number;
               rawBoundsMode?: RawBoundsMode;
             })
           : null;
-        const { bounds: rawBounds, mode: rawBoundsMode } = resolveCartesianBounds(prevScatter, s.data, reuseSample);
+        const rawPointCount = getPointCount(s.data);
+        // Sticky index-sorted proof: prior frame fully proved x=i at this N.
+        const stickyIndexSorted =
+          prevScatterResolved?.indexSortedProven === true &&
+          prevScatterResolved.indexSortedPointCount === rawPointCount;
+
+        // Equal-N y-only + index-sorted under **LTTB** (group 4): re-bind y at
+        // prior sample x indices in O(k) instead of full O(N) LTTB. Requires
+        // matching sampling + threshold (same gate as canReuseResolvedSeriesSample).
+        // min/max/average always re-sample (bucket extrema depend on y).
+        // Brownian xy (group 2) fails classifyEqualNYOnlyRewrite → full path.
+        // Classify before bounds so sticky/full proof is shared (one O(n) max cold).
+        let sampledData: CartesianSeriesData;
+        /** True when this frame still has a valid index-sorted proof (sticky or cold). */
+        let indexSortedThisFrame = false;
+        if (prevScatter) {
+          sampledData = prevScatter.data;
+          // Identity-reuse: keep prior sticky proof when present.
+          indexSortedThisFrame = stickyIndexSorted;
+        } else if (
+          sampling === 'lttb' &&
+          prevScatterResolved &&
+          prevScatterResolved.sampling === 'lttb' &&
+          prevScatterResolved.samplingThreshold === samplingThreshold
+        ) {
+          const yOnlyKind = classifyEqualNYOnlyRewrite(
+            prevScatterResolved.rawData as CartesianSeriesData,
+            s.data,
+            { prevIndexSortedProven: stickyIndexSorted }
+          );
+          if (yOnlyKind === 'indexSorted') {
+            indexSortedThisFrame = true;
+            const remapped = remapIndexSortedSampleY(
+              prevScatterResolved.data as CartesianSeriesData,
+              s.data
+            );
+            sampledData = remapped ?? sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
+          } else {
+            // Clears sticky for this frame (Brownian / equalX) — do not trustIndexSorted.
+            sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
+          }
+        } else if (stickyIndexSorted && sampleLooksIndexSortedX(s.data)) {
+          // Non-LTTB equal-N stream (e.g. sampling:'none'): keep sticky for bounds O(1).
+          indexSortedThisFrame = true;
+          sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
+        } else {
+          sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
+          // Cold first frame (no sticky / no LTTB remap prev): one full O(n) proof so
+          // subsequent equal-N frames can sticky-skip. Cheap sample reject first.
+          if (sampleLooksIndexSortedX(s.data) && isIndexSortedX(s.data)) {
+            indexSortedThisFrame = true;
+          }
+        }
+
+        const {
+          bounds: rawBounds,
+          mode: rawBoundsMode,
+          indexSortedHit,
+        } = resolveCartesianBounds(prevScatter, s.data, reuseSample, {
+          // Only trust when this frame re-validated sticky or cold-proved — never
+          // after classify rejected (Brownian).
+          trustIndexSorted: indexSortedThisFrame,
+        });
+
+        const indexSortedProven = Boolean(indexSortedThisFrame || indexSortedHit);
         const mode = normalizeScatterMode((s as unknown as { readonly mode?: unknown }).mode) ?? scatterDefaults.mode;
         const binSize =
           normalizeDensityBinSize((s as unknown as { readonly binSize?: unknown }).binSize) ?? scatterDefaults.binSize;
@@ -1292,11 +1378,12 @@ export function resolveOptions(
           normalizeDensityNormalization(
             (s as unknown as { readonly densityNormalization?: unknown }).densityNormalization
           ) ?? scatterDefaults.densityNormalization;
+
         return {
           ...s,
           visible,
           rawData: s.data,
-          data: prevScatter ? prevScatter.data : sampleSeriesDataPoints(s.data, sampling, samplingThreshold),
+          data: sampledData,
           color,
           mode,
           binSize,
@@ -1308,6 +1395,9 @@ export function resolveOptions(
           rawBoundsMode,
           yAxis,
           contentHash,
+          ...(indexSortedProven
+            ? { indexSortedProven: true as const, indexSortedPointCount: rawPointCount }
+            : {}),
         };
       }
       case 'pie': {

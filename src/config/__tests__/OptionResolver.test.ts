@@ -394,3 +394,291 @@ describe('OptionResolver full series rewrite path', () => {
     warnSpy.mockRestore();
   });
 });
+
+describe('OptionResolver equal-N LTTB y-remap (group 4)', () => {
+  it('indexSorted equal-N skips sampleSeriesDataPoints and remaps y at frozen indices', async () => {
+    const sampleSeries = await import('../../data/sampleSeries');
+    const n = 100;
+    const threshold = 10;
+    const rawA: DataPoint[] = Array.from({ length: n }, (_, i) => [i, Math.sin(i) * 10] as DataPoint);
+    const rawB: DataPoint[] = Array.from({ length: n }, (_, i) => [i, Math.sin(i) * 10 + 1] as DataPoint);
+
+    const first = resolveOptions({
+      series: [{ type: 'scatter', data: rawA, sampling: 'lttb', samplingThreshold: threshold }],
+      yAxis: { min: -20, max: 20 },
+    });
+    const firstSampled = (first.series[0] as { data: DataPoint[] }).data;
+    expect(getPointCount(firstSampled)).toBeLessThanOrEqual(threshold);
+
+    const spy = vi.spyOn(sampleSeries, 'sampleSeriesDataPoints');
+    const second = resolveOptions(
+      {
+        series: [{ type: 'scatter', data: rawB, sampling: 'lttb', samplingThreshold: threshold }],
+        yAxis: { min: -20, max: 20 },
+      },
+      { previousResolved: first }
+    );
+    expect(spy).not.toHaveBeenCalled();
+    const remapped = (second.series[0] as { data: DataPoint[] }).data;
+    expect(getPointCount(remapped)).toBe(getPointCount(firstSampled));
+    // X indices frozen; y re-read from rawB
+    for (let j = 0; j < getPointCount(remapped); j++) {
+      const x = Array.isArray(remapped[j]) ? (remapped[j] as number[])[0]! : (remapped[j] as { x: number }).x;
+      const y = Array.isArray(remapped[j]) ? (remapped[j] as number[])[1]! : (remapped[j] as { y: number }).y;
+      const idx = Math.round(x as number);
+      expect(y).toBe(rawB[idx]![1]);
+    }
+    spy.mockRestore();
+  });
+
+  it('Brownian xy still calls full sampleSeriesDataPoints', async () => {
+    const sampleSeries = await import('../../data/sampleSeries');
+    const n = 80;
+    const threshold = 10;
+    const rawA: DataPoint[] = Array.from({ length: n }, (_, i) => [i * 0.1, i] as DataPoint);
+    const rawB: DataPoint[] = Array.from({ length: n }, (_, i) => [i * 0.1 + 0.5, i + 1] as DataPoint);
+
+    const first = resolveOptions({
+      series: [{ type: 'scatter', data: rawA, sampling: 'lttb', samplingThreshold: threshold }],
+      xAxis: { min: -5, max: 20 },
+      yAxis: { min: -5, max: 100 },
+    });
+    const spy = vi.spyOn(sampleSeries, 'sampleSeriesDataPoints');
+    resolveOptions(
+      {
+        series: [{ type: 'scatter', data: rawB, sampling: 'lttb', samplingThreshold: threshold }],
+        xAxis: { min: -5, max: 20 },
+        yAxis: { min: -5, max: 100 },
+      },
+      { previousResolved: first }
+    );
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('equalX (stable x≠i) does not use index remap — full sample', async () => {
+    const sampleSeries = await import('../../data/sampleSeries');
+    const n = 60;
+    const threshold = 10;
+    // Stable x spaced by 2 — equal-X y-only, not index-sorted
+    const rawA: DataPoint[] = Array.from({ length: n }, (_, i) => [i * 2, i] as DataPoint);
+    const rawB: DataPoint[] = Array.from({ length: n }, (_, i) => [i * 2, i + 5] as DataPoint);
+
+    const first = resolveOptions({
+      series: [{ type: 'scatter', data: rawA, sampling: 'lttb', samplingThreshold: threshold }],
+      yAxis: { min: -5, max: 100 },
+    });
+    const spy = vi.spyOn(sampleSeries, 'sampleSeriesDataPoints');
+    resolveOptions(
+      {
+        series: [{ type: 'scatter', data: rawB, sampling: 'lttb', samplingThreshold: threshold }],
+        yAxis: { min: -5, max: 100 },
+      },
+      { previousResolved: first }
+    );
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('samplingThreshold change forces full sample (not frozen k)', async () => {
+    const sampleSeries = await import('../../data/sampleSeries');
+    const n = 100;
+    const rawA: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i] as DataPoint);
+    const rawB: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i + 1] as DataPoint);
+
+    const first = resolveOptions({
+      series: [{ type: 'scatter', data: rawA, sampling: 'lttb', samplingThreshold: 10 }],
+      yAxis: { min: -5, max: 200 },
+    });
+    const spy = vi.spyOn(sampleSeries, 'sampleSeriesDataPoints');
+    const second = resolveOptions(
+      {
+        series: [{ type: 'scatter', data: rawB, sampling: 'lttb', samplingThreshold: 20 }],
+        yAxis: { min: -5, max: 200 },
+      },
+      { previousResolved: first }
+    );
+    expect(spy).toHaveBeenCalled();
+    expect(getPointCount((second.series[0] as { data: DataPoint[] }).data)).toBeLessThanOrEqual(20);
+    spy.mockRestore();
+  });
+
+  it('min sampling does not freeze prior indices (always re-sample)', async () => {
+    const sampleSeries = await import('../../data/sampleSeries');
+    const n = 80;
+    const threshold = 10;
+    const rawA: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i] as DataPoint);
+    const rawB: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i + 1] as DataPoint);
+
+    const first = resolveOptions({
+      series: [{ type: 'scatter', data: rawA, sampling: 'min', samplingThreshold: threshold }],
+      yAxis: { min: -5, max: 200 },
+    });
+    const spy = vi.spyOn(sampleSeries, 'sampleSeriesDataPoints');
+    resolveOptions(
+      {
+        series: [{ type: 'scatter', data: rawB, sampling: 'min', samplingThreshold: threshold }],
+        yAxis: { min: -5, max: 200 },
+      },
+      { previousResolved: first }
+    );
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('null remap fallback calls sampleSeriesDataPoints when indices invalid', async () => {
+    const sampleSeries = await import('../../data/sampleSeries');
+    const rewrite = await import('../../data/seriesRewriteDetect');
+    const n = 50;
+    const threshold = 10;
+    const rawA: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i] as DataPoint);
+    const rawB: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i + 1] as DataPoint);
+
+    const first = resolveOptions({
+      series: [{ type: 'scatter', data: rawA, sampling: 'lttb', samplingThreshold: threshold }],
+      yAxis: { min: -5, max: 100 },
+    });
+    const remapSpy = vi.spyOn(rewrite, 'remapIndexSortedSampleY').mockReturnValue(null);
+    const sampleSpy = vi.spyOn(sampleSeries, 'sampleSeriesDataPoints');
+    resolveOptions(
+      {
+        series: [{ type: 'scatter', data: rawB, sampling: 'lttb', samplingThreshold: threshold }],
+        yAxis: { min: -5, max: 100 },
+      },
+      { previousResolved: first }
+    );
+    expect(remapSpy).toHaveBeenCalled();
+    expect(sampleSpy).toHaveBeenCalled();
+    remapSpy.mockRestore();
+    sampleSpy.mockRestore();
+  });
+
+  it('sticky indexSortedProven: second equal-N frame skips full isIndexSortedX', async () => {
+    const rewrite = await import('../../data/seriesRewriteDetect');
+    const n = 80;
+    const threshold = 10;
+    const rawA: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i] as DataPoint);
+    const rawB: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i + 1] as DataPoint);
+    const rawC: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i + 2] as DataPoint);
+
+    const first = resolveOptions({
+      series: [{ type: 'scatter', data: rawA, sampling: 'lttb', samplingThreshold: threshold }],
+      yAxis: { min: -5, max: 200 },
+    });
+    expect((first.series[0] as { indexSortedProven?: boolean }).indexSortedProven).toBe(true);
+    expect((first.series[0] as { indexSortedPointCount?: number }).indexSortedPointCount).toBe(n);
+
+    // Warm sticky on second resolve
+    const second = resolveOptions(
+      {
+        series: [{ type: 'scatter', data: rawB, sampling: 'lttb', samplingThreshold: threshold }],
+        yAxis: { min: -5, max: 200 },
+      },
+      { previousResolved: first }
+    );
+    expect((second.series[0] as { indexSortedProven?: boolean }).indexSortedProven).toBe(true);
+
+    const fullScanSpy = vi.spyOn(rewrite, 'isIndexSortedX');
+    resolveOptions(
+      {
+        series: [{ type: 'scatter', data: rawC, sampling: 'lttb', samplingThreshold: threshold }],
+        yAxis: { min: -5, max: 200 },
+      },
+      { previousResolved: second }
+    );
+    // Sticky path: classify should not call full isIndexSortedX; bounds trusts sticky.
+    expect(fullScanSpy).not.toHaveBeenCalled();
+    fullScanSpy.mockRestore();
+  });
+
+  it('clears sticky when Brownian x change after proven stream', () => {
+    const n = 40;
+    const threshold = 10;
+    const rawA: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i] as DataPoint);
+    const rawB: DataPoint[] = Array.from({ length: n }, (_, i) => [i * 0.1 + 0.5, i] as DataPoint);
+
+    const first = resolveOptions({
+      series: [{ type: 'scatter', data: rawA, sampling: 'lttb', samplingThreshold: threshold }],
+      xAxis: { min: -5, max: 20 },
+      yAxis: { min: -5, max: 100 },
+    });
+    expect((first.series[0] as { indexSortedProven?: boolean }).indexSortedProven).toBe(true);
+
+    const second = resolveOptions(
+      {
+        series: [{ type: 'scatter', data: rawB, sampling: 'lttb', samplingThreshold: threshold }],
+        xAxis: { min: -5, max: 20 },
+        yAxis: { min: -5, max: 100 },
+      },
+      { previousResolved: first }
+    );
+    expect((second.series[0] as { indexSortedProven?: boolean }).indexSortedProven).toBeFalsy();
+  });
+
+  it('length / N mismatch does not reuse sticky — cold re-proofs at new N', async () => {
+    const rewrite = await import('../../data/seriesRewriteDetect');
+    const n = 50;
+    const threshold = 10;
+    const rawN: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i] as DataPoint);
+    const rawNPlus: DataPoint[] = Array.from({ length: n + 1 }, (_, i) => [i, i + 1] as DataPoint);
+
+    const first = resolveOptions({
+      series: [{ type: 'scatter', data: rawN, sampling: 'lttb', samplingThreshold: threshold }],
+      yAxis: { min: -5, max: 200 },
+    });
+    expect((first.series[0] as { indexSortedProven?: boolean }).indexSortedProven).toBe(true);
+    expect((first.series[0] as { indexSortedPointCount?: number }).indexSortedPointCount).toBe(n);
+
+    const fullScanSpy = vi.spyOn(rewrite, 'isIndexSortedX');
+    const second = resolveOptions(
+      {
+        series: [{ type: 'scatter', data: rawNPlus, sampling: 'lttb', samplingThreshold: threshold }],
+        yAxis: { min: -5, max: 200 },
+      },
+      { previousResolved: first }
+    );
+    // N mismatch: sticky gate fails → cold isIndexSortedX must run for new N.
+    expect(fullScanSpy).toHaveBeenCalled();
+    // New N re-proved index-sorted at n+1 (not silent reuse of old sticky).
+    expect((second.series[0] as { indexSortedProven?: boolean }).indexSortedProven).toBe(true);
+    expect((second.series[0] as { indexSortedPointCount?: number }).indexSortedPointCount).toBe(n + 1);
+    fullScanSpy.mockRestore();
+  });
+
+  it('sampling none: sticky continuity skips isIndexSortedX; Brownian clears', async () => {
+    const rewrite = await import('../../data/seriesRewriteDetect');
+    const n = 60;
+    const rawA: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i] as DataPoint);
+    const rawB: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i + 1] as DataPoint);
+    const rawBrownian: DataPoint[] = Array.from({ length: n }, (_, i) => [i * 0.1 + 0.3, i] as DataPoint);
+
+    const first = resolveOptions({
+      series: [{ type: 'scatter', data: rawA, sampling: 'none' }],
+      yAxis: { min: -5, max: 200 },
+    });
+    expect((first.series[0] as { indexSortedProven?: boolean }).indexSortedProven).toBe(true);
+    expect((first.series[0] as { indexSortedPointCount?: number }).indexSortedPointCount).toBe(n);
+
+    const fullScanSpy = vi.spyOn(rewrite, 'isIndexSortedX');
+    const second = resolveOptions(
+      {
+        series: [{ type: 'scatter', data: rawB, sampling: 'none' }],
+        yAxis: { min: -5, max: 200 },
+      },
+      { previousResolved: first }
+    );
+    // Non-LTTB sticky + sampleLooksIndexSortedX path — no full re-proof.
+    expect(fullScanSpy).not.toHaveBeenCalled();
+    expect((second.series[0] as { indexSortedProven?: boolean }).indexSortedProven).toBe(true);
+    fullScanSpy.mockRestore();
+
+    const third = resolveOptions(
+      {
+        series: [{ type: 'scatter', data: rawBrownian, sampling: 'none' }],
+        yAxis: { min: -5, max: 200 },
+      },
+      { previousResolved: second }
+    );
+    expect((third.series[0] as { indexSortedProven?: boolean }).indexSortedProven).toBeFalsy();
+  });
+});

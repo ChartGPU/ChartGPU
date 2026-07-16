@@ -1,10 +1,11 @@
 // scatter.wgsl
 // Instanced anti-aliased circle shader (SDF):
-// - Per-instance vertex input:
-//   - center   = vec2<f32> point center (transformed by VSUniforms.transform)
-//   - radiusPx = f32 circle radius in pixels (per-instance path)
-// - Constant-radius path (vsMainConstRadius): radius from VSUniforms.radiusPx,
-//   instance buffer is tightly packed float32x2 centers only.
+// - Variable-radius path (vsMain): per-instance center (vec2) + radiusPx.
+// - Const-radius dual-buffer (vsMainConstRadiusSplit, production Option A):
+//   separate float32 x and y instance buffers (shaderLocation 0/1); radius from
+//   VSUniforms.radiusPx. Enables equal-N y-only upload of N×4 y bytes only.
+// - Legacy interleaved const-radius entry (vsMainConstRadius): float32x2 centers
+//   in one buffer — kept for shader completeness; renderer uses split path.
 // - Draw call: draw(6, instanceCount) using triangle-list expansion in VS
 // - Uniforms:
 //   - @group(0) @binding(0): VSUniforms { transform, viewportPx, radiusPx }
@@ -37,6 +38,13 @@ struct VSIn {
 
 struct VSInCenterOnly {
   @location(0) center: vec2<f32>,
+};
+
+// Dual-buffer const-radius: x and y in separate instance buffers so equal-N
+// y-only rewrites upload only the y channel (N×4 bytes).
+struct VSInXYSplit {
+  @location(0) x: f32,
+  @location(1) y: f32,
 };
 
 struct VSOut {
@@ -81,6 +89,11 @@ fn vsMain(in: VSIn, @builtin(vertex_index) vertexIndex: u32) -> VSOut {
 @vertex
 fn vsMainConstRadius(in: VSInCenterOnly, @builtin(vertex_index) vertexIndex: u32) -> VSOut {
   return expandCircle(in.center, vsUniforms.radiusPx, vertexIndex);
+}
+
+@vertex
+fn vsMainConstRadiusSplit(in: VSInXYSplit, @builtin(vertex_index) vertexIndex: u32) -> VSOut {
+  return expandCircle(vec2<f32>(in.x, in.y), vsUniforms.radiusPx, vertexIndex);
 }
 
 @fragment

@@ -11,17 +11,18 @@ This document is intentionally **short**. It’s a map to the internal modules t
 ## Data pipeline (internal)
 
 - **Data store + GPU uploads**: [`createDataStore.ts`](../../src/data/createDataStore.ts)
-- **Series residency + upload policy** (issue 3.4): [`seriesResidency.ts`](../../src/data/seriesResidency.ts) — shared verbs (`skip` | `rangedAppend` | `fullRewrite` | `growWithGpuCopy`). **Scatter and candlestick** call `resolveUploadPolicy` for geometry-cache skip decisions. Line/DataStore keep equivalent inlined policy (same verbs). Area shares line storage only when chronological (linear layout or decimation output).
+- **Series residency + upload policy** (issue 3.4 / 2.2): [`seriesResidency.ts`](../../src/data/seriesResidency.ts) — shared verbs (`skip` | `rangedAppend` | `fullRewrite` | `growWithGpuCopy` | `yOnlyRewrite`). **Scatter and candlestick** call `resolveUploadPolicy` for geometry-cache / y-only decisions. Line/DataStore keep equivalent inlined policy (same verbs). Area shares line storage only when chronological (linear layout or decimation output).
 - **`mappedAtCreation`**: Still **unused** in production series paths (default remains `queue.writeBuffer`). Performance canvas task “Use mappedAtCreation for Initial Uploads” is **incomplete** — do not treat as done.
 - **Streaming GPU buffers** (double-buffered): [`createStreamBuffer.ts`](../../src/data/createStreamBuffer.ts)
 - **CPU downsampling (LTTB helper)**: [`lttbSample.ts`](../../src/data/lttbSample.ts)
-- **Content stamps / rewrite detect**: [`seriesContentHash.ts`](../../src/data/seriesContentHash.ts), [`seriesRewriteDetect.ts`](../../src/data/seriesRewriteDetect.ts)
+- **Content stamps / rewrite detect**: [`seriesContentHash.ts`](../../src/data/seriesContentHash.ts), [`seriesRewriteDetect.ts`](../../src/data/seriesRewriteDetect.ts) — `classifyEqualNYOnlyRewrite` / `isEqualNSortedXYOnlyRewrite` gate equal-N y-only (must not fire for Brownian xy).
 
 ### Upload residuals (documented intentionally)
 
 | Residual | Choice | Notes |
 |----------|--------|--------|
-| **Y-only rewrite** (2.1) | **Accept residual GPU bandwidth** | CPU packs y-only when x matches staging; GPU is still a full interleaved `writeBuffer` of N×8 (WebGPU has no strided write). Full FNV is skipped when y-only proved change (cheap stamp for decimation). |
+| **Line DataStore y-only GPU** (2.1 residual) | **Accept residual GPU bandwidth for lines** | CPU packs y-only when x matches staging; GPU is still a full interleaved `writeBuffer` of N×8 (WebGPU has no strided write). Full FNV is skipped when y-only proved change. **Scatter const-radius** uses dual x/y instance buffers so equal-N y-only uploads **only N×4 y bytes** (Option A). |
+| **Scatter Brownian draw** (group 2 @ 1M) | **Hard residual — draw/MSAA bound** | Full xy rewrite every frame (`sampling: 'none'`); y-only path correctly does not activate. ~14 FPS @ 1M after dual-buffer; SciChart ~66 FPS. Further wins need cheaper point primitive / LOD / MSAA policy (not sampling hacks). |
 | **CPU zoom pan** (2.2) | **Debounced resample** | Non–GPU-eligible series still full-`setSeries` on zoom debounce fire. GPU-eligible lines keep raw resident (zero raw re-upload on pan). Holding previous sample under clip mid-pan is not wired (would need a dedicated hold buffer). |
 | **Update animation** (2.3) | **Full re-upload while interpolating** | Identity caches clear every frame (correctness under in-place mutation). N>20k skips lerp. GPU-side lerp dual-buffer is deferred. |
 
@@ -32,7 +33,8 @@ This document is intentionally **short**. It’s a map to the internal modules t
 3. **Dual-store (tooltip off)**: ChartGPU hit-test columns are not rebuilt on every setOption; `hitTestStoreNeedsResync` + resync from coordinator on `hitTest` / tooltip on. Append with `maxPoints` uses the same skip when tooltip off.
 4. **Raw ref → promote**: Coordinator stores setOption data by reference; `appendData` promotes via branded owned `MutableXYColumns` (never mutates caller XY arrays).
 5. **No double LTTB**: Full data rewrite uses OptionResolver-sampled series; baseline recompute does not re-sample.
-6. **DataStore y-only**: CPU y pack only when staging x matches; GPU upload remains full interleaved. Scatter const-radius path uses xy-only instance buffer + uniform radius.
+6. **Equal-N y-only (group 4)**: `classifyEqualNYOnlyRewrite` → index-sorted + `sampling === 'lttb'` with matching prior sampling/threshold remaps prior LTTB sample y in O(k) (frozen index set; full LTTB on length/x/sampling config change). **Sticky `indexSortedProven`**: one full O(n) `isIndexSortedX` proof is stored on the resolved series; subsequent equal-N frames at the same N skip re-proving when samples still look like x=i (cleared on Brownian / length change). min/max/average always re-sample. Scatter const-radius dual-buffer writes only the y channel. Brownian xy (group 2) must stay on the full path.
+7. **DataStore line y-only**: CPU y pack when staging x matches; GPU upload remains full interleaved (residual).
 
 ## Interaction (internal)
 

@@ -26,7 +26,8 @@ export type UploadPolicy =
   | 'skip' // geometry identity hit — uniforms only
   | 'rangedAppend' // O(k) writeBuffer of new points
   | 'fullRewrite' // pack + full writeBuffer of N
-  | 'growWithGpuCopy'; // capacity growth: copyBufferToBuffer retained + ranged new
+  | 'growWithGpuCopy' // capacity growth: copyBufferToBuffer retained + ranged new
+  | 'yOnlyRewrite'; // equal-N x-stable: pack/write y channel only (scatter dual-buffer)
 
 export type SeriesResidency = {
   readonly kind: SeriesResidencyKind;
@@ -51,11 +52,14 @@ export function resolveUploadPolicy(input: {
   readonly geometryCacheHit: boolean;
   readonly appendedThisFrame: boolean;
   readonly needsGrowth: boolean;
+  /** Equal-N x-stable y rewrite (scatter dual-buffer / partial GPU). */
+  readonly yOnlyRewrite?: boolean;
 }): UploadPolicy {
   if (input.appendedThisFrame) return 'rangedAppend';
   if (input.needsGrowth) return 'growWithGpuCopy';
   if (input.geometryCacheHit && input.residency.lastRef === input.dataRef) {
     return 'skip';
   }
+  if (input.yOnlyRewrite) return 'yOnlyRewrite';
   return 'fullRewrite';
 }

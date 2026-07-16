@@ -1,5 +1,5 @@
 /**
- * Const-radius scatter: xy-only instance stride (N*8) vs per-instance radius (N*16).
+ * Const-radius scatter dual-buffer: N×4 × 2 channels (x,y) vs variable N×16.
  */
 
 /// <reference types="@webgpu/types" />
@@ -90,7 +90,7 @@ const baseSeries = (symbolSize: number): ResolvedScatterSeriesConfig =>
   }) as ResolvedScatterSeriesConfig;
 
 describe('scatter const-radius instance stride', () => {
-  it('uploads N*8 bytes for constant symbolSize dense tuples', () => {
+  it('uploads dual N*4 channels for constant symbolSize dense tuples', () => {
     const device = createMockDevice();
     const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
     const renderer = createScatterRenderer(device, { sampleCount: 1 });
@@ -99,7 +99,9 @@ describe('scatter const-radius instance stride', () => {
     renderer.prepare(baseSeries(5), data as unknown as never, identityScale, identityScale, gridArea);
 
     const sizes = writeBuffer.mock.calls.map((c) => c[4]).filter((s): s is number => typeof s === 'number');
-    expect(sizes).toContain(n * 8);
+    // Option A dual-buffer: x and y each N*4 (not interleaved N*8, not variable N*16).
+    expect(sizes.filter((s) => s === n * 4)).toHaveLength(2);
+    expect(sizes).not.toContain(n * 8);
     expect(sizes).not.toContain(n * 16);
     renderer.dispose();
   });
@@ -159,7 +161,7 @@ describe('scatter geometry identity cache (issue 1.2)', () => {
     renderer.dispose();
   });
 
-  it('re-uploads when data ref changes', () => {
+  it('re-uploads when data ref changes (equal-N y-only → single N×4)', () => {
     const device = createMockDevice();
     const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
     const renderer = createScatterRenderer(device, { sampleCount: 1 });
@@ -175,8 +177,9 @@ describe('scatter geometry identity cache (issue 1.2)', () => {
     renderer.prepare(baseSeries(5), dataA as unknown as never, identityScale, identityScale, gridArea);
     writeBuffer.mockClear();
     renderer.prepare(baseSeries(5), dataB as unknown as never, identityScale, identityScale, gridArea);
-    const instanceWrites = writeBuffer.mock.calls.filter((c) => typeof c[4] === 'number' && (c[4] as number) >= 2 * 8);
-    expect(instanceWrites.length).toBeGreaterThan(0);
+    // y-only equal-N: single N*4 y write (x stable at 0,1).
+    const sizes = writeBuffer.mock.calls.map((c) => c[4]).filter((s): s is number => typeof s === 'number' && s > 0);
+    expect(sizes).toEqual([2 * 4]);
     renderer.dispose();
   });
 
@@ -214,7 +217,9 @@ describe('scatter geometry identity cache (issue 1.2)', () => {
     writeBuffer.mockClear();
     renderer.invalidateGeometry();
     renderer.prepare(baseSeries(5), data as unknown as never, identityScale, identityScale, gridArea);
-    expect(writeBuffer.mock.calls.some((c) => typeof c[4] === 'number' && (c[4] as number) >= 2 * 8)).toBe(true);
+    // Full dual-buffer rewrite after invalidate: 2 × N*4.
+    const sizes = writeBuffer.mock.calls.map((c) => c[4]).filter((s): s is number => typeof s === 'number');
+    expect(sizes.filter((s) => s === 2 * 4)).toHaveLength(2);
     renderer.dispose();
   });
 });
