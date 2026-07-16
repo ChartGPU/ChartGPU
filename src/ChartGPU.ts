@@ -59,7 +59,10 @@ import {
   getX as getCartesianX,
   getY as getCartesianY,
   isRingXYColumns,
+  isStagingRingView,
+  stagingRingViewToRingXYColumns,
   type RingXYColumns,
+  type StagingRingView,
 } from "./data/cartesianData";
 import {
   normalizeMaxPoints,
@@ -1044,6 +1047,10 @@ export async function createChartGPU(
         ring.start = 0;
         ring.count = src.count;
         nextData[i] = ring;
+      } else if (isStagingRingView(raw)) {
+        // Thin-path FIFO: rebuild into a private ring so tooltip-on appends keep
+        // modular capacity (not a large linear store after long staging sessions).
+        nextData[i] = stagingRingViewToRingXYColumns(raw as StagingRingView);
       } else {
         nextData[i] = cartesianDataToMutableColumns(
           raw as CartesianSeriesData,

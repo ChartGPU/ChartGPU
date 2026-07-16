@@ -98,6 +98,8 @@ describe("prepareSeries GPU decimation (WG-P0-1 xOffset)", () => {
     const linePrepare = vi.fn();
     const decimationPrepare = vi.fn(() => 8);
     const setSeries = vi.fn();
+    // After setSeries packs with domain-first origin, store reports that offset.
+    const getSeriesXOffset = vi.fn(() => TIME_ORIGIN_MS);
 
     const dataStore: DataStore = {
       setSeries,
@@ -108,6 +110,7 @@ describe("prepareSeries GPU decimation (WG-P0-1 xOffset)", () => {
       getSeriesRingLayout: vi.fn(() => ({ start: 0, capacity: 0 })),
       getSeriesContentHash: vi.fn(() => 0xabc),
       getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
+      getSeriesXOffset,
       dispose: vi.fn(),
     };
 
@@ -128,6 +131,7 @@ describe("prepareSeries GPU decimation (WG-P0-1 xOffset)", () => {
       decimationComputes: [
         {
           prepare: decimationPrepare,
+          needsEncode: vi.fn(() => false),
           encodeCompute: vi.fn(),
           getOutputBuffer: vi.fn(() => decimatedBuffer),
           getOutputPointCount: vi.fn(() => 8),
@@ -198,6 +202,7 @@ describe("prepareSeries GPU decimation (WG-P0-1 xOffset)", () => {
       getSeriesRingLayout: vi.fn(() => ({ start: 0, capacity: 0 })),
       getSeriesContentHash: vi.fn(() => 0x1),
       getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
+      getSeriesXOffset: vi.fn(() => 0),
       dispose: vi.fn(),
     };
 
@@ -218,6 +223,7 @@ describe("prepareSeries GPU decimation (WG-P0-1 xOffset)", () => {
       decimationComputes: [
         {
           prepare: decimationPrepare,
+          needsEncode: vi.fn(() => false),
           encodeCompute: vi.fn(),
           getOutputBuffer: vi.fn(() => decimatedBuffer),
           getOutputPointCount: vi.fn(() => 8),
@@ -274,6 +280,7 @@ describe("prepareSeries GPU decimation (WG-P0-1 xOffset)", () => {
       getSeriesRingLayout: vi.fn(() => ({ start: 3, capacity: 16 })),
       getSeriesContentHash: vi.fn(() => 0x99),
       getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
+      getSeriesXOffset: vi.fn(() => 0),
       dispose: vi.fn(),
     };
 
@@ -299,6 +306,7 @@ describe("prepareSeries GPU decimation (WG-P0-1 xOffset)", () => {
         decimationComputes: [
           {
             prepare: decimationPrepare,
+            needsEncode: vi.fn(() => false),
             encodeCompute: vi.fn(),
             getOutputBuffer: vi.fn(() => decimatedBuffer),
             getOutputPointCount: vi.fn(() => 8),
@@ -374,6 +382,7 @@ describe("prepareSeries GPU decimation (WG-P0-1 xOffset)", () => {
       getSeriesRingLayout: vi.fn(() => ({ start: 5, capacity: 32 })),
       getSeriesContentHash: vi.fn(() => 0x42),
       getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
+      getSeriesXOffset: vi.fn(() => 0),
       dispose: vi.fn(),
     };
 
@@ -399,6 +408,7 @@ describe("prepareSeries GPU decimation (WG-P0-1 xOffset)", () => {
         decimationComputes: [
           {
             prepare: decimationPrepare,
+            needsEncode: vi.fn(() => false),
             encodeCompute: vi.fn(),
             getOutputBuffer: vi.fn(() => decimatedBuffer),
             getOutputPointCount: vi.fn(() => 8),
@@ -442,5 +452,318 @@ describe("prepareSeries GPU decimation (WG-P0-1 xOffset)", () => {
     // Full-range fallback when raw is null (ignores zoom domain).
     expect(args.visibleStart).toBe(0);
     expect(args.visibleEnd).toBe(rawPointCount);
+  });
+
+  it("never setSeries when rawData is a StagingRingView (already GPU-backed)", () => {
+    const points: Array<[number, number]> = [];
+    for (let i = 0; i < 64; i++) {
+      points.push([i, Math.sin(i / 5)]);
+    }
+    // Modular staging alias matching DataStore ring layout.
+    const staging = new Float32Array(64 * 2);
+    for (let i = 0; i < 64; i++) {
+      staging[i * 2] = i;
+      staging[i * 2 + 1] = Math.sin(i / 5);
+    }
+    const stagingView = {
+      __stagingRing: true as const,
+      staging,
+      start: 4,
+      count: 64,
+      capacity: 64,
+      xOffset: 0,
+    };
+    const series = {
+      ...makeLineSeries(points),
+      rawData: stagingView as unknown as typeof points,
+      data: points,
+    };
+
+    const rawBuffer = { label: "raw" } as unknown as GPUBuffer;
+    const decimatedBuffer = { label: "decimated" } as unknown as GPUBuffer;
+    const linePrepare = vi.fn();
+    const decimationPrepare = vi.fn(() => 8);
+    const setSeries = vi.fn();
+
+    const dataStore: DataStore = {
+      setSeries,
+      appendSeries: vi.fn(),
+      removeSeries: vi.fn(),
+      getSeriesBuffer: vi.fn(() => rawBuffer),
+      getSeriesPointCount: vi.fn(() => 64),
+      getSeriesRingLayout: vi.fn(() => ({ start: 4, capacity: 64 })),
+      getSeriesContentHash: vi.fn(() => 0x77),
+      getSeriesStagingBuffer: vi.fn(() => staging),
+      getSeriesXOffset: vi.fn(() => 0),
+      dispose: vi.fn(),
+    };
+
+    prepareSeries(
+      {
+        lineRenderers: [
+          {
+            prepare: linePrepare,
+            render: vi.fn(),
+            dispose: vi.fn(),
+          } as any,
+        ],
+        areaRenderers: [],
+        barRenderer: {
+          prepare: vi.fn(),
+          render: vi.fn(),
+          dispose: vi.fn(),
+        } as any,
+        scatterRenderers: [],
+        scatterDensityRenderers: [],
+        pieRenderers: [],
+        candlestickRenderers: [],
+        decimationComputes: [
+          {
+            prepare: decimationPrepare,
+            needsEncode: vi.fn(() => false),
+            encodeCompute: vi.fn(),
+            getOutputBuffer: vi.fn(() => decimatedBuffer),
+            getOutputPointCount: vi.fn(() => 8),
+            dispose: vi.fn(),
+          },
+        ],
+      },
+      {
+        currentOptions: {
+          xAxis: { type: "value" },
+          yAxes: [{ id: "y", min: -1 }],
+          series: [series],
+        } as any,
+        seriesForRender: [series],
+        xScale: makeScale(0, 63),
+        yScales: new Map([["y", makeScale(-1, 1)]]),
+        gridArea: makeGridArea(),
+        dataStore,
+        // Empty set: without StagingRingView guard this would call setSeries.
+        appendedGpuThisFrame: new Set(),
+        gpuSeriesKindByIndex: ["gpuDecimationRaw"],
+        zoomState: null,
+        visibleXDomain: { min: 0, max: 63 },
+        introPhase: "done",
+        introProgress01: 1,
+        withAlpha: (c: string) => c,
+        maxRadiusCss: 4,
+        lastSetSeriesCache: new Map(),
+        filterGapsCache: createFilterGapsCache(),
+      },
+    );
+
+    expect(setSeries).not.toHaveBeenCalled();
+    expect(decimationPrepare).toHaveBeenCalled();
+    const args = decimationPrepare.mock.calls[0]![0] as {
+      ringStart?: number;
+      ringCapacity?: number;
+    };
+    expect(args.ringStart).toBe(4);
+    expect(args.ringCapacity).toBe(64);
+  });
+
+  it("time axis + StagingRingView uses packing origin (not new oldest domain x) for line.prepare", () => {
+    // FIFO dropped original oldest (packing origin TIME_ORIGIN_MS); chronological
+    // getX(0) is a newer timestamp. Line affine must still use packing origin.
+    const PACKING_ORIGIN = TIME_ORIGIN_MS;
+    const NEW_OLDEST = TIME_ORIGIN_MS + 60_000; // post-window oldest domain x
+    const n = 64;
+    const staging = new Float32Array(n * 2);
+    // staging stores Float32(x - packingOrigin); logical oldest is NEW_OLDEST.
+    for (let i = 0; i < n; i++) {
+      const domainX = NEW_OLDEST + i * 1000;
+      staging[i * 2] = domainX - PACKING_ORIGIN;
+      staging[i * 2 + 1] = Math.sin(i / 5);
+    }
+    const stagingView = {
+      __stagingRing: true as const,
+      staging,
+      start: 0,
+      count: n,
+      capacity: n,
+      xOffset: PACKING_ORIGIN,
+    };
+    // Series data chronological view: first domain x is NEW_OLDEST (not packing origin).
+    const domainPoints: Array<[number, number]> = [];
+    for (let i = 0; i < n; i++) {
+      domainPoints.push([NEW_OLDEST + i * 1000, Math.sin(i / 5)]);
+    }
+    const series = {
+      ...makeLineSeries(domainPoints),
+      rawData: stagingView as unknown as typeof domainPoints,
+      data: domainPoints,
+    };
+
+    const rawBuffer = { label: "raw" } as unknown as GPUBuffer;
+    const decimatedBuffer = { label: "decimated" } as unknown as GPUBuffer;
+    const linePrepare = vi.fn();
+    const decimationPrepare = vi.fn(() => 8);
+    const getSeriesXOffset = vi.fn(() => PACKING_ORIGIN);
+
+    const dataStore: DataStore = {
+      setSeries: vi.fn(),
+      appendSeries: vi.fn(),
+      removeSeries: vi.fn(),
+      getSeriesBuffer: vi.fn(() => rawBuffer),
+      getSeriesPointCount: vi.fn(() => n),
+      getSeriesRingLayout: vi.fn(() => ({ start: 0, capacity: n })),
+      getSeriesContentHash: vi.fn(() => 0x55),
+      getSeriesStagingBuffer: vi.fn(() => staging),
+      getSeriesXOffset,
+      dispose: vi.fn(),
+    };
+
+    prepareSeries(
+      {
+        lineRenderers: [
+          {
+            prepare: linePrepare,
+            render: vi.fn(),
+            dispose: vi.fn(),
+          } as any,
+        ],
+        areaRenderers: [],
+        barRenderer: {
+          prepare: vi.fn(),
+          render: vi.fn(),
+          dispose: vi.fn(),
+        } as any,
+        scatterRenderers: [],
+        scatterDensityRenderers: [],
+        pieRenderers: [],
+        candlestickRenderers: [],
+        decimationComputes: [
+          {
+            prepare: decimationPrepare,
+            needsEncode: vi.fn(() => false),
+            encodeCompute: vi.fn(),
+            getOutputBuffer: vi.fn(() => decimatedBuffer),
+            getOutputPointCount: vi.fn(() => 8),
+            dispose: vi.fn(),
+          },
+        ],
+      },
+      {
+        currentOptions: {
+          xAxis: { type: "time" },
+          yAxes: [{ id: "y", min: -1 }],
+          series: [series],
+        } as any,
+        seriesForRender: [series],
+        xScale: makeScale(NEW_OLDEST, NEW_OLDEST + (n - 1) * 1000),
+        yScales: new Map([["y", makeScale(-1, 1)]]),
+        gridArea: makeGridArea(),
+        dataStore,
+        appendedGpuThisFrame: new Set(),
+        gpuSeriesKindByIndex: ["gpuDecimationRaw"],
+        zoomState: null,
+        visibleXDomain: {
+          min: NEW_OLDEST,
+          max: NEW_OLDEST + (n - 1) * 1000,
+        },
+        introPhase: "done",
+        introProgress01: 1,
+        withAlpha: (c: string) => c,
+        maxRadiusCss: 4,
+        lastSetSeriesCache: new Map(),
+        filterGapsCache: createFilterGapsCache(),
+      },
+    );
+
+    expect(linePrepare).toHaveBeenCalled();
+    const xOffsetArg = linePrepare.mock.calls[0]![4] as number;
+    // Must equal packing origin / staging.xOffset — NOT the post-FIFO oldest.
+    expect(xOffsetArg).toBe(PACKING_ORIGIN);
+    expect(xOffsetArg).not.toBe(NEW_OLDEST);
+  });
+
+  it("time axis + appendedGpuThisFrame uses getSeriesXOffset for line.prepare (not domain-first)", () => {
+    const PACKING_ORIGIN = TIME_ORIGIN_MS;
+    const NEW_OLDEST = TIME_ORIGIN_MS + 120_000;
+    const points: Array<[number, number]> = [];
+    for (let i = 0; i < 64; i++) {
+      points.push([NEW_OLDEST + i * 1000, Math.sin(i / 5)]);
+    }
+    const series = makeLineSeries(points);
+
+    const rawBuffer = { label: "raw" } as unknown as GPUBuffer;
+    const decimatedBuffer = { label: "decimated" } as unknown as GPUBuffer;
+    const linePrepare = vi.fn();
+    const getSeriesXOffset = vi.fn(() => PACKING_ORIGIN);
+
+    prepareSeries(
+      {
+        lineRenderers: [
+          {
+            prepare: linePrepare,
+            render: vi.fn(),
+            dispose: vi.fn(),
+          } as any,
+        ],
+        areaRenderers: [],
+        barRenderer: {
+          prepare: vi.fn(),
+          render: vi.fn(),
+          dispose: vi.fn(),
+        } as any,
+        scatterRenderers: [],
+        scatterDensityRenderers: [],
+        pieRenderers: [],
+        candlestickRenderers: [],
+        decimationComputes: [
+          {
+            prepare: vi.fn(() => 8),
+            needsEncode: vi.fn(() => false),
+            encodeCompute: vi.fn(),
+            getOutputBuffer: vi.fn(() => decimatedBuffer),
+            getOutputPointCount: vi.fn(() => 8),
+            dispose: vi.fn(),
+          },
+        ],
+      },
+      {
+        currentOptions: {
+          xAxis: { type: "time" },
+          yAxes: [{ id: "y", min: -1 }],
+          series: [series],
+        } as any,
+        seriesForRender: [series],
+        xScale: makeScale(NEW_OLDEST, NEW_OLDEST + 63_000),
+        yScales: new Map([["y", makeScale(-1, 1)]]),
+        gridArea: makeGridArea(),
+        dataStore: {
+          setSeries: vi.fn(),
+          appendSeries: vi.fn(),
+          removeSeries: vi.fn(),
+          getSeriesBuffer: vi.fn(() => rawBuffer),
+          getSeriesPointCount: vi.fn(() => 64),
+          getSeriesRingLayout: vi.fn(() => ({ start: 0, capacity: 0 })),
+          getSeriesContentHash: vi.fn(() => 0x1),
+          getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
+          getSeriesXOffset,
+          dispose: vi.fn(),
+        },
+        // Append this frame: setSeries skipped; must still use store packing origin.
+        appendedGpuThisFrame: new Set([0]),
+        gpuSeriesKindByIndex: ["gpuDecimationRaw"],
+        zoomState: null,
+        visibleXDomain: {
+          min: NEW_OLDEST,
+          max: NEW_OLDEST + 63_000,
+        },
+        introPhase: "done",
+        introProgress01: 1,
+        withAlpha: (c: string) => c,
+        maxRadiusCss: 4,
+        lastSetSeriesCache: new Map(),
+        filterGapsCache: createFilterGapsCache(),
+      },
+    );
+
+    expect(getSeriesXOffset).toHaveBeenCalledWith(0);
+    const xOffsetArg = linePrepare.mock.calls[0]![4] as number;
+    expect(xOffsetArg).toBe(PACKING_ORIGIN);
+    expect(xOffsetArg).not.toBe(NEW_OLDEST);
   });
 });

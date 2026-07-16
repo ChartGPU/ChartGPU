@@ -20,9 +20,12 @@
  *      stay on the CPU path (which already has established gap handling).
  */
 
-import type { CartesianSeriesData, SeriesSampling } from "../config/types";
+import type { SeriesSampling } from "../config/types";
 import type { ResolvedSeriesConfig } from "../config/OptionResolver";
-import { hasNullGaps } from "./cartesianData";
+import {
+  hasNullGaps,
+  type CoordinatorCartesianData,
+} from "./cartesianData";
 import type { DecimationAlgorithm } from "../renderers/createDecimationCompute";
 
 /**
@@ -62,7 +65,7 @@ export function mapSamplingToDecimationAlgorithm(
  */
 export function isGpuDecimationEligible(
   series: ResolvedSeriesConfig,
-  rawData: CartesianSeriesData,
+  rawData: CoordinatorCartesianData,
 ): boolean {
   if (series.type !== "line") return false;
   // Line+areaStyle still uses the CPU area vertex path on this branch (P1-3/P1-4).

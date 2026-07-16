@@ -37,8 +37,17 @@ import {
   appendIntoRingXY,
   createRingXYColumns,
   isRingXYColumns,
+  isStagingRingView,
+  createStagingRingView,
+  stagingRingViewToRingXYColumns,
+  type CoordinatorCartesianData,
   type RingXYColumns,
+  type StagingRingView,
 } from "../data/cartesianData";
+import {
+  demoteStagingViewAfterRebindFailure,
+  isStagingThinPathEligible,
+} from "./renderCoordinator/data/stagingThinPath";
 import {
   normalizeMaxPoints,
   planMaxPointsWindow,
@@ -331,11 +340,8 @@ type MutableXYColumns = {
   [OWNED_XY_COLUMNS]?: true;
 };
 
-/** Runtime cartesian slot: owned columns, ring, or raw setOption ref (DataPoint[] / user XY). */
-type RuntimeCartesianData =
-  | MutableXYColumns
-  | RingXYColumns
-  | CartesianSeriesData;
+/** Runtime cartesian slot: owned columns, ring, staging view, or raw setOption ref. */
+type RuntimeCartesianData = MutableXYColumns | CoordinatorCartesianData;
 
 const brandOwnedColumns = (cols: MutableXYColumns): MutableXYColumns => {
   cols[OWNED_XY_COLUMNS] = true;
@@ -2093,21 +2099,17 @@ export function createRenderCoordinator(
         }
       } else {
         // Handle other cartesian series (line, area, bar, scatter).
-        // setOption rewrite may store a raw DataPoint[] ref — promote before mutate.
-        let raw: MutableXYColumns | RingXYColumns = ensureMutableRuntimeColumns(
-          seriesIndex,
-          s,
-        );
-
         // Optional fast-path: append just the new points when the DataStore buffer
         // holds full raw line data (sampling='none' full-span, or GPU decimation raw).
         const kind = gpuSeriesKindByIndex[seriesIndex];
         const isGpuDecimationActive = kind === "gpuDecimationRaw";
+        const existingRuntime =
+          runtimeRawDataByIndex[seriesIndex] as CartesianSeriesData | null;
         const isGpuDecimationEligibleNow =
           s.type === "line" &&
           isGpuDecimationEligible(
             s,
-            (runtimeRawDataByIndex[seriesIndex] as CartesianSeriesData) ??
+            existingRuntime ??
               ((s.rawData ?? s.data) as CartesianSeriesData),
           );
         const canUseFastPath =
@@ -2121,12 +2123,59 @@ export function createRenderCoordinator(
             isGpuDecimationEligibleNow ||
             (s.sampling === "none" && isFullSpanZoomBefore));
 
+        // Thin path = tooltip off + maxPoints + GPU append fast path: bind
+        // coordinator raw to DataStore staging (zero-copy) instead of dual-packing
+        // into RingXYColumns every frame. ChartGPU hit-test dual-store is skipped
+        // under the same tooltip-off + maxPoints contract.
+        let hasMaxPointsInFlush = false;
+        for (const batch of batches) {
+          if (normalizeMaxPoints(batch.maxPoints) != null) {
+            hasMaxPointsInFlush = true;
+            break;
+          }
+        }
+        const useStagingThinPath = isStagingThinPathEligible(
+          canUseFastPath,
+          hasMaxPointsInFlush,
+          currentOptions.tooltip?.show,
+        );
+
+        // setOption rewrite may store a raw DataPoint[] ref — promote before mutate
+        // (unless thin path will replace the slot with a staging view).
+        let raw: MutableXYColumns | RingXYColumns | StagingRingView | null =
+          null;
+        if (!useStagingThinPath) {
+          raw = ensureMutableRuntimeColumns(seriesIndex, s);
+        } else if (isStagingRingView(existingRuntime)) {
+          raw = existingRuntime;
+        } else if (isRingXYColumns(existingRuntime)) {
+          raw = existingRuntime;
+        }
+
         let didWindow = false;
         for (const batch of batches) {
           const cartesianData = batch.points as CartesianSeriesData;
           const maxPoints = normalizeMaxPoints(batch.maxPoints);
           const appendGpuOptions =
             maxPoints != null ? ({ maxPoints } as const) : undefined;
+
+          // prevLen for planMaxPointsWindow: staging view / ring / linear / DataStore.
+          let prevLen = 0;
+          if (isStagingRingView(raw)) {
+            prevLen = raw.count;
+          } else if (isRingXYColumns(raw)) {
+            prevLen = raw.count;
+          } else if (raw != null && isOwnedMutableColumns(raw)) {
+            prevLen = (raw as MutableXYColumns).x.length;
+          } else {
+            try {
+              prevLen = dataStore.getSeriesPointCount(seriesIndex);
+            } catch {
+              prevLen = existingRuntime
+                ? getPointCount(existingRuntime)
+                : 0;
+            }
+          }
 
           if (canUseFastPath) {
             try {
@@ -2157,11 +2206,85 @@ export function createRenderCoordinator(
             );
           }
 
+          // Thin path: after GPU modular append, point coordinator raw at staging
+          // (no RingXYColumns pack). Bounds from O(1) endpoints + new-batch y.
+          if (
+            useStagingThinPath &&
+            maxPoints != null &&
+            appendedGpuThisFrame.has(seriesIndex)
+          ) {
+            const n = getPointCount(cartesianData);
+            const plan = planMaxPointsWindow(prevLen, n, maxPoints);
+            try {
+              const layout = dataStore.getSeriesRingLayout(seriesIndex);
+              const staging = dataStore.getSeriesStagingBuffer(seriesIndex);
+              const count = dataStore.getSeriesPointCount(seriesIndex);
+              const xOffset = dataStore.getSeriesXOffset(seriesIndex);
+              const prevView = isStagingRingView(raw) ? raw : null;
+              raw = createStagingRingView(
+                staging,
+                layout.start,
+                layout.capacity,
+                count,
+                xOffset,
+                prevView,
+              );
+              runtimeRawDataByIndex[seriesIndex] = raw;
+
+              // O(1) x endpoints + incremental y (never shrinks on drop — same
+              // conservative product policy as RingXYColumns path).
+              const x0 = getX(raw as unknown as CartesianSeriesData, 0);
+              const x1 = getX(
+                raw as unknown as CartesianSeriesData,
+                Math.max(0, count - 1),
+              );
+              const prevB = runtimeRawBoundsByIndex[seriesIndex];
+              let yMin = prevB?.yMin ?? Number.POSITIVE_INFINITY;
+              let yMax = prevB?.yMax ?? Number.NEGATIVE_INFINITY;
+              const end = plan.newSrcOffset + plan.keepNewCount;
+              for (let i = plan.newSrcOffset; i < end; i++) {
+                const y = getY(cartesianData, i);
+                if (Number.isFinite(y)) {
+                  if (y < yMin) yMin = y;
+                  if (y > yMax) yMax = y;
+                }
+              }
+              if (
+                Number.isFinite(x0) &&
+                Number.isFinite(x1) &&
+                Number.isFinite(yMin) &&
+                Number.isFinite(yMax)
+              ) {
+                let xMin = x0;
+                let xMax = x1;
+                if (xMin === xMax) xMax = xMin + 1;
+                if (yMin === yMax) yMax = yMin + 1;
+                runtimeRawBoundsByIndex[seriesIndex] = {
+                  xMin,
+                  xMax,
+                  yMin,
+                  yMax,
+                };
+              } else if (plan.didWindow) {
+                didWindow = true;
+              }
+            } catch {
+              // DataStore not ready or rebind failed after append — demote any
+              // stale StagingRingView so fallthrough dual-pack can re-sync.
+              raw = demoteStagingViewAfterRebindFailure(raw);
+            }
+            if (isStagingRingView(raw)) {
+              continue;
+            }
+          }
+
+          // Full column path (tooltip on, or thin path unavailable).
+          if (raw == null || isStagingRingView(raw)) {
+            raw = ensureMutableRuntimeColumns(seriesIndex, s);
+          }
+
           // Update runtime columnar storage with the same window policy as DataStore.
           const n = getPointCount(cartesianData);
-          let prevLen = isRingXYColumns(raw)
-            ? raw.count
-            : (raw as MutableXYColumns).x.length;
           let plan = planMaxPointsWindow(prevLen, n, maxPoints);
 
           // Leave-ring or capacity mismatch: demote RingXY → chronological linear
@@ -3037,6 +3160,20 @@ export function createRenderCoordinator(
     const existing = runtimeRawDataByIndex[seriesIndex];
     if (isRingXYColumns(existing)) return existing;
     if (isOwnedMutableColumns(existing)) return existing;
+    // Staging views are zero-copy over DataStore; promote to capacity-preserving
+    // ring columns when leaving thin path (tooltip on / non-fast-path append)
+    // so the next maxPoints append stays O(append) modular — not linear → re-ring.
+    if (isStagingRingView(existing)) {
+      const ring = stagingRingViewToRingXYColumns(existing);
+      runtimeRawDataByIndex[seriesIndex] = ring;
+      if (runtimeRawBoundsByIndex[seriesIndex] == null) {
+        runtimeRawBoundsByIndex[seriesIndex] =
+          computeRawBoundsFromCartesianData(
+            ring as unknown as CartesianSeriesData,
+          );
+      }
+      return ring;
+    }
     const sAny = s as ResolvedSeriesConfig & {
       rawData?: CartesianSeriesData;
       rawBounds?: Bounds | null;
@@ -4619,6 +4756,10 @@ export function createRenderCoordinator(
       lastSetSeriesCache,
       filterGapsCache,
     });
+    // One-frame skip only: StagingRingView safety is isStagingRingView in
+    // setSeriesIfChanged, not this set. Clear so partial multi-series flushes
+    // cannot leave idle series looking "protected" across frames.
+    appendedGpuThisFrame.clear();
 
     const { visibleBarSeriesConfigs } = seriesPreparation;
 

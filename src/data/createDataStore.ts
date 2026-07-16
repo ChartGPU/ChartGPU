@@ -81,6 +81,11 @@ export interface DataStore {
    * Throws if the series has not been set yet.
    */
   getSeriesStagingBuffer(index: number): Float32Array;
+  /**
+   * X-origin subtracted during packing (time-axis Float32 precision). Staging
+   * stores `x - xOffset`; domain-space consumers must add this back.
+   */
+  getSeriesXOffset(index: number): number;
   dispose(): void;
 }
 
@@ -799,6 +804,10 @@ export function createDataStore(device: GPUDevice): DataStore {
     return getSeriesEntry(index).stagingBuffer;
   };
 
+  const getSeriesXOffset = (index: number): number => {
+    return getSeriesEntry(index).xOffset;
+  };
+
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
@@ -822,6 +831,7 @@ export function createDataStore(device: GPUDevice): DataStore {
     getSeriesRingLayout,
     getSeriesContentHash,
     getSeriesStagingBuffer,
+    getSeriesXOffset,
     dispose,
   };
 }

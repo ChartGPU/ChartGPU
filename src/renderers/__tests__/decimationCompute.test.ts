@@ -483,6 +483,136 @@ describe("createDecimationCompute", () => {
       // (Current implementation exits before beginComputePass when span <= 0.)
       expect(encoder.__passes).toHaveLength(0);
     });
+
+    it("needsEncode is true after prepare when dirty; false after encode and when clean", () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 800000 });
+
+      expect(d.needsEncode()).toBe(false);
+
+      d.prepare({
+        algorithm: "lttb",
+        rawBuffer,
+        rawPointCount: 100_000,
+        visibleStart: 0,
+        visibleEnd: 100_000,
+        targetBuckets: 512,
+      });
+      expect(d.needsEncode()).toBe(true);
+
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      expect(d.needsEncode()).toBe(false);
+
+      // Identical prepare clears dirty → still false.
+      d.prepare({
+        algorithm: "lttb",
+        rawBuffer,
+        rawPointCount: 100_000,
+        visibleStart: 0,
+        visibleEnd: 100_000,
+        targetBuckets: 512,
+      });
+      expect(d.needsEncode()).toBe(false);
+
+      // Dirty window change → true again.
+      d.prepare({
+        algorithm: "lttb",
+        rawBuffer,
+        rawPointCount: 100_000,
+        visibleStart: 10,
+        visibleEnd: 90_000,
+        targetBuckets: 512,
+      });
+      expect(d.needsEncode()).toBe(true);
+    });
+
+    it("needsEncode is false for empty visible span after prepare", () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 8000 });
+      d.prepare({
+        algorithm: "min",
+        rawBuffer,
+        rawPointCount: 100,
+        visibleStart: 50,
+        visibleEnd: 50,
+        targetBuckets: 16,
+      });
+      expect(d.needsEncode()).toBe(false);
+    });
+
+    it("encodeCompute(encoder, intoPass) dispatches without ending the shared pass", () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 800000 });
+      d.prepare({
+        algorithm: "min",
+        rawBuffer,
+        rawPointCount: 100_000,
+        visibleStart: 0,
+        visibleEnd: 100_000,
+        targetBuckets: 256,
+      });
+
+      const sharedPass = {
+        setPipeline: vi.fn(),
+        setBindGroup: vi.fn(),
+        dispatchWorkgroups: vi.fn(),
+        end: vi.fn(),
+      };
+      const encoder = createMockEncoder();
+      d.encodeCompute(
+        encoder as unknown as GPUCommandEncoder,
+        sharedPass as unknown as GPUComputePassEncoder,
+      );
+
+      // Caller-owned pass: no beginComputePass, no end().
+      expect(encoder.beginComputePass).not.toHaveBeenCalled();
+      expect(sharedPass.end).not.toHaveBeenCalled();
+      expect(sharedPass.setBindGroup).toHaveBeenCalledTimes(1);
+      expect(sharedPass.setPipeline).toHaveBeenCalledTimes(1);
+      expect(sharedPass.dispatchWorkgroups).toHaveBeenCalledWith(254);
+      expect(d.needsEncode()).toBe(false);
+    });
+
+    it("batches N dirty series into one shared pass (caller end once)", () => {
+      const a = createDecimationCompute(device);
+      const b = createDecimationCompute(device);
+      const rawA = createMockBuffer({ size: 800000 });
+      const rawB = createMockBuffer({ size: 800000 });
+      a.prepare({
+        algorithm: "lttb",
+        rawBuffer: rawA,
+        rawPointCount: 50_000,
+        visibleStart: 0,
+        visibleEnd: 50_000,
+        targetBuckets: 128,
+      });
+      b.prepare({
+        algorithm: "min",
+        rawBuffer: rawB,
+        rawPointCount: 40_000,
+        visibleStart: 0,
+        visibleEnd: 40_000,
+        targetBuckets: 64,
+      });
+      expect(a.needsEncode()).toBe(true);
+      expect(b.needsEncode()).toBe(true);
+
+      const encoder = createMockEncoder();
+      const pass = encoder.beginComputePass({
+        label: "decimationCompute/batchPass",
+      });
+      a.encodeCompute(encoder as unknown as GPUCommandEncoder, pass);
+      b.encodeCompute(encoder as unknown as GPUCommandEncoder, pass);
+      pass.end();
+
+      expect(encoder.beginComputePass).toHaveBeenCalledTimes(1);
+      expect(pass.setBindGroup).toHaveBeenCalledTimes(2);
+      // LTTB: 2 pipeline sets; min/max: 1 → total 3.
+      expect(pass.setPipeline).toHaveBeenCalledTimes(3);
+      expect(pass.end).toHaveBeenCalledTimes(1);
+      expect(a.needsEncode()).toBe(false);
+      expect(b.needsEncode()).toBe(false);
+    });
   });
 
   describe("bind-group caching", () => {

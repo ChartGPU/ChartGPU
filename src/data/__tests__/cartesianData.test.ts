@@ -14,6 +14,10 @@ import {
   packXYInto,
   createRingXYColumns,
   appendIntoRingXY,
+  createStagingRingView,
+  isStagingRingView,
+  stagingRingViewToRingXYColumns,
+  hasNullGaps,
 } from "../cartesianData";
 import type { DataPoint } from "../../config/types";
 
@@ -368,5 +372,72 @@ describe("RingXYColumns (FIFO modular CPU columns)", () => {
     expect(b.xMax).toBe(3);
     expect(b.yMin).toBe(4);
     expect(b.yMax).toBe(6);
+  });
+});
+
+describe("StagingRingView (zero-copy DataStore staging alias)", () => {
+  it("reads modular staging with xOffset restored", () => {
+    // Physical: [p2, p3, p0, p1] with start=2, capacity=4, count=4
+    // logical 0→phys2=(10,100), 1→phys3=(11,110), 2→phys0=(12,120), 3→phys1=(13,130)
+    const staging = new Float32Array([
+      12, 120, 13, 130, 10, 100, 11, 110,
+    ]);
+    const view = createStagingRingView(staging, 2, 4, 4, 1000);
+    expect(isStagingRingView(view)).toBe(true);
+    expect(getPointCount(view as any)).toBe(4);
+    expect(getX(view as any, 0)).toBe(1010); // 10 + 1000
+    expect(getY(view as any, 0)).toBe(100);
+    expect(getX(view as any, 3)).toBe(1013);
+    expect(getY(view as any, 3)).toBe(130);
+    expect(hasNullGaps(view as any)).toBe(false);
+  });
+
+  it("reuses object identity on createStagingRingView", () => {
+    const staging = new Float32Array([1, 2, 3, 4]);
+    const a = createStagingRingView(staging, 0, 0, 2, 0);
+    const b = createStagingRingView(staging, 1, 2, 2, 5, a);
+    expect(b).toBe(a);
+    expect(a.start).toBe(1);
+    expect(a.xOffset).toBe(5);
+    expect(a.count).toBe(2);
+  });
+
+  it("linear layout (capacity 0) indexes staging directly", () => {
+    const staging = new Float32Array([1, 10, 2, 20, 3, 30]);
+    const view = createStagingRingView(staging, 0, 0, 3, 0);
+    expect(getX(view as any, 1)).toBe(2);
+    expect(getY(view as any, 1)).toBe(20);
+    const out = new Float32Array(6);
+    packXYInto(out, 0, view as any, 0, 3, 0);
+    expect(Array.from(out)).toEqual([1, 10, 2, 20, 3, 30]);
+  });
+
+  it("stagingRingViewToRingXYColumns preserves capacity and chronological domain x", () => {
+    // Physical modular: start=2, capacity=4, count=4, xOffset=1000
+    // logical 0→phys2=(10+1000), 1→phys3=(11+1000), 2→phys0=(12+1000), 3→phys1=(13+1000)
+    const staging = new Float32Array([
+      12, 120, 13, 130, 10, 100, 11, 110,
+    ]);
+    const view = createStagingRingView(staging, 2, 4, 4, 1000);
+    const ring = stagingRingViewToRingXYColumns(view);
+    expect(ring.capacity).toBe(4);
+    expect(ring.count).toBe(4);
+    expect(ring.start).toBe(0);
+    expect(ring.x[0]).toBe(1010);
+    expect(ring.y[0]).toBe(100);
+    expect(ring.x[3]).toBe(1013);
+    expect(ring.y[3]).toBe(130);
+    // Capacity slots beyond count remain available for modular append.
+    expect(ring.x.length).toBe(4);
+  });
+
+  it("stagingRingViewToRingXYColumns uses count as capacity when layout is linear", () => {
+    const staging = new Float32Array([1, 10, 2, 20, 3, 30]);
+    const view = createStagingRingView(staging, 0, 0, 3, 50);
+    const ring = stagingRingViewToRingXYColumns(view);
+    expect(ring.capacity).toBe(3);
+    expect(ring.count).toBe(3);
+    expect(ring.x[0]).toBe(51); // 1 + 50
+    expect(ring.y[1]).toBe(20);
   });
 });

@@ -60,6 +60,49 @@ export type RingXYColumns = {
   capacity: number;
 };
 
+/**
+ * Zero-copy view over DataStore modular staging (interleaved Float32 x,y with
+ * `xOffset` already subtracted). Used for tooltip-off + maxPoints + GPU append
+ * fast-path streaming so the coordinator does not dual-pack every append into
+ * RingXYColumns.
+ *
+ * Chronological index `i` maps to physical `(start + i) % capacity` when
+ * `capacity > 0`; otherwise staging is linear in `[0, count)`.
+ *
+ * **Precision contract:** staging stores `Float32(x - xOffset)` (same packing as
+ * the GPU buffer). {@link getX} restores domain space as `staging[phys*2] + xOffset`,
+ * so restored domain x has Float32 error vs `RingXYColumns` Float64 dual-store.
+ * That is intentional for zero-copy / tooltip-off streaming; binary-search visible
+ * bounds can differ slightly from the dual-column path on large time axes.
+ *
+ * **WeakMap identity caveat:** `createStagingRingView` reuses one object while
+ * mutating `count`/`start`/`xOffset`/floats in place. Identity-keyed caches
+ * (e.g. monotonic-x WeakMaps) must not assume stable content under a stable ref —
+ * same class of issue as {@link RingXYColumns}. Never pass a StagingRingView as
+ * the data source to `DataStore.setSeries` (setSeries linearizes ringStart /
+ * capacity and desyncs this view).
+ */
+export type StagingRingView = {
+  readonly __stagingRing: true;
+  /** Interleaved packed floats: staging[phys*2]=x-xOffset, staging[phys*2+1]=y. */
+  staging: Float32Array;
+  start: number;
+  count: number;
+  /** Modular capacity in points; `0` means linear layout at the start of staging. */
+  capacity: number;
+  /** Added back in {@link getX} so domain / binary search use original x. */
+  xOffset: number;
+};
+
+/**
+ * Coordinator / raw-pipeline cartesian data: public input formats plus internal
+ * modular ring columns and zero-copy DataStore staging aliases.
+ */
+export type CoordinatorCartesianData =
+  | CartesianSeriesData
+  | RingXYColumns
+  | StagingRingView;
+
 export function isRingXYColumns(data: unknown): data is RingXYColumns {
   return (
     typeof data === "object" &&
@@ -69,13 +112,76 @@ export function isRingXYColumns(data: unknown): data is RingXYColumns {
   );
 }
 
+export function isStagingRingView(data: unknown): data is StagingRingView {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    (data as StagingRingView).__stagingRing === true &&
+    typeof (data as StagingRingView).count === "number"
+  );
+}
+
+/**
+ * Creates or updates a staging-backed ring view (mutates `reuse` when provided
+ * to avoid per-append object allocation on the high-rate FIFO path).
+ */
+export function createStagingRingView(
+  staging: Float32Array,
+  start: number,
+  capacity: number,
+  count: number,
+  xOffset: number,
+  reuse?: StagingRingView | null,
+): StagingRingView {
+  if (reuse && reuse.__stagingRing) {
+    reuse.staging = staging;
+    reuse.start = start;
+    reuse.capacity = capacity;
+    reuse.count = count;
+    reuse.xOffset = xOffset;
+    return reuse;
+  }
+  return {
+    __stagingRing: true,
+    staging,
+    start,
+    capacity,
+    count,
+    xOffset,
+  };
+}
+
+/**
+ * Chronological pack of a {@link StagingRingView} into a private
+ * {@link RingXYColumns} (domain x via +xOffset, capacity-preserving).
+ * Used when leaving the thin path (tooltip on / coordinator dual-column) so
+ * subsequent maxPoints appends keep modular FIFO structure.
+ */
+export function stagingRingViewToRingXYColumns(
+  view: StagingRingView,
+): RingXYColumns {
+  const cap = view.capacity > 0 ? view.capacity : Math.max(1, view.count);
+  const ring = createRingXYColumns(cap);
+  for (let k = 0; k < view.count; k++) {
+    // Inline modular read (getX/getY are defined later in this module).
+    const phys =
+      view.capacity > 0 ? (view.start + k) % view.capacity : k;
+    ring.x[k] = view.staging[phys * 2]! + view.xOffset;
+    ring.y[k] = view.staging[phys * 2 + 1]!;
+  }
+  ring.start = 0;
+  ring.count = view.count;
+  return ring;
+}
+
 /**
  * Type guard for XYArraysData format.
  */
 function isXYArraysData(data: CartesianSeriesData): data is XYArraysData {
-  // Ring columns also have x/y; detect them first so we don't treat modular
-  // storage as linear XYArraysData (wrong length / indexing).
+  // Ring columns / staging views also look object-like; detect them first so we
+  // don't treat modular storage as linear XYArraysData (wrong length / indexing).
   if (isRingXYColumns(data)) return false;
+  if (isStagingRingView(data)) return false;
   return (
     typeof data === "object" &&
     data !== null &&
@@ -167,8 +273,11 @@ function isTupleDataPoint(
 /**
  * Returns the number of points in the CartesianSeriesData.
  */
-export function getPointCount(data: CartesianSeriesData): number {
+export function getPointCount(data: CoordinatorCartesianData): number {
   if (isRingXYColumns(data)) {
+    return data.count;
+  }
+  if (isStagingRingView(data)) {
     return data.count;
   }
   if (isXYArraysData(data)) {
@@ -198,10 +307,17 @@ export function getPointCount(data: CartesianSeriesData): number {
  * Returns NaN if the point is undefined, null, or non-object (for DataPoint[] format).
  * This allows callers using `Number.isFinite()` to naturally skip missing points.
  */
-export function getX(data: CartesianSeriesData, i: number): number {
+export function getX(data: CoordinatorCartesianData, i: number): number {
   if (isRingXYColumns(data)) {
     if (i < 0 || i >= data.count) return NaN;
     return data.x[(data.start + i) % data.capacity]!;
+  }
+  if (isStagingRingView(data)) {
+    if (i < 0 || i >= data.count) return NaN;
+    // Domain restore: Float32(x - xOffset) + xOffset (see StagingRingView precision contract).
+    const phys =
+      data.capacity > 0 ? (data.start + i) % data.capacity : i;
+    return data.staging[phys * 2]! + data.xOffset;
   }
   if (isXYArraysData(data)) {
     return data.x[i]!;
@@ -231,10 +347,16 @@ export function getX(data: CartesianSeriesData, i: number): number {
  * Returns NaN if the point is undefined, null, or non-object (for DataPoint[] format).
  * This allows callers using `Number.isFinite()` to naturally skip missing points.
  */
-export function getY(data: CartesianSeriesData, i: number): number {
+export function getY(data: CoordinatorCartesianData, i: number): number {
   if (isRingXYColumns(data)) {
     if (i < 0 || i >= data.count) return NaN;
     return data.y[(data.start + i) % data.capacity]!;
+  }
+  if (isStagingRingView(data)) {
+    if (i < 0 || i >= data.count) return NaN;
+    const phys =
+      data.capacity > 0 ? (data.start + i) % data.capacity : i;
+    return data.staging[phys * 2 + 1]!;
   }
   if (isXYArraysData(data)) {
     return data.y[i]!;
@@ -271,6 +393,9 @@ export function getSize(
   if (isRingXYColumns(data)) {
     if (!data.size || i < 0 || i >= data.count) return undefined;
     return data.size[(data.start + i) % data.capacity];
+  }
+  if (isStagingRingView(data)) {
+    return undefined;
   }
   if (isXYArraysData(data)) {
     return data.size?.[i];
@@ -411,6 +536,26 @@ export function packXYInto(
     return;
   }
 
+  if (isStagingRingView(src)) {
+    // Staging is already packed as (x - src.xOffset, y). Re-apply relative offset.
+    const delta = src.xOffset - xOffset;
+    const cap = src.capacity;
+    let phys =
+      cap > 0 ? (src.start + srcPointOffset) % cap : srcPointOffset;
+    for (let i = 0; i < actualPointCount; i++) {
+      const outIdx = outFloatOffset + i * 2;
+      out[outIdx] = src.staging[phys * 2]! + delta;
+      out[outIdx + 1] = src.staging[phys * 2 + 1]!;
+      if (cap > 0) {
+        phys++;
+        if (phys >= cap) phys = 0;
+      } else {
+        phys++;
+      }
+    }
+    return;
+  }
+
   if (isXYArraysData(src)) {
     // Fast path: bulk copy with xOffset adjustment
     for (let i = 0; i < actualPointCount; i++) {
@@ -488,6 +633,26 @@ export function computeRawBoundsFromCartesianData(
       const y = data.y[phys]!;
       phys++;
       if (phys >= cap) phys = 0;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (x < xMin) xMin = x;
+      if (x > xMax) xMax = x;
+      if (y < yMin) yMin = y;
+      if (y > yMax) yMax = y;
+    }
+  } else if (isStagingRingView(data)) {
+    const n = data.count;
+    const cap = data.capacity;
+    const xo = data.xOffset;
+    let phys = cap > 0 ? data.start : 0;
+    for (let i = 0; i < n; i++) {
+      const x = data.staging[phys * 2]! + xo;
+      const y = data.staging[phys * 2 + 1]!;
+      if (cap > 0) {
+        phys++;
+        if (phys >= cap) phys = 0;
+      } else {
+        phys++;
+      }
       if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
       if (x < xMin) xMin = x;
       if (x > xMax) xMax = x;
@@ -592,6 +757,23 @@ export function computeRawXExtentFromCartesianData(
       if (x < xMin) xMin = x;
       if (x > xMax) xMax = x;
     }
+  } else if (isStagingRingView(data)) {
+    const n = data.count;
+    const cap = data.capacity;
+    const xo = data.xOffset;
+    let phys = cap > 0 ? data.start : 0;
+    for (let i = 0; i < n; i++) {
+      const x = data.staging[phys * 2]! + xo;
+      if (cap > 0) {
+        phys++;
+        if (phys >= cap) phys = 0;
+      } else {
+        phys++;
+      }
+      if (!Number.isFinite(x)) continue;
+      if (x < xMin) xMin = x;
+      if (x > xMax) xMax = x;
+    }
   } else if (isXYArraysData(data)) {
     const count = data.x.length;
     for (let i = 0; i < count; i++) {
@@ -636,8 +818,9 @@ export function computeRawXExtentFromCartesianData(
  * Only applies to ReadonlyArray<DataPoint | null> format — XYArraysData and
  * InterleavedXYData cannot contain null entries and always return false.
  */
-export function hasNullGaps(data: CartesianSeriesData): boolean {
+export function hasNullGaps(data: CoordinatorCartesianData): boolean {
   if (isRingXYColumns(data)) return false;
+  if (isStagingRingView(data)) return false;
   if (!Array.isArray(data)) return false;
   return data.includes(null);
 }

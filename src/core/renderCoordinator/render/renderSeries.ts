@@ -36,7 +36,11 @@ import { clampInt } from "../utils/canvasUtils";
 import { clamp01 } from "../animation/animationHelpers";
 import { findVisibleRangeIndicesByX } from "../data/computeVisibleSlice";
 import { resolvePieRadiiCss } from "../utils/timeAxisUtils";
-import { getPointCount, getX } from "../../../data/cartesianData";
+import {
+  getPointCount,
+  getX,
+  isStagingRingView,
+} from "../../../data/cartesianData";
 import {
   type FilterGapsCache,
   getFilteredGapsCached,
@@ -187,12 +191,19 @@ export function prepareSeries(
    * Calls `dataStore.setSeries` only when the `(data, xOffset)` pair changed from the
    * previous frame (P1-2). Skips pack+hash when the same array reference is re-used
    * (steady-state static / hover frames).
+   *
+   * Never setSeries a `StagingRingView`: staging already aliases DataStore modular
+   * layout. setSeries always repacks linearly (ringStart=0, ringCapacity=0) and
+   * would desync the view's modular start/capacity from GPU content.
    */
   const setSeriesIfChanged = (
     seriesIndex: number,
     data: unknown,
     options?: Readonly<{ xOffset?: number }>,
   ): void => {
+    if (isStagingRingView(data)) {
+      return;
+    }
     const xOffset = options?.xOffset ?? 0;
     const cached = lastSetSeriesCache.get(seriesIndex);
     if (cached && cached.data === data && cached.xOffset === xOffset) {
@@ -239,7 +250,12 @@ export function prepareSeries(
         const gpuEligible = isGpuDecimationEligible(s, rawDataForGpu);
 
         if (gpuEligible) {
-          const xOffset = (() => {
+          // Time-axis packing origin: first finite domain x only establishes a
+          // *new* setSeries pack. When GPU already holds packed floats (staging
+          // alias, append this frame, or existing series), use DataStore's fixed
+          // origin — after FIFO drops the original oldest, chronological getX(0)
+          // is a newer timestamp and must NOT be used as the line affine offset.
+          const domainFirstX = (() => {
             if (currentOptions.xAxis.type !== "time") return 0;
             const count = getPointCount(rawDataForGpu);
             for (let k = 0; k < count; k++) {
@@ -248,10 +264,26 @@ export function prepareSeries(
             }
             return 0;
           })();
+          const packingXOffset = isStagingRingView(rawDataForGpu)
+            ? rawDataForGpu.xOffset
+            : domainFirstX;
 
           if (!appendedGpuThisFrame.has(i)) {
-            setSeriesIfChanged(i, rawDataForGpu, { xOffset });
+            setSeriesIfChanged(i, rawDataForGpu, { xOffset: packingXOffset });
           }
+
+          const xOffset = (() => {
+            if (currentOptions.xAxis.type !== "time") return 0;
+            if (isStagingRingView(rawDataForGpu)) {
+              return rawDataForGpu.xOffset;
+            }
+            try {
+              return dataStore.getSeriesXOffset(i);
+            } catch {
+              return packingXOffset;
+            }
+          })();
+
           const rawBuffer = dataStore.getSeriesBuffer(i);
           const rawPointCount = dataStore.getSeriesPointCount(i);
 
@@ -268,9 +300,9 @@ export function prepareSeries(
           );
 
           // Prefer visible-range binary search on coordinator raw (including
-          // RingXYColumns — getX is chronological). Full-range only when raw is
-          // unavailable (should not happen on the GPU-eligible path).
-          // Decimation maps logical indices via modular ringStart/ringCapacity.
+          // RingXYColumns / StagingRingView — getX is chronological). Full-range
+          // only when raw is unavailable (should not happen on the GPU-eligible
+          // path). Decimation maps logical indices via modular ringStart/ringCapacity.
           const ringLayout = dataStore.getSeriesRingLayout(i);
           const visible =
             rawDataForGpu != null
@@ -337,9 +369,14 @@ export function prepareSeries(
         // If we already appended into the DataStore this frame (fast-path), avoid a full re-upload.
         // For time axes (epoch-ms), subtract an x-origin before packing to Float32 to avoid precision loss
         // (Float32 ulp at ~1e12 is ~2e5), which can manifest as stroke shimmer during zoom.
-        const xOffset = (() => {
+        // When connectNulls is true, strip null/NaN gap entries so the line draws through gaps.
+        // Cached by data ref identity (P2-12) so static frames do not re-allocate.
+        const uploadData = s.connectNulls
+          ? getFilteredGapsCached(filterGapsCache, i, s.data)
+          : s.data;
+        const domainFirstX = (() => {
           if (currentOptions.xAxis.type !== "time") return 0;
-          const d = s.data;
+          const d = uploadData;
           const count = getPointCount(d);
           for (let k = 0; k < count; k++) {
             const x = getX(d, k);
@@ -347,14 +384,27 @@ export function prepareSeries(
           }
           return 0;
         })();
-        // When connectNulls is true, strip null/NaN gap entries so the line draws through gaps.
-        // Cached by data ref identity (P2-12) so static frames do not re-allocate.
-        const uploadData = s.connectNulls
-          ? getFilteredGapsCached(filterGapsCache, i, s.data)
-          : s.data;
+        // Staging / GPU-backed: packing origin is fixed on DataStore; domain-first
+        // would drift after maxPoints FIFO drops the original oldest sample.
+        const packingXOffset = isStagingRingView(uploadData)
+          ? uploadData.xOffset
+          : domainFirstX;
         if (!appendedGpuThisFrame.has(i)) {
-          setSeriesIfChanged(i, uploadData, { xOffset });
+          setSeriesIfChanged(i, uploadData, { xOffset: packingXOffset });
         }
+        const xOffset = (() => {
+          if (currentOptions.xAxis.type !== "time") return 0;
+          if (isStagingRingView(uploadData)) {
+            return uploadData.xOffset;
+          }
+          // Prefer store origin when series already exists (append fast path /
+          // setSeries skip). After setSeries, getSeriesXOffset matches packing.
+          try {
+            return dataStore.getSeriesXOffset(i);
+          } catch {
+            return packingXOffset;
+          }
+        })();
         const buffer = dataStore.getSeriesBuffer(i);
         // Pass filtered data to the renderer so point count matches the GPU buffer.
         const lineSeriesForRenderer =
@@ -540,9 +590,10 @@ export function encodeScatterDensityCompute(
 }
 
 /**
- * Encodes GPU compute-shader decimation passes before rendering (P0-2).
+ * Encodes GPU compute-shader decimation before rendering (P0-2).
  *
- * Safe to call unconditionally — each `decimationComputes[i]` is dirty-gated
+ * Batches all dirty series into a **single** compute pass (bind-group / pipeline
+ * switches only). Safe to call unconditionally — each instance is dirty-gated
  * and no-ops when no eligible `prepare()` ran this frame.
  */
 export function encodeDecimationCompute(
@@ -550,12 +601,20 @@ export function encodeDecimationCompute(
   seriesForRender: ReadonlyArray<ResolvedSeriesConfig>,
   encoder: GPUCommandEncoder,
 ): void {
+  let pass: GPUComputePassEncoder | null = null;
   for (let i = 0; i < seriesForRender.length; i++) {
     const s = seriesForRender[i];
-    if (s.visible !== false && s.type === "line") {
-      renderers.decimationComputes[i].encodeCompute(encoder);
+    if (s.visible === false || s.type !== "line") continue;
+    const compute = renderers.decimationComputes[i];
+    if (!compute.needsEncode()) continue;
+    if (pass == null) {
+      pass = encoder.beginComputePass({
+        label: "decimationCompute/batchPass",
+      });
     }
+    compute.encodeCompute(encoder, pass);
   }
+  pass?.end();
 }
 
 /**

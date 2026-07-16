@@ -94,11 +94,24 @@ export interface DecimationCompute {
   prepare(params: DecimationComputePrepareParams): number;
 
   /**
+   * True when the next {@link encodeCompute} will dispatch work (prepared + dirty).
+   * Used by the coordinator to open a shared compute pass only when needed.
+   */
+  needsEncode(): boolean;
+
+  /**
    * Encodes the compute pass(es) onto {@link encoder}. No-op if no eligible
    * `prepare()` has been called, or if the dirty flag is clear (no inputs
    * changed this frame).
+   *
+   * When `intoPass` is provided, dispatches into that shared pass (caller owns
+   * begin/end). Used by the coordinator to batch all series decimation into one
+   * compute pass instead of 5× beginComputePass per frame.
    */
-  encodeCompute(encoder: GPUCommandEncoder): void;
+  encodeCompute(
+    encoder: GPUCommandEncoder,
+    intoPass?: GPUComputePassEncoder,
+  ): void;
 
   /**
    * GPU storage buffer holding the decimated `vec2<f32>` points. Stable across
@@ -420,7 +433,17 @@ export function createDecimationCompute(
     return buckets;
   };
 
-  const encodeCompute: DecimationCompute["encodeCompute"] = (encoder) => {
+  const needsEncode: DecimationCompute["needsEncode"] = () => {
+    if (disposed || !hasPrepared || !dirty || !bindGroup) return false;
+    const buckets = lastTargetBuckets;
+    const span = lastVisibleEnd - lastVisibleStart;
+    return buckets >= 2 && span > 0;
+  };
+
+  const encodeCompute: DecimationCompute["encodeCompute"] = (
+    encoder,
+    intoPass,
+  ) => {
     assertNotDisposed();
     if (!hasPrepared) return;
     if (!dirty) return;
@@ -434,9 +457,12 @@ export function createDecimationCompute(
       return;
     }
 
-    const pass = encoder.beginComputePass({
-      label: "decimationCompute/computePass",
-    });
+    const ownsPass = intoPass == null;
+    const pass =
+      intoPass ??
+      encoder.beginComputePass({
+        label: "decimationCompute/computePass",
+      });
     pass.setBindGroup(0, bindGroup);
 
     if (lastAlgorithm === "min" || lastAlgorithm === "max") {
@@ -456,7 +482,9 @@ export function createDecimationCompute(
       pass.dispatchWorkgroups(buckets);
     }
 
-    pass.end();
+    if (ownsPass) {
+      pass.end();
+    }
     dirty = false;
   };
 
@@ -506,6 +534,7 @@ export function createDecimationCompute(
 
   return {
     prepare,
+    needsEncode,
     encodeCompute,
     getOutputBuffer,
     getOutputPointCount,
