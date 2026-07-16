@@ -109,27 +109,23 @@ export function createRenderCoordinator(
 
 ## Rendering Pipeline
 
-The render coordinator implements a **3-pass MSAA rendering strategy** for high-quality anti-aliased output:
+The render coordinator implements a **2-pass MSAA strategy** (Phase 4b — no third single-sample top overlay):
 
-### Pass 1: Main Scene (4x MSAA)
-- **Target**: 4x MSAA texture (`mainColorTexture` with `sampleCount: 4`)
+### Pass 1: Main Scene (`MAIN_SCENE_MSAA_SAMPLE_COUNT` = **4×**)
+- **Target**: 4× MSAA texture (`mainColorTexture`)
 - **Resolve**: Single-sample texture (`mainResolveTexture`)
-- **Renderers**: grid, area, line, bar, scatter, candlestick, reference lines, annotation markers
-- **Sample count**: All main-pass renderers use `MAIN_SCENE_MSAA_SAMPLE_COUNT` (4) in their pipeline configuration
+- **Renderers**: grid, area, line, bar, scatter, candlestick, **below-series** reference lines / markers
+- **Sample count**: All main-pass series/grid/below-annotation pipelines use `MAIN_SCENE_MSAA_SAMPLE_COUNT` (4; WebGPU allows only 1 or 4)
 
-### Pass 2: Blit + Annotations
-- **Target**: MSAA overlay texture
-- **Purpose**: Composite resolved main scene with additional annotation overlays
-
-### Pass 3: UI Overlays (single-sample)
-- **Target**: Swapchain texture (canvas context)
-- **Renderers**: axes, crosshair, highlight
-- **Sample count**: `1` (no MSAA)
+### Pass 2: Annotation Overlay (`ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT` = **4×**)
+- **Target**: 4× MSAA overlay texture, resolved to swapchain
+- **Contents**: Blit resolved main scene → above-series annotations → **axes / crosshair / highlight**
+- **Sample count**: Axes, crosshair, highlight, and above-series annotation pipelines use `ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT` (4)
 
 **Critical for renderer implementations:**
-- `MAIN_SCENE_MSAA_SAMPLE_COUNT` is exported from `textureManager.ts`
-- All main-pass renderer pipelines **must** use `sampleCount: 4` in their `multisample` configuration
-- Overlay-pass renderers retain `sampleCount: 1`
+- `MAIN_SCENE_MSAA_SAMPLE_COUNT` (4) and `ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT` (4) are exported from `textureManager.ts`
+- Main-pass pipelines **must** match main sample count; overlay UI/annotation pipelines **must** match overlay sample count
+- Do **not** reintroduce a third single-sample top overlay pass
 
 ## Related Types
 

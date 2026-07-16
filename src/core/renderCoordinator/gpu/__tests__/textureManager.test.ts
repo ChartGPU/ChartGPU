@@ -130,7 +130,7 @@ describe('TextureManager', () => {
     const manager = createTextureManager(config);
     manager.ensureTextures(800, 600);
 
-    // Main color texture is now 4x MSAA (RENDER_ATTACHMENT only — multisampled textures cannot have TEXTURE_BINDING).
+    // Main color texture is 4× MSAA (WebGPU allows only 1 or 4; RENDER_ATTACHMENT only).
     expect(device.createTexture).toHaveBeenCalledWith(
       expect.objectContaining({
         label: 'textureManager/mainColorTexture',

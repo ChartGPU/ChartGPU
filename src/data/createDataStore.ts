@@ -3,6 +3,31 @@ import { getPointCount, packXYInto } from './cartesianData';
 import { maxPointsPeakRetention, normalizeMaxPoints, planMaxPointsWindow } from './maxPointsWindow';
 import { isYOnlyRewriteAgainstStaging, packYOnlyInto } from './seriesRewriteDetect';
 
+/**
+ * Compute: equal-N line y-only rewrite into interleaved vec2 storage (Track C Option B).
+ * Uploads only N×4 dense y bytes via writeBuffer; GPU rewrites y lanes in place so
+ * line/area/decimation keep a single interleaved layout (not dual-buffer line).
+ */
+const Y_REWRITE_WGSL = /* wgsl */ `
+struct Params {
+  count : u32,
+  _p0 : u32,
+  _p1 : u32,
+  _p2 : u32,
+};
+@group(0) @binding(0) var<storage, read_write> points : array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read> yIn : array<f32>;
+@group(0) @binding(2) var<uniform> params : Params;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+  let i = gid.x;
+  if (i >= params.count) { return; }
+  let p = points[i];
+  points[i] = vec2<f32>(p.x, yIn[i]);
+}
+`;
+
 export type SeriesRingLayout = Readonly<{
   /**
    * Physical index of the oldest retained point. `0` with `capacity === 0`
@@ -297,6 +322,124 @@ export function createDataStore(device: GPUDevice): DataStore {
   const series = new Map<number, SeriesEntry>();
   let disposed = false;
 
+  // Lazy equal-N y-only GPU rewrite (Track C Option B — compute y lanes).
+  let yRewritePipeline: GPUComputePipeline | null = null;
+  let yRewriteBindGroupLayout: GPUBindGroupLayout | null = null;
+  let yChannelBuffer: GPUBuffer | null = null;
+  let yChannelCapacityBytes = 0;
+  let yChannelStaging = new Float32Array(0);
+  let yParamsUniform: GPUBuffer | null = null;
+  const yParamsScratch = new Uint32Array(4);
+  /** Bind group cached by (seriesBuffer, yChannelBuffer) identity — avoid per-frame createBindGroup. */
+  let yRewriteBindGroup: GPUBindGroup | null = null;
+  let yRewriteBoundSeriesBuffer: GPUBuffer | null = null;
+  let yRewriteBoundYChannel: GPUBuffer | null = null;
+
+  const ensureYRewritePipeline = (): void => {
+    if (yRewritePipeline) return;
+    const module = device.createShaderModule({
+      label: 'DataStore/yRewrite.wgsl',
+      code: Y_REWRITE_WGSL,
+    });
+    yRewriteBindGroupLayout = device.createBindGroupLayout({
+      label: 'DataStore/yRewriteBGL',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      ],
+    });
+    const layout = device.createPipelineLayout({
+      label: 'DataStore/yRewritePL',
+      bindGroupLayouts: [yRewriteBindGroupLayout],
+    });
+    yRewritePipeline = device.createComputePipeline({
+      label: 'DataStore/yRewritePipeline',
+      layout,
+      compute: { module, entryPoint: 'main' },
+    });
+    yParamsUniform = device.createBuffer({
+      label: 'DataStore/yRewriteParams',
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+  };
+
+  const ensureYChannelCapacity = (pointCount: number): void => {
+    const bytes = Math.max(4, roundUpToMultipleOf4(pointCount * 4));
+    if (!yChannelBuffer || yChannelCapacityBytes < bytes) {
+      if (yChannelBuffer) {
+        try {
+          yChannelBuffer.destroy();
+        } catch {
+          // best-effort
+        }
+      }
+      const grown = Math.max(bytes, nextPow2(bytes));
+      yChannelBuffer = device.createBuffer({
+        label: 'DataStore/yChannelUpload',
+        size: grown,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      yChannelCapacityBytes = grown;
+      yChannelStaging = new Float32Array(grown / 4);
+    } else if (yChannelStaging.length < pointCount) {
+      yChannelStaging = new Float32Array(yChannelCapacityBytes / 4);
+    }
+  };
+
+  /**
+   * Upload dense y (N×4) and rewrite y lanes of the interleaved series buffer on GPU.
+   * CPU staging must already hold the correct interleaved floats (packYOnlyInto).
+   */
+  const gpuYOnlyRewrite = (seriesBuffer: GPUBuffer, staging: Float32Array, pointCount: number): void => {
+    if (pointCount <= 0) return;
+    ensureYRewritePipeline();
+    ensureYChannelCapacity(pointCount);
+    // Dense y extract from interleaved staging.
+    for (let i = 0; i < pointCount; i++) {
+      yChannelStaging[i] = staging[i * 2 + 1]!;
+    }
+    const yBytes = pointCount * 4;
+    device.queue.writeBuffer(yChannelBuffer!, 0, yChannelStaging.buffer, yChannelStaging.byteOffset, yBytes);
+    yParamsScratch[0] = pointCount >>> 0;
+    yParamsScratch[1] = 0;
+    yParamsScratch[2] = 0;
+    yParamsScratch[3] = 0;
+    device.queue.writeBuffer(yParamsUniform!, 0, yParamsScratch.buffer, yParamsScratch.byteOffset, 16);
+
+    // Rebuild bind group only when series or y-channel buffer identity changes.
+    // (ensureYChannelCapacity may reallocate yChannelBuffer; bound identity covers that.)
+    if (
+      yRewriteBindGroup == null ||
+      yRewriteBoundSeriesBuffer !== seriesBuffer ||
+      yRewriteBoundYChannel !== yChannelBuffer
+    ) {
+      yRewriteBindGroup = device.createBindGroup({
+        layout: yRewriteBindGroupLayout!,
+        entries: [
+          { binding: 0, resource: { buffer: seriesBuffer } },
+          { binding: 1, resource: { buffer: yChannelBuffer! } },
+          { binding: 2, resource: { buffer: yParamsUniform! } },
+        ],
+      });
+      yRewriteBoundSeriesBuffer = seriesBuffer;
+      yRewriteBoundYChannel = yChannelBuffer;
+    }
+    // Per-setSeries submit is intentional: y-lane rewrite must complete on the queue
+    // before the frame encoder's decimation/main-pass reads the interleaved buffer.
+    // WebGPU orders submits; multi-series frames pay one submit each (FIFO append stays
+    // on the thin path via ring/length gates). Batching onto the frame encoder would
+    // collapse submits but needs pending-work plumbing across DataStore → coordinator.
+    const encoder = device.createCommandEncoder({ label: 'DataStore/yRewrite' });
+    const pass = encoder.beginComputePass({ label: 'DataStore/yRewritePass' });
+    pass.setPipeline(yRewritePipeline!);
+    pass.setBindGroup(0, yRewriteBindGroup);
+    pass.dispatchWorkgroups(Math.ceil(pointCount / 64));
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+  };
+
   const assertNotDisposed = (): void => {
     if (disposed) {
       throw new Error('DataStore is disposed.');
@@ -372,17 +515,15 @@ export function createDataStore(device: GPUDevice): DataStore {
     }
 
     // Y-only path: same length + identical x channel → rewrite y floats only in
-    // staging (CPU). Must NOT fire for Brownian scatter where x also changes.
-    // Note: GPU upload is still a full interleaved writeBuffer of N*8 bytes —
-    // WebGPU has no strided partial upload; residual vs true partial GPU xfer.
-    // Suite group 4 is scatter (default LTTB) so this path is mainly for line/
-    // bar full-rewrite with sorted x, not the scatter hot path.
+    // staging (CPU) + GPU y-lane compute (Track C). Must NOT fire for Brownian
+    // xy where x also changes. Linear layout only (no modular ring).
     const yOnly =
       existing != null &&
       existing.pointCount === pointCount &&
       existing.xOffset === xOffset &&
       existing.ringStart === 0 &&
       existing.ringCapacityPoints === 0 &&
+      existing.buffer === buffer &&
       isYOnlyRewriteAgainstStaging(data, existing.stagingBuffer, existing.pointCount, existing.xOffset);
 
     let yOnlyChanged = false;
@@ -398,8 +539,7 @@ export function createDataStore(device: GPUDevice): DataStore {
 
     const packedView = pointCount > 0 ? stagingBuffer.subarray(0, pointCount * 2) : new Float32Array(0);
 
-    // Issue 2.1: y-only already proved y changed — skip full O(N) FNV.
-    // Residual: GPU still full writeBuffer of N×8 (WebGPU has no strided write).
+    // Issue 2.1 / Track C: y-only already proved y changed — skip full O(N) FNV.
     // Stamp hash so decimation still dirties. Issue 2.6: skipContentHash same.
     const skipHash = yOnlyChanged || options?.skipContentHash === true;
     let hash32: number;
@@ -421,8 +561,11 @@ export function createDataStore(device: GPUDevice): DataStore {
       return;
     }
 
-    // Full interleaved GPU upload (even after y-only CPU pack) — residual 2.1.
-    if (packedView.byteLength > 0) {
+    if (yOnlyChanged && pointCount > 0) {
+      // Track C Option B: write N×4 y + compute merge into interleaved GPU buffer.
+      gpuYOnlyRewrite(buffer, stagingBuffer, pointCount);
+    } else if (packedView.byteLength > 0) {
+      // Full interleaved GPU upload (xy rewrite, cold, growth, length change).
       device.queue.writeBuffer(buffer, 0, packedView.buffer, packedView.byteOffset, packedView.byteLength);
     }
 
@@ -765,6 +908,30 @@ export function createDataStore(device: GPUDevice): DataStore {
       }
     }
     series.clear();
+
+    if (yChannelBuffer) {
+      try {
+        yChannelBuffer.destroy();
+      } catch {
+        // best-effort
+      }
+      yChannelBuffer = null;
+    }
+    if (yParamsUniform) {
+      try {
+        yParamsUniform.destroy();
+      } catch {
+        // best-effort
+      }
+      yParamsUniform = null;
+    }
+    yRewritePipeline = null;
+    yRewriteBindGroupLayout = null;
+    yRewriteBindGroup = null;
+    yRewriteBoundSeriesBuffer = null;
+    yRewriteBoundYChannel = null;
+    yChannelCapacityBytes = 0;
+    yChannelStaging = new Float32Array(0);
   };
 
   return {

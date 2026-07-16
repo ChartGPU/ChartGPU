@@ -20,12 +20,14 @@ beforeAll(() => {
     INDIRECT: 0x0100,
     QUERY_RESOLVE: 0x0200,
   };
+  // @ts-ignore
+  globalThis.GPUShaderStage = { VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 };
 });
 
 import { createDataStore } from '../createDataStore';
 
 function createMockDevice() {
-  const buffers: Array<{ size: number; destroy: ReturnType<typeof vi.fn> }> = [];
+  const buffers: Array<{ size: number; destroy: ReturnType<typeof vi.fn>; label?: string }> = [];
   const device = {
     limits: {
       maxBufferSize: 268435456,
@@ -36,9 +38,17 @@ function createMockDevice() {
       submit: vi.fn(),
     },
     createCommandEncoder: vi.fn(() => {
+      const pass = {
+        setPipeline: vi.fn(),
+        setBindGroup: vi.fn(),
+        dispatchWorkgroups: vi.fn(),
+        end: vi.fn(),
+      };
       const encoder = {
         copyBufferToBuffer: vi.fn(),
+        beginComputePass: vi.fn(() => pass),
         finish: vi.fn(() => ({})),
+        __pass: pass,
       };
       (device as any).__lastEncoder = encoder;
       return encoder;
@@ -53,9 +63,17 @@ function createMockDevice() {
       buffers.push(b);
       return b as unknown as GPUBuffer;
     }),
+    createShaderModule: vi.fn(() => ({})),
+    createBindGroupLayout: vi.fn(() => ({})),
+    createPipelineLayout: vi.fn(() => ({})),
+    createComputePipeline: vi.fn(() => ({})),
+    createBindGroup: vi.fn(() => ({})),
   } as unknown as GPUDevice & {
     __buffers: typeof buffers;
-    __lastEncoder?: { copyBufferToBuffer: ReturnType<typeof vi.fn> };
+    __lastEncoder?: {
+      copyBufferToBuffer: ReturnType<typeof vi.fn>;
+      beginComputePass: ReturnType<typeof vi.fn>;
+    };
   };
   (device as any).__buffers = buffers;
   return device;
@@ -514,44 +532,6 @@ describe('createDataStore', () => {
       expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 0 });
     });
 
-    it('y-only identical content does not writeBuffer and keeps hash (2.1)', () => {
-      const store = createDataStore(device);
-      store.setSeries(0, [
-        [0, 1],
-        [1, 2],
-        [2, 3],
-      ]);
-      const hash = store.getSeriesContentHash(0);
-      (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mockClear();
-      store.setSeries(0, [
-        [0, 1],
-        [1, 2],
-        [2, 3],
-      ]);
-      expect(store.getSeriesContentHash(0)).toBe(hash);
-      expect(device.queue.writeBuffer).not.toHaveBeenCalled();
-    });
-
-    it('y-only changed content stamps hash and writes without full FNV path (2.1)', () => {
-      const store = createDataStore(device);
-      store.setSeries(0, [
-        [0, 1],
-        [1, 2],
-        [2, 3],
-      ]);
-      const hashA = store.getSeriesContentHash(0);
-      (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mockClear();
-      store.setSeries(0, [
-        [0, 10],
-        [1, 20],
-        [2, 30],
-      ]);
-      expect(store.getSeriesContentHash(0)).not.toBe(hashA);
-      expect(device.queue.writeBuffer).toHaveBeenCalled();
-      const staging = store.getSeriesStagingBuffer(0);
-      expect(staging[1]).toBe(10);
-    });
-
     it('skipContentHash stamps and writes without full FNV short-circuit (2.6)', () => {
       const store = createDataStore(device);
       store.setSeries(0, [
@@ -724,6 +704,197 @@ describe('createDataStore', () => {
       const st = store.getSeriesStagingBuffer(0);
       expect(st[0]).toBe(100);
       expect(st[1]).toBe(50);
+    });
+  });
+
+  /** Sum of explicit size args on writeBuffer calls (5th parameter). */
+  function totalWritePayloadBytes(writeBuffer: ReturnType<typeof vi.fn>): number {
+    let total = 0;
+    for (const call of writeBuffer.mock.calls) {
+      const sizeArg = call[4] as number | undefined;
+      if (typeof sizeArg === 'number') total += sizeArg;
+    }
+    return total;
+  }
+
+  describe('equal-N y-only GPU rewrite (Track C)', () => {
+    it('y-only identical content does not writeBuffer and keeps hash (2.1)', () => {
+      const store = createDataStore(device);
+      store.setSeries(0, [
+        [0, 1],
+        [1, 2],
+        [2, 3],
+      ]);
+      const hash = store.getSeriesContentHash(0);
+      (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mockClear();
+      store.setSeries(0, [
+        [0, 1],
+        [1, 2],
+        [2, 3],
+      ]);
+      expect(store.getSeriesContentHash(0)).toBe(hash);
+      expect(device.queue.writeBuffer).not.toHaveBeenCalled();
+    });
+
+    it('y-only changed content: GPU payload ≤ N×4+16 (not full N×8)', () => {
+      const store = createDataStore(device);
+      // Use N large enough that y+params overhead is still ≪ full interleaved.
+      const n = 32;
+      const prev = Array.from({ length: n }, (_, i) => [i, i] as [number, number]);
+      const next = Array.from({ length: n }, (_, i) => [i, i + 1] as [number, number]);
+      store.setSeries(0, prev);
+      const hashA = store.getSeriesContentHash(0);
+      (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mockClear();
+      store.setSeries(0, next);
+      expect(store.getSeriesContentHash(0)).not.toBe(hashA);
+      const payload = totalWritePayloadBytes(device.queue.writeBuffer as ReturnType<typeof vi.fn>);
+      expect(payload).toBeLessThan(n * 8);
+      expect(payload).toBeLessThanOrEqual(n * 4 + 16);
+      expect(store.getSeriesStagingBuffer(0)[1]).toBe(1);
+    });
+
+    it('equal-N y-only large N writes ≪ N×8 (compute y-lanes)', () => {
+      const store = createDataStore(device);
+      const n = 1000;
+      store.setSeries(
+        0,
+        Array.from({ length: n }, (_, i) => [i, i * 0.1] as [number, number])
+      );
+      (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mockClear();
+      (device.queue.submit as ReturnType<typeof vi.fn>).mockClear();
+      (device.createBindGroup as ReturnType<typeof vi.fn>).mockClear();
+
+      store.setSeries(
+        0,
+        Array.from({ length: n }, (_, i) => [i, i * 0.1 + 1] as [number, number])
+      );
+
+      const payload = totalWritePayloadBytes(device.queue.writeBuffer as ReturnType<typeof vi.fn>);
+      expect(payload).toBeLessThan(n * 8);
+      expect(payload).toBeLessThanOrEqual(n * 4 + 16);
+      expect(device.queue.submit).toHaveBeenCalled();
+      expect(device.createComputePipeline).toHaveBeenCalled();
+
+      // Second y-only frame reuses bind group (no new createBindGroup).
+      (device.createBindGroup as ReturnType<typeof vi.fn>).mockClear();
+      store.setSeries(
+        0,
+        Array.from({ length: n }, (_, i) => [i, i * 0.1 + 2] as [number, number])
+      );
+      expect(device.createBindGroup).not.toHaveBeenCalled();
+    });
+
+    it('false-positive miss: Brownian xy uses full interleaved writeBuffer', () => {
+      const store = createDataStore(device);
+      store.setSeries(0, [
+        [0.1, 1],
+        [1.2, 2],
+        [1.9, 3],
+      ]);
+      (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mockClear();
+      (device.createComputePipeline as ReturnType<typeof vi.fn>).mockClear();
+      store.setSeries(0, [
+        [0.2, 1.1],
+        [1.3, 2.1],
+        [2.0, 3.1],
+      ]);
+      const sizes = (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mock.calls
+        .map((c) => c[4] as number | undefined)
+        .filter((s): s is number => typeof s === 'number');
+      expect(sizes.some((s) => s === 24)).toBe(true);
+      expect(device.createComputePipeline).not.toHaveBeenCalled();
+    });
+
+    it('false-positive miss: length change uses full interleaved write (no y-only compute)', () => {
+      const store = createDataStore(device);
+      store.setSeries(0, [
+        [0, 1],
+        [1, 2],
+      ]);
+      (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mockClear();
+      (device.createComputePipeline as ReturnType<typeof vi.fn>).mockClear();
+      store.setSeries(0, [
+        [0, 1],
+        [1, 2],
+        [2, 3],
+      ]);
+      const payload = totalWritePayloadBytes(device.queue.writeBuffer as ReturnType<typeof vi.fn>);
+      // Full 3 points × 8 = 24 (may be exact size arg)
+      expect(payload).toBeGreaterThanOrEqual(24);
+      expect(device.createComputePipeline).not.toHaveBeenCalled();
+    });
+
+    it('false-positive miss: null-gap structure change takes full path', () => {
+      const store = createDataStore(device);
+      store.setSeries(0, [
+        [0, 1],
+        [1, 2],
+        [2, 3],
+      ] as any);
+      (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mockClear();
+      (device.createComputePipeline as ReturnType<typeof vi.fn>).mockClear();
+      // Gap appears: x no longer matches staging (NaN x) → not y-only
+      store.setSeries(0, [[0, 1], null, [2, 3]] as any);
+      expect(device.createComputePipeline).not.toHaveBeenCalled();
+      const payload = totalWritePayloadBytes(device.queue.writeBuffer as ReturnType<typeof vi.fn>);
+      expect(payload).toBeGreaterThanOrEqual(24);
+    });
+
+    it('false-positive miss: after ring wrap setSeries does not take y-only compute', () => {
+      const store = createDataStore(device);
+      const seed: Array<[number, number]> = [];
+      for (let i = 0; i < 64; i++) seed.push([i, i]);
+      store.setSeries(0, seed);
+      store.setSeries(0, [
+        [0, 0],
+        [1, 1],
+        [2, 2],
+        [3, 3],
+      ]);
+      // Wrap → modular ring
+      store.appendSeries(0, [[10, 10]], { maxPoints: 4 });
+      expect(store.getSeriesRingLayout(0).start).not.toBe(0);
+      expect(store.isSeriesRingMode(0)).toBe(true);
+
+      (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mockClear();
+      (device.createComputePipeline as ReturnType<typeof vi.fn>).mockClear();
+      // Equal-N-looking xy rewrite while ring-tagged: y-only requires linear layout.
+      store.setSeries(0, [
+        [1, 100],
+        [2, 101],
+        [3, 102],
+        [10, 103],
+      ]);
+      expect(device.createComputePipeline).not.toHaveBeenCalled();
+      const payload = totalWritePayloadBytes(device.queue.writeBuffer as ReturnType<typeof vi.fn>);
+      // Full interleaved of 4 points
+      expect(payload).toBeGreaterThanOrEqual(32);
+    });
+
+    it('dispose destroys y-rewrite yChannel and params buffers after y-only path', () => {
+      const store = createDataStore(device);
+      store.setSeries(0, [
+        [0, 1],
+        [1, 2],
+        [2, 3],
+      ]);
+      store.setSeries(0, [
+        [0, 10],
+        [1, 20],
+        [2, 30],
+      ]);
+      // Collect labeled y-rewrite buffers created by the equal-N path.
+      const buffers = (device as any).__buffers as Array<{ label?: string; destroy: ReturnType<typeof vi.fn> }>;
+      const yChannel = buffers.find((b) => b.label === 'DataStore/yChannelUpload');
+      const yParams = buffers.find((b) => b.label === 'DataStore/yRewriteParams');
+      expect(yChannel).toBeDefined();
+      expect(yParams).toBeDefined();
+      yChannel!.destroy.mockClear();
+      yParams!.destroy.mockClear();
+
+      store.dispose();
+      expect(yChannel!.destroy).toHaveBeenCalled();
+      expect(yParams!.destroy).toHaveBeenCalled();
     });
   });
 });

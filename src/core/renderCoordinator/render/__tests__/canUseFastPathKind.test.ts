@@ -30,7 +30,8 @@ describe('canUseFastPath kind tagging (issue 1.6)', () => {
       /if\s*\(\s*s\.sampling\s*===\s*["']none["']\s*\)\s*\{\s*gpuSeriesKindByIndex\[i\]\s*=\s*["']fullRawLine["']/
     );
     // No isFullSpanZoom gate on that assignment.
-    const tagIdx = renderSeriesSrc.indexOf('gpuSeriesKindByIndex[i] = "fullRawLine"');
+    // Source uses single-quoted string literals.
+    const tagIdx = renderSeriesSrc.indexOf("gpuSeriesKindByIndex[i] = 'fullRawLine'");
     expect(tagIdx).toBeGreaterThan(-1);
     const before = renderSeriesSrc.slice(Math.max(0, tagIdx - 200), tagIdx);
     expect(before).not.toMatch(/isFullSpanZoom/);

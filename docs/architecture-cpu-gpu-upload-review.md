@@ -159,7 +159,7 @@ device.queue.submit([one command buffer])
 
 **One `queue.submit` per coordinator frame.** Texture bandwidth (MSAA + blit) is orthogonal to series upload volume; uploads are decided in `prepare` before encode.
 
-Docs drift: `docs/ARCHITECTURE.md` still mentions “3-pass” in places; AGENTS.md correctly documents the 2-pass Phase 4b collapse. AGENTS also claims grid/axis cache a `GPURenderBundle` — **false**; the real mechanism is `OverlayPrepareMemo` skipping `prepare()`.
+Docs: 2-pass MSAA is main **4×** / overlay **4×** (WebGPU only allows sampleCount 1 or 4). AGENTS also claims grid/axis cache a `GPURenderBundle` — **false**; the real mechanism is `OverlayPrepareMemo` skipping `prepare()`.
 
 ---
 
@@ -470,7 +470,7 @@ Thin path proves zero-copy streaming is viable when interaction contracts allow 
 | `writeBuffer` as default | Correct per WebGPU guidance |
 | Overlay memo / tooltip ~30 Hz | Cap interaction CPU |
 | Geometric growth, no shrink | Amortize realloc; free only on dispose |
-| 4× MSAA 2-pass | Quality; do not reintroduce third pass |
+| 2-pass MSAA (main 4× / overlay 4×) | Quality + fill; do not reintroduce third pass; never use sampleCount 2 |
 
 ### Accidental / bugs / false contracts
 
@@ -623,7 +623,7 @@ Coordinator should shrink toward options, layout/scales, interaction, and pass e
 | Memory layout (alignment, struct packing) | Point stride 8; uniforms 16/256-aligned; grid dynamic offsets |
 | Optimization (shared uniforms, less work, less traffic) | Line already shares DataStore; scatter/candle re-do work; uniform dirty-skip missing |
 | How it works (CPU/GPU separation, massively parallel independent iterations) | Decimation/density correctly stay on GPU; CPU LTTB on every append is the anti-pattern |
-| Multisampling / resources | 2-pass 4× MSAA is a bandwidth cost independent of upload |
+| Multisampling / resources | 2-pass MSAA (main 4× / overlay 4×) is a bandwidth cost independent of upload |
 
 ## Appendix B: Representative copy counts
 

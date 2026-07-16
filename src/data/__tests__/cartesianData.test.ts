@@ -230,6 +230,77 @@ describe('packXYInto - null gap handling', () => {
     expect(out[4]).toBe(10); // 20 - 10
     expect(out[5]).toBe(3);
   });
+
+  it('dense tuple path packs [x,y] without xOffset', () => {
+    const data: DataPoint[] = [
+      [1, 2],
+      [3, 4],
+      [5, 6],
+    ];
+    const out = new Float32Array(6);
+    packXYInto(out, 0, data, 0, 3, 0);
+    expect(Array.from(out)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('leading null then tuples still packs later tuples (Issue 1)', () => {
+    const data: (DataPoint | null)[] = [null, [1, 2], [3, 4]];
+    const out = new Float32Array(6);
+    packXYInto(out, 0, data as any, 0, 3, 0);
+    expect(Number.isNaN(out[0])).toBe(true);
+    expect(Number.isNaN(out[1])).toBe(true);
+    expect(out[2]).toBe(1);
+    expect(out[3]).toBe(2);
+    expect(out[4]).toBe(3);
+    expect(out[5]).toBe(4);
+  });
+
+  it('leading undefined then tuples packs correctly', () => {
+    const data: DataPoint[] = [undefined as any, [10, 20], [30, 40]];
+    const out = new Float32Array(6);
+    packXYInto(out, 0, data as any, 0, 3, 0);
+    expect(Number.isNaN(out[0])).toBe(true);
+    expect(out[2]).toBe(10);
+    expect(out[3]).toBe(20);
+    expect(out[4]).toBe(30);
+    expect(out[5]).toBe(40);
+  });
+
+  it('srcPointOffset mid-null starts packing from offset', () => {
+    const data: (DataPoint | null)[] = [[0, 0], null, [2, 3], [4, 5]];
+    const out = new Float32Array(6);
+    // Start at index 1 (null) → probe scans to [2,3]
+    packXYInto(out, 0, data as any, 1, 3, 0);
+    expect(Number.isNaN(out[0])).toBe(true);
+    expect(Number.isNaN(out[1])).toBe(true);
+    expect(out[2]).toBe(2);
+    expect(out[3]).toBe(3);
+    expect(out[4]).toBe(4);
+    expect(out[5]).toBe(5);
+  });
+
+  it('object DataPoint path still packs x/y fields', () => {
+    const data: DataPoint[] = [
+      { x: 1, y: 2 },
+      { x: 3, y: 4 },
+    ];
+    const out = new Float32Array(4);
+    packXYInto(out, 0, data, 0, 2, 0);
+    expect(Array.from(out)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('mixed tuple then object packs both shapes', () => {
+    const data: DataPoint[] = [[1, 2], { x: 3, y: 4 } as DataPoint];
+    const out = new Float32Array(4);
+    packXYInto(out, 0, data, 0, 2, 0);
+    expect(Array.from(out)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('mixed object then tuple packs both via object path', () => {
+    const data: DataPoint[] = [{ x: 1, y: 2 }, [3, 4] as DataPoint];
+    const out = new Float32Array(4);
+    packXYInto(out, 0, data, 0, 2, 0);
+    expect(Array.from(out)).toEqual([1, 2, 3, 4]);
+  });
 });
 
 describe('dropPrefixXY', () => {

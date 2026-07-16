@@ -79,9 +79,7 @@ import {
 import { createCrosshairRenderer } from '../renderers/createCrosshairRenderer';
 import { createHighlightRenderer } from '../renderers/createHighlightRenderer';
 import { createReferenceLineRenderer } from '../renderers/createReferenceLineRenderer';
-import type { ReferenceLineInstance } from '../renderers/createReferenceLineRenderer';
 import { createAnnotationMarkerRenderer } from '../renderers/createAnnotationMarkerRenderer';
-import type { AnnotationMarkerInstance } from '../renderers/createAnnotationMarkerRenderer';
 import { createEventManager } from '../interaction/createEventManager';
 import type { PipelineCache } from './PipelineCache';
 import type { ChartGPUEventPayload } from '../interaction/createEventManager';
@@ -1683,8 +1681,9 @@ export function createRenderCoordinator(
   // 1. Main 4× MSAA → resolve (grid, series, below-series annotations)
   // 2. Overlay 4× MSAA → resolve to swapchain (blit + above-series annotations +
   //    axes/crosshair/highlight). No third single-sample top overlay pass.
-  // Below/above annotation pipelines share sampleCount 4 (WG-P2-1): one renderer
-  // each; prepared once; drawn into main (below) or overlay (above) as needed.
+  // WebGPU only allows sampleCount 1 or 4 — main and overlay both use 4×.
+  // Below/above annotation layers keep separate instances so prepare is layer-only
+  // (start at 0 per pass) without combined-list offsets.
   const referenceLineRenderer = createReferenceLineRenderer(device, {
     targetFormat,
     sampleCount: MAIN_SCENE_MSAA_SAMPLE_COUNT,
@@ -1695,9 +1694,16 @@ export function createRenderCoordinator(
     sampleCount: MAIN_SCENE_MSAA_SAMPLE_COUNT,
     pipelineCache,
   });
-  // Alias MSAA slots to the same instances (both passes use sampleCount 4).
-  const referenceLineRendererMsaa = referenceLineRenderer;
-  const annotationMarkerRendererMsaa = annotationMarkerRenderer;
+  const referenceLineRendererMsaa = createReferenceLineRenderer(device, {
+    targetFormat,
+    sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
+    pipelineCache,
+  });
+  const annotationMarkerRendererMsaa = createAnnotationMarkerRenderer(device, {
+    targetFormat,
+    sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
+    pipelineCache,
+  });
 
   const textureManager = createTextureManager({
     device,
@@ -3664,15 +3670,7 @@ export function createRenderCoordinator(
       theme: currentOptions.theme,
     });
 
-    // Extract annotation instances for GPU rendering
-    const combinedReferenceLines: ReadonlyArray<ReferenceLineInstance> =
-      annotationResult.linesBelow.length + annotationResult.linesAbove.length > 0
-        ? [...annotationResult.linesBelow, ...annotationResult.linesAbove]
-        : [];
-    const combinedMarkers: ReadonlyArray<AnnotationMarkerInstance> =
-      annotationResult.markersBelow.length + annotationResult.markersAbove.length > 0
-        ? [...annotationResult.markersBelow, ...annotationResult.markersAbove]
-        : [];
+    // Annotation layers prepared separately for main (below) vs overlay (above) MSAA.
     const referenceLineBelowCount = annotationResult.linesBelow.length;
     const referenceLineAboveCount = annotationResult.linesAbove.length;
     const markerBelowCount = annotationResult.markersBelow.length;
@@ -4170,22 +4168,36 @@ export function createRenderCoordinator(
       introP < 1 ? createAnimatedBarYScale(yScale, plotClipRect, visibleBarSeriesConfigs, introP) : yScale;
     poolState.barRenderer.prepare(visibleBarSeriesConfigs, dataStore, xScale, yScaleForBars, gridArea);
 
-    // Prepare annotation GPU overlays once (WG-P2-1: single sampleCount-4 instance
-    // used for both main below-series and overlay above-series draws).
-    // Note: these renderers expect CANVAS-LOCAL CSS pixel coordinates; the coordinator owns
-    // data-space → canvas-space conversion and plot scissor state.
+    // Prepare annotation GPU overlays for main vs overlay pipelines (both 4× MSAA).
+    // Prepare each layer's list every frame (empty list clears prior-frame instances).
+    // Render only when that layer's count > 0; draws start at 0 (not combined offsets).
+    // Note: these renderers expect CANVAS-LOCAL CSS pixel coordinates.
     if (hasCartesianSeries) {
-      referenceLineRenderer.prepare(gridArea, combinedReferenceLines);
+      referenceLineRenderer.prepare(gridArea, annotationResult.linesBelow);
+      referenceLineRendererMsaa.prepare(gridArea, annotationResult.linesAbove);
       annotationMarkerRenderer.prepare({
         canvasWidth: gridArea.canvasWidth,
         canvasHeight: gridArea.canvasHeight,
         devicePixelRatio: gridArea.devicePixelRatio,
-        instances: combinedMarkers,
+        instances: annotationResult.markersBelow,
+      });
+      annotationMarkerRendererMsaa.prepare({
+        canvasWidth: gridArea.canvasWidth,
+        canvasHeight: gridArea.canvasHeight,
+        devicePixelRatio: gridArea.devicePixelRatio,
+        instances: annotationResult.markersAbove,
       });
     } else {
       // Ensure prior frame instances don't persist visually if series mode changes.
       referenceLineRenderer.prepare(gridArea, []);
+      referenceLineRendererMsaa.prepare(gridArea, []);
       annotationMarkerRenderer.prepare({
+        canvasWidth: gridArea.canvasWidth,
+        canvasHeight: gridArea.canvasHeight,
+        devicePixelRatio: gridArea.devicePixelRatio,
+        instances: [],
+      });
+      annotationMarkerRendererMsaa.prepare({
         canvasWidth: gridArea.canvasWidth,
         canvasHeight: gridArea.canvasHeight,
         devicePixelRatio: gridArea.devicePixelRatio,
@@ -4211,7 +4223,7 @@ export function createRenderCoordinator(
       label: 'renderCoordinator/mainPass',
       colorAttachments: [
         {
-          view: texState.mainColorView!, // MSAA texture (4x)
+          view: texState.mainColorView!, // MSAA texture (main 4×)
           resolveTarget: texState.mainResolveView!, // single-sample resolve target
           clearValue,
           loadOp: 'clear',
@@ -4288,9 +4300,7 @@ export function createRenderCoordinator(
         gridArea,
         overlayPass,
         plotScissor,
-        referenceLineBelowCount,
         referenceLineAboveCount,
-        markerBelowCount,
         markerAboveCount,
       }
     );
@@ -4416,9 +4426,10 @@ export function createRenderCoordinator(
     xAxisRenderer.dispose();
     for (const r of yAxisRenderers.values()) r.dispose();
     yAxisRenderers.clear();
-    // Single instances (Msaa aliases point at the same objects — dispose once).
     referenceLineRenderer.dispose();
+    referenceLineRendererMsaa.dispose();
     annotationMarkerRenderer.dispose();
+    annotationMarkerRendererMsaa.dispose();
 
     textureManager.dispose();
 

@@ -10,10 +10,12 @@ import { ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT } from '../../gpu/textureManager';
 
 const coordinatorPath = resolve(__dirname, '../../../createRenderCoordinator.ts');
 const overlaysPath = resolve(__dirname, '../renderOverlays.ts');
+const renderSeriesPath = resolve(__dirname, '../renderSeries.ts');
 
 describe('frame graph contracts (WG-P1-5 / WG-P2-1)', () => {
   const coordinatorSrc = readFileSync(coordinatorPath, 'utf8');
   const overlaysSrc = readFileSync(overlaysPath, 'utf8');
+  const renderSeriesSrc = readFileSync(renderSeriesPath, 'utf8');
 
   it('does not open a third topOverlayPass on the swapchain', () => {
     expect(coordinatorSrc).not.toMatch(/topOverlayPass/);
@@ -34,18 +36,60 @@ describe('frame graph contracts (WG-P1-5 / WG-P2-1)', () => {
     );
   });
 
-  it('aliases MSAA annotation renderers to the single sampleCount-4 instances (WG-P2-1)', () => {
-    expect(coordinatorSrc).toMatch(/const referenceLineRendererMsaa = referenceLineRenderer/);
-    expect(coordinatorSrc).toMatch(/const annotationMarkerRendererMsaa = annotationMarkerRenderer/);
-    // Must not construct a second pair of annotation renderers.
+  it('creates main + overlay annotation renderers when MSAA sample counts differ', () => {
+    // Main and overlay both 4× (WebGPU sampleCount 1|4 only). Layer-only prepare keeps separate instances.
     const refCreates = (coordinatorSrc.match(/createReferenceLineRenderer\(/g) ?? []).length;
     const markerCreates = (coordinatorSrc.match(/createAnnotationMarkerRenderer\(/g) ?? []).length;
-    expect(refCreates).toBe(1);
-    expect(markerCreates).toBe(1);
+    expect(refCreates).toBe(2);
+    expect(markerCreates).toBe(2);
+    expect(coordinatorSrc).toMatch(/referenceLineRendererMsaa\s*=\s*createReferenceLineRenderer/);
+    expect(coordinatorSrc).toMatch(/annotationMarkerRendererMsaa\s*=\s*createAnnotationMarkerRenderer/);
+  });
+
+  it('prepares and disposes both main and Msaa annotation instances', () => {
+    // Prepare: main + msaa for both reference lines and markers (cartesian + empty branches).
+    expect(coordinatorSrc).toMatch(/referenceLineRenderer\.prepare\(/);
+    expect(coordinatorSrc).toMatch(/referenceLineRendererMsaa\.prepare\(/);
+    expect(coordinatorSrc).toMatch(/annotationMarkerRenderer\.prepare\(/);
+    expect(coordinatorSrc).toMatch(/annotationMarkerRendererMsaa\.prepare\(/);
+    // Dispose both (no alias — each must be destroyed).
+    expect(coordinatorSrc).toMatch(/referenceLineRenderer\.dispose\(/);
+    expect(coordinatorSrc).toMatch(/referenceLineRendererMsaa\.dispose\(/);
+    expect(coordinatorSrc).toMatch(/annotationMarkerRenderer\.dispose\(/);
+    expect(coordinatorSrc).toMatch(/annotationMarkerRendererMsaa\.dispose\(/);
+  });
+
+  it('prepares layer-only annotation instances (below→main, above→overlay)', () => {
+    // Layer-only prepare: main gets linesBelow/markersBelow; MSAA gets linesAbove/markersAbove.
+    // Must not reintroduce combined-list prepare with below+above offsets.
+    expect(coordinatorSrc).toMatch(
+      /referenceLineRenderer\.prepare\(\s*gridArea,\s*annotationResult\.linesBelow\s*\)/
+    );
+    expect(coordinatorSrc).toMatch(
+      /referenceLineRendererMsaa\.prepare\(\s*gridArea,\s*annotationResult\.linesAbove\s*\)/
+    );
+    expect(coordinatorSrc).toMatch(/instances:\s*annotationResult\.markersBelow/);
+    expect(coordinatorSrc).toMatch(/instances:\s*annotationResult\.markersAbove/);
+    // No combined below+above list for prepare.
+    expect(coordinatorSrc).not.toMatch(/combinedReferenceLines/);
+    expect(coordinatorSrc).not.toMatch(/combinedMarkers/);
+  });
+
+  it('renders above-series annotations from start 0 with aboveCount (not below offset)', () => {
+    // Layer-only prepare means MSAA render starts at 0, not referenceLineBelowCount.
+    expect(renderSeriesSrc).toMatch(
+      /referenceLineRendererMsaa\.render\(\s*overlayPass,\s*0,\s*referenceLineAboveCount\s*\)/
+    );
+    expect(renderSeriesSrc).toMatch(
+      /annotationMarkerRendererMsaa\.render\(\s*overlayPass,\s*0,\s*markerAboveCount\s*\)/
+    );
+    expect(renderSeriesSrc).not.toMatch(/firstLine\s*=\s*referenceLineBelowCount/);
+    expect(renderSeriesSrc).not.toMatch(/firstMarker\s*=\s*markerBelowCount/);
   });
 
   it('draws UI overlays into the annotation overlay pass before it ends', () => {
-    const overlayBegin = coordinatorSrc.indexOf('label: "renderCoordinator/annotationOverlayMsaaPass"');
+    // Source uses single-quoted string literals.
+    const overlayBegin = coordinatorSrc.indexOf("label: 'renderCoordinator/annotationOverlayMsaaPass'");
     const overlayEnd = coordinatorSrc.indexOf('overlayPass.end()');
     expect(overlayBegin).toBeGreaterThan(-1);
     expect(overlayEnd).toBeGreaterThan(overlayBegin);

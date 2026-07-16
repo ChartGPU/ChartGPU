@@ -35,6 +35,7 @@ vi.mock('../rendererUtils', () => ({
 }));
 
 import { createScatterRenderer } from '../createScatterRenderer';
+import { writeUniformBuffer } from '../rendererUtils';
 
 function createMockDevice() {
   return {
@@ -283,6 +284,54 @@ describe('scatter equal-N y-only dual-buffer (issue 1.2 Option A)', () => {
     // Sparse pack: 9 finite points × 4 bytes × 2 channels
     const sizes = instanceWriteSizes(writeBuffer);
     expect(sizes.filter((s) => s === 9 * 4)).toHaveLength(2);
+    renderer.dispose();
+  });
+
+  it('denseCompact prepare writes min radius (1 device px) into VS uniform at high density', () => {
+    const device = createMockDevice();
+    const writeUniform = writeUniformBuffer as ReturnType<typeof vi.fn>;
+    writeUniform.mockClear();
+    const renderer = createScatterRenderer(device, { sampleCount: 1 });
+    // Small plot + 1M points → density ≫ HI → fully compact radius = 1.0
+    // (gridArea scissor uses full canvas when margins 0 → use tiny canvas).
+    const tinyGrid = {
+      ...gridArea,
+      canvasWidth: 100,
+      canvasHeight: 100,
+      plotWidth: 100,
+      plotHeight: 100,
+    } as unknown as GridArea;
+    const n = 1_000_000;
+    const data = Array.from({ length: n }, (_, i) => [i * 0.0001, i * 0.0001] as const);
+    // symbolSize 5 × dpr 1 = 5 device px nominal
+    renderer.prepare(baseSeries(5), data as unknown as never, identityScale, identityScale, tinyGrid);
+
+    // writeUniformBuffer(device, buffer, data) — VS uniform is ArrayBuffer 80 bytes
+    const vsWrites = writeUniform.mock.calls.filter((c) => {
+      const data = c[2];
+      return data instanceof ArrayBuffer && data.byteLength === 80;
+    });
+    expect(vsWrites.length).toBeGreaterThan(0);
+    const f32 = new Float32Array(vsWrites[vsWrites.length - 1]![2] as ArrayBuffer);
+    // radius at float index 18
+    expect(f32[18]).toBe(1);
+    renderer.dispose();
+  });
+
+  it('low-density prepare keeps full symbolSize radius in VS uniform', () => {
+    const device = createMockDevice();
+    const writeUniform = writeUniformBuffer as ReturnType<typeof vi.fn>;
+    writeUniform.mockClear();
+    const renderer = createScatterRenderer(device, { sampleCount: 1 });
+    const n = 1000; // density ≪ 0.5 on 800×400
+    const data = Array.from({ length: n }, (_, i) => [i, i] as const);
+    renderer.prepare(baseSeries(5), data as unknown as never, identityScale, identityScale, gridArea);
+    const vsWrites = writeUniform.mock.calls.filter((c) => {
+      const data = c[2];
+      return data instanceof ArrayBuffer && data.byteLength === 80;
+    });
+    const f32 = new Float32Array(vsWrites[vsWrites.length - 1]![2] as ArrayBuffer);
+    expect(f32[18]).toBe(5); // symbolSize 5 × dpr 1
     renderer.dispose();
   });
 

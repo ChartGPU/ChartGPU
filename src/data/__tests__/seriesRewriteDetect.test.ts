@@ -126,6 +126,18 @@ describe('seriesRewriteDetect', () => {
       expect(classifyEqualNYOnlyRewrite(prev, next)).toBe(false);
     });
 
+    it('returns false for unsorted Brownian line (group 3 shape) — no y-only / indexSorted sticky', () => {
+      // Group 3: non-monotonic x, both channels step every frame (fixed deltas).
+      const n = 64;
+      const prev: DataPoint[] = Array.from({ length: n }, (_, i) => [Math.sin(i) * 10 + i * 0.01, i] as DataPoint);
+      const next: DataPoint[] = Array.from(
+        { length: n },
+        (_, i) => [Math.sin(i) * 10 + i * 0.01 + 0.25, i + 0.1] as DataPoint
+      );
+      expect(classifyEqualNYOnlyRewrite(prev, next)).toBe(false);
+      expect(classifyEqualNYOnlyRewrite(prev, next, { prevIndexSortedProven: true })).toBe(false);
+    });
+
     it('returns false on length change', () => {
       const prev: DataPoint[] = [
         [0, 1],

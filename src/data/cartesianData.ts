@@ -566,22 +566,63 @@ export function packXYInto(
     return;
   }
 
-  // ReadonlyArray<DataPoint> path
+  // ReadonlyArray<DataPoint> path — specialize on first *finite* point shape so
+  // group 3 full rewrites (dense [x,y] tuples) avoid per-point Array.isArray.
+  // Leading null/undefined must not force the object path (Issue 1 review).
+  const arr = src as ReadonlyArray<DataPoint | null | undefined>;
+  let useTupleFastPath = false;
+  for (let s = 0; s < actualPointCount; s++) {
+    const probe = arr[srcPointOffset + s];
+    if (probe == null) continue;
+    if (typeof probe !== 'object') continue;
+    useTupleFastPath = Array.isArray(probe);
+    break;
+  }
+
+  if (useTupleFastPath) {
+    // Fast path when first non-null is a tuple (SciChart group 3 / 2). Still
+    // handles mid-series nulls and rare object points without corrupting later tuples.
+    for (let i = 0; i < actualPointCount; i++) {
+      const srcIdx = srcPointOffset + i;
+      const outIdx = outFloatOffset + i * 2;
+      const p = arr[srcIdx];
+      if (p == null || typeof p !== 'object') {
+        out[outIdx] = NaN;
+        out[outIdx + 1] = NaN;
+        continue;
+      }
+      if (Array.isArray(p)) {
+        out[outIdx] = (p[0] as number) - xOffset;
+        out[outIdx + 1] = p[1] as number;
+      } else {
+        out[outIdx] = (p as { x: number }).x - xOffset;
+        out[outIdx + 1] = (p as { y: number }).y;
+      }
+    }
+    return;
+  }
+
+  // Object DataPoint path (or all-null series). Tuples mid-series still handled
+  // via Array.isArray so mixed shapes pack correctly.
   for (let i = 0; i < actualPointCount; i++) {
     const srcIdx = srcPointOffset + i;
     const outIdx = outFloatOffset + i * 2;
-    const p = src[srcIdx];
+    const p = arr[srcIdx];
 
-    // Guard against undefined/null/non-object entries (sparse arrays, holes)
     if (p === undefined || p === null || typeof p !== 'object') {
       out[outIdx] = NaN;
       out[outIdx + 1] = NaN;
       continue;
     }
 
-    const x = isTupleDataPoint(p) ? p[0] : p.x;
-    const y = isTupleDataPoint(p) ? p[1] : p.y;
+    if (Array.isArray(p)) {
+      out[outIdx] = (p[0] as number) - xOffset;
+      out[outIdx + 1] = p[1] as number;
+      continue;
+    }
 
+    const x = (p as { x: number }).x;
+    const y = (p as { y: number }).y;
     out[outIdx] = x - xOffset;
     out[outIdx + 1] = y;
   }

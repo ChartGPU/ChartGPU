@@ -183,4 +183,80 @@ describe('createLineRenderer bounds (P2-5)', () => {
     expect(src).toMatch(/computeClipAffineFromScale\(xScale, 0, 1\)/);
     expect(src).toMatch(/computeClipAffineFromScale\(yScale, 0, 1\)/);
   });
+
+  it('denseThin prepare writes thinned line width into VS uniform at high N', () => {
+    const device = createMockDevice();
+    const writeUniform = writeUniformBuffer as ReturnType<typeof vi.fn>;
+    writeUniform.mockClear();
+    const renderer = createLineRenderer(device);
+    // pointCountOverride drives policy; 1M → fully thinned to 1 CSS px
+    const data: DataPoint[] = [
+      [0, 0],
+      [1, 1],
+    ];
+    const series = {
+      type: 'line',
+      data,
+      rawData: data,
+      color: '#0af',
+      lineStyle: { width: 2, opacity: 1, color: '#0af' },
+      sampling: 'none',
+      samplingThreshold: 5000,
+      connectNulls: false,
+      yAxis: 'y',
+      visible: true,
+    } as ResolvedLineSeriesConfig;
+    const xScale = createLinearScale().domain(0, 1).range(-1, 1);
+    const yScale = createLinearScale().domain(0, 1).range(1, -1);
+    const dataBuffer = { label: 'data' } as GPUBuffer;
+
+    renderer.prepare(series, dataBuffer, xScale, yScale, 0, 1, 800, 600, 1_000_000);
+
+    const vsWrites = writeUniform.mock.calls.filter((c) => {
+      const dataArg = c[2];
+      return dataArg instanceof ArrayBuffer && dataArg.byteLength === 80;
+    });
+    expect(vsWrites.length).toBeGreaterThan(0);
+    const f32 = new Float32Array(vsWrites[vsWrites.length - 1]![2] as ArrayBuffer);
+    // lineWidthCssPx at float index 19
+    expect(f32[19]).toBe(1);
+    renderer.dispose();
+  });
+
+  it('low-N prepare keeps nominal line width in VS uniform', () => {
+    const device = createMockDevice();
+    const writeUniform = writeUniformBuffer as ReturnType<typeof vi.fn>;
+    writeUniform.mockClear();
+    const renderer = createLineRenderer(device);
+    const data: DataPoint[] = [
+      [0, 0],
+      [1, 1],
+      [2, 0],
+    ];
+    const series = {
+      type: 'line',
+      data,
+      rawData: data,
+      color: '#0af',
+      lineStyle: { width: 2, opacity: 1, color: '#0af' },
+      sampling: 'none',
+      samplingThreshold: 5000,
+      connectNulls: false,
+      yAxis: 'y',
+      visible: true,
+    } as ResolvedLineSeriesConfig;
+    const xScale = createLinearScale().domain(0, 2).range(-1, 1);
+    const yScale = createLinearScale().domain(0, 1).range(1, -1);
+    const dataBuffer = { label: 'data' } as GPUBuffer;
+
+    renderer.prepare(series, dataBuffer, xScale, yScale, 0, 1, 800, 600);
+
+    const vsWrites = writeUniform.mock.calls.filter((c) => {
+      const dataArg = c[2];
+      return dataArg instanceof ArrayBuffer && dataArg.byteLength === 80;
+    });
+    const f32 = new Float32Array(vsWrites[vsWrites.length - 1]![2] as ArrayBuffer);
+    expect(f32[19]).toBe(2);
+    renderer.dispose();
+  });
 });

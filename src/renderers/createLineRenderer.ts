@@ -5,6 +5,7 @@ import { parseCssColorToRgba01 } from '../utils/colors';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
 import { getPointCount } from '../data/cartesianData';
 import type { PipelineCache } from '../core/PipelineCache';
+import { resolveLineDrawPolicy } from './lineDrawPolicy';
 
 export interface LineRenderer {
   /**
@@ -232,10 +233,16 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     const dpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
     const canvasW = Number.isFinite(canvasWidthDevicePx) && canvasWidthDevicePx > 0 ? canvasWidthDevicePx : 1;
     const canvasH = Number.isFinite(canvasHeightDevicePx) && canvasHeightDevicePx > 0 ? canvasHeightDevicePx : 1;
-    const lineWidthCss =
+    const nominalLineWidthCss =
       Number.isFinite(seriesConfig.lineStyle.width) && seriesConfig.lineStyle.width > 0
         ? seriesConfig.lineStyle.width
         : DEFAULT_LINE_WIDTH_CSS_PX;
+    // Dense full-rewrite draw policy (group 3): slightly thinner stroke at high N
+    // cuts AA fill without changing sampling / pack / residency.
+    const lineWidthCss = resolveLineDrawPolicy({
+      pointCount: currentPointCount,
+      lineWidthCssPx: nominalLineWidthCss,
+    }).effectiveLineWidthCssPx;
 
     vsUniformScratchF32[16] = canvasW;
     vsUniformScratchF32[17] = canvasH;

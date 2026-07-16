@@ -12,6 +12,7 @@ import {
   isYOnlyRewriteAgainstXStaging,
   packYOnlyChannel,
 } from '../data/seriesRewriteDetect';
+import { resolveScatterDrawPolicy } from './scatterDrawPolicy';
 
 export interface ScatterRenderer {
   prepare(
@@ -437,7 +438,22 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     } else {
       lastScissor = null;
     }
-    writeVsUniforms(ax, bx, ay, by, viewportW, viewportH, lastConstRadiusDevicePx);
+    // Dense-const draw policy (group 2 residual): shrink drawn radius when
+    // points-per-pixel is high. Upload path unchanged; sampling stays 'none'.
+    let drawRadiusDevicePx = lastConstRadiusDevicePx;
+    if (useConstRadius && lastConstRadiusDevicePx > 0) {
+      const plotW = lastScissor?.w ?? viewportW;
+      const plotH = lastScissor?.h ?? viewportH;
+      const drawPol = resolveScatterDrawPolicy({
+        constRadius: true,
+        pointCount: count,
+        plotWidthDevicePx: plotW,
+        plotHeightDevicePx: plotH,
+        radiusDevicePx: lastConstRadiusDevicePx,
+      });
+      drawRadiusDevicePx = drawPol.effectiveRadiusDevicePx;
+    }
+    writeVsUniforms(ax, bx, ay, by, viewportW, viewportH, drawRadiusDevicePx);
 
     const [r, g, b, a] = parseSeriesColorToRgba01(seriesConfig.color);
     fsUniformScratchF32[0] = r;

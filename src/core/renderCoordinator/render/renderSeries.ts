@@ -108,9 +108,8 @@ export interface AboveSeriesAnnotationContext {
   gridArea: GridArea;
   overlayPass: GPURenderPassEncoder;
   plotScissor: { x: number; y: number; w: number; h: number };
-  referenceLineBelowCount: number;
+  /** Layer-only prepare: MSAA above render always starts at instance 0. */
   referenceLineAboveCount: number;
-  markerBelowCount: number;
   markerAboveCount: number;
 }
 
@@ -788,24 +787,21 @@ export function renderAboveSeriesAnnotations(
     gridArea,
     overlayPass,
     plotScissor,
-    referenceLineBelowCount,
     referenceLineAboveCount,
-    markerBelowCount,
     markerAboveCount,
   } = context;
 
   // Annotations (above series): reference lines then markers, clipped to plot scissor.
+  // MSAA overlay renderers are prepared with *only* above-layer instances (start at 0).
   if (hasCartesianSeries && plotScissor.w > 0 && plotScissor.h > 0) {
     const hasAbove = referenceLineAboveCount > 0 || markerAboveCount > 0;
     if (hasAbove) {
-      const firstLine = referenceLineBelowCount;
-      const firstMarker = markerBelowCount;
       overlayPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
       if (referenceLineAboveCount > 0) {
-        annotationRenderers.referenceLineRendererMsaa.render(overlayPass, firstLine, referenceLineAboveCount);
+        annotationRenderers.referenceLineRendererMsaa.render(overlayPass, 0, referenceLineAboveCount);
       }
       if (markerAboveCount > 0) {
-        annotationRenderers.annotationMarkerRendererMsaa.render(overlayPass, firstMarker, markerAboveCount);
+        annotationRenderers.annotationMarkerRendererMsaa.render(overlayPass, 0, markerAboveCount);
       }
       overlayPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
     }

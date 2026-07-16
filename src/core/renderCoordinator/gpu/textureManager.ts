@@ -2,10 +2,10 @@
  * GPU texture management for the RenderCoordinator.
  *
  * Handles lazy allocation of render target textures and MSAA overlay management.
- * Uses a multi-pass rendering strategy:
- * 1. Main scene → 4x MSAA texture, resolved to single-sample mainResolveTexture
- * 2. Blit resolved main scene to MSAA overlay target + draw annotations (MSAA overlay pass)
- * 3. Draw UI overlays on resolved swapchain (single-sample)
+ * Uses a **2-pass** rendering strategy (Phase 4b — no third single-sample top pass):
+ * 1. Main scene → 4× MSAA texture, resolved to single-sample mainResolveTexture
+ * 2. Overlay 4× MSAA: blit resolved main → above-series annotations → axes/crosshair/highlight
+ *    → resolve to swapchain
  *
  * @module textureManager
  */
@@ -17,6 +17,11 @@ import type { PipelineCache } from '../../PipelineCache';
  * MSAA sample count for the main scene render pass.
  * All series renderers (line, area, bar, scatter, etc.) and the grid
  * must create pipelines with this sample count.
+ *
+ * WebGPU only allows multisample counts of **1 or 4** (portable). A prior
+ * residual attempt used 2× for fill-rate; that fails validation on Chrome
+ * (`Invalid CommandBuffer` / invalid texture sampleCount) and is not legal.
+ * Keep main + overlay at 4×; dense-series wins come from draw policy LOD.
  */
 export const MAIN_SCENE_MSAA_SAMPLE_COUNT = 4;
 
@@ -146,7 +151,7 @@ function destroyTexture(tex: GPUTexture | null): void {
  * or format change.
  *
  * **Architecture:**
- * - Main color texture: 4x MSAA render target for main scene
+ * - Main color texture: 4× MSAA render target for main scene
  * - Main resolve texture: Single-sample resolve target (read by overlay blit)
  * - Overlay MSAA texture: Multi-sample render target for annotations
  * - Blit pipeline: Copies resolved main scene to MSAA target for overlay pass
