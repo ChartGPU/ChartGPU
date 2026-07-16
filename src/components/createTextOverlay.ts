@@ -3,6 +3,12 @@ export type TextOverlayAnchor = 'start' | 'middle' | 'end';
 export interface TextOverlayLabelOptions {
   readonly fontSize?: number;
   readonly color?: string;
+  readonly fontFamily?: string;
+  /**
+   * CSS/canvas font-weight (e.g. `'600'`, `bold`). Applied in the canvas
+   * `ctx.font` string when set.
+   */
+  readonly fontWeight?: string | number;
   readonly anchor?: TextOverlayAnchor;
   /**
    * Rotation in degrees (CSS `rotate(<deg>deg)`).
@@ -16,6 +22,12 @@ export interface TextOverlayOptions {
    * Prevents labels from overflowing outside the container.
    */
   readonly clip?: boolean;
+  /**
+   * Canvas backing-store pixel ratio. Defaults to `window.devicePixelRatio`.
+   * Pass the chart's resolved DPR (e.g. `options.devicePixelRatio ?? 1`) so
+   * multi-chart dashboards at DPR 1 do not oversample labels vs the plot.
+   */
+  readonly devicePixelRatio?: number;
 }
 
 export interface TextOverlay {
@@ -24,23 +36,27 @@ export interface TextOverlay {
   dispose(): void;
 }
 
-const getAnchorTransform = (anchor: TextOverlayAnchor): Readonly<{ translateX: string; originX: string }> => {
-  switch (anchor) {
-    case 'start':
-      return { translateX: '0%', originX: '0%' };
-    case 'middle':
-      return { translateX: '-50%', originX: '50%' };
-    case 'end':
-      return { translateX: '-100%', originX: '100%' };
-  }
-};
-
+/**
+ * Canvas-backed text overlay for high-frequency axis label updates.
+ *
+ * Auto-ranging multi-chart / series compression rebuilds labels every frame.
+ * DOM `createElement` + layout was a steady-state tax vs SciChart native text.
+ * A single canvas `fillText` pass matches the TextOverlay API (addLabel still
+ * returns a dummy span for callers that style it — styles are applied via
+ * options on the next fill). Anchors use canvas `textAlign` (not CSS transforms).
+ */
 export function createTextOverlay(container: HTMLElement, options?: TextOverlayOptions): TextOverlay {
   const computedStyle = getComputedStyle(container);
   const computedPosition = computedStyle.position;
   const computedOverflow = computedStyle.overflow;
 
   const clip = options?.clip ?? false;
+  const fixedDpr =
+    options?.devicePixelRatio != null &&
+    Number.isFinite(options.devicePixelRatio) &&
+    options.devicePixelRatio > 0
+      ? options.devicePixelRatio
+      : null;
 
   const didSetRelative = computedPosition === 'static';
   const didSetOverflowVisible =
@@ -57,57 +73,129 @@ export function createTextOverlay(container: HTMLElement, options?: TextOverlayO
     container.style.overflow = 'visible';
   }
 
-  const overlay = document.createElement('div');
-  overlay.style.position = 'absolute';
-  overlay.style.inset = '0';
-  overlay.style.pointerEvents = 'none';
-  overlay.style.overflow = clip ? 'hidden' : 'visible';
-  overlay.style.zIndex = '10'; // Above zoom slider (z-index: 4) and other overlays
-  container.appendChild(overlay);
+  const canvas = document.createElement('canvas');
+  canvas.style.position = 'absolute';
+  canvas.style.inset = '0';
+  canvas.style.width = '100%';
+  canvas.style.height = '100%';
+  canvas.style.pointerEvents = 'none';
+  canvas.style.zIndex = '10';
+  if (clip) {
+    canvas.style.overflow = 'hidden';
+  }
+  container.appendChild(canvas);
 
+  const ctx = canvas.getContext('2d');
   let disposed = false;
+  let dpr =
+    fixedDpr ?? (typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1);
+
+  type PendingLabel = {
+    text: string;
+    x: number;
+    y: number;
+    fontSize: number;
+    color: string;
+    fontFamily: string;
+    fontWeight: string | number | undefined;
+    anchor: TextOverlayAnchor;
+    rotation: number;
+  };
+  const pending: PendingLabel[] = [];
+  // Dummy span returned for API compat (callers may style it; canvas path ignores span).
+  const dummySpan = typeof document !== 'undefined' ? document.createElement('span') : ({} as HTMLSpanElement);
+  const defaultFontFamily =
+    typeof window !== 'undefined'
+      ? getComputedStyle(container).fontFamily || 'system-ui, sans-serif'
+      : 'system-ui, sans-serif';
+
+  const syncCanvasSize = (): void => {
+    if (!ctx) return;
+    const cssW = container.clientWidth || 0;
+    const cssH = container.clientHeight || 0;
+    dpr =
+      fixedDpr ?? (typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1);
+    const bw = Math.max(1, Math.round(cssW * dpr));
+    const bh = Math.max(1, Math.round(cssH * dpr));
+    if (canvas.width !== bw || canvas.height !== bh) {
+      canvas.width = bw;
+      canvas.height = bh;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  };
+
+  const flush = (): void => {
+    if (disposed || !ctx) return;
+    syncCanvasSize();
+    const cssW = canvas.width / dpr;
+    const cssH = canvas.height / dpr;
+    ctx.clearRect(0, 0, cssW, cssH);
+    for (let i = 0; i < pending.length; i++) {
+      const lab = pending[i]!;
+      ctx.save();
+      const weightPrefix =
+        lab.fontWeight !== undefined && lab.fontWeight !== '' ? `${lab.fontWeight} ` : '';
+      ctx.font = `${weightPrefix}${lab.fontSize}px ${lab.fontFamily}`;
+      ctx.fillStyle = lab.color;
+      ctx.textBaseline = 'middle';
+      if (lab.anchor === 'middle') ctx.textAlign = 'center';
+      else if (lab.anchor === 'end') ctx.textAlign = 'right';
+      else ctx.textAlign = 'left';
+
+      if (lab.rotation !== 0) {
+        ctx.translate(lab.x, lab.y);
+        ctx.rotate((lab.rotation * Math.PI) / 180);
+        ctx.fillText(lab.text, 0, 0);
+      } else {
+        ctx.fillText(lab.text, lab.x, lab.y);
+      }
+      ctx.restore();
+    }
+  };
+
+  let flushScheduled = false;
+  const scheduleFlush = (): void => {
+    if (flushScheduled) return;
+    flushScheduled = true;
+    // Microtask: axis labels call clear + many addLabel then finish; flush once.
+    queueMicrotask(() => {
+      flushScheduled = false;
+      if (!disposed) flush();
+    });
+  };
 
   const clear = (): void => {
     if (disposed) return;
-    overlay.replaceChildren();
+    pending.length = 0;
+    scheduleFlush();
   };
 
   const addLabel: TextOverlay['addLabel'] = (text, x, y, options) => {
     if (disposed) {
-      // Keep it non-throwing so callsites don't need try/catch in teardown paths.
-      return document.createElement('span');
+      return dummySpan;
     }
-
-    const span = document.createElement('span');
-    span.textContent = text;
-    span.style.position = 'absolute';
-    span.style.left = `${x}px`;
-    span.style.top = `${y}px`;
-    span.style.pointerEvents = 'none';
-    span.style.userSelect = 'none';
-    span.style.whiteSpace = 'nowrap';
-    span.style.lineHeight = '1';
-
-    if (options?.fontSize != null) span.style.fontSize = `${options.fontSize}px`;
-    if (options?.color != null) span.style.color = options.color;
-
-    const rotation = options?.rotation ?? 0;
-    const anchor = options?.anchor ?? 'start';
-    const { translateX, originX } = getAnchorTransform(anchor);
-
-    span.style.transformOrigin = `${originX} 50%`;
-    span.style.transform = `translateX(${translateX}) translateY(-50%) rotate(${rotation}deg)`;
-
-    overlay.appendChild(span);
-    return span;
+    pending.push({
+      text,
+      x,
+      y,
+      fontSize: options?.fontSize ?? 12,
+      color: options?.color ?? '#000',
+      fontFamily: options?.fontFamily ?? defaultFontFamily,
+      fontWeight: options?.fontWeight,
+      anchor: options?.anchor ?? 'start',
+      rotation: options?.rotation ?? 0,
+    });
+    scheduleFlush();
+    return dummySpan;
   };
 
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
+    pending.length = 0;
 
     try {
-      overlay.remove();
+      canvas.remove();
     } finally {
       if (previousInlinePosition !== null) {
         container.style.position = previousInlinePosition;

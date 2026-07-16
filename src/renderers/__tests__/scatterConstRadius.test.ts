@@ -89,6 +89,90 @@ const baseSeries = (symbolSize: number): ResolvedScatterSeriesConfig =>
     visible: true,
   }) as ResolvedScatterSeriesConfig;
 
+describe('scatter F32 column zero-copy path', () => {
+  it('hits zero-copy writeBuffer for dense {x: Float32Array, y: Float32Array}', () => {
+    const device = createMockDevice();
+    const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
+    const renderer = createScatterRenderer(device, { sampleCount: 1 });
+    const n = 50;
+    const x = new Float32Array(n);
+    const y = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      x[i] = i;
+      y[i] = i * 0.5;
+    }
+    const data = { x, y };
+    writeBuffer.mockClear();
+    renderer.prepare(baseSeries(5), data as unknown as never, identityScale, identityScale, gridArea);
+
+    // Two channel uploads sourced from column ArrayBuffers (byteOffset/byteLength form).
+    const colWrites = writeBuffer.mock.calls.filter(
+      (c) => c[2] === x.buffer || c[2] === y.buffer
+    );
+    expect(colWrites.length).toBe(2);
+    expect(colWrites.some((c) => c[2] === x.buffer && c[4] === n * 4)).toBe(true);
+    expect(colWrites.some((c) => c[2] === y.buffer && c[4] === n * 4)).toBe(true);
+  });
+
+  it('misses zero-copy for number[] columns (pack path)', () => {
+    const device = createMockDevice();
+    const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
+    const renderer = createScatterRenderer(device, { sampleCount: 1 });
+    const n = 20;
+    const x = Array.from({ length: n }, (_, i) => i);
+    const y = Array.from({ length: n }, (_, i) => i * 0.5);
+    const data = { x, y };
+    writeBuffer.mockClear();
+    renderer.prepare(baseSeries(5), data as unknown as never, identityScale, identityScale, gridArea);
+
+    // Packed staging uses ArrayBuffer views that are NOT the number[] itself.
+    const sourcedFromNumberArray = writeBuffer.mock.calls.some(
+      (c) => c[2] === x || c[2] === y
+    );
+    expect(sourcedFromNumberArray).toBe(false);
+    // Still uploads N*4 channel bytes (from CPU staging).
+    const channelBytes = writeBuffer.mock.calls.filter((c) => c[4] === n * 4);
+    expect(channelBytes.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('misses zero-copy for staging-ring alias markers', () => {
+    const device = createMockDevice();
+    const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
+    const renderer = createScatterRenderer(device, { sampleCount: 1 });
+    const n = 10;
+    const x = new Float32Array(n);
+    const y = new Float32Array(n);
+    const data = { x, y, __stagingRing: true };
+    writeBuffer.mockClear();
+    renderer.prepare(baseSeries(5), data as unknown as never, identityScale, identityScale, gridArea);
+    const colWrites = writeBuffer.mock.calls.filter(
+      (c) => c[2] === x.buffer || c[2] === y.buffer
+    );
+    // Staging-ring flag forces pack path — must not zero-copy column buffers.
+    expect(colWrites.length).toBe(0);
+  });
+
+  it('misses zero-copy when F32 columns contain non-finite values', () => {
+    const device = createMockDevice();
+    const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
+    const renderer = createScatterRenderer(device, { sampleCount: 1 });
+    const n = 8;
+    const x = new Float32Array(n);
+    const y = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      x[i] = i;
+      y[i] = i;
+    }
+    y[3] = Number.NaN;
+    writeBuffer.mockClear();
+    renderer.prepare(baseSeries(5), { x, y } as unknown as never, identityScale, identityScale, gridArea);
+    const colWrites = writeBuffer.mock.calls.filter(
+      (c) => c[2] === x.buffer || c[2] === y.buffer
+    );
+    expect(colWrites.length).toBe(0);
+  });
+});
+
 describe('scatter const-radius instance stride', () => {
   it('uploads dual N*4 channels for constant symbolSize dense tuples', () => {
     const device = createMockDevice();

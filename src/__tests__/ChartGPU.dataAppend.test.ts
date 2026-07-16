@@ -1329,10 +1329,9 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
 
   it('skips hit-test columnar growth when maxPoints + tooltip off (dual-store relief)', async () => {
     // Suite FIFO: tooltip false + maxPoints skips ChartGPU hit-test columns.
-    // Proof of skip (not just resync): after skip-only appends, first *unbounded*
-    // maintain append must not double-apply. Seed [0,1]; skip maxPoints:2 leaves
-    // coordinator at [2,3]; unbounded [100] → single apply [2,3,100] (not
-    // [2,3,100,100]). Domain left edge ≈ 2, right ≈ 100.
+    // Subsequent unbounded append with tooltip still off also skips (aligned with
+    // setOption tooltip-off policy). hitTest() on-demand resyncs from coordinator
+    // so domain still reflects [2,3,100] after skip-only streaming.
     const data: Array<[number, number]> = [
       [0, 0],
       [1, 1],
@@ -1349,8 +1348,7 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
     chart.appendData(0, [[3, 3]], { maxPoints: 2 });
     await new Promise((resolve) => setTimeout(resolve, 30));
 
-    // Unbounded maintain while tooltip still off: resync prior state then apply
-    // [100] once (regression for double-apply after flush-inclusive resync).
+    // Unbounded + tooltip still off: still skip dual store; GPU/coordinator only.
     chart.appendData(0, [[100, 50]]);
     await new Promise((resolve) => setTimeout(resolve, 30));
 
@@ -1365,6 +1363,41 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
       expect(hitLeft.match.value[0]).toBeGreaterThanOrEqual(2);
       expect(hitLeft.match.value[0]).not.toBe(0);
     }
+
+    await chart.dispose();
+  });
+
+  it('skips hit-test columnar growth on unbounded append when tooltip off (compression dual-store)', async () => {
+    // Series compression / multi-chart line slots: tooltip false, no maxPoints,
+    // append every frame. Dual columnar growth must not track full raw N.
+    // Re-enable tooltip forces resync from coordinator (same as product path).
+    const data: Array<[number, number]> = [
+      [0, 0],
+      [1, 1],
+    ];
+    const chart = await ChartGPU.create(mockContainer, {
+      animation: false,
+      tooltip: { show: false },
+      grid: { left: 0, right: 0, top: 0, bottom: 0 },
+      yAxis: { min: -10, max: 60 },
+      series: [{ type: 'line', data, sampling: 'none' }],
+    });
+
+    chart.appendData(0, [[50, 25]]);
+    chart.appendData(0, [[100, 50]]);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    // Axes-only setOption that turns tooltip on — must resync from coordinator.
+    chart.setOption({
+      ...chart.options,
+      tooltip: { show: true },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    const hitRight = chart.hitTest(makePointer(799, 86));
+    expect(hitRight.isInGrid).toBe(true);
+    expect(hitRight.match).not.toBeNull();
+    expect(hitRight.match?.value[0]).toBeCloseTo(100, 0);
 
     await chart.dispose();
   });

@@ -7,18 +7,21 @@ import { demoteStagingViewAfterRebindFailure, isStagingThinPathEligible } from '
 import { createStagingRingView, createRingXYColumns } from '../../../../data/cartesianData';
 
 describe('isStagingThinPathEligible', () => {
-  it('is true for GPU fast path + maxPoints (tooltip-independent, issue 1.5)', () => {
+  it('is true for GPU fast path with maxPoints (FIFO, tooltip-independent)', () => {
     expect(isStagingThinPathEligible(true, true, false)).toBe(true);
     expect(isStagingThinPathEligible(true, true, true)).toBe(true);
     expect(isStagingThinPathEligible(true, true, undefined)).toBe(true);
   });
 
-  it('is false without maxPoints', () => {
-    expect(isStagingThinPathEligible(true, false, false)).toBe(false);
+  it('is true for GPU fast path without maxPoints (unbounded compression / LTTB)', () => {
+    // Multi-chart line slots + series compression: dual number[] growth was the tax.
+    expect(isStagingThinPathEligible(true, false, false)).toBe(true);
+    expect(isStagingThinPathEligible(true, false, true)).toBe(true);
   });
 
   it('is false without GPU append fast path', () => {
     expect(isStagingThinPathEligible(false, true, false)).toBe(false);
+    expect(isStagingThinPathEligible(false, false, false)).toBe(false);
   });
 });
 

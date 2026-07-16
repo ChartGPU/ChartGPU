@@ -161,68 +161,27 @@ function getLineBindGroupLayout(device: GPUDevice): GPUBindGroupLayout {
 }
 
 /**
- * Shared VS transform buffer per device (group 1 multi-series).
+ * Frame epoch for line prepare (group 1 multi-series bookkeeping).
  *
- * All line series on the same axes + same effective width + same packing origin
- * write identical VS uniforms when only y-domain ticks. The first prepare in a
- * frame claims/writes the shared buffer; matching series bind it and skip
- * per-series writeBuffer. Divergent series (different width / xOffset) fall
- * back to their private buffer.
+ * Historically a single **device-global shared VS uniform buffer** was claimed by
+ * the first series each frame so equal-N multi-series could skip N−1 writeBuffers.
+ * Multi-chart harnesses share one GPUDevice and defer `queue.submit` via
+ * {@link enqueueDeviceSubmit}: chart B's prepare overwrote the shared buffer
+ * while chart A's encoded CB still bound it → wrong/off-screen/faint strokes.
  *
- * **Multi-chart caveat:** frame claim uses a process-global epoch
- * ({@link beginLineSharedVsFrame}). Charts that **interleave** prepare across
- * instances on the same GPUDevice without each calling `beginLineSharedVsFrame`
- * before their own line prepare loop can overwrite the shared buffer while
- * another chart's bind groups still reference it. Safe when each chart
- * prepares+submits without interleaving another chart's prepare on the same
- * device (normal single-chart and sequential multi-chart render).
+ * Line renderers now always use their **private** VS buffer with dirty-skip
+ * (issue 2.5). {@link beginLineSharedVsFrame} remains as a no-op epoch bump for
+ * call-site compatibility and future per-command-buffer sharing if needed.
  */
-type SharedLineVsState = {
-  buffer: GPUBuffer;
-  frameId: number;
-  ax: number;
-  bx: number;
-  ay: number;
-  by: number;
-  canvasW: number;
-  canvasH: number;
-  dpr: number;
-  lineWidth: number;
-  scratch: ArrayBuffer;
-  scratchF32: Float32Array;
-};
-
-const sharedLineVsByDevice = new WeakMap<GPUDevice, SharedLineVsState>();
 let lineSharedVsFrameId = 0;
 
 /**
- * Call once before preparing any line series in a frame so shared VS can be
- * claimed by the first series and reused by the rest.
+ * Call once before preparing any line series in a frame.
+ * Retained for API/call-site compatibility; VS sharing is disabled (see above).
  */
-export function beginLineSharedVsFrame(): void {
+export function beginLineSharedVsFrame(_shareKey?: number): void {
   lineSharedVsFrameId++;
-}
-
-function getSharedLineVs(device: GPUDevice): SharedLineVsState {
-  let s = sharedLineVsByDevice.get(device);
-  if (s) return s;
-  const scratch = new ArrayBuffer(80);
-  s = {
-    buffer: createUniformBuffer(device, 80, { label: 'lineRenderer/sharedVsUniforms' }),
-    frameId: -1,
-    ax: Number.NaN,
-    bx: Number.NaN,
-    ay: Number.NaN,
-    by: Number.NaN,
-    canvasW: Number.NaN,
-    canvasH: Number.NaN,
-    dpr: Number.NaN,
-    lineWidth: Number.NaN,
-    scratch,
-    scratchF32: new Float32Array(scratch),
-  };
-  sharedLineVsByDevice.set(device, s);
-  return s;
+  void lineSharedVsFrameId;
 }
 
 export function createLineRenderer(device: GPUDevice, options?: LineRendererOptions): LineRenderer {
@@ -385,11 +344,12 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
         ? seriesConfig.lineStyle.width
         : DEFAULT_LINE_WIDTH_CSS_PX;
     // Dense full-rewrite (group 3) + multi-series fill cliff (group 1): switch to
-    // line-list hairline without changing sampling / pack / residency.
+    // line-list hairline only when main MSAA is 4× (see lineDrawPolicy).
     const drawPolicy = resolveLineDrawPolicy({
       pointCount: currentPointCount,
       lineWidthCssPx: nominalLineWidthCss,
       lineSeriesCount,
+      msaaSampleCount: sampleCount,
     });
     currentDrawPolicy = drawPolicy.policy;
     const lineWidthCss = drawPolicy.effectiveLineWidthCssPx;
@@ -399,51 +359,11 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     vsUniformScratchF32[18] = dpr;
     vsUniformScratchF32[19] = lineWidthCss;
 
-    // Shared VS: first line prepare this frame writes once; matching series reuse.
-    const shared = getSharedLineVs(device);
+    // Private VS only (multi-chart deferred-submit safe). Dirty-skip when affine /
+    // size / width unchanged (issue 2.5) — covers axes-only ticks without a
+    // device-global shared buffer that multi-chart slots would clobber.
     let vsBufferForBind: GPUBuffer = vsUniformBuffer;
-    if (shared.frameId !== lineSharedVsFrameId) {
-      // Claim shared for this frame.
-      writeUniformBuffer(device, shared.buffer, vsUniformScratchBuffer);
-      shared.frameId = lineSharedVsFrameId;
-      shared.ax = ax;
-      shared.bx = bxAdjusted;
-      shared.ay = ay;
-      shared.by = by;
-      shared.canvasW = canvasW;
-      shared.canvasH = canvasH;
-      shared.dpr = dpr;
-      shared.lineWidth = lineWidthCss;
-      vsBufferForBind = shared.buffer;
-      lastAx = ax;
-      lastBx = bxAdjusted;
-      lastAy = ay;
-      lastBy = by;
-      lastCanvasW = canvasW;
-      lastCanvasH = canvasH;
-      lastDpr = dpr;
-      lastLineWidth = lineWidthCss;
-    } else if (
-      shared.ax === ax &&
-      shared.bx === bxAdjusted &&
-      shared.ay === ay &&
-      shared.by === by &&
-      shared.canvasW === canvasW &&
-      shared.canvasH === canvasH &&
-      shared.dpr === dpr &&
-      shared.lineWidth === lineWidthCss
-    ) {
-      vsBufferForBind = shared.buffer;
-      lastAx = ax;
-      lastBx = bxAdjusted;
-      lastAy = ay;
-      lastBy = by;
-      lastCanvasW = canvasW;
-      lastCanvasH = canvasH;
-      lastDpr = dpr;
-      lastLineWidth = lineWidthCss;
-    } else {
-      // Divergent VS (different width / xOffset) — private buffer.
+    {
       const vsDirty =
         lastAx !== ax ||
         lastBx !== bxAdjusted ||
@@ -464,7 +384,6 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
         lastDpr = dpr;
         lastLineWidth = lineWidthCss;
       }
-      vsBufferForBind = vsUniformBuffer;
     }
 
     // Color parse is relatively expensive (CSS string); cache base RGBA by color key.

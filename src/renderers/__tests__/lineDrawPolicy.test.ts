@@ -27,9 +27,21 @@ describe('resolveLineDrawPolicy', () => {
     const r = resolveLineDrawPolicy({
       pointCount: DENSE_HAIRLINE_POINT_THRESHOLD,
       lineWidthCssPx: 2,
+      msaaSampleCount: 4,
     });
     expect(r.policy).toBe('denseHairline');
     expect(r.effectiveLineWidthCssPx).toBe(DENSE_LINE_MIN_WIDTH_CSS);
+  });
+
+  it('msaaSampleCount 1 never enters denseHairline (multi-chart antialias:false)', () => {
+    const r = resolveLineDrawPolicy({
+      pointCount: 1_000_000,
+      lineWidthCssPx: 2,
+      lineSeriesCount: 1000,
+      msaaSampleCount: 1,
+    });
+    expect(r.policy).toBe('standard');
+    expect(r.effectiveLineWidthCssPx).toBe(2);
   });
 
   it('enters denseHairline for group 3 @ 50k', () => {

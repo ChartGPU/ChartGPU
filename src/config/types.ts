@@ -708,4 +708,28 @@ export interface ChartGPUOptions {
    * - `'external'`: Application is responsible for calling renderFrame() on each frame
    */
   readonly renderMode?: RenderMode;
+  /**
+   * Multisample antialiasing for the main + overlay GPU passes.
+   *
+   * - `true` (default): 4× MSAA (WebGPU portable max; sampleCount 2 is invalid)
+   * - `false`: sampleCount 1 — lower fill-rate / memory for multi-chart dashboards
+   *   and streaming grids where pixel density is already high or cells are small
+   *
+   * **Create-only:** applied at `ChartGPU.create` / coordinator construction when
+   * MSAA pipelines and the texture manager are built. Changing this via
+   * `setOption` / `setOptions` does **not** rebuild those resources. To change
+   * MSAA after creation, dispose and recreate the chart.
+   */
+  readonly antialias?: boolean;
+  /**
+   * Canvas backing-store pixel ratio. Defaults to `window.devicePixelRatio`.
+   * Set to `1` on multi-chart dashboards to cap GPU fill rate on high-DPI displays
+   * (SciChart-style multi-surface grids often present at 1×).
+   *
+   * **Create-only:** applied at `ChartGPU.create` / coordinator construction
+   * (GPU canvas configure + text-overlay DPR). Changing this via `setOption` /
+   * `setOptions` does **not** reconfigure the canvas backing store or text
+   * overlay. To change DPR after creation, dispose and recreate the chart.
+   */
+  readonly devicePixelRatio?: number;
 }

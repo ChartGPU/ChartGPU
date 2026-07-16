@@ -305,11 +305,24 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
           const rawBuffer = dataStore.getSeriesBuffer(i);
           const rawPointCount = dataStore.getSeriesPointCount(i);
 
-          const fallbackTarget = Math.max(2, Math.floor(Math.max(1, gridArea.canvasWidth) * 2));
-          const rawTarget = Number.isFinite(s.samplingThreshold)
+          // Cap decimation output by plot pixel density as well as samplingThreshold.
+          // Multi-chart slots are often << 5000 CSS px wide; targeting the full
+          // threshold wastes compute + draw. Use **plot** width (not full canvas)
+          // and ≥2 samples per device px so random-walk / LTTB strokes stay
+          // continuous (1 sample/px aliases into long sparse segments that look
+          // faint/dashed, especially with antialias:false + dpr:1).
+          const dpr = Math.max(1e-6, gridArea.devicePixelRatio || 1);
+          const plotWidthCss = Math.max(
+            1,
+            gridArea.canvasWidth / dpr - gridArea.left - gridArea.right
+          );
+          const plotWidthDevice = Math.max(1, Math.floor(plotWidthCss * dpr));
+          // Floor 128 so tiny slots still get a usable polyline; 2× width for Nyquist-ish LOD.
+          const pixelCap = Math.max(128, plotWidthDevice * 2);
+          const configuredTarget = Number.isFinite(s.samplingThreshold)
             ? Math.max(2, s.samplingThreshold | 0)
-            : fallbackTarget;
-          const targetBuckets = Math.min(rawTarget, Math.max(2, rawPointCount));
+            : Math.max(2, pixelCap);
+          const targetBuckets = Math.min(configuredTarget, pixelCap, Math.max(2, rawPointCount));
 
           // Prefer visible-range binary search on coordinator raw (including
           // RingXYColumns / StagingRingView — getX is chronological). Full-range

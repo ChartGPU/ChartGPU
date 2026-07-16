@@ -76,11 +76,19 @@ import {
   createRendererPool,
   ensureRendererPoolsForSeries,
 } from './renderCoordinator/renderers/rendererPool';
+import { createTextureManager } from './renderCoordinator/gpu/textureManager';
+import { enqueueDeviceSubmit, flushDeviceSubmit } from './gpu/submitBatcher';
 import {
-  createTextureManager,
-  ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
-  MAIN_SCENE_MSAA_SAMPLE_COUNT,
-} from './renderCoordinator/gpu/textureManager';
+  applyStickyAutoDomain,
+  DEFAULT_STICKY_DOMAIN_HEADROOM,
+  resolveStickyOrDataDomain,
+  shouldApplyStickyAutoDomain,
+  shouldSkipStickyAutoXDomain,
+} from './renderCoordinator/zoom/stickyAutoDomain';
+import {
+  isFullSpanZoomRange as isFullSpanZoomRangeHelper,
+  scanCartesianVisibleYBounds,
+} from './renderCoordinator/zoom/visibleYBounds';
 import { createCrosshairRenderer } from '../renderers/createCrosshairRenderer';
 import { createHighlightRenderer } from '../renderers/createHighlightRenderer';
 import { createReferenceLineRenderer } from '../renderers/createReferenceLineRenderer';
@@ -255,6 +263,23 @@ type Bounds = Readonly<{
 
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
 const DEFAULT_TICK_COUNT: number = 5;
+
+/** FNV-1a offset / prime for compact axis-label DOM signatures (issue 11). */
+const LABEL_SIG_FNV_OFFSET = 0x811c9dc5;
+const LABEL_SIG_FNV_PRIME = 0x01000193;
+/** Scratch view for hashing float64 bit patterns without per-tick allocations. */
+const labelSigF64 = new Float64Array(1);
+const labelSigU32 = new Uint32Array(labelSigF64.buffer);
+
+const mixLabelSigUint = (h: number, v: number): number =>
+  Math.imul(h ^ (v >>> 0), LABEL_SIG_FNV_PRIME) >>> 0;
+
+const mixLabelSigFloat = (h: number, f: number): number => {
+  labelSigF64[0] = f;
+  let next = mixLabelSigUint(h, labelSigU32[0]!);
+  next = mixLabelSigUint(next, labelSigU32[1]!);
+  return next;
+};
 
 // Story 6: time-axis label tiers + adaptive tick count (x-axis only).
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -937,15 +962,23 @@ const computeBaseXDomain = (
  * Computes Y-axis domain bounds from the visible/rendered series data.
  * This avoids scanning the full raw dataset when yAxis.autoBounds === 'visible'.
  *
- * Performance: O(n) where n = total points across all visible series data.
- * This is called only when renderSeries changes (zoom/pan/data updates), not per-frame.
+ * When `xWindow` is provided (zoomed GPU-decimation path that still holds full
+ * raw on the series), only points with x in [min, max] contribute — O(n) but
+ * correct for the visible window instead of global raw extrema.
+ *
+ * Performance: O(n) where n = total points across all series data.
+ * Called when renderSeries / zoom changes, not every paint with stable zoom.
  */
 const computeVisibleYBoundsForAxis = (
   series: ResolvedChartGPUOptions['series'],
-  axisId: string
+  axisId: string,
+  xWindow?: { readonly min: number; readonly max: number } | null
 ): { yMin: number; yMax: number } => {
   let yMin = Number.POSITIVE_INFINITY;
   let yMax = Number.NEGATIVE_INFINITY;
+  const filterX = xWindow != null && Number.isFinite(xWindow.min) && Number.isFinite(xWindow.max);
+  const xMinW = filterX ? xWindow!.min : 0;
+  const xMaxW = filterX ? xWindow!.max : 0;
 
   for (let s = 0; s < series.length; s++) {
     const seriesConfig = series[s];
@@ -956,6 +989,10 @@ const computeVisibleYBoundsForAxis = (
       const visibleOHLC = seriesConfig.data as ReadonlyArray<OHLCDataPoint>;
       for (let i = 0; i < visibleOHLC.length; i++) {
         const p = visibleOHLC[i]!;
+        const timestamp = isTupleOHLCDataPoint(p) ? p[0] : p.timestamp;
+        if (filterX && Number.isFinite(timestamp) && (timestamp < xMinW || timestamp > xMaxW)) {
+          continue;
+        }
         const low = isTupleOHLCDataPoint(p) ? p[3] : p.low;
         const high = isTupleOHLCDataPoint(p) ? p[4] : p.high;
         if (!Number.isFinite(low) || !Number.isFinite(high)) continue;
@@ -969,17 +1006,14 @@ const computeVisibleYBoundsForAxis = (
       continue;
     }
 
-    const data = seriesConfig.data as CartesianSeriesData;
-    const n = getPointCount(data);
-    for (let i = 0; i < n; i++) {
-      const y = getY(data, i);
-      if (!Number.isFinite(y)) continue;
-      if (y < yMin) yMin = y;
-      if (y > yMax) yMax = y;
+    const scanned = scanCartesianVisibleYBounds(seriesConfig.data as CartesianSeriesData, xWindow);
+    if (scanned) {
+      if (scanned.yMin < yMin) yMin = scanned.yMin;
+      if (scanned.yMax > yMax) yMax = scanned.yMax;
     }
   }
 
-  if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) {
+  if (!Number.isFinite(yMin) || !Number.isFinite(yMax) || yMin === Number.POSITIVE_INFINITY) {
     return { yMin: 0, yMax: 1 };
   }
 
@@ -1224,13 +1258,20 @@ export function createRenderCoordinator(
 
   const targetFormat = gpuContext.preferredFormat ?? DEFAULT_TARGET_FORMAT;
   const pipelineCache = callbacks?.pipelineCache;
+  // Match chart canvas DPR (multi-chart harness often forces 1; avoid sharper labels than plot).
+  const overlayDpr =
+    Number.isFinite(gpuContext.devicePixelRatio) && (gpuContext.devicePixelRatio as number) > 0
+      ? (gpuContext.devicePixelRatio as number)
+      : 1;
 
   // DOM-dependent features (overlays, legends) require HTMLCanvasElement.
   const overlayContainer = isHTMLCanvasElement(gpuContext.canvas) ? gpuContext.canvas.parentElement : null;
-  const axisLabelOverlay: TextOverlay | null = overlayContainer ? createTextOverlay(overlayContainer) : null;
+  const axisLabelOverlay: TextOverlay | null = overlayContainer
+    ? createTextOverlay(overlayContainer, { devicePixelRatio: overlayDpr })
+    : null;
   // Dedicated overlay for annotations (do not reuse axis label overlay).
   const annotationOverlay: TextOverlay | null = overlayContainer
-    ? createTextOverlay(overlayContainer, { clip: true })
+    ? createTextOverlay(overlayContainer, { clip: true, devicePixelRatio: overlayDpr })
     : null;
 
   const handleSeriesToggle = (seriesIndex: number, sliceIndex?: number): void => {
@@ -1532,6 +1573,67 @@ export function createRenderCoordinator(
   // Recomputed whenever renderSeries changes (zoom/pan/data updates).
   let cachedVisibleYBoundsByAxis: Map<string, { yMin: number; yMax: number }> = new Map();
 
+  /**
+   * Sticky auto-range domains (multi-chart / series compression).
+   * Expanding data every frame otherwise forces grid+axis prepare + label rebuild
+   * every append. Hold ~10% headroom and only expand when data breaches the sticky
+   * domain — matches SciChart-style growBy amortization without changing the
+   * sampling contract. Cleared on full setOption / explicit axis domains.
+   */
+  let stickyAutoXDomain: { min: number; max: number } | null = null;
+  const stickyAutoYDomainByAxis = new Map<string, { min: number; max: number }>();
+
+  /**
+   * Base X domain used for zoom→visible window, sampling, and slice.
+   * Must match paint's sticky / autoScroll / explicit-end gates so decimation
+   * windows agree with GPU scales when sticky headroom is active.
+   *
+   * - `mode: 'read'`: use existing sticky if active; do not mutate sticky state.
+   * - `mode: 'paint'`: applyStickyAutoDomain / clear sticky when skipped or mid-transition.
+   */
+  function resolveBaseXDomain(
+    mode: 'read' | 'paint',
+    opts?: {
+      dataXDomain?: { min: number; max: number };
+      /** When true mid-transition: return data domain; clear sticky in paint mode. */
+      updateTransitionActive?: boolean;
+    }
+  ): { min: number; max: number } {
+    const dataXDomain =
+      opts?.dataXDomain ?? computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
+
+    if (opts?.updateTransitionActive) {
+      if (mode === 'paint') {
+        stickyAutoXDomain = null;
+      }
+      return dataXDomain;
+    }
+
+    const xExplicitMin = finiteOrUndefined(currentOptions.xAxis.min);
+    const xExplicitMax = finiteOrUndefined(currentOptions.xAxis.max);
+    const skipSticky = shouldSkipStickyAutoXDomain(
+      currentOptions.autoScroll,
+      xExplicitMin,
+      xExplicitMax
+    );
+
+    if (mode === 'paint') {
+      if (skipSticky) {
+        stickyAutoXDomain = null;
+        return dataXDomain;
+      }
+      const next = applyStickyAutoDomain(
+        dataXDomain,
+        stickyAutoXDomain,
+        DEFAULT_STICKY_DOMAIN_HEADROOM
+      );
+      stickyAutoXDomain = next;
+      return next;
+    }
+
+    return resolveStickyOrDataDomain(dataXDomain, stickyAutoXDomain, { skipSticky });
+  }
+
   const shouldComputeVisibleYBoundsForAxis = (opts: ResolvedChartGPUOptions, axisId: string): boolean => {
     const yAxisConfig = opts.yAxes.find((ax) => ax.id === axisId) || opts.yAxes[0]!;
     const autoBoundsMode = yAxisConfig.autoBounds ?? 'visible';
@@ -1543,9 +1645,38 @@ export function createRenderCoordinator(
 
   const recomputeCachedVisibleYBoundsIfNeeded = (): void => {
     cachedVisibleYBoundsByAxis.clear();
+    // Full-span / no zoom: "visible" equals the full dataset. Prefer O(1) raw
+    // bounds (runtimeRawBoundsByIndex / series.rawBounds) instead of scanning
+    // renderSeries. Critical for GPU-decimation + series-compression paths where
+    // the series still holds full raw (100k→multi-M) and every append would
+    // otherwise be an O(N) y-extrema walk.
+    const zoomRange = zoomState?.getRange() ?? null;
+    const fullSpan = isFullSpanZoomRangeHelper(zoomRange);
+    const seriesForAxis =
+      runtimeBaseSeries.length > 0 ? runtimeBaseSeries : currentOptions.series;
+
+    // Zoomed: filter Y extrema to the visible X window (GPU-decimation series
+    // keep full raw on the series; unfiltered scan would use off-window peaks).
+    // Same sticky/autoScroll gates as paint so visible-Y matches drawn scales.
+    let xWindow: { min: number; max: number } | null = null;
+    if (!fullSpan && zoomRange) {
+      const baseX = resolveBaseXDomain('read');
+      const vis = computeVisibleXDomain(baseX, zoomRange);
+      xWindow = { min: vis.min, max: vis.max };
+    }
+
     for (const ax of currentOptions.yAxes) {
-      if (shouldComputeVisibleYBoundsForAxis(currentOptions, ax.id!)) {
-        cachedVisibleYBoundsByAxis.set(ax.id!, computeVisibleYBoundsForAxis(renderSeries, ax.id!));
+      if (!shouldComputeVisibleYBoundsForAxis(currentOptions, ax.id!)) continue;
+      if (fullSpan) {
+        cachedVisibleYBoundsByAxis.set(
+          ax.id!,
+          computeGlobalYBoundsForAxis(seriesForAxis, ax.id!, runtimeRawBoundsByIndex)
+        );
+      } else {
+        cachedVisibleYBoundsByAxis.set(
+          ax.id!,
+          computeVisibleYBoundsForAxis(renderSeries, ax.id!, xWindow)
+        );
       }
     }
   };
@@ -1656,57 +1787,70 @@ export function createRenderCoordinator(
 
   let dataStore = createDataStore(device);
 
+  /** DOM axis-label rebuild signature; skip clear+rebuild when unchanged. */
+  let lastAxisLabelDomSignature = '';
+  /**
+   * Bumped on every setOptions so labelSig invalidates when tick formatters,
+   * axis type, theme fonts, or other options that affect label content change.
+   * Function identity cannot be stringified reliably.
+   */
+  let axisLabelContentEpoch = 0;
+
+  // MSAA: default 4× (portable WebGPU max). `antialias: false` → sampleCount 1
+  // for multi-chart dashboards / streaming grids (legal values are only 1|4).
+  const msaaSampleCount: 1 | 4 = currentOptions.antialias === false ? 1 : 4;
+
   const gridRenderer = createGridRenderer(device, {
     targetFormat,
-    sampleCount: MAIN_SCENE_MSAA_SAMPLE_COUNT,
+    sampleCount: msaaSampleCount,
     pipelineCache,
   });
-  // Axes / crosshair / highlight draw into the annotation overlay MSAA pass
-  // (WG-P1-5 Phase 4b): sampleCount must match ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT.
+  // Axes / crosshair / highlight must match the main/overlay pass sampleCount.
   const xAxisRenderer = createAxisRenderer(device, {
     targetFormat,
-    sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
+    sampleCount: msaaSampleCount,
     pipelineCache,
   });
   const yAxisRenderers = new Map<string, ReturnType<typeof createAxisRenderer>>();
   const crosshairRenderer = createCrosshairRenderer(device, {
     targetFormat,
-    sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
+    sampleCount: msaaSampleCount,
     pipelineCache,
   });
   crosshairRenderer.setVisible(false);
   const highlightRenderer = createHighlightRenderer(device, {
     targetFormat,
-    sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
+    sampleCount: msaaSampleCount,
     pipelineCache,
   });
   highlightRenderer.setVisible(false);
 
   // Frame graph (WG-P1-5):
-  // 1. Main 4× MSAA → resolve (grid, series, below-series annotations)
-  // 2. Overlay 4× MSAA → resolve to swapchain (blit + above-series annotations +
-  //    axes/crosshair/highlight). No third single-sample top overlay pass.
-  // WebGPU only allows sampleCount 1 or 4 — main and overlay both use 4×.
-  // Below/above annotation layers keep separate instances so prepare is layer-only
-  // (start at 0 per pass) without combined-list offsets.
+  // 1. Main MSAA → resolve (grid, series, below-series annotations)
+  // 2. Overlay MSAA → resolve to swapchain (blit + above-series annotations +
+  //    axes/crosshair/highlight) — skipped on direct-swapchain path when no hairline.
+  // WebGPU only allows sampleCount 1 or 4. Below/above annotation layers keep
+  // separate instances so prepare is layer-only (start at 0 per pass).
   const referenceLineRenderer = createReferenceLineRenderer(device, {
     targetFormat,
-    sampleCount: MAIN_SCENE_MSAA_SAMPLE_COUNT,
+    sampleCount: msaaSampleCount,
     pipelineCache,
   });
   const annotationMarkerRenderer = createAnnotationMarkerRenderer(device, {
     targetFormat,
-    sampleCount: MAIN_SCENE_MSAA_SAMPLE_COUNT,
+    sampleCount: msaaSampleCount,
     pipelineCache,
   });
+  // Alias: when main and overlay share sampleCount, still keep separate
+  // instances for layer-only prepare (below vs above).
   const referenceLineRendererMsaa = createReferenceLineRenderer(device, {
     targetFormat,
-    sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
+    sampleCount: msaaSampleCount,
     pipelineCache,
   });
   const annotationMarkerRendererMsaa = createAnnotationMarkerRenderer(device, {
     targetFormat,
-    sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
+    sampleCount: msaaSampleCount,
     pipelineCache,
   });
 
@@ -1714,6 +1858,7 @@ export function createRenderCoordinator(
     device,
     targetFormat,
     pipelineCache,
+    sampleCount: msaaSampleCount,
   });
 
   const initialGridArea = computeGridArea(gpuContext, currentOptions);
@@ -1775,10 +1920,7 @@ export function createRenderCoordinator(
     callbacks?.onRequestRender?.();
   };
 
-  const isFullSpanZoomRange = (range: ZoomRange | null): boolean => {
-    if (!range) return true;
-    return Number.isFinite(range.start) && Number.isFinite(range.end) && range.start <= 0 && range.end >= 100;
-  };
+  const isFullSpanZoomRange = (range: ZoomRange | null): boolean => isFullSpanZoomRangeHelper(range);
 
   const cancelScheduledFlush = (): void => {
     if (flushRafId !== null) {
@@ -1885,10 +2027,11 @@ export function createRenderCoordinator(
           // GPU path and raw none both work at any zoom; buffer holds full raw.
           (isGpuDecimationActive || isGpuDecimationEligibleNow || s.sampling === 'none');
 
-        // Thin path = maxPoints + GPU append fast path: bind coordinator raw to
-        // DataStore staging (zero-copy) instead of dual-packing into RingXYColumns
-        // every frame (issue 1.5 — tooltip no longer gates coordinator residency).
-        // ChartGPU hit-test dual-store skip remains tooltip-off + maxPoints.
+        // Thin path = GPU append fast path: bind coordinator raw to DataStore
+        // staging (zero-copy) instead of dual-packing into RingXYColumns /
+        // growing MutableXYColumns every frame. Covers FIFO maxPoints (issue 1.5)
+        // and unbounded LTTB/compression append (multi-chart line slots).
+        // ChartGPU hit-test dual-store skip remains tooltip-off independently.
         let hasMaxPointsInFlush = false;
         for (const batch of batches) {
           if (normalizeMaxPoints(batch.maxPoints) != null) {
@@ -1960,9 +2103,10 @@ export function createRenderCoordinator(
             );
           }
 
-          // Thin path: after GPU modular append, point coordinator raw at staging
-          // (no RingXYColumns pack). Bounds from O(1) endpoints + new-batch y.
-          if (useStagingThinPath && maxPoints != null && appendedGpuThisFrame.has(seriesIndex)) {
+          // Thin path: after GPU modular/ranged append, point coordinator raw at
+          // staging (no RingXY / MutableXY dual-pack). Bounds from O(1) endpoints
+          // + new-batch y. FIFO (maxPoints) and unbounded pure growth both qualify.
+          if (useStagingThinPath && appendedGpuThisFrame.has(seriesIndex)) {
             const n = getPointCount(cartesianData);
             const plan = planMaxPointsWindow(prevLen, n, maxPoints);
             try {
@@ -1983,8 +2127,8 @@ export function createRenderCoordinator(
               let yMin = prevB?.yMin ?? Number.POSITIVE_INFINITY;
               let yMax = prevB?.yMax ?? Number.NEGATIVE_INFINITY;
               const end = plan.newSrcOffset + plan.keepNewCount;
-              // FIFO suite: shared Float64 y columns — scan column directly
-              // (avoid getY dispatch × large append batches / frame).
+              // FIFO / compression suite: shared Float64 y columns — scan column
+              // directly (avoid getY dispatch × large append batches / frame).
               const yCol =
                 typeof cartesianData === 'object' &&
                 cartesianData !== null &&
@@ -2035,7 +2179,7 @@ export function createRenderCoordinator(
             }
           }
 
-          // Full column path (tooltip on, or thin path unavailable).
+          // Full column path (thin path ineligible / rebind failed).
           if (raw == null || isStagingRingView(raw)) {
             raw = ensureMutableRuntimeColumns(seriesIndex, s);
           }
@@ -2280,7 +2424,43 @@ export function createRenderCoordinator(
     // Fallback clear if no onChange fired (e.g. range unchanged).
     if (canAutoScroll) pendingZoomSourceKind = undefined;
 
-    recomputeRuntimeBaseSeries();
+    // Streaming append hot path: when every series is already GPU-decimation
+    // eligible on the baseline, patch rawData/rawBounds in place instead of
+    // reallocating the full resolved-series array (series compression / multi-
+    // chart line slots append every frame).
+    let patchedInPlace = false;
+    if (
+      runtimeBaseSeries.length === currentOptions.series.length &&
+      runtimeBaseSeries.length > 0
+    ) {
+      patchedInPlace = true;
+      for (let i = 0; i < runtimeBaseSeries.length; i++) {
+        const base = runtimeBaseSeries[i]!;
+        const cfg = currentOptions.series[i]!;
+        if (base.type === 'pie' || cfg.type === 'pie') continue;
+        if (base.type === 'candlestick' || cfg.type === 'candlestick') {
+          patchedInPlace = false;
+          break;
+        }
+        const rawCartesian =
+          (runtimeRawDataByIndex[i] as CartesianSeriesData | null) ??
+          ((cfg.rawData ?? cfg.data) as CartesianSeriesData);
+        if (!isGpuDecimationEligible(cfg, rawCartesian) || !isGpuDecimationEligible(base, rawCartesian)) {
+          patchedInPlace = false;
+          break;
+        }
+        const bounds = runtimeRawBoundsByIndex[i] ?? base.rawBounds ?? undefined;
+        // Mutate shared resolved object — display path only reads these fields.
+        (base as { rawData: CartesianSeriesData }).rawData = rawCartesian;
+        (base as { data: CartesianSeriesData }).data = rawCartesian;
+        if (bounds) {
+          (base as { rawBounds?: typeof bounds }).rawBounds = bounds;
+        }
+      }
+    }
+    if (!patchedInPlace) {
+      recomputeRuntimeBaseSeries();
+    }
 
     // If zoom is disabled or full-span, `renderSeries` is just the baseline.
     // (Zoom-visible resampling is handled by the unified flush when needed.)
@@ -2828,8 +3008,9 @@ export function createRenderCoordinator(
     if (isRingXYColumns(existing)) return existing;
     if (isOwnedMutableColumns(existing)) return existing;
     // Staging views are zero-copy over DataStore; promote to capacity-preserving
-    // ring columns when leaving thin path (tooltip on / non-fast-path append)
-    // so the next maxPoints append stays O(append) modular — not linear → re-ring.
+    // ring columns when leaving thin path (GPU fast path ineligible / non-append
+    // mutations that need owned Mutable/RingXY) so the next maxPoints append stays
+    // O(append) modular — not linear → re-ring. Thin path is not tooltip-gated.
     if (isStagingRingView(existing)) {
       const ring = stagingRingViewToRingXYColumns(existing);
       runtimeRawDataByIndex[seriesIndex] = ring;
@@ -2903,18 +3084,12 @@ export function createRenderCoordinator(
 
   function sliceRenderSeriesToVisibleRange(): void {
     const zoomRange = zoomState?.getRange() ?? null;
-    const baseXDomain = computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
+    const baseXDomain = resolveBaseXDomain('read');
     const visibleX = computeVisibleXDomain(baseXDomain, zoomRange);
 
     // Fast path: no zoom or full span - use baseline directly
-    const isFullSpan =
-      zoomRange == null ||
-      (Number.isFinite(zoomRange.start) &&
-        Number.isFinite(zoomRange.end) &&
-        zoomRange.start <= 0 &&
-        zoomRange.end >= 100);
-
-    if (isFullSpan) {
+    // (shared 0.5%-tolerance predicate — see zoomHelpers.isFullSpanZoom).
+    if (isFullSpanZoomRange(zoomRange)) {
       renderSeries = runtimeBaseSeries;
       // Recompute visible y-bounds from the full baseline series
       recomputeCachedVisibleYBoundsIfNeeded();
@@ -2971,7 +3146,7 @@ export function createRenderCoordinator(
 
   function recomputeRenderSeries(): void {
     const zoomRange = zoomState?.getRange() ?? null;
-    const baseXDomain = computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
+    const baseXDomain = resolveBaseXDomain('read');
     const visibleX = computeVisibleXDomain(baseXDomain, zoomRange);
 
     // Add buffer zone (ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±10% beyond visible range) for caching
@@ -3001,13 +3176,7 @@ export function createRenderCoordinator(
       }
 
       // Fast path: no zoom window / full span. Use baseline resolved `data` (already sampled by resolver).
-      const isFullSpan =
-        zoomRange == null ||
-        (Number.isFinite(zoomRange.start) &&
-          Number.isFinite(zoomRange.end) &&
-          zoomRange.start <= 0 &&
-          zoomRange.end >= 100);
-      if (isFullSpan) {
+      if (isFullSpanZoomRange(zoomRange)) {
         next[i] = s;
         continue;
       }
@@ -3098,7 +3267,7 @@ export function createRenderCoordinator(
     device,
     targetFormat,
     pipelineCache,
-    sampleCount: MAIN_SCENE_MSAA_SAMPLE_COUNT,
+    sampleCount: msaaSampleCount,
   });
 
   ensureRendererPoolsForSeries(rendererPool, currentOptions.series);
@@ -3173,6 +3342,9 @@ export function createRenderCoordinator(
     const needsBaselineResample = shouldRecomputeBaselineSampling(prevSeries, resolvedOptions.series);
 
     currentOptions = resolvedOptions;
+    // Invalidate DOM axis-label skip-cache: formatters, axis type, theme fonts,
+    // and other label-affecting options may have changed (functions not in sig).
+    axisLabelContentEpoch++;
 
     if (likelyDataChanged) {
       // Series data or structure changed — full reset of runtime data state.
@@ -3188,6 +3360,10 @@ export function createRenderCoordinator(
 
     // Always refresh: annotations, themes, tooltip config, etc. may have changed.
     cachedVisibleYBoundsByAxis.clear();
+    // Drop sticky auto-range so setOption (axes-only y min/max, full rewrite)
+    // does not keep a prior streaming headroom domain.
+    stickyAutoXDomain = null;
+    stickyAutoYDomainByAxis.clear();
     legend?.update(resolvedOptions.series, resolvedOptions.theme);
     if (needsBaselineResample) {
       // Sampling path may flip (e.g. line areaStyle on/off → GPU vs CPU). Retag
@@ -3609,9 +3785,15 @@ export function createRenderCoordinator(
     const zoomRange = zoomState?.getRange() ?? null;
 
     const updateP = updateTransition ? clamp01(updateProgress01) : 1;
-    const baseXDomain = updateTransition
+    const dataXDomain = updateTransition
       ? lerpDomain(updateTransition.from.xBaseDomain, updateTransition.to.xBaseDomain, updateP)
       : computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
+    // Sticky auto-range / autoScroll / mid-transition: shared with slice + resample
+    // via resolveBaseXDomain so zoom-percent windows match GPU scales.
+    const baseXDomain = resolveBaseXDomain('paint', {
+      dataXDomain,
+      updateTransitionActive: !!(updateTransition && updateP < 1),
+    });
     const visibleXDomain = computeVisibleXDomain(baseXDomain, zoomRange);
 
     const plotClipRect = computePlotClipRect(gridArea);
@@ -3631,13 +3813,29 @@ export function createRenderCoordinator(
         const fromY = updateTransition.from.yBaseDomains.get(axisId) ?? { min: 0, max: 1 };
         const toY = updateTransition.to.yBaseDomains.get(axisId) ?? { min: 0, max: 1 };
         dom = lerpDomain(fromY, toY, updateP);
+        stickyAutoYDomainByAxis.delete(axisId);
       } else {
-        dom = computeBaseYDomainForAxis(
+        const dataDom = computeBaseYDomainForAxis(
           currentOptions,
           axisId,
           runtimeRawBoundsByIndex,
           cachedVisibleYBoundsByAxis.get(axisId) ?? null
         );
+        const yExplicitMin = finiteOrUndefined(ax.min);
+        const yExplicitMax = finiteOrUndefined(ax.max);
+        // Any explicit end disables sticky so headroom cannot pad past a locked edge.
+        if (!shouldApplyStickyAutoDomain(yExplicitMin, yExplicitMax)) {
+          dom = dataDom;
+          stickyAutoYDomainByAxis.delete(axisId);
+        } else {
+          const next = applyStickyAutoDomain(
+            dataDom,
+            stickyAutoYDomainByAxis.get(axisId) ?? null,
+            DEFAULT_STICKY_DOMAIN_HEADROOM
+          );
+          stickyAutoYDomainByAxis.set(axisId, next);
+          dom = next;
+        }
       }
       currentYDomains.set(axisId, dom);
       currentYScales.set(
@@ -4222,10 +4420,31 @@ export function createRenderCoordinator(
       });
     }
 
-    textureManager.ensureTextures(gridArea.canvasWidth, gridArea.canvasHeight);
+    // Dense hairline (group 3 ≥25k) must draw sampleCount:1 on the resolved main
+    // color *before* axes. That forces the 2-pass path (main→resolve→hairline→
+    // overlay blit+UI). When no dense hairline is deferred, collapse to a single
+    // 4× MSAA main pass that resolves straight to the swapchain and draws
+    // above-series annotations + axes/crosshair/highlight in-pass.
+    // Multi-chart dashboards (no hairline) avoid a full-screen blit + second
+    // 4× MSAA target every frame — large FPS/memory win at high chart counts.
+    // Legal sample counts remain 1|4 only (never 2).
+    // Dense hairline only helps when main is 4× MSAA (avoids overdraw). With
+    // sampleCount 1 (`antialias: false`), lines already draw in the main pass.
+    const needsDenseHairlinePass =
+      msaaSampleCount > 1 && hasDenseHairlineLines(poolState, seriesPreparation);
+    // sampleCount 1 cannot use resolveTarget — draw straight to swapchain when
+    // there is no post-resolve hairline pass. sampleCount 4 can resolve main→swapchain.
+    const useDirectSwapchainResolve = !needsDenseHairlinePass;
+    const useSwapchainAsMainView = useDirectSwapchainResolve && msaaSampleCount === 1;
+
+    textureManager.ensureTextures(gridArea.canvasWidth, gridArea.canvasHeight, {
+      needResolveAndOverlay: !useDirectSwapchainResolve,
+      // Direct sampleCount-1 path needs no offscreen color target.
+      needMainColor: !useSwapchainAsMainView,
+    });
     const texState = textureManager.getState();
 
-    // Swapchain view for the resolved MSAA overlay pass and for the final (load) overlay pass.
+    // Swapchain view for direct main resolve or for the overlay MSAA resolve target.
     const swapchainView = gpuContext.canvasContext.getCurrentTexture().createView();
     const encoder = device.createCommandEncoder({
       label: 'renderCoordinator/commandEncoder',
@@ -4237,15 +4456,26 @@ export function createRenderCoordinator(
     encodeDecimationCompute(poolState, seriesForRender, encoder);
 
     const mainPass = encoder.beginRenderPass({
-      label: 'renderCoordinator/mainPass',
+      label: useDirectSwapchainResolve
+        ? 'renderCoordinator/mainPassDirect'
+        : 'renderCoordinator/mainPass',
       colorAttachments: [
-        {
-          view: texState.mainColorView!, // MSAA texture (main 4×)
-          resolveTarget: texState.mainResolveView!, // single-sample resolve target
-          clearValue,
-          loadOp: 'clear',
-          storeOp: 'discard', // MSAA content discarded after resolve
-        },
+        useSwapchainAsMainView
+          ? {
+              view: swapchainView,
+              clearValue,
+              loadOp: 'clear',
+              storeOp: 'store',
+            }
+          : {
+              view: texState.mainColorView!, // MSAA (4×) main color
+              resolveTarget: useDirectSwapchainResolve
+                ? swapchainView
+                : texState.mainResolveView!, // intermediate resolve for hairline/overlay path
+              clearValue,
+              loadOp: 'clear',
+              storeOp: 'discard', // MSAA content discarded after resolve
+            },
       ],
     });
 
@@ -4256,8 +4486,7 @@ export function createRenderCoordinator(
     // - bars next (fills)
     // - scatter next (points on top of fills, below strokes/overlays)
     // - line strokes next
-    // - highlight next (on top of strokes)
-    // - axes last (on top)
+    // - (direct path) above-series annotations + axes/highlight/crosshair last
     if (gridRenderer) {
       gridRenderer.render(mainPass);
     }
@@ -4284,12 +4513,41 @@ export function createRenderCoordinator(
       seriesPreparation
     );
 
+    if (useDirectSwapchainResolve) {
+      // Above-series annotations + UI into the same 4× MSAA main pass (sampleCount
+      // matches ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT === MAIN_SCENE_MSAA_SAMPLE_COUNT).
+      renderAboveSeriesAnnotations(
+        {
+          referenceLineRenderer,
+          referenceLineRendererMsaa,
+          annotationMarkerRenderer,
+          annotationMarkerRendererMsaa,
+        },
+        {
+          hasCartesianSeries,
+          gridArea,
+          overlayPass: mainPass,
+          plotScissor,
+          referenceLineAboveCount,
+          markerAboveCount,
+        }
+      );
+      highlightRenderer.render(mainPass);
+      if (hasCartesianSeries) {
+        xAxisRenderer.render(mainPass);
+        for (const r of yAxisRenderers.values()) {
+          r.render(mainPass);
+        }
+      }
+      crosshairRenderer.render(mainPass);
+    }
+
     mainPass.end();
 
-    // Dense hairline lines (group 3 ≥25k): draw after main resolve into a
-    // sampleCount:1 load-pass. Avoids 4× MSAA overdraw on high-N line-list
-    // segments while grid/other series keep main 4×. Legal sample counts only 1|4.
-    if (hasDenseHairlineLines(poolState, seriesPreparation)) {
+    if (!useDirectSwapchainResolve) {
+      // Dense hairline lines (group 3 ≥25k): draw after main resolve into a
+      // sampleCount:1 load-pass. Avoids 4× MSAA overdraw on high-N line-list
+      // segments while grid/other series keep main 4×. Legal sample counts only 1|4.
       const hairlinePass = encoder.beginRenderPass({
         label: 'renderCoordinator/denseHairlinePass',
         colorAttachments: [
@@ -4312,93 +4570,146 @@ export function createRenderCoordinator(
         seriesPreparation
       );
       hairlinePass.end();
-    }
 
-    // MSAA annotation overlay pass: blit resolved main → MSAA target, then above-series annotations.
-    const overlayPass = encoder.beginRenderPass({
-      label: 'renderCoordinator/annotationOverlayMsaaPass',
-      colorAttachments: [
+      // MSAA annotation overlay pass: blit resolved main → MSAA target, then above-series annotations.
+      const overlayPass = encoder.beginRenderPass({
+        label: 'renderCoordinator/annotationOverlayMsaaPass',
+        colorAttachments: [
+          {
+            view: texState.overlayMsaaView!,
+            resolveTarget: swapchainView,
+            clearValue,
+            loadOp: 'clear',
+            storeOp: 'discard',
+          },
+        ],
+      });
+
+      overlayPass.setPipeline(texState.overlayBlitPipeline);
+      overlayPass.setBindGroup(0, texState.overlayBlitBindGroup!);
+      overlayPass.draw(3);
+
+      // Render above-series annotations to the overlay pass
+      renderAboveSeriesAnnotations(
         {
-          view: texState.overlayMsaaView!,
-          resolveTarget: swapchainView,
-          clearValue,
-          loadOp: 'clear',
-          storeOp: 'discard',
+          referenceLineRenderer,
+          referenceLineRendererMsaa,
+          annotationMarkerRenderer,
+          annotationMarkerRendererMsaa,
         },
-      ],
-    });
+        {
+          hasCartesianSeries,
+          gridArea,
+          overlayPass,
+          plotScissor,
+          referenceLineAboveCount,
+          markerAboveCount,
+        }
+      );
 
-    overlayPass.setPipeline(texState.overlayBlitPipeline);
-    overlayPass.setBindGroup(0, texState.overlayBlitBindGroup!);
-    overlayPass.draw(3);
-
-    // Render above-series annotations to the overlay pass
-    renderAboveSeriesAnnotations(
-      {
-        referenceLineRenderer,
-        referenceLineRendererMsaa,
-        annotationMarkerRenderer,
-        annotationMarkerRendererMsaa,
-      },
-      {
-        hasCartesianSeries,
-        gridArea,
-        overlayPass,
-        plotScissor,
-        referenceLineAboveCount,
-        markerAboveCount,
+      // Axes / highlight / crosshair in the same 4× overlay pass (WG-P1-5).
+      // Drawn after above-series annotations so UI stays on top within the pass.
+      highlightRenderer.render(overlayPass);
+      if (hasCartesianSeries) {
+        xAxisRenderer.render(overlayPass);
+        for (const r of yAxisRenderers.values()) {
+          r.render(overlayPass);
+        }
       }
-    );
+      crosshairRenderer.render(overlayPass);
 
-    // Axes / highlight / crosshair in the same 4× overlay pass (WG-P1-5).
-    // Drawn after above-series annotations so UI stays on top within the pass.
-    highlightRenderer.render(overlayPass);
-    if (hasCartesianSeries) {
-      xAxisRenderer.render(overlayPass);
-      for (const r of yAxisRenderers.values()) {
-        r.render(overlayPass);
-      }
+      overlayPass.end();
     }
-    crosshairRenderer.render(overlayPass);
 
-    overlayPass.end();
-    device.queue.submit([encoder.finish()]);
+    // Multi-chart shared-device: coalesce N chart submits into one microtask batch.
+    enqueueDeviceSubmit(device, encoder.finish());
 
     hasRenderedOnce = true;
 
-    // Generate axis labels for DOM overlay
-    renderAxisLabels(axisLabelOverlay, overlayContainer, {
-      gpuContext,
-      currentOptions,
-      xScale,
-      xTickValues,
-      plotClipRect,
-      visibleXRangeMs,
-    });
-
-    // Generate Y-axis labels for each axis
-    const canvas2 = gpuContext.canvas as HTMLCanvasElement | null;
-    if (canvas2) {
-      const canvasCssW = getCanvasCssWidth(canvas2);
-      const canvasCssH = getCanvasCssHeight(canvas2);
-      const offX = canvas2.offsetLeft || 0;
-      const offY = canvas2.offsetTop || 0;
+    // DOM axis labels: clear+rebuild is expensive (multi-chart × N). Skip when
+    // tick values, scale affines, plot clip, theme, and axis names are unchanged.
+    // Scatter fixed-domain slots and axes-only mountain/column after ticks settle
+    // hit this path every frame.
+    //
+    // Tick values + y domains are folded into a compact FNV-1a hash so we avoid
+    // O(tickCount) string growth every frame while still invalidating when
+    // computed y domains change with matching affine+count (issue 11).
+    {
+      let tickHash = LABEL_SIG_FNV_OFFSET >>> 0;
+      tickHash = mixLabelSigUint(tickHash, xTickValues.length);
+      for (let ti = 0; ti < xTickValues.length; ti++) {
+        tickHash = mixLabelSigFloat(tickHash, xTickValues[ti]!);
+      }
       for (const yAxisConfig of currentOptions.yAxes) {
         const axisId = yAxisConfig.id!;
         const yScaleForAxis = currentYScales.get(axisId);
         if (!yScaleForAxis) continue;
-        renderYAxisLabels({
-          axisLabelOverlay,
-          overlayContainer,
-          yAxisConfig,
-          yScale: yScaleForAxis,
+        const yTickCount = (yAxisConfig as { tickCount?: number }).tickCount ?? 5;
+        const yDomain = currentYDomains.get(axisId);
+        tickHash = mixLabelSigUint(tickHash, yTickCount);
+        if (yDomain) {
+          tickHash = mixLabelSigFloat(tickHash, yDomain.min);
+          tickHash = mixLabelSigFloat(tickHash, yDomain.max);
+        }
+        // Explicit config ends (distinct from computed sticky/data domain).
+        tickHash = mixLabelSigFloat(tickHash, yAxisConfig.min ?? Number.NaN);
+        tickHash = mixLabelSigFloat(tickHash, yAxisConfig.max ?? Number.NaN);
+      }
+
+      let labelSig = `${plotClipRect.left},${plotClipRect.right},${plotClipRect.top},${plotClipRect.bottom}|`;
+      labelSig += `${currentOptions.theme.fontSize}|${currentOptions.theme.textColor}|`;
+      labelSig += `${currentOptions.theme.fontFamily ?? ''}|`;
+      // epoch: setOptions bump covers tickFormatter identity / theme font changes.
+      // xr / xt: time-axis formatting depends on visible range and axis type.
+      labelSig += `epoch:${axisLabelContentEpoch}|xr:${visibleXRangeMs}|xt:${currentOptions.xAxis.type ?? ''}|`;
+      labelSig += `x:${currentOptions.xAxis.name ?? ''}|`;
+      labelSig += `th:${tickHash >>> 0}|`;
+      labelSig += `xs:${xScale.scale(0)},${xScale.scale(1)}|`;
+      for (const yAxisConfig of currentOptions.yAxes) {
+        const axisId = yAxisConfig.id!;
+        const yScaleForAxis = currentYScales.get(axisId);
+        if (!yScaleForAxis) continue;
+        const yTickCount = (yAxisConfig as { tickCount?: number }).tickCount ?? 5;
+        labelSig += `y:${axisId}:${yAxisConfig.name ?? ''}:${yAxisConfig.position ?? 'left'}:`;
+        labelSig += `${yScaleForAxis.scale(0)},${yScaleForAxis.scale(1)}:${yTickCount}|`;
+        // Y axis type can affect tick formatting when present.
+        labelSig += `yt:${(yAxisConfig as { type?: string }).type ?? ''};`;
+      }
+      if (labelSig !== lastAxisLabelDomSignature) {
+        lastAxisLabelDomSignature = labelSig;
+        renderAxisLabels(axisLabelOverlay, overlayContainer, {
+          gpuContext,
+          currentOptions,
+          xScale,
+          xTickValues,
           plotClipRect,
-          canvasCssWidth: canvasCssW,
-          canvasCssHeight: canvasCssH,
-          offsetX: offX,
-          offsetY: offY,
-          theme: currentOptions.theme,
+          visibleXRangeMs,
         });
+
+        const canvas2 = gpuContext.canvas as HTMLCanvasElement | null;
+        if (canvas2) {
+          const canvasCssW = getCanvasCssWidth(canvas2);
+          const canvasCssH = getCanvasCssHeight(canvas2);
+          const offX = canvas2.offsetLeft || 0;
+          const offY = canvas2.offsetTop || 0;
+          for (const yAxisConfig of currentOptions.yAxes) {
+            const axisId = yAxisConfig.id!;
+            const yScaleForAxis = currentYScales.get(axisId);
+            if (!yScaleForAxis) continue;
+            renderYAxisLabels({
+              axisLabelOverlay,
+              overlayContainer,
+              yAxisConfig,
+              yScale: yScaleForAxis,
+              plotClipRect,
+              canvasCssWidth: canvasCssW,
+              canvasCssHeight: canvasCssH,
+              offsetX: offX,
+              offsetY: offY,
+              theme: currentOptions.theme,
+            });
+          }
+        }
       }
     }
 
@@ -4420,6 +4731,15 @@ export function createRenderCoordinator(
   const dispose: RenderCoordinator['dispose'] = () => {
     if (disposed) return;
     disposed = true;
+
+    // Drain batched GPU submits BEFORE destroying textures/buffers. Otherwise a
+    // microtask from the last renderFrame can submit CBs that reference freed RTs
+    // (multi-chart shared-device is especially sensitive).
+    try {
+      flushDeviceSubmit(device);
+    } catch {
+      // best-effort — device may already be lost
+    }
 
     // Story 5.16: stop intro animation and avoid further render requests.
     try {
@@ -4452,6 +4772,8 @@ export function createRenderCoordinator(
     lastSetSeriesCache.clear();
     filterGapsCache.clear();
     clearOverlayPrepareMemo(overlayPrepareMemo);
+    stickyAutoXDomain = null;
+    stickyAutoYDomainByAxis.clear();
 
     insideZoom?.dispose();
     insideZoom = null;

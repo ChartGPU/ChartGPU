@@ -19,6 +19,8 @@ Optimize ChartGPU for large datasets and real-time streaming.
 
 **GPU decimation (line, `lttb`/`min`/`max`, null-gap-free):** compute shaders replace CPU sampling. When points-per-bucket exceed **512**, each bucket evaluates a uniform **512-candidate** set (endpoints included) instead of every raw point — exact below that density; approximate extrema/shape at extreme N (e.g. 10M pts / 2500 buckets). This bounds GPU bandwidth for FIFO streaming without changing `sampling` mode.
 
+**Streaming density cadence (intentional visual lag):** under pure unbounded growth (N increases, same buffer / buckets / ring), recompute period scales with points-per-bucket: **period 2** at density ≥100, **4** at ≥200, **8** at ≥1000. Between recomputes the chart draws a **1–7-frame-old** LTTB sample — acceptable for extreme streaming N, not a sampling-mode change. Equal-N content rewrites always recompute immediately; modular FIFO rings never density-skip.
+
 **Config:** Per-series `sampling`, `samplingThreshold` in [options](api/options.md#series-configuration). See [`examples/sampling/`](../examples/sampling/).
 
 ## Zoom-aware resampling

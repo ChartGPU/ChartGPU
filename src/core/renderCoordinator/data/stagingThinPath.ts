@@ -1,10 +1,19 @@
 /**
  * Staging thin-path (zero-copy DataStore alias) eligibility helpers.
  *
- * Thin path = maxPoints + GPU append fast path. Coordinator runtime raw binds
- * to DataStore modular staging (no dual-pack into RingXYColumns). ChartGPU's
- * hit-test dual-store skip remains gated on `tooltip.show === false` separately
- * (lazy resync on hitTest / tooltip re-enable) — issue 1.5.
+ * Thin path = GPU append fast path (`fullRawLine` / `gpuDecimationRaw`). Coordinator
+ * runtime raw binds to DataStore **Float32** staging (no dual-pack into
+ * RingXYColumns or growing MutableXYColumns). Covers:
+ * - FIFO `maxPoints` modular ring (issue 1.5)
+ * - Unbounded pure growth (series compression / multi-chart line slots with
+ *   LTTB + `appendData` and no maxPoints — dual number[] growth was a primary
+ *   steady-state tax as N climbed past 1M)
+ *
+ * **Dual residency:** GPU/staging is F32 interleaved vec2. ChartGPU's hit-test
+ * columnar store (F64 when present) is independent — skipped when
+ * `tooltip.show === false` (lazy resync on hitTest / tooltip re-enable). Thin-path
+ * eligibility is **not** gated on tooltip; F32 domain precision is acceptable for
+ * streaming scales while tooltips may prefer dual-store F64 when enabled.
  *
  * @module stagingThinPath
  * @internal
@@ -13,19 +22,20 @@
 import { isStagingRingView } from '../../../data/cartesianData';
 
 /**
- * True when coordinator runtime raw should bind to DataStore modular staging
- * instead of dual-packing into RingXYColumns / owned columns.
+ * True when coordinator runtime raw should bind to DataStore staging instead of
+ * dual-packing into RingXYColumns / owned MutableXYColumns.
  *
- * `tooltipShow` is accepted for call-site compatibility / documentation; it no
- * longer gates the coordinator thin path (issue 1.5). Float32 staging precision
- * is acceptable for streaming domain; hit-test dual-store is independent.
+ * `hasMaxPointsInFlush` and `tooltipShow` remain in the signature for call-site
+ * compatibility; neither gates eligibility anymore. FIFO and unbounded growth
+ * both dual-pack-free when the GPU append fast path is live. Float32 staging
+ * precision is acceptable for streaming domain; hit-test dual-store is independent.
  */
 export function isStagingThinPathEligible(
   canUseFastPath: boolean,
-  hasMaxPointsInFlush: boolean,
+  _hasMaxPointsInFlush: boolean,
   _tooltipShow?: boolean | undefined
 ): boolean {
-  return canUseFastPath && hasMaxPointsInFlush;
+  return canUseFastPath;
 }
 
 /**

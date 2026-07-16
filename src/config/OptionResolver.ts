@@ -1612,6 +1612,8 @@ export function resolveOptions(
     palette: theme.colorPalette,
     series,
     legend: userOptions.legend,
+    // Default true (4× MSAA). Explicit false → sampleCount 1 for multi-chart fill/memory.
+    antialias: userOptions.antialias !== false,
   };
 }
 

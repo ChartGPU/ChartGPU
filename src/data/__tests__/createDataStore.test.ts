@@ -225,6 +225,34 @@ describe('createDataStore', () => {
       expect(stagingLarge).not.toBe(stagingSmall);
       expect(stagingLarge.length).toBeGreaterThan(smallLen);
     });
+
+    it('clamps setSeries capacity to maxStorageBufferBindingSize (FIFO 10M bind-group fix)', () => {
+      // Chrome/Metal often has maxBufferSize=256MiB but maxStorageBufferBindingSize=128MiB.
+      // Unclamped 10M 2× headroom → 256MiB buffer → Invalid BindGroup on storage bind.
+      const tight = createMockDevice();
+      (tight.limits as { maxBufferSize: number; maxStorageBufferBindingSize: number }).maxBufferSize =
+        256 * 1024 * 1024;
+      (tight.limits as { maxBufferSize: number; maxStorageBufferBindingSize: number }).maxStorageBufferBindingSize =
+        128 * 1024 * 1024;
+      const store = createDataStore(tight);
+
+      // 10M points = 80MiB required; 2× headroom wants 160MiB → pow2 256MiB without clamp.
+      const n = 10_000_000;
+      const x = new Float64Array(n);
+      const y = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        x[i] = i;
+        y[i] = i * 0.001;
+      }
+      store.setSeries(0, { x, y });
+
+      const buf = store.getSeriesBuffer(0) as unknown as { size: number };
+      const required = n * 8;
+      expect(buf.size).toBeGreaterThanOrEqual(required);
+      expect(buf.size).toBeLessThanOrEqual(128 * 1024 * 1024);
+      // Must not allocate the unclamped 256MiB headroom.
+      expect(buf.size).toBeLessThan(256 * 1024 * 1024);
+    });
   });
 
   describe('appendSeries with maxPoints (fixed-capacity ring FIFO)', () => {
@@ -1030,6 +1058,59 @@ describe('createDataStore', () => {
       store.dispose();
       expect(yChannel!.destroy).toHaveBeenCalled();
       expect(yParams!.destroy).toHaveBeenCalled();
+    });
+  });
+
+  describe('streaming headroom policy (setSeries modest vs append cap)', () => {
+    it('setSeries ≥10k reserves ~1M-point headroom (not multi-M hard floor)', () => {
+      const store = createDataStore(device);
+      const n = 10_000;
+      const x = new Float64Array(n);
+      const y = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        x[i] = i;
+        y[i] = i;
+      }
+      store.setSeries(0, { x, y });
+      const buf = store.getSeriesBuffer(0) as unknown as { size: number };
+      // 1M points * 8 bytes = 8_388_608 (pow2). Exact target is 80_000; headroom >> target.
+      expect(buf.size).toBeGreaterThanOrEqual(1_000_000 * 8);
+      // Must not jump to the old 4M-point hard floor on setSeries.
+      expect(buf.size).toBeLessThan(4_000_000 * 8);
+    });
+
+    it('unbounded append ≥100k grows with 2× pad but caps at 2M points', () => {
+      const store = createDataStore(device);
+      // Seed just under growth path; small capacity then force past 100k.
+      const seedN = 1000;
+      const x0 = new Float64Array(seedN);
+      const y0 = new Float64Array(seedN);
+      for (let i = 0; i < seedN; i++) {
+        x0[i] = i;
+        y0[i] = i;
+      }
+      store.setSeries(0, { x: x0, y: y0 });
+
+      // Grow to 100k+ in one append (unbounded).
+      const add = 120_000;
+      const x1 = new Float64Array(add);
+      const y1 = new Float64Array(add);
+      for (let i = 0; i < add; i++) {
+        x1[i] = seedN + i;
+        y1[i] = i;
+      }
+      store.appendSeries(0, { x: x1, y: y1 });
+      const nextCount = seedN + add;
+      expect(store.getSeriesPointCount(0)).toBe(nextCount);
+      const buf = store.getSeriesBuffer(0) as unknown as { size: number };
+      const targetBytes = nextCount * 8;
+      // Pure geometric nextPow2(target) for 121k pts = 1_048_576.
+      // 2× stream pad nextPow2(target*2) = 2_097_152 — must use the larger pad.
+      const pureGeometric = 2 ** Math.ceil(Math.log2(targetBytes));
+      const streamPad = 2 ** Math.ceil(Math.log2(targetBytes * 2));
+      expect(streamPad).toBeGreaterThan(pureGeometric);
+      expect(buf.size).toBe(streamPad);
+      expect(buf.size).toBeLessThanOrEqual(2_000_000 * 8);
     });
   });
 });

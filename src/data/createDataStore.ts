@@ -1,4 +1,8 @@
 import type { CartesianSeriesData } from '../config/types';
+import {
+  destroyBufferAfterSubmit,
+  flushDeviceSubmit,
+} from '../core/gpu/submitBatcher';
 import { getPointCount, packXYInto } from './cartesianData';
 import { maxPointsPeakRetention, normalizeMaxPoints, planMaxPointsWindow } from './maxPointsWindow';
 import { isYOnlyRewriteAgainstStaging, packYOnlyInto } from './seriesRewriteDetect';
@@ -176,6 +180,31 @@ function computeGrownCapacityBytes(currentCapacityBytes: number, requiredBytes: 
   return Math.max(currentCapacityBytes, grown);
 }
 
+/**
+ * Cap series buffer capacity for devices with tight storage-binding limits.
+ *
+ * Series buffers are bound as **read-only storage** (line + decimation). WebGPU
+ * rejects bind groups when `buffer.size > maxStorageBufferBindingSize` (often
+ * **128 MiB** on Chrome/Metal even when `maxBufferSize` is 256 MiB+).
+ * FIFO 10M×5 was allocating ~256 MiB/series via setSeries headroom →
+ * `Invalid BindGroup` / black chart on the last suite row.
+ */
+function clampSeriesCapacityBytes(
+  desiredBytes: number,
+  requiredBytes: number,
+  maxBufferSize: number,
+  maxStorageBufferBindingSize: number
+): number {
+  const required = Math.max(MIN_BUFFER_BYTES, roundUpToMultipleOf4(requiredBytes));
+  const hardCap = Math.min(maxBufferSize, maxStorageBufferBindingSize);
+  if (required > hardCap) {
+    // Caller should have thrown already; keep required so createBuffer fails loudly.
+    return required;
+  }
+  const desired = Math.max(MIN_BUFFER_BYTES, roundUpToMultipleOf4(desiredBytes));
+  return Math.min(hardCap, Math.max(required, desired));
+}
+
 function fnv1aUpdate(hash: number, words: Uint32Array): number {
   let h = hash >>> 0;
   for (let i = 0; i < words.length; i++) {
@@ -297,6 +326,15 @@ export function createDataStore(device: GPUDevice): DataStore {
    * browser drivers often pin/validate the parent buffer. Scratch stays ~append-sized.
    */
   let appendScratch: Float32Array = new Float32Array(0);
+
+  /**
+   * Destroy a series buffer without flushing multi-chart submit coalescing.
+   * If command buffers are pending on this device, destroy is deferred until
+   * after the next batched submit (see destroyBufferAfterSubmit).
+   */
+  const destroyBufferSafe = (buf: GPUBuffer): void => {
+    destroyBufferAfterSubmit(device, buf);
+  };
 
   const ensureAppendScratch = (pointCount: number): Float32Array => {
     const need = Math.max(0, pointCount | 0) * 2;
@@ -521,29 +559,36 @@ export function createDataStore(device: GPUDevice): DataStore {
 
     if (!buffer || targetBytes > capacityBytes) {
       const maxBufferSize = device.limits.maxBufferSize;
-      if (targetBytes > maxBufferSize) {
+      const maxStorageBinding = device.limits.maxStorageBufferBindingSize;
+      const hardCap = Math.min(maxBufferSize, maxStorageBinding);
+      if (targetBytes > hardCap) {
         throw new Error(
-          `DataStore.setSeries(${index}): required buffer size ${targetBytes} exceeds device.limits.maxBufferSize (${maxBufferSize}).`
+          `DataStore.setSeries(${index}): required buffer size ${targetBytes} exceeds ` +
+            `min(maxBufferSize=${maxBufferSize}, maxStorageBufferBindingSize=${maxStorageBinding}). ` +
+            `Series buffers are storage-bound for line/decimation.`
         );
       }
 
       if (buffer) {
-        try {
-          buffer.destroy();
-        } catch {
-          // Ignore destroy errors; we are replacing the buffer anyway.
-        }
+        destroyBufferSafe(buffer);
       }
 
       const grownCapacityBytes = computeGrownCapacityBytes(capacityBytes, targetBytes);
-      if (grownCapacityBytes > maxBufferSize) {
-        // If geometric growth would exceed the limit, fall back to the exact required size.
-        // (Still no shrink: if current capacity was already larger, we'd keep it above.)
-        // NOTE: targetBytes is already checked against maxBufferSize above.
-        capacityBytes = targetBytes;
-      } else {
-        capacityBytes = grownCapacityBytes;
+      // SciChart-parity streaming headroom: series compression / multi-chart line
+      // slots seed ~100k then append 10k/frame unbounded. Pre-reserve headroom for
+      // mid-size seeds, but **do not** 4× multi-M seeds (5M×5 FIFO was reserving
+      // ~256MB/series → multi-GB + Invalid BindGroup under memory pressure).
+      // High-rate pure growth headroom remains on appendSeries (2× / 2M cap).
+      // Always clamp to maxStorageBufferBindingSize (10M seed 2× → 256MB would
+      // fail bind-group validation on 128 MiB devices).
+      let desired = grownCapacityBytes;
+      if (pointCount >= 10_000) {
+        const mult = pointCount >= 1_000_000 ? 2 : 4;
+        const minReservePts = pointCount >= 1_000_000 ? pointCount : 1_000_000;
+        const headroom = nextPow2(Math.max(targetBytes * mult, minReservePts * 2 * 4));
+        desired = Math.max(desired, headroom);
       }
+      capacityBytes = clampSeriesCapacityBytes(desired, targetBytes, maxBufferSize, maxStorageBinding);
 
       buffer = device.createBuffer({
         size: capacityBytes,
@@ -663,6 +708,7 @@ export function createDataStore(device: GPUDevice): DataStore {
     let stagingBuffer = existing.stagingBuffer;
     let ringStart = existing.ringStart;
     const maxBufferSize = device.limits.maxBufferSize;
+    const maxStorageBinding = device.limits.maxStorageBufferBindingSize;
     const prevRingCap = existing.ringCapacityPoints;
     const prevRingStart = existing.ringStart;
     const wasRing = prevRingCap > 0;
@@ -688,9 +734,11 @@ export function createDataStore(device: GPUDevice): DataStore {
     // window after packing — GPU prefix copy is skipped there to avoid a wasted
     // copy that would be overwritten by writeFullPointsToGpu.
     if (needsGrowth) {
-      if (targetBytes > maxBufferSize) {
+      const hardCap = Math.min(maxBufferSize, maxStorageBinding);
+      if (targetBytes > hardCap) {
         throw new Error(
-          `DataStore.appendSeries(${index}): required buffer size ${targetBytes} exceeds device.limits.maxBufferSize (${maxBufferSize}).`
+          `DataStore.appendSeries(${index}): required buffer size ${targetBytes} exceeds ` +
+            `min(maxBufferSize=${maxBufferSize}, maxStorageBufferBindingSize=${maxStorageBinding}).`
         );
       }
       const oldBuffer = existing.buffer;
@@ -699,8 +747,23 @@ export function createDataStore(device: GPUDevice): DataStore {
       const oldCap = existing.ringCapacityPoints;
       const oldCount = existing.pointCount;
 
-      const grownCapacityBytes = computeGrownCapacityBytes(capacityBytes, targetBytes);
-      capacityBytes = grownCapacityBytes > maxBufferSize ? targetBytes : grownCapacityBytes;
+      let grownCapacityBytes = computeGrownCapacityBytes(capacityBytes, targetBytes);
+      // Unbounded high-rate append (series compression): grow ~2× required so
+      // display-refresh windows avoid a tight 1M→1.01M→… ladder, without a hard
+      // multi-M floor that multi-chart slots would multiply into multi-GB.
+      // Cap stream headroom at 2M points so N concurrent line slots stay safe.
+      if (!isRing && nextPointCount >= 100_000) {
+        const MAX_STREAM_HEADROOM_POINTS = 2_000_000;
+        const preferred = nextPow2(targetBytes * 2);
+        const capped = Math.min(preferred, MAX_STREAM_HEADROOM_POINTS * 2 * 4);
+        grownCapacityBytes = Math.max(grownCapacityBytes, Math.max(targetBytes, capped));
+      }
+      capacityBytes = clampSeriesCapacityBytes(
+        grownCapacityBytes,
+        targetBytes,
+        maxBufferSize,
+        maxStorageBinding
+      );
       buffer = device.createBuffer({
         size: capacityBytes,
         usage: seriesBufferUsage(),
@@ -717,11 +780,7 @@ export function createDataStore(device: GPUDevice): DataStore {
       if (pureGrowthAppend && oldCount > 0) {
         copyRetainedPointsToNewBuffer(device, oldBuffer, buffer, oldStart, oldCap, oldCount);
       }
-      try {
-        oldBuffer.destroy();
-      } catch {
-        // Ignore destroy errors; we are replacing the buffer anyway.
-      }
+      destroyBufferSafe(oldBuffer);
       ringStart = 0;
 
       if (pureGrowthAppend) {
@@ -931,6 +990,11 @@ export function createDataStore(device: GPUDevice): DataStore {
     if (disposed) return;
     disposed = true;
 
+    try {
+      flushDeviceSubmit(device);
+    } catch {
+      // best-effort
+    }
     for (const entry of series.values()) {
       try {
         entry.buffer.destroy();

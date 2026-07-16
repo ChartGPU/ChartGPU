@@ -36,7 +36,7 @@ flowchart TB
       ChartCreate --> InstanceAPI["ChartGPUInstance APIs"]
       InstanceAPI --> RequestRender["requestAnimationFrame - coalesced (auto mode)"]
       RequestRender --> Coordinator
-      InstanceAPI --> RenderFrame["renderFrame() - synchronous (external mode)"]
+      InstanceAPI --> RenderFrame["renderFrame() - encode sync; submit microtask-batched (external mode)"]
       RenderFrame --> Coordinator
 
       InstanceAPI --> SetOption["setOption(...)"]

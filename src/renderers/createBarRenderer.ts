@@ -199,6 +199,16 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
   const sampleCount = Number.isFinite(sampleCountRaw) ? Math.max(1, Math.floor(sampleCountRaw)) : 1;
   const pipelineCache = options?.pipelineCache;
 
+  // WebGPU default maxBufferSize is 256 MiB. Bar instances are 32 B each; nextPow2
+  // growth of a 10M-point column series would request 512 MiB → GPUValidationError
+  // on Chrome/Metal (SciChart suite group 5 last row). Cap allocation + pack density.
+  const maxBufferSizeRaw = device.limits?.maxBufferSize;
+  const maxBufferSize =
+    typeof maxBufferSizeRaw === 'number' && Number.isFinite(maxBufferSizeRaw) && maxBufferSizeRaw > 0
+      ? maxBufferSizeRaw
+      : 256 * 1024 * 1024;
+  const maxInstancesByBuffer = Math.max(1, Math.floor(maxBufferSize / INSTANCE_STRIDE_BYTES));
+
   const bindGroupLayout = device.createBindGroupLayout({
     entries: [
       {
@@ -300,25 +310,67 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
     lastBy = by;
   };
 
+  /**
+   * Minimum positive adjacent X gap across series (category width).
+   *
+   * At multi-million points a full collect+sort is O(N log N) and allocates a
+   * huge scratch array — deadly for the SciChart suite 5M/10M column rows.
+   * Prefer O(N) consecutive deltas (correct for ascending/time-series data);
+   * only fall back to a bounded sort sample when a series is non-monotonic.
+   */
   const computeBarCategoryStep = (seriesConfigs: ReadonlyArray<ResolvedBarSeriesConfig>): number => {
-    categoryXScratch.length = 0;
+    let minStep = Number.POSITIVE_INFINITY;
+    let finiteCount = 0;
+    let needsFullSortSample = false;
+
     for (let s = 0; s < seriesConfigs.length; s++) {
       const data = seriesConfigs[s].data;
       const count = getPointCount(data);
+      let prev = Number.NaN;
       for (let i = 0; i < count; i++) {
         const x = getX(data, i);
-        if (Number.isFinite(x)) categoryXScratch.push(x);
+        if (!Number.isFinite(x)) continue;
+        finiteCount++;
+        if (Number.isFinite(prev)) {
+          const d = x - prev;
+          if (d > 0 && d < minStep) minStep = d;
+          else if (d < 0) needsFullSortSample = true;
+        }
+        prev = x;
       }
     }
 
-    if (categoryXScratch.length < 2) return 1;
-    categoryXScratch.sort((a, b) => a - b);
+    if (finiteCount < 2) return 1;
 
-    let minStep = Number.POSITIVE_INFINITY;
+    if (!needsFullSortSample) {
+      return Number.isFinite(minStep) && minStep > 0 ? minStep : 1;
+    }
+
+    // Non-monotonic series: estimate min gap from a bounded sorted sample.
+    categoryXScratch.length = 0;
+    const sampleCap = 50_000;
+    let seen = 0;
+    for (let s = 0; s < seriesConfigs.length; s++) {
+      const data = seriesConfigs[s].data;
+      const count = getPointCount(data);
+      const stride = count > sampleCap ? Math.ceil(count / sampleCap) : 1;
+      for (let i = 0; i < count && categoryXScratch.length < sampleCap; i += stride) {
+        const x = getX(data, i);
+        if (Number.isFinite(x)) {
+          categoryXScratch.push(x);
+          seen++;
+        }
+      }
+    }
+    if (categoryXScratch.length < 2) {
+      return Number.isFinite(minStep) && minStep > 0 ? minStep : 1;
+    }
+    categoryXScratch.sort((a, b) => a - b);
     for (let i = 1; i < categoryXScratch.length; i++) {
-      const d = categoryXScratch[i] - categoryXScratch[i - 1];
+      const d = categoryXScratch[i]! - categoryXScratch[i - 1]!;
       if (d > 0 && d < minStep) minStep = d;
     }
+    void seen;
     return Number.isFinite(minStep) && minStep > 0 ? minStep : 1;
   };
 
@@ -607,14 +659,43 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
       fallbackCategoryCount
     );
 
-    let maxBars = 0;
+    // Density stride: when N×32B would exceed maxBufferSize (10M columns → 320MB
+    // raw, 512MB after nextPow2), keep ≤ maxInstancesByBuffer and widen bars so
+    // the silhouette still fills the plot (SciChart suite group 5 last row).
+    //
+    // Per-series fair budgets: a shared global packCap + sequential fill can fully
+    // drop trailing series (sum-of-counts stride + early break). Give each series
+    // at least floor(maxInstances / seriesCount) slots and stride independently.
+    // Stacked series sharing a stackId still use one x-stride (max count in stack)
+    // so segment indices stay aligned.
+    const seriesCountForPack = Math.max(1, seriesConfigs.length);
+    const perSeriesCap = Math.max(1, Math.floor(maxInstancesByBuffer / seriesCountForPack));
+    const packCap = Math.min(maxInstancesByBuffer, seriesCountForPack * perSeriesCap);
+
+    const seriesPointCounts: number[] = new Array(seriesConfigs.length);
+    const stackMaxCount = new Map<string, number>();
     for (let s = 0; s < seriesConfigs.length; s++) {
-      maxBars += Math.max(0, getPointCount(seriesConfigs[s].data));
+      const count = Math.max(0, getPointCount(seriesConfigs[s].data));
+      seriesPointCounts[s] = count;
+      const stackId = normalizeStackId(seriesConfigs[s].stack);
+      if (stackId !== '') {
+        const prev = stackMaxCount.get(stackId) ?? 0;
+        if (count > prev) stackMaxCount.set(stackId, count);
+      }
     }
 
-    ensureCpuInstanceCapacityFloats(maxBars * INSTANCE_STRIDE_FLOATS);
+    const densityStrides: number[] = new Array(seriesConfigs.length);
+    for (let s = 0; s < seriesConfigs.length; s++) {
+      const stackId = normalizeStackId(seriesConfigs[s].stack);
+      const countForStride =
+        stackId !== '' ? (stackMaxCount.get(stackId) ?? seriesPointCounts[s]!) : seriesPointCounts[s]!;
+      densityStrides[s] = countForStride > perSeriesCap ? Math.ceil(countForStride / perSeriesCap) : 1;
+    }
+
+    ensureCpuInstanceCapacityFloats(packCap * INSTANCE_STRIDE_FLOATS);
     const f32 = cpuInstanceStagingF32;
     let outFloats = 0;
+    const maxOutFloats = packCap * INSTANCE_STRIDE_FLOATS;
 
     // Per-stack, per-x running sums in domain units (supports negative stacking too).
     const stackSumsByStackId = new Map<string, Map<number, { posSum: number; negSum: number }>>();
@@ -628,7 +709,7 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
       const series = seriesConfigs[seriesIndex];
       const data = series.data;
       dataRefs[seriesIndex] = data;
-      dataLengths[seriesIndex] = getPointCount(data);
+      dataLengths[seriesIndex] = seriesPointCounts[seriesIndex]!;
       colors[seriesIndex] = series.color;
       const stackId = normalizeStackId(series.stack);
       stacks[seriesIndex] = stackId;
@@ -636,8 +717,21 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
       const [r, g, b, a] = parseSeriesColorToRgba01(series.color);
       const clusterIndex = clusterIndexBySeries[seriesIndex] ?? 0;
 
-      const count = getPointCount(data);
-      for (let i = 0; i < count; i++) {
+      const count = seriesPointCounts[seriesIndex]!;
+      const densityStride = densityStrides[seriesIndex]!;
+      // Widen this series' bars by its density stride (stacked peers share stride).
+      const packBarWidthDomain = barWidthDomain * densityStride;
+      const packGapDomain = gapDomain * densityStride;
+      const packClusterWidthDomain = clusterWidthDomain * densityStride;
+      // Independent per-series budget — do not let earlier series consume the global pack.
+      const seriesMaxOutFloats = Math.min(
+        maxOutFloats,
+        outFloats + perSeriesCap * INSTANCE_STRIDE_FLOATS
+      );
+
+      for (let i = 0; i < count; i += densityStride) {
+        if (outFloats >= seriesMaxOutFloats) break;
+
         const x = getX(data, i);
         const y = getY(data, i);
         if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
@@ -646,7 +740,8 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
         // Under reversed x (xDir < 0), mirror slot index so series 0 stays left
         // in clip without shifting the single-series center (idx stays 0).
         const effectiveClusterIndex = xDir < 0 ? clusterCount - 1 - clusterIndex : clusterIndex;
-        const left = x - clusterWidthDomain / 2 + effectiveClusterIndex * (barWidthDomain + gapDomain);
+        const left =
+          x - packClusterWidthDomain / 2 + effectiveClusterIndex * (packBarWidthDomain + packGapDomain);
 
         let baseDomain = baselineDomain;
         let heightDomain = 0;
@@ -688,7 +783,7 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
 
         f32[outFloats + 0] = left;
         f32[outFloats + 1] = baseDomain;
-        f32[outFloats + 2] = barWidthDomain;
+        f32[outFloats + 2] = packBarWidthDomain;
         f32[outFloats + 3] = heightDomain;
         f32[outFloats + 4] = r;
         f32[outFloats + 5] = g;
@@ -700,10 +795,27 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
 
     // If we skipped invalid points, resize the effective instance count.
     instanceCount = outFloats / INSTANCE_STRIDE_FLOATS;
+    // Hard cap: never write more instances than fit in maxBufferSize.
+    if (instanceCount > maxInstancesByBuffer) {
+      instanceCount = maxInstancesByBuffer;
+    }
     const requiredBytes = Math.max(4, instanceCount * INSTANCE_STRIDE_BYTES);
 
     if (!instanceBuffer || instanceBuffer.size < requiredBytes) {
-      const grownBytes = Math.max(Math.max(4, nextPow2(requiredBytes)), instanceBuffer ? instanceBuffer.size : 0);
+      // Prefer geometric growth, but never exceed maxBufferSize (createBuffer
+      // validation). When nextPow2 would overshoot, fall back to exact required.
+      let grownBytes = Math.max(Math.max(4, nextPow2(requiredBytes)), instanceBuffer ? instanceBuffer.size : 0);
+      if (grownBytes > maxBufferSize) {
+        grownBytes = Math.min(maxBufferSize, Math.max(4, requiredBytes));
+      }
+      // Align size to 4 bytes (WebGPU writeBuffer / buffer size rule).
+      grownBytes = Math.max(4, Math.ceil(grownBytes / 4) * 4);
+      if (grownBytes > maxBufferSize) {
+        grownBytes = Math.floor(maxBufferSize / 4) * 4;
+      }
+      if (instanceCount * INSTANCE_STRIDE_BYTES > grownBytes) {
+        instanceCount = Math.floor(grownBytes / INSTANCE_STRIDE_BYTES);
+      }
       if (instanceBuffer) {
         try {
           instanceBuffer.destroy();

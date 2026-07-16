@@ -6,7 +6,9 @@ Chart configuration. Full types: [`types.ts`](../../src/config/types.ts).
 
 - **`theme`**: `'dark' | 'light'` or [`ThemeConfig`](themes.md#themeconfig)
 - **`DataPoint`**: tuple `[x, y, size?]` or object `{ x, y, size? }`
-- **`autoScroll?: boolean`**: when `true`, `appendData()` keeps visible x-range anchored to newest data (only when data zoom enabled and `xAxis.min`/`max` unset). Demo: [`live-streaming/`](../../examples/live-streaming/)
+- **`autoScroll?: boolean`**: when `true`, `appendData()` keeps visible x-range anchored to newest data (only when data zoom enabled and `xAxis.min`/`max` unset). Demo: [`live-streaming/`](../../examples/live-streaming/). **Disables sticky X headroom** so FIFO/`maxPoints` sliding windows track the retained data min/max (sticky would freeze historical xMin and compress the waveform into a thin strip on the right).
+- **`antialias?: boolean`** (default `true`): main + overlay GPU passes use **4× MSAA** when `true`, or `sampleCount: 1` when `false` (lower fill-rate / memory for multi-chart dashboards). WebGPU portable multisample counts are only **1 or 4**. **Create-only:** takes effect at `ChartGPU.create` / coordinator construction; changing via `setOption` does **not** rebuild MSAA pipelines or the texture manager. Dispose and recreate the chart to change.
+- **`devicePixelRatio?: number`**: canvas backing-store pixel ratio (defaults to `window.devicePixelRatio`). Set to `1` on multi-chart dashboards to cap GPU fill rate on high-DPI displays. **Create-only:** applied at `ChartGPU.create` (GPU canvas configure + text-overlay DPR); changing via `setOption` does **not** reconfigure the backing store. Dispose and recreate to change.
 
 ## Annotations
 
@@ -25,7 +27,7 @@ Chart configuration. Full types: [`types.ts`](../../src/config/types.ts).
 - **Dense scatter draw (const radius)**: When points-per-plot-pixel is high, drawn marker radius may compact toward ~1 device pixel (draw-only; does not change `sampling` or uploaded point count). Low-density charts keep full `symbolSize`.
 - **Dense line draw (hairline)**: When a line series has **≥ ~25 000 displayed points** (raw or `pointCountOverride` after GPU decimation), ChartGPU switches **draw only** to a native **1 device-px `line-list` hairline** (`denseHairline`). Those segments are drawn in a **post-resolve sampleCount:1** pass (not under main 4× MSAA overdraw). Series `lineStyle.width` config is unchanged; low-N lines (e.g. ≤10k, or FIFO rows after LTTB/GPU decimation keeps N low) keep full AA quads + configured width. Applies to **all** high-N lines, not only unsorted full rewrites.
 - **Multi-series dense hairline (total-segment budget)**: When the chart has **≥ 2 visible line series** and the approximate total segment count `visibleLineSeriesCount × max(0, pointCount − 1)` is **≥ ~500 000** (equal-N approximation using each series' own point count), those lines also enter `denseHairline` even if each series is below the 25k per-series threshold. Example: **1000 series × 1000 points** hairlines; **500 × 500** stays standard AA. **Visual tradeoff:** multi-series stress charts draw 1 device-px strokes instead of thick width-2 AA quads. Does not change sampling or uploaded data.
-- **Main scene MSAA (library-wide)**: Main series pass and overlay UI both use **4× MSAA** (`MAIN_SCENE_MSAA_SAMPLE_COUNT` / `ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT`) by default. Dense hairline lines additionally use a **legal sampleCount:1** pass after main resolve (see Internals group-3 contract). WebGPU only allows portable multisample counts of **1 or 4** — `sampleCount: 2` is invalid and will fail validation (`Invalid CommandBuffer`).
+- **Main scene MSAA (library-wide)**: Main series pass and overlay UI both use **4× MSAA** (`MAIN_SCENE_MSAA_SAMPLE_COUNT` / `ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT`) by default, or **1×** when `antialias: false` is passed at create. Dense hairline lines additionally use a **legal sampleCount:1** pass after main resolve (see Internals group-3 contract). WebGPU only allows portable multisample counts of **1 or 4** — `sampleCount: 2` is invalid and will fail validation (`Invalid CommandBuffer`). `antialias` / `devicePixelRatio` are **create-only** (see top of this page).
 
 ### CandlestickSeriesConfig
 
@@ -114,9 +116,15 @@ Notes (density mode):
 - **Explicit domains (override auto-bounds)**:
   - **`AxisConfig.min?: number` / `AxisConfig.max?: number`**: when set, ChartGPU uses these explicit axis bounds and does **not** auto-derive bounds from data for that axis.
   - **Precedence**: explicit `min`/`max` always override any auto-bounds behavior.
+  - **One-sided explicit**: if only `min` or only `max` is set, the other end is still data-derived; sticky auto-domain headroom (below) is **disabled** whenever either end is explicit so growBy padding never extends past a locked edge.
+- **Sticky auto-domain headroom (streaming / multi-chart)**:
+  - When **both** ends of an axis are auto (no explicit `min`/`max`), ChartGPU uses a sticky domain: **first establish matches the data extrema exactly** (static column/mountain charts fill the plot), then ~**10% growBy headroom** is added only when data **breaches** that domain (streaming compression amortization). If the data **min slides upward** (FIFO/`maxPoints` drop-oldest), sticky **follows** the new min instead of freezing the historical origin. Sticky X is off entirely when `autoScroll: true`.
+  - Purpose: high-rate `appendData` (series compression, multi-chart line slots) would otherwise force grid/axis prepare + label rebuild every frame as the domain creeps by a few points.
+  - Cleared on `setOption` (including axes-only rewrites) and when any end becomes explicit.
+  - Does **not** change sampling contracts (`lttb` stays `lttb`).
 - **Y-axis auto-bounds during x-zoom (new default)**:
   - **`yAxis.autoBounds?: 'visible' | 'global'`** controls how ChartGPU derives the **y-axis** domain when `yAxis.min`/`yAxis.max` are not set.
-    - **`'visible'` (default)**: when x-axis data zoom is active, ChartGPU derives y-bounds from the **visible** (zoomed) x-range.
+    - **`'visible'` (default)**: when x-axis data zoom is active, ChartGPU derives y-bounds from the **visible** (zoomed) x-range (using the same sticky X domain the paint path uses when sticky is active).
     - **`'global'`**: derive y-bounds from the **full dataset** (pre-zoom behavior), even while x-zoomed.
   - This option is intended for `yAxis` (it has no effect on `xAxis`).
 - **`AxisConfig.tickFormatter?: (value: number) => string | null`**: custom formatter for axis tick labels. When provided, replaces the built-in tick label formatting for that axis.

@@ -25,6 +25,15 @@ export type LineDrawPolicyInput = Readonly<{
    * Used with pointCount to estimate total segment fill for multi-series cliffs.
    */
   readonly lineSeriesCount?: number;
+  /**
+   * Main-pass multisample count (1 or 4). Dense hairline exists to avoid **4×
+   * MSAA** overdraw on high-N line-list. When main is already `sampleCount: 1`
+   * (`antialias: false` multi-chart), keep standard AA quads:
+   * - Native `line-list` looks dashed/faint without MSAA (Metal diamond coverage)
+   * - Deferred hairline pass is only opened when `msaaSampleCount > 1`, so
+   *   selecting hairline at sampleCount 1 would draw nothing (blank stroke)
+   */
+  readonly msaaSampleCount?: number;
 }>;
 
 export type LineDrawPolicyResult = Readonly<{
@@ -69,6 +78,7 @@ export const DENSE_LINE_MIN_WIDTH_CSS = 1;
  *
  * - `standard`: screen-space AA quads (width honored)
  * - `denseHairline`: WebGPU `line-list` (1 device px), drawn in a post-resolve sampleCount:1 pass
+ *   (only when main MSAA is 4× — see {@link LineDrawPolicyInput.msaaSampleCount})
  */
 export function resolveLineDrawPolicy(input: LineDrawPolicyInput): LineDrawPolicyResult {
   const w =
@@ -79,6 +89,15 @@ export function resolveLineDrawPolicy(input: LineDrawPolicyInput): LineDrawPolic
     Number.isFinite(input.lineSeriesCount) && (input.lineSeriesCount as number) > 0
       ? Math.floor(input.lineSeriesCount as number)
       : 1;
+  // Default allow hairline when msaaSampleCount omitted (unit tests / 4× default path).
+  const msaa =
+    Number.isFinite(input.msaaSampleCount) && (input.msaaSampleCount as number) > 0
+      ? Math.floor(input.msaaSampleCount as number)
+      : 4;
+  // sampleCount 1: never hairline (visual + undrawn-pass bug with multi-chart antialias:false).
+  if (msaa <= 1) {
+    return { policy: 'standard', effectiveLineWidthCssPx: w };
+  }
 
   const perSeriesHairline = pointCount >= DENSE_HAIRLINE_POINT_THRESHOLD;
   const segmentsPerSeries = Math.max(0, pointCount - 1);

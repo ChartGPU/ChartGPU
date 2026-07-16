@@ -261,6 +261,19 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
   let lastRingStart = 0;
   let lastRingCapacity = 0;
   let lastOutputPointCount = 0;
+  /**
+   * High-density streaming cadence: when visible raw points per bucket are
+   * very large (series compression / multi-chart LTTB as N grows), re-running
+   * full LTTB every append frame is mostly redundant. Under pure unbounded
+   * streaming growth only, recompute period is density-scaled: 2 (≥100 pts/bucket),
+   * 4 (≥200), 8 (≥1000) — intentional max visual lag of 1–7 frames of a prior
+   * LTTB sample. Equal-N content rewrites always recompute; modular FIFO rings
+   * never density-skip. Sampling contract unchanged (still LTTB of the window).
+   */
+  let highDensitySkipStreak = 0;
+
+  /** Set when output/raw bind-group resources change; forces a compute re-dispatch. */
+  let bindGroupResourcesChanged = false;
 
   const ensureBuffers = (capacityPoints: number): void => {
     const required = Math.max(MIN_OUTPUT_CAPACITY, capacityPoints);
@@ -288,6 +301,7 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
 
     outputBuffer = device.createBuffer({
       label: 'decimationCompute/outputBuffer',
+      // STORAGE for compute + line storage-read; COPY_SRC for tests/debug readback.
       size: byteSize,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     });
@@ -297,8 +311,10 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     });
 
-    // Buffer identity changed → rebuild bind group on the next encode.
+    // Buffer identity changed → rebuild bind group (old BG references destroyed outputs).
     bindGroup = null;
+    boundRawBuffer = null;
+    bindGroupResourcesChanged = true;
   };
 
   const ensureBindGroup = (rawBuffer: GPUBuffer): void => {
@@ -316,6 +332,7 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
       ],
     });
     boundRawBuffer = rawBuffer;
+    bindGroupResourcesChanged = true;
   };
 
   const assertNotDisposed = (): void => {
@@ -348,8 +365,10 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
     const ringCap = Math.max(0, (ringCapacityIn ?? 0) | 0);
     const ringStart = ringCap > 0 ? Math.max(0, (ringStartIn ?? 0) | 0) % ringCap : 0;
 
+    bindGroupResourcesChanged = false;
     ensureBuffers(buckets);
     ensureBindGroup(rawBuffer);
+    const resourcesChanged = bindGroupResourcesChanged;
 
     // Detect signature changes to decide whether to re-dispatch the compute.
     // contentVersion covers same-buffer same-N payload rewrites (WG-P0-2).
@@ -363,39 +382,89 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
       lastTargetBuckets !== buckets ||
       lastContentVersion !== version ||
       lastRingStart !== ringStart ||
-      lastRingCapacity !== ringCap;
+      lastRingCapacity !== ringCap ||
+      resourcesChanged;
     if (signatureChanged) {
-      dirty = true;
-      lastAlgorithm = algorithm;
-      lastRawBuffer = rawBuffer;
-      lastRawPointCount = rawCount;
-      lastVisibleStart = vs;
-      lastVisibleEnd = ve;
-      lastTargetBuckets = buckets;
-      lastContentVersion = version;
-      lastRingStart = ringStart;
-      lastRingCapacity = ringCap;
-    }
+      const visibleSpan = Math.max(0, ve - vs);
+      const density = visibleSpan / Math.max(1, buckets);
+      // Only amortize pure streaming appends (N increased, same buffer identity /
+      // buckets / algorithm / ring / visible-start). Equal-N content rewrites
+      // (setSeries payload version), buffer growth, zoom, ring wrap, and algorithm
+      // flips always recompute immediately.
+      // Modular FIFO (ringCap > 0): never density-skip — ringStart moves every
+      // wrap frame and skipped encodes can leave stale/invalid bind-group state
+      // after output growth (5M×5 suite cliff).
+      const onlyStreamingAppend =
+        hasPrepared &&
+        lastOutputPointCount > 0 &&
+        rawCount > lastRawPointCount &&
+        lastAlgorithm === algorithm &&
+        lastRawBuffer === rawBuffer &&
+        lastTargetBuckets === buckets &&
+        lastVisibleStart === vs &&
+        lastRingStart === ringStart &&
+        lastRingCapacity === ringCap &&
+        ringCap === 0 &&
+        !resourcesChanged;
+      // Density-scaled cadence: amortize LTTB under extreme streaming N while
+      // still refreshing the sample regularly (period 2 / 4 / 8 → max 1–7 frame lag).
+      // See docs/performance.md “Streaming density cadence”.
+      let period = 1;
+      if (onlyStreamingAppend) {
+        if (density >= 1000) period = 8;
+        else if (density >= 200) period = 4;
+        else if (density >= 100) period = 2;
+      }
+      let acceptDirty = true;
+      if (period > 1) {
+        highDensitySkipStreak++;
+        // Accept when streak is a multiple of period (incl. first after reset
+        // would need streak==period; after accept we don't reset streak so
+        // streak grows: accept at period, 2*period, ...).
+        if (highDensitySkipStreak % period !== 0) {
+          acceptDirty = false;
+        }
+      } else {
+        highDensitySkipStreak = 0;
+      }
 
-    // Pack uniforms. Layout must match the `DecimationUniforms` struct in WGSL.
-    uniformScratchU32[0] = rawCount >>> 0;
-    uniformScratchU32[1] = vs >>> 0;
-    uniformScratchU32[2] = ve >>> 0;
-    uniformScratchU32[3] = buckets >>> 0;
-    uniformScratchU32[4] = algorithm === 'max' ? MODE_MAX : algorithm === 'min' ? MODE_MIN : 0;
-    uniformScratchU32[5] = ringStart >>> 0;
-    uniformScratchU32[6] = ringCap >>> 0;
-    uniformScratchU32[7] = 0;
+      // Bind-group / output rebuild must always re-encode (new storage is empty).
+      if (resourcesChanged) {
+        acceptDirty = true;
+        highDensitySkipStreak = 0;
+      }
 
-    // Issue 2.5: skip uniform write when signature unchanged this prepare
-    // (dirty may still be true if encodeCompute has not run yet).
-    if (signatureChanged) {
-      writeUniformBuffer(device, uniformBuffer, uniformScratch);
+      if (acceptDirty) {
+        dirty = true;
+        lastAlgorithm = algorithm;
+        lastRawBuffer = rawBuffer;
+        lastRawPointCount = rawCount;
+        lastVisibleStart = vs;
+        lastVisibleEnd = ve;
+        lastTargetBuckets = buckets;
+        lastContentVersion = version;
+        lastRingStart = ringStart;
+        lastRingCapacity = ringCap;
+
+        // Pack uniforms. Layout must match the `DecimationUniforms` struct in WGSL.
+        uniformScratchU32[0] = rawCount >>> 0;
+        uniformScratchU32[1] = vs >>> 0;
+        uniformScratchU32[2] = ve >>> 0;
+        uniformScratchU32[3] = buckets >>> 0;
+        uniformScratchU32[4] = algorithm === 'max' ? MODE_MAX : algorithm === 'min' ? MODE_MIN : 0;
+        uniformScratchU32[5] = ringStart >>> 0;
+        uniformScratchU32[6] = ringCap >>> 0;
+        uniformScratchU32[7] = 0;
+        writeUniformBuffer(device, uniformBuffer, uniformScratch);
+        lastOutputPointCount = buckets;
+      }
+      // When skipping: leave last* signature fields on the previous accepted
+      // prepare so the next frame still sees signatureChanged (content moved on)
+      // and the even streak accepts. lastOutputPointCount stays prior buckets.
     }
 
     hasPrepared = true;
-    lastOutputPointCount = buckets;
-    return buckets;
+    return lastOutputPointCount > 0 ? lastOutputPointCount : buckets;
   };
 
   const needsEncode: DecimationCompute['needsEncode'] = () => {

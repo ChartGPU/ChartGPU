@@ -396,6 +396,153 @@ describe('createDecimationCompute', () => {
       expect(enc.__passes).toHaveLength(0);
     });
 
+    it('high-density streaming append uses density-scaled recompute cadence', () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 8_000_000 });
+      // density = 200_000/512 ≈ 390 ≥ 200 → period 4 after warm prepare
+      const base = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        visibleStart: 0,
+        targetBuckets: 512,
+      };
+
+      d.prepare({ ...base, rawPointCount: 200_000, visibleEnd: 200_000, contentVersion: 1 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+
+      // Growth frames 1–3: skip; frame 4: accept (period 4)
+      for (let i = 1; i <= 3; i++) {
+        const n = 200_000 + i * 10_000;
+        d.prepare({ ...base, rawPointCount: n, visibleEnd: n, contentVersion: 1 + i });
+        const enc = createMockEncoder();
+        d.encodeCompute(enc as unknown as GPUCommandEncoder);
+        expect(enc.__passes).toHaveLength(0);
+      }
+      d.prepare({ ...base, rawPointCount: 240_000, visibleEnd: 240_000, contentVersion: 5 });
+      const runEnc = createMockEncoder();
+      d.encodeCompute(runEnc as unknown as GPUCommandEncoder);
+      expect(runEnc.__passes).toHaveLength(1);
+
+      // Equal-N content rewrite must always re-dispatch (not streaming cadence)
+      d.prepare({ ...base, rawPointCount: 240_000, visibleEnd: 240_000, contentVersion: 6 });
+      const rewriteEnc = createMockEncoder();
+      d.encodeCompute(rewriteEnc as unknown as GPUCommandEncoder);
+      expect(rewriteEnc.__passes).toHaveLength(1);
+    });
+
+    it('period-2 cadence when density ∈ [100, 200)', () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 8_000_000 });
+      // density = 60_000/512 ≈ 117 → period 2
+      const base = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        visibleStart: 0,
+        targetBuckets: 512,
+      };
+      d.prepare({ ...base, rawPointCount: 60_000, visibleEnd: 60_000, contentVersion: 1 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+
+      d.prepare({ ...base, rawPointCount: 65_000, visibleEnd: 65_000, contentVersion: 2 });
+      const skipEnc = createMockEncoder();
+      d.encodeCompute(skipEnc as unknown as GPUCommandEncoder);
+      expect(skipEnc.__passes).toHaveLength(0);
+
+      d.prepare({ ...base, rawPointCount: 70_000, visibleEnd: 70_000, contentVersion: 3 });
+      const runEnc = createMockEncoder();
+      d.encodeCompute(runEnc as unknown as GPUCommandEncoder);
+      expect(runEnc.__passes).toHaveLength(1);
+    });
+
+    it('period-8 cadence when density ≥ 1000', () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 80_000_000 });
+      // density = 600_000/512 ≈ 1172 → period 8
+      const base = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        visibleStart: 0,
+        targetBuckets: 512,
+      };
+      d.prepare({ ...base, rawPointCount: 600_000, visibleEnd: 600_000, contentVersion: 1 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+
+      for (let i = 1; i <= 7; i++) {
+        const n = 600_000 + i * 5_000;
+        d.prepare({ ...base, rawPointCount: n, visibleEnd: n, contentVersion: 1 + i });
+        const enc = createMockEncoder();
+        d.encodeCompute(enc as unknown as GPUCommandEncoder);
+        expect(enc.__passes).toHaveLength(0);
+      }
+      d.prepare({ ...base, rawPointCount: 640_000, visibleEnd: 640_000, contentVersion: 9 });
+      const runEnc = createMockEncoder();
+      d.encodeCompute(runEnc as unknown as GPUCommandEncoder);
+      expect(runEnc.__passes).toHaveLength(1);
+    });
+
+    it('buffer identity change always dirties (not cadence-skipped)', () => {
+      const d = createDecimationCompute(device);
+      const raw1 = createMockBuffer({ size: 8_000_000 });
+      const raw2 = createMockBuffer({ size: 8_000_000 });
+      d.prepare({
+        algorithm: 'lttb',
+        rawBuffer: raw1,
+        rawPointCount: 200_000,
+        visibleStart: 0,
+        visibleEnd: 200_000,
+        targetBuckets: 512,
+        contentVersion: 1,
+      });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+
+      // Streaming-sized growth on a NEW buffer must recompute immediately.
+      d.prepare({
+        algorithm: 'lttb',
+        rawBuffer: raw2,
+        rawPointCount: 210_000,
+        visibleStart: 0,
+        visibleEnd: 210_000,
+        targetBuckets: 512,
+        contentVersion: 2,
+      });
+      const enc = createMockEncoder();
+      d.encodeCompute(enc as unknown as GPUCommandEncoder);
+      expect(enc.__passes).toHaveLength(1);
+    });
+
+    it('never density-skips when modular ring capacity is active (FIFO 5M safety)', () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 40_000_000 });
+      // High density would normally period-skip on linear unbounded growth.
+      const base = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        rawPointCount: 200_000,
+        visibleStart: 0,
+        visibleEnd: 200_000,
+        targetBuckets: 512,
+        contentVersion: 1,
+        ringStart: 0,
+        ringCapacity: 5_000_000,
+      };
+      d.prepare(base);
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+
+      // N growth with same ring identity — must still encode every frame (no skip).
+      for (let n = 210_000; n <= 250_000; n += 10_000) {
+        d.prepare({
+          ...base,
+          rawPointCount: n,
+          visibleEnd: n,
+          contentVersion: n,
+          ringCapacity: 5_000_000,
+        });
+        const enc = createMockEncoder();
+        d.encodeCompute(enc as unknown as GPUCommandEncoder);
+        expect(enc.__passes.length).toBeGreaterThanOrEqual(1);
+      }
+    });
+
     it('dirties when ringStart/ringCapacity change (modular FIFO wrap)', () => {
       const d = createDecimationCompute(device);
       const rawBuffer = createMockBuffer({ size: 800000 });

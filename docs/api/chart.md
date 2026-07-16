@@ -15,6 +15,7 @@ const chart = await ChartGPU.create(container, {
 
 - **`container`**: mount target (ChartGPU owns a canvas inside it)
 - **`options`**: configuration (see [options.md](options.md))
+  - **Create-only options:** `antialias` and `devicePixelRatio` are applied when the chart / render coordinator is constructed (MSAA pipelines, texture manager, canvas backing store, text-overlay DPR). Changing them later with `setOption` has no effect on those resources — dispose and recreate the chart instead.
 - **`context?`**: optional shared WebGPU `{ adapter, device, pipelineCache? }`
 
 ## Sharing GPU resources (optional)
@@ -91,6 +92,25 @@ function loop() {
 }
 loop();
 ```
+
+### GPU submit timing
+
+`renderFrame()` **encodes** the frame but **defers** `device.queue.submit` to a
+`queueMicrotask`. Multi-chart dashboards that share one `GPUDevice` and call
+`renderFrame()` on every surface in the same JS turn therefore collapse into a
+single batched submit (SciChart-parity multi-surface present).
+
+If you need GPU work on the queue before `onSubmittedWorkDone()` (or any
+immediate post-submit fence), drain the microtask first:
+
+```ts
+chart.renderFrame();
+await Promise.resolve(); // flush batched submit
+await device.queue.onSubmittedWorkDone();
+```
+
+`dispose()` flushes any pending batched submit for that chart’s device before
+destroying textures/buffers.
 
 Example: [`examples/external-render-mode/`](../../examples/external-render-mode/).
 

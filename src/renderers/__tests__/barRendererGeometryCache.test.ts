@@ -42,20 +42,23 @@ vi.mock('../rendererUtils', () => ({
 
 const writeUniformBufferMock = writeUniformBuffer as ReturnType<typeof vi.fn>;
 
-function createMockDevice() {
-  return {
+function createMockDevice(limits?: Partial<GPUSupportedLimits>) {
+  const device = {
     label: 'mockDevice',
     limits: {
       maxUniformBufferBindingSize: 65536,
       minUniformBufferOffsetAlignment: 256,
+      maxBufferSize: 256 * 1024 * 1024,
+      ...limits,
     },
     queue: {
       writeBuffer: vi.fn(),
       submit: vi.fn(),
     },
-    createBuffer: vi.fn(() => ({
+    createBuffer: vi.fn((desc?: GPUBufferDescriptor) => ({
       destroy: vi.fn(),
-      size: 256 * 1024,
+      size: desc?.size ?? 256 * 1024,
+      label: desc?.label ?? '',
     })),
     createBindGroupLayout: vi.fn(() => ({})),
     createBindGroup: vi.fn(() => ({})),
@@ -63,6 +66,7 @@ function createMockDevice() {
     createShaderModule: vi.fn(() => ({})),
     createRenderPipeline: vi.fn(() => ({})),
   } as unknown as GPUDevice;
+  return device;
 }
 
 function barConfig(
@@ -476,6 +480,130 @@ describe('createBarRenderer geometry cache', () => {
     const centerBf = f32fwd[8] + f32fwd[10] / 2;
     expect(centerAf).toBeLessThan(centerBf);
     expect((centerAf + centerBf) / 2).toBeCloseTo(1, 5);
+    renderer.dispose();
+  });
+
+  it('clamps instance buffer to maxBufferSize and density-strides oversized series (10M column fix)', () => {
+    // 32 B/instance × 10M would be 320MB; nextPow2 → 512MB > typical 256MB maxBufferSize.
+    // With a tiny cap, packing must stride and createBuffer size must stay ≤ limit.
+    const tinyCap = 32 * 1024; // 32 KiB → max 1024 instances
+    const device = createMockDevice({ maxBufferSize: tinyCap });
+    const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
+    const createBuffer = device.createBuffer as ReturnType<typeof vi.fn>;
+    const renderer = createBarRenderer(device);
+
+    const n = 5000; // needs densityStride = ceil(5000/1024) = 5
+    const data: DataPoint[] = new Array(n);
+    for (let i = 0; i < n; i++) data[i] = [i, i % 7];
+
+    const ga = gridArea();
+    const clip = plotClipFor(ga);
+    const xScale = createLinearScale().domain(0, n - 1).range(clip.left, clip.right);
+    const yScale = createLinearScale().domain(0, 10).range(clip.bottom, clip.top);
+
+    renderer.prepare([barConfig(data)], emptyDataStore, xScale, yScale, ga);
+
+    expect(createBuffer).toHaveBeenCalled();
+    for (const call of createBuffer.mock.calls) {
+      const desc = call[0] as GPUBufferDescriptor | undefined;
+      if (desc?.label === 'barRenderer/instanceBuffer') {
+        expect(desc.size).toBeLessThanOrEqual(tinyCap);
+      }
+    }
+
+    expect(writeBuffer).toHaveBeenCalledTimes(1);
+    const byteLength = writeBuffer.mock.calls[0][4] as number;
+    const maxInstances = Math.floor(tinyCap / INSTANCE_STRIDE_BYTES);
+    expect(byteLength).toBeLessThanOrEqual(maxInstances * INSTANCE_STRIDE_BYTES);
+    expect(byteLength % INSTANCE_STRIDE_BYTES).toBe(0);
+    // Density stride keeps full x span: last packed left edge near the end of domain.
+    const f32 = lastInstanceFloats(writeBuffer);
+    const packed = byteLength / INSTANCE_STRIDE_BYTES;
+    expect(packed).toBeGreaterThan(0);
+    expect(packed).toBeLessThanOrEqual(maxInstances);
+    const lastLeft = f32[(packed - 1) * 8]!;
+    // With stride 5, last sample is near n-1; left ≈ x - width/2 should be high in domain.
+    expect(lastLeft).toBeGreaterThan((n - 1) * 0.8);
+
+    renderer.dispose();
+  });
+
+  it('multi-series density packing does not starve trailing series (per-series budget)', () => {
+    // Shared global packCap + sequential fill used to drop series 1 when series 0
+    // alone filled maxInstances after density stride (e.g. 10k+1 with stride 10).
+    // Fair per-series caps keep every series represented in the packed buffer.
+    const tinyCap = 32 * 1024; // 32 KiB → max 1024 instances
+    const device = createMockDevice({ maxBufferSize: tinyCap });
+    const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
+    const renderer = createBarRenderer(device);
+
+    const maxInstances = Math.floor(tinyCap / INSTANCE_STRIDE_BYTES);
+    // N just above maxInstances so density engages; two series would overfill a shared cap.
+    const n = maxInstances + 200; // 1224 each → total 2448 > 1024
+    const dataA: DataPoint[] = new Array(n);
+    const dataB: DataPoint[] = new Array(n);
+    for (let i = 0; i < n; i++) {
+      dataA[i] = [i, 1];
+      dataB[i] = [i, 2];
+    }
+
+    const ga = gridArea();
+    const clip = plotClipFor(ga);
+    const xScale = createLinearScale().domain(0, n - 1).range(clip.left, clip.right);
+    const yScale = createLinearScale().domain(0, 3).range(clip.bottom, clip.top);
+
+    const colorA = '#ff0000';
+    const colorB = '#0000ff';
+    renderer.prepare(
+      [barConfig(dataA, { color: colorA }), barConfig(dataB, { color: colorB })],
+      emptyDataStore,
+      xScale,
+      yScale,
+      ga
+    );
+
+    expect(writeBuffer).toHaveBeenCalledTimes(1);
+    const byteLength = writeBuffer.mock.calls[0][4] as number;
+    expect(byteLength).toBeLessThanOrEqual(maxInstances * INSTANCE_STRIDE_BYTES);
+    expect(byteLength % INSTANCE_STRIDE_BYTES).toBe(0);
+
+    const f32 = lastInstanceFloats(writeBuffer);
+    const packed = byteLength / INSTANCE_STRIDE_BYTES;
+    expect(packed).toBeGreaterThan(0);
+    expect(packed).toBeLessThanOrEqual(maxInstances);
+
+    // RGBA slots at +4..+7 — both series colors must appear (trailing series not dropped).
+    let sawRed = false;
+    let sawBlue = false;
+    let redCount = 0;
+    let blueCount = 0;
+    for (let i = 0; i < packed; i++) {
+      const base = i * 8;
+      const r = f32[base + 4]!;
+      const g = f32[base + 5]!;
+      const b = f32[base + 6]!;
+      // #ff0000 → (1,0,0), #0000ff → (0,0,1)
+      if (r > 0.9 && g < 0.1 && b < 0.1) {
+        sawRed = true;
+        redCount++;
+      } else if (r < 0.1 && g < 0.1 && b > 0.9) {
+        sawBlue = true;
+        blueCount++;
+      }
+    }
+    expect(sawRed).toBe(true);
+    expect(sawBlue).toBe(true);
+    // Fair share: each series gets floor(maxInstances/2) budget; both should pack many samples.
+    const perSeriesCap = Math.floor(maxInstances / 2);
+    expect(redCount).toBeGreaterThan(0);
+    expect(blueCount).toBeGreaterThan(0);
+    expect(redCount).toBeLessThanOrEqual(perSeriesCap);
+    expect(blueCount).toBeLessThanOrEqual(perSeriesCap);
+    // Combined still within buffer; neither series monopolizes all slots.
+    expect(redCount + blueCount).toBe(packed);
+    expect(redCount).toBeGreaterThanOrEqual(Math.min(n, perSeriesCap) / 4);
+    expect(blueCount).toBeGreaterThanOrEqual(Math.min(n, perSeriesCap) / 4);
+
     renderer.dispose();
   });
 });

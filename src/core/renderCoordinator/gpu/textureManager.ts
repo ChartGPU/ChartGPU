@@ -101,6 +101,12 @@ export interface TextureManagerConfig {
   readonly device: GPUDevice;
   readonly targetFormat: GPUTextureFormat;
   readonly pipelineCache?: PipelineCache;
+  /**
+   * MSAA sample count for main + overlay targets (WebGPU portable: 1 or 4 only).
+   * Defaults to {@link MAIN_SCENE_MSAA_SAMPLE_COUNT} (4). Pass 1 when
+   * `options.antialias === false` for multi-chart / streaming grids.
+   */
+  readonly sampleCount?: 1 | 4;
 }
 
 /**
@@ -113,8 +119,20 @@ export interface TextureManager {
    *
    * @param width - Canvas width in device pixels
    * @param height - Canvas height in device pixels
+   * @param options.needResolveAndOverlay - When false (direct swapchain resolve path),
+   *   only the main 4× MSAA color target is allocated. When true (dense-hairline /
+   *   2-pass path), also allocate mainResolve + overlay MSAA + blit bind group.
+   *   Default true for backward compatibility.
    */
-  ensureTextures(width: number, height: number): void;
+  ensureTextures(
+    width: number,
+    height: number,
+    options?: {
+      readonly needResolveAndOverlay?: boolean;
+      /** When false, skip main MSAA color (sampleCount-1 direct-to-swapchain path). Default true. */
+      readonly needMainColor?: boolean;
+    }
+  ): void;
 
   /**
    * Gets current texture manager state for rendering.
@@ -163,6 +181,7 @@ function destroyTexture(tex: GPUTexture | null): void {
  */
 export function createTextureManager(config: TextureManagerConfig): TextureManager {
   const { device, targetFormat } = config;
+  const sampleCount: 1 | 4 = config.sampleCount === 1 ? 1 : 4;
 
   // Internal mutable state
   const state: InternalState = {
@@ -205,7 +224,7 @@ export function createTextureManager(config: TextureManagerConfig): TextureManag
         formats: targetFormat,
       },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
-      multisample: { count: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT },
+      multisample: { count: sampleCount },
     },
     config.pipelineCache
   );
@@ -213,67 +232,110 @@ export function createTextureManager(config: TextureManagerConfig): TextureManag
   /**
    * Ensures overlay textures are allocated for the given dimensions.
    * Reallocates if size or format changes.
+   *
+   * When `needResolveAndOverlay` is false (direct swapchain resolve), only the
+   * main 4× MSAA color target is kept — multi-chart grids without dense hairline
+   * avoid ~5× extra RT memory (resolve 1× + overlay MSAA 4×) per instance.
    */
-  function ensureTextures(canvasWidthDevicePx: number, canvasHeightDevicePx: number): void {
+  function ensureTextures(
+    canvasWidthDevicePx: number,
+    canvasHeightDevicePx: number,
+    options?: {
+      readonly needResolveAndOverlay?: boolean;
+      readonly needMainColor?: boolean;
+    }
+  ): void {
     // Clamp dimensions to valid range [1, infinity)
     const w = Number.isFinite(canvasWidthDevicePx) ? Math.max(1, Math.floor(canvasWidthDevicePx)) : 1;
     const h = Number.isFinite(canvasHeightDevicePx) ? Math.max(1, Math.floor(canvasHeightDevicePx)) : 1;
+    const needResolveAndOverlay = options?.needResolveAndOverlay !== false;
+    const needMainColor = options?.needMainColor !== false;
 
-    // Check if textures are already allocated with correct dimensions and format
-    if (
-      state.mainColorTexture &&
-      state.mainResolveTexture &&
-      state.overlayMsaaTexture &&
-      state.overlayBlitBindGroup &&
+    const sizeOk =
       state.overlayTargetsWidth === w &&
       state.overlayTargetsHeight === h &&
-      state.overlayTargetsFormat === targetFormat
-    ) {
-      return; // Textures are already correct
+      state.overlayTargetsFormat === targetFormat;
+    const mainOk = !needMainColor || !!state.mainColorTexture;
+    const resolveOverlayOk =
+      !needResolveAndOverlay ||
+      (state.mainResolveTexture && state.overlayMsaaTexture && state.overlayBlitBindGroup);
+
+    if (sizeOk && mainOk && resolveOverlayOk) {
+      // Free unused targets when path switches to leaner modes.
+      let freed = false;
+      if (!needMainColor && state.mainColorTexture) {
+        destroyTexture(state.mainColorTexture);
+        state.mainColorTexture = null;
+        state.mainColorView = null;
+        freed = true;
+      }
+      if (!needResolveAndOverlay && (state.mainResolveTexture || state.overlayMsaaTexture)) {
+        destroyTexture(state.mainResolveTexture);
+        destroyTexture(state.overlayMsaaTexture);
+        state.mainResolveTexture = null;
+        state.mainResolveView = null;
+        state.overlayMsaaTexture = null;
+        state.overlayMsaaView = null;
+        state.overlayBlitBindGroup = null;
+        freed = true;
+      }
+      if (freed) cachedState = null;
+      return;
     }
 
     // Destroy old textures before allocating new ones
     destroyTexture(state.mainColorTexture);
     destroyTexture(state.mainResolveTexture);
     destroyTexture(state.overlayMsaaTexture);
+    state.mainColorTexture = null;
+    state.mainColorView = null;
+    state.mainResolveTexture = null;
+    state.mainResolveView = null;
+    state.overlayMsaaTexture = null;
+    state.overlayMsaaView = null;
+    state.overlayBlitBindGroup = null;
 
-    // Allocate main color texture (MSAA render target).
-    // RENDER_ATTACHMENT only — multisampled textures cannot have TEXTURE_BINDING.
-    state.mainColorTexture = device.createTexture({
-      label: 'textureManager/mainColorTexture',
-      size: { width: w, height: h },
-      sampleCount: MAIN_SCENE_MSAA_SAMPLE_COUNT,
-      format: targetFormat,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    state.mainColorView = state.mainColorTexture.createView();
+    if (needMainColor) {
+      // Allocate main color texture (MSAA render target).
+      // RENDER_ATTACHMENT only — multisampled textures cannot have TEXTURE_BINDING.
+      state.mainColorTexture = device.createTexture({
+        label: 'textureManager/mainColorTexture',
+        size: { width: w, height: h },
+        sampleCount,
+        format: targetFormat,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      state.mainColorView = state.mainColorTexture.createView();
+    }
 
-    // Allocate single-sample resolve target for the MSAA main pass.
-    // This receives the resolved result and is read by the overlay blit pipeline.
-    state.mainResolveTexture = device.createTexture({
-      label: 'textureManager/mainResolveTexture',
-      size: { width: w, height: h },
-      format: targetFormat,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    });
-    state.mainResolveView = state.mainResolveTexture.createView();
+    if (needResolveAndOverlay) {
+      // Allocate single-sample resolve target for the MSAA main pass.
+      // This receives the resolved result and is read by the overlay blit pipeline.
+      state.mainResolveTexture = device.createTexture({
+        label: 'textureManager/mainResolveTexture',
+        size: { width: w, height: h },
+        format: targetFormat,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      state.mainResolveView = state.mainResolveTexture.createView();
 
-    // Allocate MSAA overlay texture (multi-sample)
-    state.overlayMsaaTexture = device.createTexture({
-      label: 'textureManager/annotationOverlayMsaaTexture',
-      size: { width: w, height: h },
-      sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
-      format: targetFormat,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    state.overlayMsaaView = state.overlayMsaaTexture.createView();
+      // Allocate MSAA overlay texture (multi-sample)
+      state.overlayMsaaTexture = device.createTexture({
+        label: 'textureManager/annotationOverlayMsaaTexture',
+        size: { width: w, height: h },
+        sampleCount,
+        format: targetFormat,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      state.overlayMsaaView = state.overlayMsaaTexture.createView();
 
-    // Create bind group for blit pipeline — reads from the resolved (single-sample) texture.
-    state.overlayBlitBindGroup = device.createBindGroup({
-      label: 'textureManager/overlayBlitBindGroup',
-      layout: overlayBlitBindGroupLayout,
-      entries: [{ binding: 0, resource: state.mainResolveView }],
-    });
+      // Create bind group for blit pipeline — reads from the resolved (single-sample) texture.
+      state.overlayBlitBindGroup = device.createBindGroup({
+        label: 'textureManager/overlayBlitBindGroup',
+        layout: overlayBlitBindGroupLayout,
+        entries: [{ binding: 0, resource: state.mainResolveView }],
+      });
+    }
 
     // Update cached dimensions and format
     state.overlayTargetsWidth = w;
@@ -301,8 +363,8 @@ export function createTextureManager(config: TextureManagerConfig): TextureManag
         overlayMsaaView: state.overlayMsaaView,
         overlayBlitBindGroup: state.overlayBlitBindGroup,
         overlayBlitPipeline,
-        msaaSampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
-        mainSceneMsaaSampleCount: MAIN_SCENE_MSAA_SAMPLE_COUNT,
+        msaaSampleCount: sampleCount,
+        mainSceneMsaaSampleCount: sampleCount,
       };
     }
     return cachedState;

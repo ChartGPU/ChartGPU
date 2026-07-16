@@ -568,6 +568,64 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
           xs[i] = x;
           ys[i] = y;
         }
+      } else if (
+        // SciChart-parity XY columns. Float32Array channels can zero-copy
+        // writeBuffer when every value is finite (scanned once; non-finite
+        // falls through to the pack path below). Exclude internal ring /
+        // staging aliases (modular getX/getY).
+        typeof data === 'object' &&
+        data !== null &&
+        !Array.isArray(data) &&
+        'x' in data &&
+        'y' in data &&
+        !(data as { __ring?: boolean }).__ring &&
+        !(data as { __stagingRing?: boolean }).__stagingRing
+      ) {
+        const xCol = (data as { x: ArrayLike<number> }).x;
+        const yCol = (data as { y: ArrayLike<number> }).y;
+        if (
+          xCol instanceof Float32Array &&
+          yCol instanceof Float32Array &&
+          xCol.length >= count &&
+          yCol.length >= count
+        ) {
+          // Zero-copy contract: columns must be entirely finite (no NaN/±Inf).
+          // Brownian/suite paths always are; non-finite falls through to pack.
+          let f32Finite = true;
+          for (let i = 0; i < count; i++) {
+            if (!Number.isFinite(xCol[i] as number) || !Number.isFinite(yCol[i] as number)) {
+              f32Finite = false;
+              break;
+            }
+          }
+          if (f32Finite) {
+            // Zero-copy dense path: GPU channel buffers = column bytes.
+            instanceCount = count;
+            boundConstPointCount = count;
+            const requiredBytes = Math.max(4, count * CONST_CHANNEL_STRIDE_BYTES);
+            ensureGpuChannelBuffers(requiredBytes);
+            if (xInstanceBuffer && yInstanceBuffer && count > 0) {
+              const byteLen = count * CONST_CHANNEL_STRIDE_BYTES;
+              device.queue.writeBuffer(xInstanceBuffer, 0, xCol.buffer, xCol.byteOffset, byteLen);
+              device.queue.writeBuffer(yInstanceBuffer, 0, yCol.buffer, yCol.byteOffset, byteLen);
+            }
+            boundDataRef = data;
+            boundSizeMode = sizeMode;
+            boundConstRadiusCss = constantSymbolSizeCss;
+            boundDpr = dpr;
+            return;
+          }
+        }
+        for (let i = 0; i < count; i++) {
+          const x = xCol[i] as number;
+          const y = yCol[i] as number;
+          if (!Number.isFinite(x) || !Number.isFinite(y)) {
+            dense = false;
+            break;
+          }
+          xs[i] = x;
+          ys[i] = y;
+        }
       } else {
         for (let i = 0; i < count; i++) {
           const x = getX(data, i);

@@ -64,17 +64,18 @@ describe('frame graph contracts (WG-P1-5 / WG-P2-1)', () => {
     expect(renderSeriesSrc).toMatch(/beginLineSharedVsFrame/);
   });
 
-  it('creates axis/crosshair/highlight with annotation MSAA sample count', () => {
+  it('creates axis/crosshair/highlight with chart MSAA sample count', () => {
     expect(ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT).toBe(4);
-    // Each of the three UI overlay creators must pass sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT
+    // UI overlays share msaaSampleCount with main (4× default, or 1 when antialias:false).
+    expect(coordinatorSrc).toMatch(/const msaaSampleCount:\s*1\s*\|\s*4/);
     expect(coordinatorSrc).toMatch(
-      /createAxisRenderer\(device,\s*\{[^}]*sampleCount:\s*ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT/s
+      /createAxisRenderer\(device,\s*\{[^}]*sampleCount:\s*msaaSampleCount/s
     );
     expect(coordinatorSrc).toMatch(
-      /createCrosshairRenderer\(device,\s*\{[^}]*sampleCount:\s*ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT/s
+      /createCrosshairRenderer\(device,\s*\{[^}]*sampleCount:\s*msaaSampleCount/s
     );
     expect(coordinatorSrc).toMatch(
-      /createHighlightRenderer\(device,\s*\{[^}]*sampleCount:\s*ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT/s
+      /createHighlightRenderer\(device,\s*\{[^}]*sampleCount:\s*msaaSampleCount/s
     );
   });
 
@@ -139,5 +140,27 @@ describe('frame graph contracts (WG-P1-5 / WG-P2-1)', () => {
     expect(overlayBlock).toMatch(/highlightRenderer\.render\(overlayPass\)/);
     expect(overlayBlock).toMatch(/xAxisRenderer\.render\(overlayPass\)/);
     expect(overlayBlock).toMatch(/crosshairRenderer\.render\(overlayPass\)/);
+  });
+
+  it('skips DOM axis-label rebuild when signature is unchanged', () => {
+    // Multi-chart / scatter fixed-domain: avoid clear+rebuild every frame.
+    expect(coordinatorSrc).toMatch(/lastAxisLabelDomSignature/);
+    expect(coordinatorSrc).toMatch(/labelSig !== lastAxisLabelDomSignature/);
+    // Must still call renderAxisLabels when signature changes (rebuild path present).
+    expect(coordinatorSrc).toMatch(/renderAxisLabels\(axisLabelOverlay/);
+  });
+
+  it('direct swapchain resolve path draws UI into main when no dense hairline', () => {
+    // Multi-chart / compression / axes-only: single 4× MSAA main pass resolves
+    // to swapchain (no blit + second MSAA target). Must still be sampleCount 4.
+    expect(coordinatorSrc).toMatch(/useDirectSwapchainResolve/);
+    expect(coordinatorSrc).toMatch(/mainPassDirect/);
+    expect(coordinatorSrc).toMatch(/needResolveAndOverlay:\s*!useDirectSwapchainResolve/);
+    // Direct path draws UI into mainPass (not only overlayPass).
+    expect(coordinatorSrc).toMatch(/highlightRenderer\.render\(mainPass\)/);
+    expect(coordinatorSrc).toMatch(/xAxisRenderer\.render\(mainPass\)/);
+    expect(coordinatorSrc).toMatch(/crosshairRenderer\.render\(mainPass\)/);
+    // Never legal sampleCount 2.
+    expect(coordinatorSrc).not.toMatch(/sampleCount:\s*2/);
   });
 });

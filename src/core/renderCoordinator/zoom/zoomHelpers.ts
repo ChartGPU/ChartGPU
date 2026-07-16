@@ -73,9 +73,14 @@ export function computeVisibleDomain(baseDomain: DomainBounds, zoomRange?: ZoomR
 /**
  * Checks if a zoom range represents a full-span (unzoomed) view.
  *
+ * **Single source of truth** for full-span checks (coordinator Y-bounds O(1)
+ * path, slice/render series, zoom helpers). Do not reintroduce a strict
+ * `start <= 0 && end >= 100` duplicate — UI edges and float noise need the
+ * 0.5% tolerance below.
+ *
  * A zoom is considered full-span if:
  * - Range is null/undefined
- * - Start is at or before 0% AND end is at or after 100%
+ * - Start is at or before 0% AND end is at or after 100% (within tolerance)
  *
  * Small tolerance (0.5%) is applied to account for floating-point arithmetic
  * and UI imprecision (e.g., slider at edge).

@@ -203,7 +203,8 @@ describe('createLineRenderer bounds (P2-5)', () => {
     const device = createMockDevice();
     const writeUniform = writeUniformBuffer as ReturnType<typeof vi.fn>;
     writeUniform.mockClear();
-    const renderer = createLineRenderer(device);
+    // Hairline only when main MSAA is 4× (multi-chart antialias:false stays AA quads).
+    const renderer = createLineRenderer(device, { sampleCount: 4 });
     // pointCountOverride drives policy; ≥25k → hairline floor 1 CSS px
     const data: DataPoint[] = [
       [0, 0],
@@ -255,7 +256,7 @@ describe('createLineRenderer bounds (P2-5)', () => {
 
   it('multi-series budget: prepare with lineSeriesCount=1000, pointCount=1000 → denseHairline', () => {
     const device = createMockDevice();
-    const renderer = createLineRenderer(device);
+    const renderer = createLineRenderer(device, { sampleCount: 4 });
     const data: DataPoint[] = [
       [0, 0],
       [1, 1],
@@ -266,6 +267,33 @@ describe('createLineRenderer bounds (P2-5)', () => {
     const dataBuffer = { label: 'data' } as GPUBuffer;
     renderer.prepare(series, dataBuffer, xScale, yScale, 0, 1, 800, 600, 1000, 1000);
     expect(renderer.isDenseHairline()).toBe(true);
+    renderer.dispose();
+  });
+
+  it('sampleCount 1 never selects denseHairline (multi-chart antialias:false)', () => {
+    const device = createMockDevice();
+    const renderer = createLineRenderer(device, { sampleCount: 1 });
+    const data: DataPoint[] = [
+      [0, 0],
+      [1, 1],
+    ];
+    const series = makeSeries(data);
+    const xScale = createLinearScale().domain(0, 1).range(-1, 1);
+    const yScale = createLinearScale().domain(0, 1).range(1, -1);
+    const dataBuffer = { label: 'data' } as GPUBuffer;
+    renderer.prepare(series, dataBuffer, xScale, yScale, 0, 1, 800, 600, 50_000, 1000);
+    expect(renderer.isDenseHairline()).toBe(false);
+    const draws: Array<{ v: number; i: number }> = [];
+    const pass = {
+      setPipeline: vi.fn(),
+      setBindGroup: vi.fn(),
+      draw: vi.fn((v: number, i: number) => {
+        draws.push({ v, i });
+      }),
+    } as unknown as GPURenderPassEncoder;
+    // Must draw AA quads in main pass (not deferred no-op).
+    renderer.render(pass);
+    expect(draws).toEqual([{ v: 6, i: 49_999 }]);
     renderer.dispose();
   });
 
@@ -285,7 +313,9 @@ describe('createLineRenderer bounds (P2-5)', () => {
     renderer.dispose();
   });
 
-  it('shared VS: two renderers same frame identical transform → second skips VS writeBuffer', () => {
+  it('private VS: each renderer writes its own buffer (multi-chart deferred-submit safe)', () => {
+    // Shared device-global VS was removed: multi-chart deferred submit clobbered
+    // chart A's transform when chart B prepared. Each renderer keeps a private buffer.
     const device = createMockDevice();
     const writeUniform = writeUniformBuffer as ReturnType<typeof vi.fn>;
     writeUniform.mockClear();
@@ -302,25 +332,28 @@ describe('createLineRenderer bounds (P2-5)', () => {
     const bufA = { label: 'dataA' } as GPUBuffer;
     const bufB = { label: 'dataB' } as GPUBuffer;
 
-    const vsWritesBefore = () =>
+    const vsWrites = () =>
       writeUniform.mock.calls.filter((c) => {
         const dataArg = c[2];
         return dataArg instanceof ArrayBuffer && dataArg.byteLength === 80;
       }).length;
 
     a.prepare(series, bufA, xScale, yScale, 0, 1, 800, 600, 10);
-    const afterFirst = vsWritesBefore();
+    const afterFirst = vsWrites();
     expect(afterFirst).toBeGreaterThan(0);
     b.prepare(series, bufB, xScale, yScale, 0, 1, 800, 600, 10);
-    const afterSecond = vsWritesBefore();
-    // Second matching series should not write another VS buffer (shared reuse).
-    expect(afterSecond).toBe(afterFirst);
+    // Second renderer has its own last* state → second VS write.
+    expect(vsWrites()).toBeGreaterThan(afterFirst);
+    // Same renderer re-prepare unchanged → dirty-skip (no extra write).
+    const afterSecond = vsWrites();
+    a.prepare(series, bufA, xScale, yScale, 0, 1, 800, 600, 10);
+    expect(vsWrites()).toBe(afterSecond);
 
     a.dispose();
     b.dispose();
   });
 
-  it('shared VS: divergent line width falls back to private VS write', () => {
+  it('private VS: divergent line width writes on second renderer', () => {
     const device = createMockDevice();
     const writeUniform = writeUniformBuffer as ReturnType<typeof vi.fn>;
     writeUniform.mockClear();
@@ -350,7 +383,6 @@ describe('createLineRenderer bounds (P2-5)', () => {
     a.prepare(thin, bufA, xScale, yScale, 0, 1, 800, 600, 10);
     const afterFirst = vsCount();
     b.prepare(thick as typeof thin, bufB, xScale, yScale, 0, 1, 800, 600, 10);
-    // Divergent width → private buffer write on second series.
     expect(vsCount()).toBeGreaterThan(afterFirst);
 
     a.dispose();
@@ -359,7 +391,7 @@ describe('createLineRenderer bounds (P2-5)', () => {
 
   it('renderHairline skipSetPipeline true does not call setPipeline', () => {
     const device = createMockDevice();
-    const renderer = createLineRenderer(device);
+    const renderer = createLineRenderer(device, { sampleCount: 4 });
     const data: DataPoint[] = [
       [0, 0],
       [1, 1],
@@ -420,7 +452,7 @@ describe('createLineRenderer bounds (P2-5)', () => {
 
   it('pointCountOverride high forces hairline even when data array is short', () => {
     const device = createMockDevice();
-    const renderer = createLineRenderer(device);
+    const renderer = createLineRenderer(device, { sampleCount: 4 });
     const data: DataPoint[] = [
       [0, 0],
       [1, 1],
@@ -436,7 +468,7 @@ describe('createLineRenderer bounds (P2-5)', () => {
 
   it('denseHairline defers main render; renderHairline uses line-list draw(2, segments)', () => {
     const device = createMockDevice();
-    const renderer = createLineRenderer(device);
+    const renderer = createLineRenderer(device, { sampleCount: 4 });
     const data: DataPoint[] = [
       [0, 0],
       [1, 1],

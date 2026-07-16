@@ -282,6 +282,12 @@ export interface ChartGPUInstance {
    * In 'auto' mode, this is a no-op and logs a warning in development.
    * In 'external' mode, executes a render if the chart is dirty.
    *
+   * **GPU submit is deferred** to a microtask after this returns so multi-chart
+   * dashboards that share one `GPUDevice` can coalesce N encodes into one
+   * `queue.submit`. If you need queue visibility before
+   * `device.queue.onSubmittedWorkDone()`, await one microtask first:
+   * `chart.renderFrame(); await Promise.resolve(); await device.queue.onSubmittedWorkDone();`
+   *
    * @returns true if a frame was rendered, false if the chart was already clean
    */
   renderFrame(): boolean;
@@ -1457,7 +1463,14 @@ export async function createChartGPU(
     if (disposed) return;
 
     const rect = canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
+    // Prefer explicit option, then GPUContext (may be overridden at create), then window.
+    const dprOpt = currentOptions.devicePixelRatio;
+    const dpr =
+      typeof dprOpt === 'number' && Number.isFinite(dprOpt) && dprOpt > 0
+        ? dprOpt
+        : gpuContext?.devicePixelRatio && gpuContext.devicePixelRatio > 0
+          ? gpuContext.devicePixelRatio
+          : window.devicePixelRatio || 1;
 
     const maxDimension = gpuContext?.device?.limits.maxTextureDimension2D ?? 8192;
     const width = Math.min(maxDimension, Math.max(1, Math.round(rect.width * dpr)));
@@ -2101,18 +2114,20 @@ export async function createChartGPU(
 
       const maxPoints = normalizeMaxPoints(options?.maxPoints);
 
-      // Dual-store relief (P1): on high-rate FIFO (`maxPoints` + tooltip off),
-      // skip ChartGPU hit-test columnar growth. Coordinator still applies the
-      // ring for GPU/domain. Unbounded append keeps the hit-test store even when
-      // tooltip is off (hitTest API / axes-only tests). Re-enable tooltip /
-      // hitTest after skip resyncs via coordinator (hitTestStoreNeedsResync).
+      // Dual-store relief: when tooltip is off, skip ChartGPU hit-test columnar
+      // growth on every append (FIFO `maxPoints` *and* unbounded LTTB/compression
+      // streaming). Matches setOption's tooltip-off policy. Coordinator still
+      // owns GPU buffers + domain. hitTest() / re-enable tooltip resync from
+      // coordinator (hitTestStoreNeedsResync). Multi-chart + series compression
+      // suites use tooltip:false — dual O(n) columnar growth was a primary
+      // steady-state tax as raw N grew each frame.
       //
       // IMPORTANT: resync BEFORE coordinator.appendData for this batch. Resync
       // flushes pending coordinator batches; if we appended first, the snapshot
       // would already include this batch and the local apply below would double
       // it. Order: resync prior state → queue this batch on coordinator → apply
       // once locally when maintaining the hit-test store.
-      const maintainHitTestStore = maxPoints == null || resolvedOptions.tooltip?.show !== false;
+      const maintainHitTestStore = resolvedOptions.tooltip?.show !== false;
       if (!maintainHitTestStore) {
         hitTestStoreNeedsResync = true;
       } else if (hitTestStoreNeedsResync) {
@@ -2750,8 +2765,20 @@ export async function createChartGPU(
 
     // Try to create GPU context; wrap errors with detailed WebGPU unavailability message
     try {
-      // Use shared device/adapter if provided in context parameter
-      const gpuContextOptions = context ? { device: context.device, adapter: context.adapter } : undefined;
+      // Use shared device/adapter if provided in context parameter.
+      // Optional devicePixelRatio overrides window.devicePixelRatio (multi-chart 1×).
+      const dprOpt = options.devicePixelRatio;
+      const dprOverride =
+        typeof dprOpt === 'number' && Number.isFinite(dprOpt) && dprOpt > 0 ? dprOpt : undefined;
+      const gpuContextOptions = context
+        ? {
+            device: context.device,
+            adapter: context.adapter,
+            ...(dprOverride != null ? { devicePixelRatio: dprOverride } : {}),
+          }
+        : dprOverride != null
+          ? { devicePixelRatio: dprOverride }
+          : undefined;
       gpuContext = await GPUContext.create(canvas, gpuContextOptions);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

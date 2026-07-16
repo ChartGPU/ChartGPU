@@ -167,6 +167,97 @@ describe('TextureManager', () => {
     );
   });
 
+  it('ensureTextures with needResolveAndOverlay:false only allocates main MSAA', () => {
+    const manager = createTextureManager(config);
+    manager.ensureTextures(800, 600, { needResolveAndOverlay: false });
+    const st = manager.getState();
+    expect(st.mainColorView).not.toBeNull();
+    expect(st.mainResolveView).toBeNull();
+    expect(st.overlayMsaaView).toBeNull();
+    expect(st.overlayBlitBindGroup).toBeNull();
+    const createTex = (device.createTexture as ReturnType<typeof vi.fn>).mock.calls;
+    expect(createTex.length).toBe(1);
+    expect(createTex[0]![0]).toEqual(
+      expect.objectContaining({
+        label: 'textureManager/mainColorTexture',
+        sampleCount: 4,
+      })
+    );
+  });
+
+  it('ensureTextures upgrades from direct to resolve+overlay when needed', () => {
+    const manager = createTextureManager(config);
+    manager.ensureTextures(800, 600, { needResolveAndOverlay: false });
+    manager.ensureTextures(800, 600, { needResolveAndOverlay: true });
+    const st = manager.getState();
+    expect(st.mainColorView).not.toBeNull();
+    expect(st.mainResolveView).not.toBeNull();
+    expect(st.overlayMsaaView).not.toBeNull();
+    expect(st.overlayBlitBindGroup).not.toBeNull();
+  });
+
+  it('sampleCount 1 + needMainColor/needResolveAndOverlay false allocates no textures', () => {
+    const manager = createTextureManager({ ...config, sampleCount: 1 });
+    manager.ensureTextures(800, 600, { needMainColor: false, needResolveAndOverlay: false });
+
+    const st = manager.getState();
+    expect(st.mainColorView).toBeNull();
+    expect(st.mainResolveView).toBeNull();
+    expect(st.overlayMsaaView).toBeNull();
+    expect(st.overlayBlitBindGroup).toBeNull();
+    expect(st.msaaSampleCount).toBe(1);
+    expect(st.mainSceneMsaaSampleCount).toBe(1);
+    expect((device.createTexture as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  it('sampleCount 4 upgrades from needMainColor false to full 2-pass targets', () => {
+    const manager = createTextureManager({ ...config, sampleCount: 4 });
+    manager.ensureTextures(800, 600, { needMainColor: false, needResolveAndOverlay: false });
+    expect((device.createTexture as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+
+    manager.ensureTextures(800, 600, { needMainColor: true, needResolveAndOverlay: true });
+    const st = manager.getState();
+    expect(st.mainColorView).not.toBeNull();
+    expect(st.mainResolveView).not.toBeNull();
+    expect(st.overlayMsaaView).not.toBeNull();
+    expect(st.overlayBlitBindGroup).not.toBeNull();
+
+    const createTex = (device.createTexture as ReturnType<typeof vi.fn>).mock.calls;
+    // main MSAA + resolve + overlay MSAA
+    expect(createTex.length).toBe(3);
+    expect(createTex[0]![0]).toEqual(
+      expect.objectContaining({
+        label: 'textureManager/mainColorTexture',
+        sampleCount: 4,
+      })
+    );
+  });
+
+  it('sampleCount 1 upgrades needMainColor false → true with single-sample main color', () => {
+    const manager = createTextureManager({ ...config, sampleCount: 1 });
+    manager.ensureTextures(800, 600, { needMainColor: false, needResolveAndOverlay: false });
+    expect((device.createTexture as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+
+    manager.ensureTextures(800, 600, { needMainColor: true, needResolveAndOverlay: false });
+    const st = manager.getState();
+    expect(st.mainColorView).not.toBeNull();
+    expect(st.mainResolveView).toBeNull();
+    expect(st.overlayMsaaView).toBeNull();
+    expect(st.overlayBlitBindGroup).toBeNull();
+
+    const createTex = (device.createTexture as ReturnType<typeof vi.fn>).mock.calls;
+    expect(createTex.length).toBe(1);
+    expect(createTex[0]![0]).toEqual(
+      expect.objectContaining({
+        label: 'textureManager/mainColorTexture',
+        sampleCount: 1,
+        size: { width: 800, height: 600 },
+        format: 'bgra8unorm',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      })
+    );
+  });
+
   it('ensureTextures clamps dimensions to minimum 1', () => {
     const manager = createTextureManager(config);
     manager.ensureTextures(0, -5);

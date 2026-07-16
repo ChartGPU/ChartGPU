@@ -55,9 +55,12 @@ function clipYToCanvasCssPx(yClip: number, canvasCssHeight: number): number {
   return ((1 - yClip) / 2) * canvasCssHeight;
 }
 
+/** Title weight matches `styleAxisLabelSpan` in axisLabelStyling (600). */
+const AXIS_TITLE_FONT_WEIGHT = '600';
+
 function styleAxisLabelSpan(span: HTMLSpanElement, isTitle: boolean, theme: ResolvedChartGPUOptions['theme']): void {
   span.style.fontFamily = theme.fontFamily;
-  span.style.fontWeight = isTitle ? '500' : '400';
+  span.style.fontWeight = isTitle ? AXIS_TITLE_FONT_WEIGHT : '400';
   span.style.userSelect = 'none';
   span.style.pointerEvents = 'none';
 }
@@ -126,6 +129,7 @@ export function renderAxisLabels(
     const span = axisLabelOverlay.addLabel(label, offsetX + xCss, offsetY + xLabelY, {
       fontSize: currentOptions.theme.fontSize,
       color: currentOptions.theme.textColor,
+      fontFamily: currentOptions.theme.fontFamily,
       anchor,
     });
     styleAxisLabelSpan(span, false, currentOptions.theme);
@@ -145,6 +149,8 @@ export function renderAxisLabels(
     const span = axisLabelOverlay.addLabel(xAxisName, offsetX + xCenter, offsetY + xTitleY, {
       fontSize: axisNameFontSize,
       color: currentOptions.theme.textColor,
+      fontFamily: currentOptions.theme.fontFamily,
+      fontWeight: AXIS_TITLE_FONT_WEIGHT,
       anchor: 'middle',
     });
     styleAxisLabelSpan(span, true, currentOptions.theme);
@@ -189,8 +195,20 @@ export function renderYAxisLabels(ctx: YAxisLabelRenderContext): void {
     ? getRightYAxisLabelX(plotRightCss, yTickLengthCssPx)
     : getYAxisLabelX(plotLeftCss, yTickLengthCssPx);
 
-  const ySpans: HTMLSpanElement[] = [];
   const yTickFormatter = yAxisConfig.tickFormatter;
+  // Canvas text overlay returns a dummy span — measure tick widths via 2d context
+  // (getBoundingClientRect on pooled/dummy spans is 0).
+  let measureCtx: CanvasRenderingContext2D | null = null;
+  try {
+    const c = document.createElement('canvas');
+    measureCtx = c.getContext('2d');
+    if (measureCtx) {
+      measureCtx.font = `${theme.fontSize}px ${theme.fontFamily}`;
+    }
+  } catch {
+    measureCtx = null;
+  }
+  let maxTickLabelWidth = 0;
 
   for (let i = 0; i < yTickCount; i++) {
     const t = yTickCount <= 1 ? 0.5 : i / (yTickCount - 1);
@@ -201,22 +219,25 @@ export function renderYAxisLabels(ctx: YAxisLabelRenderContext): void {
     const label = yTickFormatter ? yTickFormatter(v) : formatTickValue(yFormatter, v);
     if (label == null) continue;
 
+    if (measureCtx) {
+      maxTickLabelWidth = Math.max(maxTickLabelWidth, measureCtx.measureText(label).width);
+    } else {
+      maxTickLabelWidth = Math.max(maxTickLabelWidth, label.length * theme.fontSize * 0.6);
+    }
+
     const span = axisLabelOverlay.addLabel(label, offsetX + yLabelX, offsetY + yCss, {
       fontSize: theme.fontSize,
       color: theme.textColor,
+      fontFamily: theme.fontFamily,
       anchor: isRight ? 'start' : 'end',
     });
     styleAxisLabelSpan(span, false, theme);
-    ySpans.push(span);
   }
 
   // Y-axis title
   const axisNameFontSize = getAxisTitleFontSize(theme.fontSize);
   const yAxisName = yAxisConfig.name?.trim() ?? '';
   if (yAxisName.length > 0) {
-    const maxTickLabelWidth =
-      ySpans.length === 0 ? 0 : ySpans.reduce((max, s) => Math.max(max, s.getBoundingClientRect().width), 0);
-
     const yCenter = (plotTopCss + plotBottomCss) / 2;
 
     const yTitleX = isRight
@@ -226,6 +247,8 @@ export function renderYAxisLabels(ctx: YAxisLabelRenderContext): void {
     const span = axisLabelOverlay.addLabel(yAxisName, offsetX + yTitleX, offsetY + yCenter, {
       fontSize: axisNameFontSize,
       color: theme.textColor,
+      fontFamily: theme.fontFamily,
+      fontWeight: AXIS_TITLE_FONT_WEIGHT,
       anchor: 'middle',
       rotation: isRight ? 90 : -90,
     });
