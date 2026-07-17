@@ -2003,3 +2003,181 @@ describe('ChartGPU - hit-test store identity reuse (axes-only setOption)', () =>
     await chart.dispose();
   });
 });
+
+
+describe('ChartGPU - dual-store correctness (PR167 review)', () => {
+  let mockContainer: HTMLElement;
+  let warnSpy: ReturnType<typeof vi.spyOn> | null = null;
+
+  function createTinyLimitDevice(): GPUDevice {
+    const d = createMockDevice();
+    // Keep maxBufferSize high for stream/crosshair buffers; only storage binding
+    // is tight so DataStore auto-windows series (128 pts × 8 B = 1024 B).
+    (d.limits as any).maxStorageBufferBindingSize = 1024;
+    return d;
+  }
+
+  beforeEach(() => {
+    mockContainer = createMockContainer();
+    const adapter = createMockAdapter();
+    (adapter.requestDevice as any).mockImplementation(async () => createTinyLimitDevice());
+    setupMockNavigatorGPU(adapter);
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      setTimeout(() => cb(performance.now()), 0);
+      return 1;
+    });
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    vi.stubGlobal('devicePixelRatio', 1);
+  });
+
+  afterEach(() => {
+    warnSpy?.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  const makePointer = (clientX: number, clientY: number): PointerEvent =>
+    ({ clientX, clientY }) as PointerEvent;
+
+  it('device auto-window caps hit-test length with tooltip on (issue 1.1)', async () => {
+    // deviceMax = floor(1024/8) = 128. Seed 20, append 200 unbounded → retained = 128.
+    // Mirror proven hitTest coords from maxPoints wrap tests (y≈50 → clientY≈86).
+    const deviceMax = 128;
+    const seed: Array<[number, number]> = Array.from({ length: 20 }, (_, i) => [i, 10]);
+    const chart = await ChartGPU.create(mockContainer, {
+      animation: false,
+      tooltip: { show: true },
+      grid: { left: 0, right: 0, top: 0, bottom: 0 },
+      yAxis: { min: -10, max: 60 },
+      series: [{ type: 'line', data: seed, sampling: 'none' }],
+    });
+
+    // Newest point uses y=50 so right-edge hit matches existing suite coords.
+    const batch: Array<[number, number]> = Array.from({ length: 200 }, (_, i) => [
+      20 + i,
+      i === 199 ? 50 : 25,
+    ]);
+    chart.appendData(0, batch);
+    await new Promise((r) => setTimeout(r, 40));
+
+    // Hard length assert: dual-store must share device window (not grow unbounded).
+    const hitCount = chart.getHitTestSeriesPointCount(0);
+    expect(hitCount).toBeGreaterThanOrEqual(1);
+    expect(hitCount).toBeLessThanOrEqual(deviceMax);
+    // After seed 20 + append 200 = 220 uncapped → plan retains exactly deviceMax.
+    expect(hitCount).toBe(deviceMax);
+
+    // Newest retained x = 219. Right edge + y=50 → proven pointer (799, 86).
+    const hitNew = chart.hitTest(makePointer(799, 86));
+    expect(hitNew.isInGrid).toBe(true);
+    expect(hitNew.match).not.toBeNull();
+    expect(hitNew.match!.value[0]).toBeCloseTo(219, 0);
+
+    // Dropped seed origin x=0 must not dominate left edge of retained domain [92, 219].
+    // y≈25 (batch body) → clientY ≈ 300 with axis -10..60.
+    const hitOld = chart.hitTest(makePointer(1, 300));
+    expect(hitOld.match).not.toBeNull();
+    expect(hitOld.match!.value[0]).toBeGreaterThanOrEqual(92);
+    expect(hitOld.match!.value[0]).not.toBe(0);
+
+    await chart.dispose();
+  });
+
+  it('presentation-only setOption after tooltip resync keeps append history (issue 1.2)', async () => {
+    const data: Array<[number, number]> = [
+      [0, 0],
+      [1, 1],
+    ];
+    const chart = await ChartGPU.create(mockContainer, {
+      animation: false,
+      tooltip: { show: false },
+      grid: { left: 0, right: 0, top: 0, bottom: 0 },
+      yAxis: { min: -10, max: 60 },
+      series: [{ type: 'line', data, sampling: 'none' }],
+    });
+
+    chart.appendData(0, [[50, 25]], { maxPoints: 2 });
+    chart.appendData(0, [[100, 50]], { maxPoints: 2 });
+    await new Promise((r) => setTimeout(r, 30));
+
+    // First setOption: re-enable tooltip (resync).
+    chart.setOption({
+      ...chart.options,
+      tooltip: { show: true },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Second presentation-only setOption (stable series data refs via chart.options).
+    chart.setOption({
+      ...chart.options,
+      grid: { left: 0, right: 0, top: 0, bottom: 0 },
+      legend: { show: false },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    const hit = chart.hitTest(makePointer(799, 86));
+    expect(hit.match).not.toBeNull();
+    expect(hit.match?.value[0]).toBeCloseTo(100, 0);
+
+    // Series data replace with new array identity rebuilds from seed (not owned history).
+    const seedReplace: Array<[number, number]> = [
+      [0, 0],
+      [1, 1],
+    ];
+    chart.setOption({
+      ...chart.options,
+      series: [{ type: 'line', data: seedReplace, sampling: 'none' }],
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    // After full series replace to seed domain 0..1, hit-test must rebuild from seed.
+    expect(chart.getHitTestSeriesPointCount(0)).toBe(2);
+    // Pointer near right edge of seed domain (x≈1): must match seed, not append history.
+    const hitAfterReplace = chart.hitTest(makePointer(799, 500));
+    expect(hitAfterReplace.match).not.toBeNull();
+    expect(hitAfterReplace.match!.value[0]).toBeGreaterThanOrEqual(0);
+    expect(hitAfterReplace.match!.value[0]).toBeLessThanOrEqual(1);
+
+    await chart.dispose();
+  });
+
+  it('maxPoints promote sized linear hit-test to ring preserves size channel (issue 1.4)', async () => {
+    // Normal device limits — only maxPoints promote (not device auto-window).
+    const adapter = createMockAdapter();
+    setupMockNavigatorGPU(adapter);
+    // Tuple [x,y,size] seeds MutableXYColumns with size; maxPoints promotes to RingXY+size.
+    const seed: Array<[number, number, number]> = [
+      [0, 0, 1],
+      [1, 1, 2],
+      [2, 2, 3],
+    ];
+    const chart = await ChartGPU.create(mockContainer, {
+      animation: false,
+      tooltip: { show: true },
+      grid: { left: 0, right: 0, top: 0, bottom: 0 },
+      yAxis: { min: -10, max: 60 },
+      series: [{ type: 'line', data: seed as any, sampling: 'none' }],
+    });
+    // prev=3 new=2 max=3 → drop 2, keep 2 new → retained [2,3,4] with sizes [3,4,5].
+    chart.appendData(
+      0,
+      [
+        [3, 30, 4],
+        [100, 50, 5],
+      ] as any,
+      { maxPoints: 3 }
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(chart.getHitTestSeriesPointCount(0)).toBe(3);
+    // Right edge hits newest x=100 (same coords as other maxPoints wrap tests).
+    const hit = chart.hitTest(makePointer(799, 86));
+    expect(hit.isInGrid).toBe(true);
+    expect(hit.match).not.toBeNull();
+    expect(hit.match!.value[0]).toBeCloseTo(100, 0);
+    // Left of retained domain [2,100] must not match dropped seed x=0.
+    const hitLeft = chart.hitTest(makePointer(1, 500));
+    expect(hitLeft.match).not.toBeNull();
+    expect(hitLeft.match!.value[0]).toBeGreaterThanOrEqual(2);
+    expect(hitLeft.match!.value[0]).not.toBe(0);
+    await chart.dispose();
+  });
+});

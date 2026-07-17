@@ -932,4 +932,91 @@ describe('OptionResolver equal-N LTTB y-remap (group 4)', () => {
     );
     expect((third.series[0] as { indexSortedProven?: boolean }).indexSortedProven).toBeFalsy();
   });
+
+  it('defaults performance.lod to auto and preserves explicit strict (issue 9)', () => {
+    const def = resolveOptions({
+      series: [{ type: 'scatter', data: [[0, 1]], sampling: 'none' }],
+    });
+    expect(def.performance.lod).toBe('auto');
+
+    const strict = resolveOptions({
+      series: [{ type: 'scatter', data: [[0, 1]], sampling: 'none' }],
+      performance: { lod: 'strict' },
+    });
+    expect(strict.performance.lod).toBe('strict');
+  });
+
+  it('performance.lod strict forces full LTTB and picks new peak; auto freezes indices (issue 2.3)', async () => {
+    const rewrite = await import('../../data/seriesRewriteDetect');
+    const { getY, getPointCount, getX } = await import('../../data/cartesianData');
+    const n = 50;
+    const threshold = 10;
+    const rawA: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i] as DataPoint);
+
+    const first = resolveOptions({
+      series: [{ type: 'scatter', data: rawA, sampling: 'lttb', samplingThreshold: threshold }],
+      yAxis: { min: -5, max: 1000 },
+      performance: { lod: 'auto' },
+    });
+    const firstSampled = (first.series[0] as { data: DataPoint[] }).data;
+    const firstIndices = new Set<number>();
+    for (let i = 0; i < getPointCount(firstSampled); i++) {
+      firstIndices.add(Math.round(getX(firstSampled, i)));
+    }
+    // Pick an interior index NOT retained by first LTTB sample for the y spike.
+    let spikeIdx = -1;
+    for (let i = 1; i < n - 1; i++) {
+      if (!firstIndices.has(i)) {
+        spikeIdx = i;
+        break;
+      }
+    }
+    expect(spikeIdx).toBeGreaterThan(0);
+
+    const rawB: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i + 10] as DataPoint);
+    rawB[spikeIdx] = [spikeIdx, 999];
+
+    const remapSpy = vi.spyOn(rewrite, 'remapIndexSortedSampleY');
+
+    // Auto: remap freezes indices → spike at unretained index absent from sample.
+    const autoSecond = resolveOptions(
+      {
+        series: [{ type: 'scatter', data: rawB, sampling: 'lttb', samplingThreshold: threshold }],
+        yAxis: { min: -5, max: 1000 },
+        performance: { lod: 'auto' },
+      },
+      { previousResolved: first }
+    );
+    expect(remapSpy).toHaveBeenCalled();
+    const autoSampled = (autoSecond.series[0] as { data: DataPoint[] }).data;
+    let autoHasSpike = false;
+    for (let i = 0; i < getPointCount(autoSampled); i++) {
+      if (getY(autoSampled, i) === 999) autoHasSpike = true;
+    }
+    expect(autoHasSpike).toBe(false);
+    remapSpy.mockClear();
+
+    const firstStrict = resolveOptions({
+      series: [{ type: 'scatter', data: rawA, sampling: 'lttb', samplingThreshold: threshold }],
+      yAxis: { min: -5, max: 1000 },
+      performance: { lod: 'strict' },
+    });
+    const strictSecond = resolveOptions(
+      {
+        series: [{ type: 'scatter', data: rawB, sampling: 'lttb', samplingThreshold: threshold }],
+        yAxis: { min: -5, max: 1000 },
+        performance: { lod: 'strict' },
+      },
+      { previousResolved: firstStrict }
+    );
+    // Strict: full LTTB, no frozen remap — new peak must appear.
+    expect(remapSpy).not.toHaveBeenCalled();
+    const strictSampled = (strictSecond.series[0] as { data: DataPoint[] }).data;
+    let strictHasSpike = false;
+    for (let i = 0; i < getPointCount(strictSampled); i++) {
+      if (getY(strictSampled, i) === 999) strictHasSpike = true;
+    }
+    expect(strictHasSpike).toBe(true);
+    remapSpy.mockRestore();
+  });
 });

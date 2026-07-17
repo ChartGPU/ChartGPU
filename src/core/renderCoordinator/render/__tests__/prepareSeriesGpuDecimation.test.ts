@@ -102,6 +102,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
       getSeriesPointCount: vi.fn(() => points.length),
       getSeriesRingLayout: vi.fn(() => ({ start: 0, capacity: 0 })),
       isSeriesRingMode: vi.fn(() => false),
+      getSeriesEffectiveMaxPoints: vi.fn(() => null),
       getSeriesContentHash: vi.fn(() => 0xabc),
       getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
       getSeriesXOffset,
@@ -195,6 +196,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
       getSeriesPointCount: vi.fn(() => points.length),
       getSeriesRingLayout: vi.fn(() => ({ start: 0, capacity: 0 })),
       isSeriesRingMode: vi.fn(() => false),
+      getSeriesEffectiveMaxPoints: vi.fn(() => null),
       getSeriesContentHash: vi.fn(() => 0x1),
       getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
       getSeriesXOffset: vi.fn(() => 0),
@@ -274,6 +276,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
       getSeriesPointCount: vi.fn(() => points.length),
       getSeriesRingLayout: vi.fn(() => ({ start: 3, capacity: 16 })),
       isSeriesRingMode: vi.fn(() => true),
+      getSeriesEffectiveMaxPoints: vi.fn(() => null),
       getSeriesContentHash: vi.fn(() => 0x99),
       getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
       getSeriesXOffset: vi.fn(() => 0),
@@ -377,6 +380,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
       getSeriesPointCount: vi.fn(() => rawPointCount),
       getSeriesRingLayout: vi.fn(() => ({ start: 5, capacity: 32 })),
       isSeriesRingMode: vi.fn(() => true),
+      getSeriesEffectiveMaxPoints: vi.fn(() => null),
       getSeriesContentHash: vi.fn(() => 0x42),
       getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
       getSeriesXOffset: vi.fn(() => 0),
@@ -490,6 +494,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
       getSeriesPointCount: vi.fn(() => 64),
       getSeriesRingLayout: vi.fn(() => ({ start: 4, capacity: 64 })),
       isSeriesRingMode: vi.fn(() => true),
+      getSeriesEffectiveMaxPoints: vi.fn(() => null),
       getSeriesContentHash: vi.fn(() => 0x77),
       getSeriesStagingBuffer: vi.fn(() => staging),
       getSeriesXOffset: vi.fn(() => 0),
@@ -607,6 +612,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
       getSeriesPointCount: vi.fn(() => n),
       getSeriesRingLayout: vi.fn(() => ({ start: 0, capacity: n })),
       isSeriesRingMode: vi.fn(() => true),
+      getSeriesEffectiveMaxPoints: vi.fn(() => null),
       getSeriesContentHash: vi.fn(() => 0x55),
       getSeriesStagingBuffer: vi.fn(() => staging),
       getSeriesXOffset,
@@ -739,6 +745,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
           getSeriesPointCount: vi.fn(() => 64),
           getSeriesRingLayout: vi.fn(() => ({ start: 0, capacity: 0 })),
           isSeriesRingMode: vi.fn(() => false),
+          getSeriesEffectiveMaxPoints: vi.fn(() => null),
           getSeriesContentHash: vi.fn(() => 0x1),
           getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
           getSeriesXOffset,
@@ -826,6 +833,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
           getSeriesPointCount: vi.fn(() => n),
           getSeriesRingLayout: vi.fn(() => ({ start: 0, capacity: 0 })),
           isSeriesRingMode: vi.fn(() => false),
+          getSeriesEffectiveMaxPoints: vi.fn(() => null),
           getSeriesContentHash: vi.fn(() => 0x42),
           getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
           getSeriesXOffset: vi.fn(() => 0),
@@ -911,6 +919,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
           // Modular wrap: capacity > 0
           getSeriesRingLayout: vi.fn(() => ({ start: 1, capacity: 4 })),
           isSeriesRingMode: vi.fn(() => true),
+          getSeriesEffectiveMaxPoints: vi.fn(() => null),
           getSeriesContentHash: vi.fn(() => 0x1),
           getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
           getSeriesXOffset: vi.fn(() => 0),
@@ -994,6 +1003,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
           getSeriesPointCount: vi.fn(() => points.length),
           getSeriesRingLayout: vi.fn(() => ({ start: 0, capacity: 0 })),
           isSeriesRingMode: vi.fn(() => false),
+          getSeriesEffectiveMaxPoints: vi.fn(() => null),
           getSeriesContentHash: vi.fn(() => 0x2),
           getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
           getSeriesXOffset: vi.fn(() => 0),
@@ -1087,6 +1097,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
           getSeriesPointCount: vi.fn(() => opts.n),
           getSeriesRingLayout: vi.fn(() => ring),
           isSeriesRingMode: vi.fn(() => ring.capacity > 0),
+          getSeriesEffectiveMaxPoints: vi.fn(() => null),
           getSeriesContentHash: vi.fn(() => 1),
           getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
           getSeriesXOffset: vi.fn(() => 0),
@@ -1191,5 +1202,166 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
     expect(args.visibleEnd).toBe(n);
     expect(args.ringStart).toBe(5);
     expect(args.ringCapacity).toBe(64);
+  });
+});
+
+describe('prepareSeries modular ring → line prepare (issue 0.1 / review 8)', () => {
+  it('sampling:none modular wrap path passes ringLayout to line.prepare', () => {
+    // CPU path (sampling none) still binds modular DataStore raw after wrap.
+    const points: Array<[number, number]> = [];
+    for (let i = 0; i < 8; i++) points.push([i, i]);
+    const series = {
+      ...makeLineSeries(points),
+      sampling: 'none' as const,
+      samplingThreshold: 5000,
+      rawData: points,
+      data: points,
+      visible: true,
+    };
+
+    const rawBuffer = { label: 'raw' } as unknown as GPUBuffer;
+    const linePrepare = vi.fn();
+    const ringLayout = { start: 1, capacity: 8 };
+
+    const dataStore: DataStore = {
+      setSeries: vi.fn(),
+      appendSeries: vi.fn(),
+      removeSeries: vi.fn(),
+      getSeriesBuffer: vi.fn(() => rawBuffer),
+      getSeriesPointCount: vi.fn(() => 8),
+      getSeriesRingLayout: vi.fn(() => ringLayout),
+      isSeriesRingMode: vi.fn(() => true),
+      getSeriesEffectiveMaxPoints: vi.fn(() => 8),
+      getSeriesContentHash: vi.fn(() => 1),
+      getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
+      getSeriesXOffset: vi.fn(() => 0),
+      dispose: vi.fn(),
+    };
+
+    prepareSeries(
+      {
+        lineRenderers: [
+          {
+            prepare: linePrepare,
+            render: vi.fn(),
+            isDenseHairline: vi.fn(() => false),
+            dispose: vi.fn(),
+          } as any,
+        ],
+        areaRenderers: [],
+        barRenderer: { prepare: vi.fn(), render: vi.fn(), dispose: vi.fn() } as any,
+        scatterRenderers: [],
+        scatterDensityRenderers: [],
+        pieRenderers: [],
+        candlestickRenderers: [],
+        decimationComputes: [],
+      },
+      {
+        currentOptions: {
+          xAxis: { type: 'value' },
+          yAxes: [{ id: 'y', min: -1 }],
+          series: [series],
+          performance: { lod: 'auto' },
+        } as any,
+        seriesForRender: [series as any],
+        xScale: makeScale(0, 7),
+        yScales: new Map([['y', makeScale(-1, 1)]]),
+        gridArea: makeGridArea(),
+        dataStore,
+        appendedGpuThisFrame: new Set([0]),
+        gpuSeriesKindByIndex: ['fullRawLine'],
+        zoomState: null,
+        visibleXDomain: { min: 0, max: 7 },
+        introPhase: 'done',
+        introProgress01: 1,
+        withAlpha: (c: string) => c,
+        maxRadiusCss: 4,
+        lastSetSeriesCache: new Map(),
+        filterGapsCache: createFilterGapsCache(),
+      }
+    );
+
+    expect(linePrepare).toHaveBeenCalled();
+    const args = linePrepare.mock.calls[0]!;
+    // prepare(series, buffer, xScale, yScale, xOffset, dpr, w, h, pointCount, lineSeriesCount, ringLayout, forceStandard)
+    expect(args[1]).toBe(rawBuffer);
+    expect(args[10]).toEqual(ringLayout);
+  });
+
+  it('decimated path omits modular ring on line.prepare (linear output)', () => {
+    const points: Array<[number, number]> = [];
+    for (let i = 0; i < 64; i++) points.push([i, Math.sin(i)]);
+    const series = makeLineSeries(points);
+
+    const rawBuffer = { label: 'raw' } as unknown as GPUBuffer;
+    const decimatedBuffer = { label: 'decimated' } as unknown as GPUBuffer;
+    const linePrepare = vi.fn();
+    const decimationPrepare = vi.fn(() => 8);
+
+    const dataStore: DataStore = {
+      setSeries: vi.fn(),
+      appendSeries: vi.fn(),
+      removeSeries: vi.fn(),
+      getSeriesBuffer: vi.fn(() => rawBuffer),
+      getSeriesPointCount: vi.fn(() => 64),
+      getSeriesRingLayout: vi.fn(() => ({ start: 3, capacity: 64 })),
+      isSeriesRingMode: vi.fn(() => true),
+      getSeriesEffectiveMaxPoints: vi.fn(() => 64),
+      getSeriesContentHash: vi.fn(() => 1),
+      getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
+      getSeriesXOffset: vi.fn(() => 0),
+      dispose: vi.fn(),
+    };
+
+    prepareSeries(
+      {
+        lineRenderers: [{ prepare: linePrepare, render: vi.fn(), dispose: vi.fn() } as any],
+        areaRenderers: [],
+        barRenderer: { prepare: vi.fn(), render: vi.fn(), dispose: vi.fn() } as any,
+        scatterRenderers: [],
+        scatterDensityRenderers: [],
+        pieRenderers: [],
+        candlestickRenderers: [],
+        decimationComputes: [
+          {
+            prepare: decimationPrepare,
+            needsEncode: vi.fn(() => false),
+            encodeCompute: vi.fn(),
+            getOutputBuffer: vi.fn(() => decimatedBuffer),
+            getOutputPointCount: vi.fn(() => 8),
+            dispose: vi.fn(),
+          },
+        ],
+      },
+      {
+        currentOptions: {
+          xAxis: { type: 'value' },
+          yAxes: [{ id: 'y', min: -1 }],
+          series: [series],
+          performance: { lod: 'auto' },
+        } as any,
+        seriesForRender: [series],
+        xScale: makeScale(0, 63),
+        yScales: new Map([['y', makeScale(-1, 1)]]),
+        gridArea: makeGridArea(),
+        dataStore,
+        appendedGpuThisFrame: new Set(),
+        gpuSeriesKindByIndex: ['unknown'],
+        zoomState: null,
+        visibleXDomain: { min: 0, max: 63 },
+        introPhase: 'done',
+        introProgress01: 1,
+        withAlpha: (c: string) => c,
+        maxRadiusCss: 4,
+        lastSetSeriesCache: new Map(),
+        filterGapsCache: createFilterGapsCache(),
+      }
+    );
+
+    expect(linePrepare).toHaveBeenCalled();
+    const args = linePrepare.mock.calls[0]!;
+    expect(args[1]).toBe(decimatedBuffer);
+    // Decimation output is chronological linear — ringLayout arg is undefined.
+    expect(args[10]).toBeUndefined();
   });
 });

@@ -240,6 +240,9 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
 
   const introP = introPhase === 'running' ? clamp01(introProgress01) : 1;
 
+  // performance.lod: 'strict' disables dense hairline / scatter radius compaction.
+  const forceStandardDraw = currentOptions.performance?.lod === 'strict';
+
   // Multi-series hairline budget (group 1): count **visible** line series once.
   // Used only for hairline segment budget and multi-series prepare inputs
   // (equal-N approximation); see `MULTI_SERIES_HAIRLINE_SEGMENT_BUDGET`.
@@ -365,6 +368,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
           let strokePointCount = rawPointCount;
 
           if (rawPointCount <= targetBuckets || algorithm === null) {
+            // Raw under-threshold: bind modular storage with ring remap in line.wgsl.
             renderers.lineRenderers[i].prepare(
               s,
               rawBuffer,
@@ -375,7 +379,9 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
               gridArea.canvasWidth,
               gridArea.canvasHeight,
               rawPointCount,
-              lineSeriesCount
+              lineSeriesCount,
+              ringLayout,
+              forceStandardDraw
             );
             gpuSeriesKindByIndex[i] = 'gpuDecimationRaw';
           } else {
@@ -396,7 +402,9 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
                 gridArea.canvasWidth,
                 gridArea.canvasHeight,
                 rawPointCount,
-                lineSeriesCount
+                lineSeriesCount,
+                ringLayout,
+                forceStandardDraw
               );
               gpuSeriesKindByIndex[i] = 'gpuDecimationRaw';
               break;
@@ -419,6 +427,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
             strokeBuffer = decimatedBuffer;
             strokePointCount = outputPointCount;
 
+            // Decimation output is always chronological linear (no ring params).
             renderers.lineRenderers[i].prepare(
               s,
               decimatedBuffer,
@@ -431,7 +440,9 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
               gridArea.canvasWidth,
               gridArea.canvasHeight,
               outputPointCount,
-              lineSeriesCount
+              lineSeriesCount,
+              undefined,
+              forceStandardDraw
             );
             gpuSeriesKindByIndex[i] = 'gpuDecimationRaw';
           }
@@ -496,6 +507,8 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
         const buffer = dataStore.getSeriesBuffer(i);
         // Pass filtered data to the renderer so point count matches the GPU buffer.
         const lineSeriesForRenderer = uploadData !== s.data ? { ...s, data: uploadData } : s;
+        // Full-raw / CPU path may still be modular after maxPoints wrap — pass ring.
+        const cpuPathRingLayout = dataStore.getSeriesRingLayout(i);
         renderers.lineRenderers[i].prepare(
           lineSeriesForRenderer,
           buffer,
@@ -506,7 +519,9 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
           gridArea.canvasWidth,
           gridArea.canvasHeight,
           undefined,
-          lineSeriesCount
+          lineSeriesCount,
+          cpuPathRingLayout,
+          forceStandardDraw
         );
 
         // Track the GPU buffer kind for future append fast-path decisions.
@@ -597,7 +612,14 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
           gpuSeriesKindByIndex[i] = 'other';
         } else {
           const animated = introP < 1 ? ({ ...s, color: withAlpha(s.color, introP) } as const) : s;
-          renderers.scatterRenderers[i].prepare(animated, s.data, xScale, getYScale(s), gridArea);
+          renderers.scatterRenderers[i].prepare(
+            animated,
+            s.data,
+            xScale,
+            getYScale(s),
+            gridArea,
+            forceStandardDraw
+          );
         }
         break;
       }

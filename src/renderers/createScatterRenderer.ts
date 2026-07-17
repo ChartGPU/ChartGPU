@@ -17,7 +17,12 @@ export interface ScatterRenderer {
     data: CartesianSeriesData,
     xScale: LinearScale,
     yScale: LinearScale,
-    gridArea?: GridArea
+    gridArea?: GridArea,
+    /**
+     * When true (`performance.lod: 'strict'`), disable dense radius compaction
+     * and honor configured marker size.
+     */
+    forceStandardDraw?: boolean
   ): void;
   /**
    * Drop cached instance geometry so the next `prepare` re-packs.
@@ -377,7 +382,14 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     lastViewportPx = [w, h];
   };
 
-  const prepare: ScatterRenderer['prepare'] = (seriesConfig, data, xScale, yScale, gridArea) => {
+  const prepare: ScatterRenderer['prepare'] = (
+    seriesConfig,
+    data,
+    xScale,
+    yScale,
+    gridArea,
+    forceStandardDraw
+  ) => {
     assertNotDisposed();
 
     // Linear scales: affine is independent of data bounds — sample at 0 and 1
@@ -447,6 +459,7 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
         plotWidthDevicePx: plotW,
         plotHeightDevicePx: plotH,
         radiusDevicePx: lastConstRadiusDevicePx,
+        forceStandard: forceStandardDraw === true,
       });
       drawRadiusDevicePx = drawPol.effectiveRadiusDevicePx;
     }
@@ -597,6 +610,11 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
           }
           if (f32Finite) {
             // Zero-copy dense path: GPU channel buffers = column bytes.
+            // Still refresh cpuXStagingF32 (and y staging) so equal-N y-only
+            // detection compares against the x just uploaded — not a stale pack.
+            ensureCpuChannelCapacity(count);
+            cpuXStagingF32.set(xCol.subarray(0, count));
+            cpuYStagingF32.set(yCol.subarray(0, count));
             instanceCount = count;
             boundConstPointCount = count;
             const requiredBytes = Math.max(4, count * CONST_CHANNEL_STRIDE_BYTES);

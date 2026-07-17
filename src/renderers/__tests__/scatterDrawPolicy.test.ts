@@ -32,6 +32,18 @@ describe('resolveScatterDrawPolicy', () => {
     expect(r.effectiveRadiusDevicePx).toBe(DENSE_SCATTER_MIN_RADIUS_DEVICE_PX);
   });
 
+  it('forceStandard (performance.lod strict) keeps configured radius at high density (issue 2.2)', () => {
+    const r = resolveScatterDrawPolicy({
+      constRadius: true,
+      pointCount: 1_000_000,
+      ...plot,
+      radiusDevicePx: 10,
+      forceStandard: true,
+    });
+    expect(r.policy).toBe('standard');
+    expect(r.effectiveRadiusDevicePx).toBe(10);
+  });
+
   it('never applies to variable-radius path', () => {
     const r = resolveScatterDrawPolicy({
       constRadius: false,

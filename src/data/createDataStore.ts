@@ -101,6 +101,15 @@ export interface DataStore {
    */
   isSeriesRingMode(index: number): boolean;
   /**
+   * Effective fixed-capacity window for this series when ring mode is active
+   * (caller `maxPoints` **or** device auto-window at storage binding limits).
+   * Returns `null` when the series is unbounded linear storage.
+   *
+   * Hit-test / dual-store paths must apply the same window when this is non-null
+   * even if the API caller omitted `options.maxPoints`.
+   */
+  getSeriesEffectiveMaxPoints(index: number): number | null;
+  /**
    * Content version for GPU dirty-gating (WG-P0-2).
    *
    * - **`setSeries`**: FNV-1a of the packed Float32 payload (equal-content
@@ -954,6 +963,11 @@ export function createDataStore(device: GPUDevice): DataStore {
     return getSeriesEntry(index).ringCapacityPoints > 0;
   };
 
+  const getSeriesEffectiveMaxPoints = (index: number): number | null => {
+    const cap = getSeriesEntry(index).ringCapacityPoints;
+    return cap > 0 ? cap : null;
+  };
+
   const getSeriesContentHash = (index: number): number => {
     return getSeriesEntry(index).hash32;
   };
@@ -1017,6 +1031,7 @@ export function createDataStore(device: GPUDevice): DataStore {
     getSeriesPointCount,
     getSeriesRingLayout,
     isSeriesRingMode,
+    getSeriesEffectiveMaxPoints,
     getSeriesContentHash,
     getSeriesStagingBuffer,
     getSeriesXOffset,

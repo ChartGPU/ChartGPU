@@ -601,4 +601,102 @@ describe('StagingRingView (zero-copy DataStore staging alias)', () => {
     expect(ring.x[0]).toBe(51); // 1 + 50
     expect(ring.y[1]).toBe(20);
   });
+
+  it('preserves per-point size through create + append + wrap (issue 1.4)', () => {
+    const ring = createRingXYColumns(4, true);
+    appendIntoRingXY(
+      ring,
+      { x: [0, 1, 2, 3], y: [10, 11, 12, 13], size: [1, 2, 3, 4] },
+      0,
+      4,
+      0
+    );
+    expect(getSize(ring as any, 0)).toBe(1);
+    expect(getSize(ring as any, 3)).toBe(4);
+    appendIntoRingXY(ring, { x: [100], y: [50], size: [9] }, 0, 1, 1);
+    expect(getPointCount(ring as any)).toBe(4);
+    expect(getX(ring as any, 0)).toBe(1);
+    expect(getSize(ring as any, 0)).toBe(2);
+    expect(getSize(ring as any, 3)).toBe(9);
+  });
+
+  it('allocates size channel on first sized append after unsized create', () => {
+    const ring = createRingXYColumns(3);
+    appendIntoRingXY(ring, { x: [0, 1], y: [0, 1] }, 0, 2, 0);
+    expect(ring.size).toBeUndefined();
+    appendIntoRingXY(ring, { x: [2], y: [2], size: [5] }, 0, 1, 0);
+    expect(ring.size).toBeDefined();
+    expect(getSize(ring as any, 2)).toBe(5);
+    expect(getSize(ring as any, 0)).toBeUndefined(); // unsized prior slots
+  });
+
+  it('linear→ring promote with size then wrap preserves chronological sizes (issue 1.4 / 10)', () => {
+    // Mirrors ChartGPU / appendFlush promote: sized linear columns → ring seed → wrap.
+    const linear = {
+      x: [0, 1, 2, 3, 4],
+      y: [10, 11, 12, 13, 14],
+      size: [1, 2, 3, 4, 5] as (number | undefined)[],
+    };
+    const maxPoints = 4;
+    const hasSize =
+      linear.size != null && linear.size.some((v) => v !== undefined && Number.isFinite(v as number));
+    const ring = createRingXYColumns(maxPoints, hasSize);
+    const seedCount = Math.min(linear.x.length, maxPoints);
+    const seedStart = Math.max(0, linear.x.length - seedCount);
+    for (let i = 0; i < seedCount; i++) {
+      ring.x[i] = linear.x[seedStart + i]!;
+      ring.y[i] = linear.y[seedStart + i]!;
+      if (ring.size && linear.size) {
+        const sv = linear.size[seedStart + i];
+        ring.size[i] = typeof sv === 'number' && Number.isFinite(sv) ? sv : Number.NaN;
+      }
+    }
+    ring.count = seedCount;
+    ring.start = 0;
+    // Seeded tail of linear: [1,2,3,4] with sizes [2,3,4,5]
+    expect(getSize(ring as any, 0)).toBe(2);
+    expect(getSize(ring as any, 3)).toBe(5);
+    // Wrap one: drop oldest (size 2), append size 9
+    appendIntoRingXY(ring, { x: [100], y: [50], size: [9] }, 0, 1, 1);
+    expect(getPointCount(ring as any)).toBe(4);
+    expect(getX(ring as any, 0)).toBe(2);
+    expect(getSize(ring as any, 0)).toBe(3);
+    expect(getSize(ring as any, 1)).toBe(4);
+    expect(getSize(ring as any, 2)).toBe(5);
+    expect(getSize(ring as any, 3)).toBe(9);
+  });
+
+  it('demote ring with size → linear → re-promote preserves sizes', () => {
+    const ring = createRingXYColumns(3, true);
+    appendIntoRingXY(
+      ring,
+      { x: [0, 1, 2], y: [10, 11, 12], size: [1, 2, 3] },
+      0,
+      3,
+      0
+    );
+    // Demote chronological (mirrors appendFlush capacity-mismatch demote).
+    const linear: { x: number[]; y: number[]; size: (number | undefined)[] } = {
+      x: [],
+      y: [],
+      size: [],
+    };
+    for (let i = 0; i < ring.count; i++) {
+      linear.x.push(getX(ring as any, i));
+      linear.y.push(getY(ring as any, i));
+      linear.size.push(getSize(ring as any, i));
+    }
+    expect(linear.size).toEqual([1, 2, 3]);
+    // Re-promote to larger capacity.
+    const next = createRingXYColumns(5, true);
+    for (let i = 0; i < linear.x.length; i++) {
+      next.x[i] = linear.x[i]!;
+      next.y[i] = linear.y[i]!;
+      next.size![i] = linear.size[i] as number;
+    }
+    next.count = linear.x.length;
+    next.start = 0;
+    expect(getSize(next as any, 0)).toBe(1);
+    expect(getSize(next as any, 2)).toBe(3);
+  });
 });

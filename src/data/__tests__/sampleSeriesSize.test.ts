@@ -18,10 +18,13 @@ describe('sampleSeriesDataPoints LTTB size preservation', () => {
     expect(sawSize).toBe(true);
   });
 
-  it('uses Float32 path when dense tuples have no size', () => {
+  it('samples dense size-less tuples via Float64-domain LTTB (epoch-safe)', () => {
+    // Issue 0.2: dense DataPoint[] no longer packs absolute x to Float32 before LTTB
+    // (epoch-ms collapse). Returns DataPoint tuples with original domain x.
     const data: DataPoint[] = Array.from({ length: 200 }, (_, i) => [i, Math.sin(i)]);
     const sampled = sampleSeriesDataPoints(data, 'lttb', 20);
-    expect(sampled instanceof Float32Array).toBe(true);
+    expect(ArrayBuffer.isView(sampled)).toBe(false);
+    expect(getPointCount(sampled)).toBe(20);
   });
 
   it('preserves XYArraysData size channel through LTTB', () => {

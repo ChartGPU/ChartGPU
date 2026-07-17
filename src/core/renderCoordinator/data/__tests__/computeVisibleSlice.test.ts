@@ -428,3 +428,24 @@ describe('computeVisibleSlice', () => {
     });
   });
 });
+
+describe('isMonotonicNonDecreasingFiniteX mutable ring/staging (issue 1.5)', () => {
+  it('does not stick mono=true after ring x mutates under same ref', async () => {
+    const { createRingXYColumns, appendIntoRingXY } = await import('../../../../data/cartesianData');
+    const ring = createRingXYColumns(4);
+    appendIntoRingXY(ring, { x: [0, 1, 2, 3], y: [0, 1, 2, 3] }, 0, 4, 0);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+    // Mutate physical x under same object identity to break monotonicity.
+    ring.x[1] = -100;
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(false);
+  });
+
+  it('does not stick mono=true after StagingRingView mutates', async () => {
+    const { createStagingRingView } = await import('../../../../data/cartesianData');
+    const staging = new Float32Array([0, 0, 1, 1, 2, 2, 3, 3]);
+    const view = createStagingRingView(staging, 0, 0, 4, 0);
+    expect(isMonotonicNonDecreasingFiniteX(view as any)).toBe(true);
+    staging[2] = -5; // break chronological x at logical index 1
+    expect(isMonotonicNonDecreasingFiniteX(view as any)).toBe(false);
+  });
+});

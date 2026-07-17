@@ -69,6 +69,27 @@ export type OHLCDataPoint = OHLCDataPointTuple | OHLCDataPointObject;
 export type SeriesSampling = 'none' | 'lttb' | 'average' | 'max' | 'min' | 'ohlc';
 
 /**
+ * Adaptive draw LOD policy for dense charts.
+ *
+ * - `'auto'` (default): may switch dense lines to 1 device-px hairline and compact
+ *   dense scatter markers toward ~1 device px for fill-rate (suite-friendly).
+ * - `'strict'`: always honor configured line width and scatter marker size;
+ *   also forces full LTTB recompute on equal-N y-only updates (no frozen indices).
+ *
+ * Does not change sampling algorithms or uploaded point counts for hairline/compact
+ * alone — those are draw-only. See `docs/performance.md`.
+ */
+export type PerformanceLod = 'auto' | 'strict';
+
+export interface PerformanceConfig {
+  /**
+   * Dense-draw LOD for lines (hairline) and scatter (radius compaction).
+   * Default: `'auto'`.
+   */
+  readonly lod?: PerformanceLod;
+}
+
+/**
  * Scatter points use the tuple form `[x, y, size?]`.
  */
 export type ScatterPointTuple = DataPointTuple;
@@ -732,4 +753,9 @@ export interface ChartGPUOptions {
    * overlay. To change DPR after creation, dispose and recreate the chart.
    */
   readonly devicePixelRatio?: number;
+  /**
+   * Performance / fidelity policy (adaptive dense LOD, equal-N LTTB behavior).
+   * See {@link PerformanceConfig}. Default lod is `'auto'`.
+   */
+  readonly performance?: PerformanceConfig;
 }

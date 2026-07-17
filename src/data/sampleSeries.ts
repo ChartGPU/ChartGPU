@@ -1,6 +1,6 @@
 import type { CartesianSeriesData, DataPoint, DataPointTuple, SeriesSampling } from '../config/types';
-import { lttbSample } from './lttbSample';
-import { getPointCount, getX, getY, getSize as getPointSize, hasAnyPerPointSize, hasNullGaps } from './cartesianData';
+import { lttbSample, lttbSampleCartesian } from './lttbSample';
+import { getPointCount, getX, getY, getSize as getPointSize, hasNullGaps } from './cartesianData';
 
 function clampTargetPoints(targetPoints: number): number {
   const t = Math.floor(targetPoints);
@@ -32,10 +32,13 @@ function isInterleavedXYData(data: CartesianSeriesData): data is import('../conf
 }
 
 /**
- * Packs CartesianSeriesData into a Float32Array for LTTB sampling.
- * Returns the packed Float32Array.
+ * Packs CartesianSeriesData into a Float32Array (absolute domain x).
+ * **Not used for LTTB index selection on time axes** — Float32 ULP at epoch-ms
+ * (~1e12) is ~1.3e5 ms and collapses second-spaced points before LTTB runs.
+ * Kept for tests / callers that intentionally want absolute Float32 pack.
+ * @internal
  */
-function packToFloat32Array(data: CartesianSeriesData): Float32Array {
+export function packToFloat32ArrayAbsolute(data: CartesianSeriesData): Float32Array {
   // Dense DataPoint[] (tuple or object): avoid per-point getX/getY dispatch.
   if (Array.isArray(data)) {
     const count = data.length;
@@ -219,10 +222,11 @@ function sampleByBucketsFromCartesian(
  *
  * When sampling occurs:
  * - For `lttb`:
- *   - Float32Array interleaved → returns sampled Float32Array
- *   - Other interleaved typed array → packs to Float32Array, returns sampled Float32Array
- *   - DataPoint[] → returns sampled DataPoint[]
- *   - XYArraysData → packs to Float32Array, returns sampled Float32Array
+ *   - Float32Array interleaved → sampled Float32Array (domain x already Float32)
+ *   - Float64 interleaved / other typed arrays / XYArraysData / DataPoint[] →
+ *     Float64-domain LTTB (`lttbSampleCartesian`); returns `DataPoint[]` with
+ *     original domain x (epoch-ms safe). Null gaps are filtered first, then the
+ *     same Float64 path runs on the non-null points.
  * - For `average`/`max`/`min`:
  *   - Returns DataPointTuple[] for all input formats
  */
@@ -241,47 +245,41 @@ export function sampleSeriesDataPoints(
 
   switch (sampling) {
     case 'lttb': {
-      // Float32Array fast path
+      // Float32Array: already Float32 domain x — LTTB on interleaved floats.
+      // Callers that need epoch-ms precision must use Float64 domain formats
+      // (DataPoint[] / XY arrays / Float64 interleaved) so index selection stays
+      // in Float64 via lttbSampleCartesian.
       if (data instanceof Float32Array) {
         return lttbSample(data, threshold);
       }
 
-      // Other interleaved typed arrays: pack to Float32Array and sample
-      if (isInterleavedXYData(data)) {
-        const packed = packToFloat32Array(data);
-        return lttbSample(packed, threshold);
+      // Float64 interleaved: keep domain x in Float64 for index selection.
+      if (data instanceof Float64Array) {
+        return lttbSampleCartesian(data as unknown as CartesianSeriesData, threshold);
       }
 
-      // XYArraysData: pack to Float32Array and sample (preserve size via DataPoint path).
+      // Other interleaved typed arrays (Int32, etc.): use Float64 getX path.
+      if (isInterleavedXYData(data)) {
+        return lttbSampleCartesian(data, threshold);
+      }
+
+      // XYArraysData: Float64 getX path (preserves epoch-ms + optional size).
       if (isXYArraysData(data)) {
-        if (hasAnyPerPointSize(data)) {
-          // Convert to DataPoint tuples with size so LTTB retains the channel.
-          const n = getPointCount(data);
-          const pts: DataPoint[] = new Array(n);
-          for (let i = 0; i < n; i++) {
-            const size = getPointSize(data, i);
-            pts[i] = size !== undefined ? [getX(data, i), getY(data, i), size] : [getX(data, i), getY(data, i)];
-          }
-          return lttbSample(pts, threshold);
-        }
-        const packed = packToFloat32Array(data);
-        return lttbSample(packed, threshold);
+        return lttbSampleCartesian(data, threshold);
       }
 
       // DataPoint[] path — filter nulls before LTTB sampling.
       // Nulls represent line-segmentation gaps and will be handled by gap detection
       // in later pipeline stages; LTTB only operates on concrete data points.
-      //
-      // Dense (no nulls) + no per-point size → pack once to Float32 and run
-      // interleaved LTTB (faster than per-point object/tuple access).
-      // When any point carries `size`, keep DataPoint LTTB so size is preserved.
+      // Always use Float64-domain LTTB (not absolute Float32 pack) so time axes
+      // keep distinct second-spaced timestamps through sampling — including the
+      // null-gap branch (filtered non-nulls still go through lttbSampleCartesian).
       const asPoints = data as ReadonlyArray<DataPoint | null>;
-      if (!hasNullGaps(data) && !hasAnyPerPointSize(data)) {
-        const packed = packToFloat32Array(asPoints as unknown as CartesianSeriesData);
-        return lttbSample(packed, threshold);
+      if (hasNullGaps(data)) {
+        const nonNullData = asPoints.filter((p): p is DataPoint => p !== null);
+        return lttbSampleCartesian(nonNullData as unknown as CartesianSeriesData, threshold);
       }
-      const nonNullData = asPoints.filter((p): p is DataPoint => p !== null);
-      return lttbSample(nonNullData, threshold);
+      return lttbSampleCartesian(asPoints as unknown as CartesianSeriesData, threshold);
     }
 
     case 'average':

@@ -187,10 +187,14 @@ function isXYArraysData(data: CartesianSeriesData): data is XYArraysData {
 /**
  * Creates a fixed-capacity ring for FIFO streaming. Physical buffers are sized
  * to `capacity`; logical length starts at 0.
+ *
+ * When `withSize` is true, allocates a per-point size channel. Prefer this when
+ * the seed/source has per-point sizes so linear → ring promotion keeps radii.
+ * `stagingRingViewToRingXYColumns` remains size-less (staging is xy only).
  */
-export function createRingXYColumns(capacity: number): RingXYColumns {
+export function createRingXYColumns(capacity: number, withSize = false): RingXYColumns {
   const cap = Math.max(1, capacity | 0);
-  return {
+  const ring: RingXYColumns = {
     __ring: true,
     x: new Float64Array(cap),
     y: new Float64Array(cap),
@@ -198,12 +202,33 @@ export function createRingXYColumns(capacity: number): RingXYColumns {
     count: 0,
     capacity: cap,
   };
+  if (withSize) {
+    ring.size = new Float64Array(cap);
+  }
+  return ring;
+}
+
+/**
+ * Ensures `ring.size` exists (allocates a size channel filled with NaN =
+ * "no size"). Used when the first sized point arrives after an unsized promote.
+ */
+export function ensureRingSizeChannel(ring: RingXYColumns): Float64Array {
+  if (ring.size) return ring.size;
+  // Fill with NaN so prior unsized slots read as "no size" via getSize.
+  const size = new Float64Array(ring.capacity);
+  size.fill(Number.NaN);
+  ring.size = size;
+  return size;
 }
 
 /**
  * Appends points into a ring, applying the same drop/keep plan as
  * `planMaxPointsWindow`. Drop first, then write — O(keepNewCount) only.
  * Never rewrites the retained window.
+ *
+ * When any appended point (or the ring already) has per-point size, writes the
+ * size channel (allocating if needed). Sources without size leave size[i] as
+ * NaN for new slots when the channel exists (getSize treats NaN as undefined).
  */
 export function appendIntoRingXY(
   ring: RingXYColumns,
@@ -226,10 +251,18 @@ export function appendIntoRingXY(
   // After drop, free space is enough for keepNewCount (plan guarantees
   // count + keepNewCount <= capacity). Write head is the first free slot.
   let write = (ring.start + ring.count) % cap;
+  let sizeChannel = ring.size;
   for (let i = 0; i < keepNewCount; i++) {
     const srcIdx = newSrcOffset + i;
     ring.x[write] = getX(src, srcIdx);
     ring.y[write] = getY(src, srcIdx);
+    const sz = getSize(src, srcIdx);
+    if (sz !== undefined) {
+      if (!sizeChannel) sizeChannel = ensureRingSizeChannel(ring);
+      sizeChannel[write] = sz;
+    } else if (sizeChannel) {
+      sizeChannel[write] = Number.NaN;
+    }
     write++;
     if (write >= cap) write = 0;
   }
@@ -367,7 +400,9 @@ export function getY(data: CoordinatorCartesianData, i: number): number {
 export function getSize(data: CartesianSeriesData, i: number): number | undefined {
   if (isRingXYColumns(data)) {
     if (!data.size || i < 0 || i >= data.count) return undefined;
-    return data.size[(data.start + i) % data.capacity];
+    const v = data.size[(data.start + i) % data.capacity];
+    // NaN marks "no size" for mixed-size ring appends (Float64Array cannot store undefined).
+    return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
   }
   if (isStagingRingView(data)) {
     return undefined;
@@ -417,7 +452,8 @@ export function hasAnyPerPointSize(data: CartesianSeriesData): boolean {
       const cap = data.capacity;
       let phys = data.start;
       for (let i = 0; i < n; i++) {
-        if (data.size[phys] !== undefined) {
+        const v = data.size[phys];
+        if (typeof v === 'number' && Number.isFinite(v)) {
           result = true;
           break;
         }

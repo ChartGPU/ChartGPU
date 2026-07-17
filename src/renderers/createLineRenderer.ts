@@ -31,7 +31,19 @@ export interface LineRenderer {
      * Visible line series count for multi-series hairline budget
      * ({@link resolveLineDrawPolicy} / group 1).
      */
-    lineSeriesCount?: number
+    lineSeriesCount?: number,
+    /**
+     * Modular ring layout when `dataBuffer` is DataStore raw storage after FIFO
+     * wrap. Logical instance `i` maps to physical `(ringStart + i) % ringCapacity`
+     * in `line.wgsl` (matches decimation). Omit or pass `ringCapacity: 0` for
+     * linear / decimated chronological buffers.
+     */
+    ringLayout?: Readonly<{ start: number; capacity: number }>,
+    /**
+     * Force standard AA quads (honor configured line width) when true — used by
+     * `performance.lod: 'strict'`. When false/omitted, dense hairline policy applies.
+     */
+    forceStandardDraw?: boolean
   ): void;
   /**
    * Draw into the **main** MSAA pass. Dense hairline series are deferred
@@ -174,8 +186,9 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
 
   const bindGroupLayout = getLineBindGroupLayout(device);
 
-  // VS uniforms: mat4x4 (64) + canvasSize (8) + dpr (4) + lineWidthCssPx (4) = 80 bytes.
-  const vsUniformBuffer = createUniformBuffer(device, 80, {
+  // VS uniforms: mat4x4 (64) + canvasSize (8) + dpr (4) + lineWidthCssPx (4)
+  // + ringStart/ringCapacity/pad (16) = 96 bytes (16-byte aligned).
+  const vsUniformBuffer = createUniformBuffer(device, 96, {
     label: 'lineRenderer/vsUniforms',
   });
   const fsUniformBuffer = createUniformBuffer(device, 16, {
@@ -183,8 +196,9 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
   });
 
   // Reused CPU-side staging for uniform writes (avoid per-frame allocations).
-  const vsUniformScratchBuffer = new ArrayBuffer(80);
+  const vsUniformScratchBuffer = new ArrayBuffer(96);
   const vsUniformScratchF32 = new Float32Array(vsUniformScratchBuffer);
+  const vsUniformScratchU32 = new Uint32Array(vsUniformScratchBuffer);
   const fsUniformScratchF32 = new Float32Array(4);
 
   // Bind group is cached by the current `dataBuffer` reference. A new bind group is created only
@@ -211,6 +225,8 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
   let lastCanvasH = Number.NaN;
   let lastDpr = Number.NaN;
   let lastLineWidth = Number.NaN;
+  let lastRingStart = 0;
+  let lastRingCapacity = 0;
   /** Which VS buffer is currently referenced by currentBindGroup. */
   let boundVsBuffer: GPUBuffer = vsUniformBuffer;
 
@@ -295,7 +311,9 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     canvasWidthDevicePx = 1,
     canvasHeightDevicePx = 1,
     pointCountOverride,
-    lineSeriesCount
+    lineSeriesCount,
+    ringLayout,
+    forceStandardDraw
   ) => {
     assertNotDisposed();
 
@@ -309,7 +327,8 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     const { a: ax, b: bxPacked } = computePackedXAffineFromScale(xScale, xOffset);
     const { a: ay, b: by } = computeClipAffineFromScale(yScale, 0, 1);
 
-    // Write VS uniforms: mat4x4 (16 floats) + canvasSize (2 floats) + dpr (1 float) + lineWidth (1 float).
+    // Write VS uniforms: mat4x4 (16 floats) + canvasSize (2 floats) + dpr (1 float)
+    // + lineWidth (1 float) + ringStart/ringCapacity (u32 pair + pad).
     writeTransformMat4F32(vsUniformScratchF32, ax, bxPacked, ay, by);
     const dpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
     const canvasW = Number.isFinite(canvasWidthDevicePx) && canvasWidthDevicePx > 0 ? canvasWidthDevicePx : 1;
@@ -320,23 +339,42 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
         : DEFAULT_LINE_WIDTH_CSS_PX;
     // Dense full-rewrite (group 3) + multi-series fill cliff (group 1): switch to
     // line-list hairline only when main MSAA is 4× (see lineDrawPolicy).
+    // `forceStandardDraw` (performance.lod: 'strict') always honors configured width.
     const drawPolicy = resolveLineDrawPolicy({
       pointCount: currentPointCount,
       lineWidthCssPx: nominalLineWidthCss,
       lineSeriesCount,
       msaaSampleCount: sampleCount,
+      forceStandard: forceStandardDraw === true,
     });
     currentDrawPolicy = drawPolicy.policy;
     const lineWidthCss = drawPolicy.effectiveLineWidthCssPx;
+
+    // Modular ring: remap when capacity > 0. start may be 0 during pre-wrap fill
+    // (identity map) or after wrap (oldest physical index). Match getSeriesRingLayout:
+    // capacity 0 → linear; capacity > 0 → floor(start) with start >= 0.
+    const ringCapacity =
+      ringLayout && Number.isFinite(ringLayout.capacity) && ringLayout.capacity > 0
+        ? Math.floor(ringLayout.capacity)
+        : 0;
+    const ringStart =
+      ringCapacity > 0 && ringLayout && Number.isFinite(ringLayout.start) && ringLayout.start >= 0
+        ? Math.floor(ringLayout.start)
+        : 0;
 
     vsUniformScratchF32[16] = canvasW;
     vsUniformScratchF32[17] = canvasH;
     vsUniformScratchF32[18] = dpr;
     vsUniformScratchF32[19] = lineWidthCss;
+    // u32 ring fields at byte offset 80 (float index 20).
+    vsUniformScratchU32[20] = ringStart >>> 0;
+    vsUniformScratchU32[21] = ringCapacity >>> 0;
+    vsUniformScratchU32[22] = 0;
+    vsUniformScratchU32[23] = 0;
 
     // Private VS only (multi-chart deferred-submit safe). Dirty-skip when affine /
-    // size / width unchanged (issue 2.5) — covers axes-only ticks without a
-    // device-global shared buffer that multi-chart slots would clobber.
+    // size / width / ring layout unchanged (issue 2.5) — covers axes-only ticks
+    // without a device-global shared buffer that multi-chart slots would clobber.
     let vsBufferForBind: GPUBuffer = vsUniformBuffer;
     {
       const vsDirty =
@@ -347,7 +385,9 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
         lastCanvasW !== canvasW ||
         lastCanvasH !== canvasH ||
         lastDpr !== dpr ||
-        lastLineWidth !== lineWidthCss;
+        lastLineWidth !== lineWidthCss ||
+        lastRingStart !== ringStart ||
+        lastRingCapacity !== ringCapacity;
       if (vsDirty) {
         writeUniformBuffer(device, vsUniformBuffer, vsUniformScratchBuffer);
         lastAx = ax;
@@ -358,6 +398,8 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
         lastCanvasH = canvasH;
         lastDpr = dpr;
         lastLineWidth = lineWidthCss;
+        lastRingStart = ringStart;
+        lastRingCapacity = ringCapacity;
       }
     }
 

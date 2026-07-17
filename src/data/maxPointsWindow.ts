@@ -72,6 +72,53 @@ export function maxPointsPeakRetention(maxPoints: number): number {
 }
 
 /**
+ * Device storage-binding cap in points (interleaved float32 x,y = 8 bytes/point).
+ * Matches DataStore auto-window arithmetic.
+ */
+export function deviceMaxPointsFromLimits(
+  limits: Readonly<{ maxBufferSize: number; maxStorageBufferBindingSize: number }>
+): number {
+  const hardCap = Math.min(limits.maxBufferSize, limits.maxStorageBufferBindingSize);
+  return Math.max(1, Math.floor(hardCap / (2 * 4)));
+}
+
+/**
+ * Resolve the effective `maxPoints` for an append across DataStore + dual-store
+ * (hit-test / coordinator columns).
+ *
+ * - Caller `maxPoints` wins when set and ≤ device cap.
+ * - When unbounded, engages device auto-window once the uncapped next length
+ *   would exceed the storage-binding budget (same gate as DataStore.appendSeries).
+ * - Device always hard-clamps growth when tighter than the caller cap.
+ */
+export function resolveEffectiveMaxPointsForAppend(
+  callerMaxPoints: number | undefined | null,
+  prevCount: number,
+  newCount: number,
+  limits?: Readonly<{ maxBufferSize: number; maxStorageBufferBindingSize: number }> | null
+): number | undefined {
+  const caller = normalizeMaxPoints(callerMaxPoints);
+  if (!limits) return caller;
+
+  const deviceMax = deviceMaxPointsFromLimits(limits);
+  const hardCap = Math.min(limits.maxBufferSize, limits.maxStorageBufferBindingSize);
+  const prev = Math.max(0, prevCount | 0);
+  const neu = Math.max(0, newCount | 0);
+  const uncappedNext = prev + neu;
+  // Match DataStore: requiredBytes ≈ nextPointCount * 8 (roundUpToMultipleOf4).
+  const requiredBytes = Math.max(4, uncappedNext * 2 * 4);
+
+  if (caller == null) {
+    if (requiredBytes > hardCap || uncappedNext > deviceMax) {
+      return deviceMax;
+    }
+    return undefined;
+  }
+  // Explicit caller max still cannot exceed device storage budget.
+  return caller <= deviceMax ? caller : deviceMax;
+}
+
+/**
  * Plans how many points to keep after appending `newCount` onto a series of
  * length `prevCount` under optional `maxPoints` (fixed-capacity ring).
  */

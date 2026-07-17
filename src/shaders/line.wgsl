@@ -21,8 +21,14 @@ struct VSUniforms {
   canvasSize      : vec2<f32>,     //  8 bytes: device pixels (width, height)
   devicePixelRatio: f32,           //  4 bytes
   lineWidthCssPx  : f32,           //  4 bytes: line width in CSS pixels
+  // Fixed-capacity ring FIFO (matches decimation.wgsl): physical index of oldest
+  // logical point. When ringCapacity == 0, storage is linear chronological.
+  ringStart       : u32,           //  4 bytes
+  ringCapacity    : u32,           //  4 bytes
+  pad0            : u32,           //  4 bytes
+  pad1            : u32,           //  4 bytes
 };
-// Total: 80 bytes (aligned to 16).
+// Total: 96 bytes (aligned to 16).
 
 @group(0) @binding(0) var<uniform> vsUniforms : VSUniforms;
 
@@ -39,6 +45,17 @@ struct VSOut {
   @location(0) acrossDevice       : f32,
   @location(1) @interpolate(flat) widthDevice : f32,
 };
+
+// Map chronological (logical) index → physical storage. After maxPoints wrap,
+// DataStore keeps modular physical order; drawing must connect logical neighbors
+// (same contract as decimation.wgsl rawAt).
+fn pointAt(logicalIdx : u32) -> vec2<f32> {
+  if (vsUniforms.ringCapacity == 0u) {
+    return points[logicalIdx];
+  }
+  let phys = (vsUniforms.ringStart + logicalIdx) % vsUniforms.ringCapacity;
+  return points[phys];
+}
 
 // Returns UV for the 6 vertices of a quad (2 triangles):
 //   uv.x: 0 → endpoint A, 1 → endpoint B
@@ -61,9 +78,9 @@ fn vsMain(
 ) -> VSOut {
   let uv = quadUv(vid);
 
-  // Read segment endpoints in data coordinates.
-  let pA_data = points[iid];
-  let pB_data = points[iid + 1u];
+  // Read segment endpoints in data coordinates (logical order under ring mode).
+  let pA_data = pointAt(iid);
+  let pB_data = pointAt(iid + 1u);
 
   // ── Gap detection ──────────────────────────────────────────────
   // Null entries in the data array are packed as NaN by the CPU.
@@ -183,8 +200,10 @@ fn vsMainHairline(
 ) -> VSOut {
   // Dual-endpoint gap check (matches AA path): if either endpoint is NaN, collapse
   // the whole segment so one-sided nulls cannot draw a spur to clip origin.
-  let pA = points[iid];
-  let pB = points[iid + 1u];
+  // Modular ring remap matches vsMain / decimation so wrap does not draw physical
+  // newest→oldest edges.
+  let pA = pointAt(iid);
+  let pB = pointAt(iid + 1u);
   if (pA.x != pA.x || pA.y != pA.y || pB.x != pB.x || pB.y != pB.y) {
     var out: VSOut;
     out.clipPosition = vec4<f32>(0.0, 0.0, 0.0, 0.0);

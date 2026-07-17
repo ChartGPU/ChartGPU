@@ -377,4 +377,40 @@ describe('scatter equal-N y-only dual-buffer (issue 1.2 Option A)', () => {
     expect(instanceWriteSizes(writeBuffer)).toEqual([3 * 4]);
     renderer.dispose();
   });
+
+  it('Float32 zero-copy full rewrite still enables correct y-only next frame (issue 1.3)', () => {
+    const device = createMockDevice();
+    const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
+    const createBuffer = device.createBuffer as ReturnType<typeof vi.fn>;
+    const renderer = createScatterRenderer(device, { sampleCount: 1 });
+    const n = 64;
+    const x = new Float32Array(n);
+    const yA = new Float32Array(n);
+    const yB = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      x[i] = i;
+      yA[i] = i * 0.5;
+      yB[i] = i * 0.5 + 1;
+    }
+    // Zero-copy path: split Float32 columns.
+    renderer.prepare(baseSeries(5), { x, y: yA } as never, identityScale, identityScale, gridArea);
+    const xBuf = createBuffer.mock.results.find(
+      (r) => (r.value as { label?: string }).label === 'scatterRenderer/xInstanceBuffer'
+    )?.value;
+    const yBuf = createBuffer.mock.results.find(
+      (r) => (r.value as { label?: string }).label === 'scatterRenderer/yInstanceBuffer'
+    )?.value;
+    expect(xBuf).toBeDefined();
+    expect(yBuf).toBeDefined();
+
+    writeBuffer.mockClear();
+    // Equal-N y-only: x staging must match zero-copy x so only y is rewritten.
+    renderer.prepare(baseSeries(5), { x, y: yB } as never, identityScale, identityScale, gridArea);
+    const writes = instanceWrites(writeBuffer);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]![0]).toBe(yBuf);
+    expect(writes[0]![0]).not.toBe(xBuf);
+    expect(writes[0]![4]).toBe(n * 4);
+    renderer.dispose();
+  });
 });

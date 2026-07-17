@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { maxPointsPeakRetention, normalizeMaxPoints, planMaxPointsWindow } from '../maxPointsWindow';
+import {
+  deviceMaxPointsFromLimits,
+  maxPointsPeakRetention,
+  normalizeMaxPoints,
+  planMaxPointsWindow,
+  resolveEffectiveMaxPointsForAppend,
+} from '../maxPointsWindow';
 
 describe('normalizeMaxPoints', () => {
   it('returns undefined for missing/invalid values', () => {
@@ -138,5 +144,43 @@ describe('planMaxPointsWindow (fixed-capacity ring)', () => {
       ringCapacity: 8,
       isRing: true,
     });
+  });
+});
+
+describe('resolveEffectiveMaxPointsForAppend (issue 1.1)', () => {
+  const tinyLimits = { maxBufferSize: 1024, maxStorageBufferBindingSize: 1024 };
+  // deviceMax = floor(1024 / 8) = 128
+
+  it('returns undefined when unbounded and under device budget', () => {
+    expect(resolveEffectiveMaxPointsForAppend(undefined, 10, 5, tinyLimits)).toBeUndefined();
+  });
+
+  it('engages device auto-window when uncapped next exceeds budget', () => {
+    const deviceMax = deviceMaxPointsFromLimits(tinyLimits);
+    expect(deviceMax).toBe(128);
+    expect(resolveEffectiveMaxPointsForAppend(undefined, 100, 50, tinyLimits)).toBe(deviceMax);
+  });
+
+  it('caller maxPoints still wins when tighter than device', () => {
+    expect(resolveEffectiveMaxPointsForAppend(50, 40, 20, tinyLimits)).toBe(50);
+  });
+
+  it('device hard-clamps when caller max exceeds device budget', () => {
+    const deviceMax = deviceMaxPointsFromLimits(tinyLimits);
+    expect(resolveEffectiveMaxPointsForAppend(10_000, 0, 1, tinyLimits)).toBe(deviceMax);
+  });
+});
+
+describe('device auto-window dual-store lockstep (issue 1.1)', () => {
+  it('planner and deviceMax agree on retained window size', () => {
+    const limits = { maxBufferSize: 512, maxStorageBufferBindingSize: 512 };
+    const deviceMax = deviceMaxPointsFromLimits(limits);
+    expect(deviceMax).toBe(64);
+    const effective = resolveEffectiveMaxPointsForAppend(undefined, 64, 10, limits);
+    expect(effective).toBe(64);
+    const plan = planMaxPointsWindow(64, 10, effective);
+    expect(plan.nextCount).toBe(64);
+    expect(plan.didWindow).toBe(true);
+    expect(plan.dropPrevCount).toBe(10);
   });
 });

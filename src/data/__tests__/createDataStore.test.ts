@@ -283,6 +283,8 @@ describe('createDataStore', () => {
       const xLast = staging[lastPhys * 2]!;
       expect(x0).toBe(10);
       expect(xLast).toBe(73);
+      // Effective max exposed for dual-store consumers (issue 1.1).
+      expect(store.getSeriesEffectiveMaxPoints(0)).toBe(64);
     });
   });
 

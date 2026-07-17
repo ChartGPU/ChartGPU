@@ -58,7 +58,11 @@ import {
   type RingXYColumns,
   type StagingRingView,
 } from './data/cartesianData';
-import { normalizeMaxPoints, planMaxPointsWindow } from './data/maxPointsWindow';
+import {
+  normalizeMaxPoints,
+  planMaxPointsWindow,
+  resolveEffectiveMaxPointsForAppend,
+} from './data/maxPointsWindow';
 
 // --- Instance registry for auto-dispose on page unload (CGPU-OOM-139) ---
 const activeInstances = new Set<{ dispose(): void; disposed: boolean }>();
@@ -153,6 +157,11 @@ export interface ChartGPUInstance {
    * @internal Test/debug: how many times the hit-test columnar store was fully rebuilt.
    */
   getHitTestStoreRebuildCount(): number;
+  /**
+   * @internal Test/debug: retained point count in the ChartGPU hit-test store for a series.
+   * Used to assert dual-store windowing (device auto-window / maxPoints) matches GPU policy.
+   */
+  getHitTestSeriesPointCount(seriesIndex: number): number;
   /**
    * Appends new points to a cartesian series at runtime (streaming).
    *
@@ -869,6 +878,10 @@ export async function createChartGPU(
   // - `runtimeRawBoundsByIndex[i]` is incrementally updated to keep scale/bounds derivation cheap.
   // - `runtimeHitTestSourceByIndex[i]` tracks the raw data reference used to build the store so
   //   axes-only / presentation-only setOption can skip O(n) column copies.
+  // - After tooltip resync from coordinator, source is set to HIT_TEST_OWNED_TOKEN so a later
+  //   presentation-only setOption reuses owned columns (append history) instead of rebuilding
+  //   from seed `s.rawData ?? s.data` (issue 1.2). True seed identity still used on normal path.
+  const HIT_TEST_OWNED_TOKEN = Symbol('chartgpu.hitTestOwned');
   let runtimeRawDataByIndex: Array<MutableXYColumns | RingXYColumns | OHLCDataPoint[]> = new Array(
     resolvedOptions.series.length
   )
@@ -876,6 +889,12 @@ export async function createChartGPU(
     .map(() => ({ x: [], y: [] }));
   let runtimeRawBoundsByIndex: Array<Bounds | null> = new Array(resolvedOptions.series.length).fill(null);
   let runtimeHitTestSourceByIndex: Array<unknown | null> = new Array(resolvedOptions.series.length).fill(null);
+  /**
+   * Options `rawData ?? data` identity observed on the last hit-test init/resync.
+   * Used with HIT_TEST_OWNED_TOKEN: same options ref → presentation-only reuse of
+   * owned columns; different options ref → series data replace rebuilds from seed.
+   */
+  let runtimeHitTestOptionsRawByIndex: Array<unknown | null> = new Array(resolvedOptions.series.length).fill(null);
   /** Tracks resolver rawBoundsMode so axes explicit→auto can refresh bounds. */
   let runtimeHitTestBoundsModeByIndex: Array<string | null> = new Array(resolvedOptions.series.length).fill(null);
   let runtimeHitTestSeriesCache: ResolvedChartGPUOptions['series'] | null = null;
@@ -894,14 +913,20 @@ export async function createChartGPU(
     const nextBounds: Array<Bounds | null> = new Array(n);
     const nextSource: Array<unknown | null> = new Array(n);
     const nextModes: Array<string | null> = new Array(n).fill(null);
+    const nextOptionsRaw: Array<unknown | null> = new Array(n);
 
     for (let i = 0; i < n; i++) {
       const s = resolvedOptions.series[i]!;
+      const optionsRaw =
+        s.type === 'pie'
+          ? null
+          : (((s as unknown as { rawData?: unknown }).rawData ?? s.data) as unknown);
       if (s.type === 'pie') {
         nextData[i] = { x: [], y: [] };
         nextBounds[i] = null;
         nextSource[i] = null;
         nextModes[i] = null;
+        nextOptionsRaw[i] = null;
         continue;
       }
       const raw = coordinator.getRuntimeSeriesData(i);
@@ -917,7 +942,8 @@ export async function createChartGPU(
           nextData[i] = cartesianDataToMutableColumns(cart);
           nextBounds[i] = computeRawBoundsFromCartesianData(cart) as Bounds | null;
         }
-        nextSource[i] = null;
+        nextSource[i] = HIT_TEST_OWNED_TOKEN;
+        nextOptionsRaw[i] = optionsRaw;
         continue;
       }
       if (s.type === 'candlestick') {
@@ -925,11 +951,17 @@ export async function createChartGPU(
         nextData[i] = ohlc.length === 0 ? [] : ohlc.slice();
       } else if (isRingXYColumns(raw)) {
         // Private ring copy (chronological at start=0) for O(append) hit-test.
+        // Preserve per-point size when coordinator ring has a size channel (issue 1.4).
         const src = raw as RingXYColumns;
-        const ring = createRingXYColumns(src.capacity);
+        const withSize = src.size != null;
+        const ring = createRingXYColumns(src.capacity, withSize);
         for (let k = 0; k < src.count; k++) {
           ring.x[k] = getCartesianX(src as unknown as CartesianSeriesData, k);
           ring.y[k] = getCartesianY(src as unknown as CartesianSeriesData, k);
+          if (ring.size) {
+            const sz = getCartesianSize(src as unknown as CartesianSeriesData, k);
+            ring.size[k] = typeof sz === 'number' && Number.isFinite(sz) ? sz : Number.NaN;
+          }
         }
         ring.start = 0;
         ring.count = src.count;
@@ -948,14 +980,17 @@ export async function createChartGPU(
           nextData[i] as unknown as CartesianSeriesData
         ) as Bounds | null;
       }
-      // Break source identity so axes-only reuse cannot re-apply stale seed.
-      nextSource[i] = null;
+      // Owned runtime after resync — not seed identity (breaks tooltip-off stale seed)
+      // but also not null (null would rebuild from seed on next setOption).
+      nextSource[i] = HIT_TEST_OWNED_TOKEN;
+      nextOptionsRaw[i] = optionsRaw;
       nextModes[i] = (s as unknown as { rawBoundsMode?: string }).rawBoundsMode ?? null;
     }
 
     runtimeRawDataByIndex = nextData;
     runtimeRawBoundsByIndex = nextBounds;
     runtimeHitTestSourceByIndex = nextSource;
+    runtimeHitTestOptionsRawByIndex = nextOptionsRaw;
     runtimeHitTestBoundsModeByIndex = nextModes;
     hitTestStoreNeedsResync = false;
     runtimeHitTestSeriesCache = null;
@@ -986,7 +1021,9 @@ export async function createChartGPU(
     const nextBounds: Array<Bounds | null> = new Array(nextCount);
     const nextSource: Array<unknown | null> = new Array(nextCount);
     const nextModes: Array<string | null> = new Array(nextCount);
+    const nextOptionsRaw: Array<unknown | null> = new Array(nextCount);
     const prevModes = runtimeHitTestBoundsModeByIndex;
+    const prevOptionsRaw = runtimeHitTestOptionsRawByIndex;
 
     for (let i = 0; i < nextCount; i++) {
       const s = resolvedOptions.series[i]!;
@@ -997,6 +1034,7 @@ export async function createChartGPU(
         nextBounds[i] = null;
         nextSource[i] = null;
         nextModes[i] = null;
+        nextOptionsRaw[i] = null;
         continue;
       }
 
@@ -1011,10 +1049,23 @@ export async function createChartGPU(
           // bounds of the original seed array.
           nextBounds[i] = prevBounds[i] ?? rawBounds ?? null;
           nextSource[i] = raw;
+          nextOptionsRaw[i] = raw;
+        } else if (
+          i < prevCount &&
+          prevSource[i] === HIT_TEST_OWNED_TOKEN &&
+          prevOptionsRaw[i] === raw &&
+          prevData[i] != null &&
+          Array.isArray(prevData[i])
+        ) {
+          nextData[i] = prevData[i]!;
+          nextBounds[i] = prevBounds[i] ?? rawBounds ?? null;
+          nextSource[i] = HIT_TEST_OWNED_TOKEN;
+          nextOptionsRaw[i] = raw;
         } else {
           nextData[i] = raw.length === 0 ? [] : raw.slice();
           nextBounds[i] = rawBounds;
           nextSource[i] = raw;
+          nextOptionsRaw[i] = raw;
         }
         nextModes[i] = mode;
         continue;
@@ -1024,16 +1075,28 @@ export async function createChartGPU(
       const rawBounds = (s as unknown as { rawBounds?: Bounds | null }).rawBounds ?? null;
       // Axes-only / presentation-only setOption keeps the same raw data ref —
       // reuse the existing mutable columns (O(1)).
+      // Owned token (post-tooltip-resync): reuse prevData when options data identity
+      // is unchanged (presentation-only). New options data ref → series replace.
       // Do not reuse when dual-store skip left columns stale (handled above).
-      if (
+      const prevOwned = i < prevCount ? prevData[i] : null;
+      const prevIsOwnedToken = i < prevCount && prevSource[i] === HIT_TEST_OWNED_TOKEN;
+      const optionsRawUnchanged = i < prevCount && prevOptionsRaw[i] === raw;
+      const reuseOwnedHistory =
+        prevIsOwnedToken &&
+        prevOwned != null &&
+        !Array.isArray(prevOwned) &&
+        optionsRawUnchanged &&
+        !hitTestStoreNeedsResync;
+      const reuseSeedIdentity =
         i < prevCount &&
         prevSource[i] === raw &&
         prevData[i] != null &&
         !Array.isArray(prevData[i]) &&
-        !hitTestStoreNeedsResync
-      ) {
+        !hitTestStoreNeedsResync;
+      if (reuseOwnedHistory || reuseSeedIdentity) {
         nextData[i] = prevData[i]!;
-        nextSource[i] = raw;
+        nextSource[i] = prevIsOwnedToken ? HIT_TEST_OWNED_TOKEN : raw;
+        nextOptionsRaw[i] = raw;
         const modeChanged = mode != null && prevModes[i] != null && mode !== prevModes[i];
         if (modeChanged) {
           // Axes explicit→auto (or reverse): recompute from owned columns so
@@ -1052,6 +1115,7 @@ export async function createChartGPU(
         nextData[i] = cartesianDataToMutableColumns(raw);
         nextBounds[i] = rawBounds ?? (computeRawBoundsFromCartesianData(raw) as Bounds | null);
         nextSource[i] = raw;
+        nextOptionsRaw[i] = raw;
       }
       nextModes[i] = mode;
     }
@@ -1059,6 +1123,7 @@ export async function createChartGPU(
     runtimeRawDataByIndex = nextData;
     runtimeRawBoundsByIndex = nextBounds;
     runtimeHitTestSourceByIndex = nextSource;
+    runtimeHitTestOptionsRawByIndex = nextOptionsRaw;
     runtimeHitTestBoundsModeByIndex = nextModes;
 
     // Always rebuild the series view wrapper so presentation fields (colors, etc.)
@@ -2038,6 +2103,19 @@ export async function createChartGPU(
     getHitTestStoreRebuildCount() {
       return hitTestStoreRebuildCount;
     },
+    getHitTestSeriesPointCount(seriesIndex) {
+      if (!Number.isFinite(seriesIndex) || seriesIndex < 0 || seriesIndex >= runtimeRawDataByIndex.length) {
+        return 0;
+      }
+      const owned = runtimeRawDataByIndex[seriesIndex];
+      if (owned == null) return 0;
+      if (isRingXYColumns(owned)) return owned.count;
+      if (Array.isArray(owned)) return owned.length;
+      if (typeof owned === 'object' && 'x' in owned && Array.isArray((owned as MutableXYColumns).x)) {
+        return (owned as MutableXYColumns).x.length;
+      }
+      return 0;
+    },
     setOption(nextOptions) {
       if (disposed) return;
       // Capture prior user options before overwrite so axes-only paths can reuse
@@ -2112,7 +2190,7 @@ export async function createChartGPU(
       }
       if (pointCount === 0) return;
 
-      const maxPoints = normalizeMaxPoints(options?.maxPoints);
+      const callerMaxPoints = normalizeMaxPoints(options?.maxPoints);
 
       // Dual-store relief: when tooltip is off, skip ChartGPU hit-test columnar
       // growth on every append (FIFO `maxPoints` *and* unbounded LTTB/compression
@@ -2134,9 +2212,33 @@ export async function createChartGPU(
         resyncHitTestStoreFromCoordinator();
       }
 
+      // Device auto-window: when unbounded append would exceed storage binding,
+      // DataStore rings at deviceMaxPoints — hit-test must use the same cap
+      // (issue 1.1). Prefer tighter of caller maxPoints and device budget.
+      const prevHitLenForCap = (() => {
+        if (!maintainHitTestStore) return 0;
+        const owned = runtimeRawDataByIndex[seriesIndex];
+        if (s.type === 'candlestick') {
+          return Array.isArray(owned) ? owned.length : 0;
+        }
+        if (isRingXYColumns(owned)) return owned.count;
+        if (owned && typeof owned === 'object' && 'x' in owned && Array.isArray((owned as MutableXYColumns).x)) {
+          return (owned as MutableXYColumns).x.length;
+        }
+        return 0;
+      })();
+      const deviceLimits = gpuContext?.device?.limits ?? null;
+      const maxPoints = resolveEffectiveMaxPointsForAppend(
+        callerMaxPoints,
+        prevHitLenForCap,
+        pointCount,
+        deviceLimits
+      );
+
       // Forward to coordinator (GPU buffers + render-state updates), then keep
       // ChartGPU's hit-testing runtime store in sync when tooltips / hit-test
-      // history are used. Both layers use planMaxPointsWindow.
+      // history are used. Both layers use planMaxPointsWindow with the same
+      // effective max (caller or device auto-window).
       coordinator?.appendData(seriesIndex, newPoints, maxPoints != null ? { maxPoints } : undefined);
 
       // Track xExtent during append (avoids separate iteration when listeners present)
@@ -2187,15 +2289,20 @@ export async function createChartGPU(
         const appendData = newPoints as CartesianSeriesData;
 
         if (maxPoints != null) {
-          // Promote linear hit-test store to ring (Issue 15).
+          // Promote linear hit-test store to ring (Issue 15). Preserve size channel.
           if (!isRingXYColumns(owned)) {
             const linear = owned as MutableXYColumns;
-            const ring = createRingXYColumns(maxPoints);
+            const hasSize = linear.size != null && linear.size.some((v) => v !== undefined && Number.isFinite(v as number));
+            const ring = createRingXYColumns(maxPoints, hasSize);
             const seedCount = Math.min(linear.x.length, maxPoints);
             const seedStart = Math.max(0, linear.x.length - seedCount);
             for (let i = 0; i < seedCount; i++) {
               ring.x[i] = linear.x[seedStart + i]!;
               ring.y[i] = linear.y[seedStart + i]!;
+              if (ring.size && linear.size) {
+                const sv = linear.size[seedStart + i];
+                ring.size[i] = typeof sv === 'number' && Number.isFinite(sv) ? sv : Number.NaN;
+              }
             }
             ring.count = seedCount;
             ring.start = 0;
@@ -2205,16 +2312,26 @@ export async function createChartGPU(
             // Capacity change: demote to linear chronological then re-promote.
             const prev = owned;
             const linear: MutableXYColumns = { x: [], y: [] };
+            const prevHasSize = prev.size != null;
+            if (prevHasSize) linear.size = [];
             for (let i = 0; i < prev.count; i++) {
               linear.x.push(getCartesianX(prev as unknown as CartesianSeriesData, i));
               linear.y.push(getCartesianY(prev as unknown as CartesianSeriesData, i));
+              if (prevHasSize && linear.size) {
+                const sv = getCartesianSize(prev as unknown as CartesianSeriesData, i);
+                linear.size.push(sv);
+              }
             }
-            const ring = createRingXYColumns(maxPoints);
+            const ring = createRingXYColumns(maxPoints, prevHasSize);
             const seedCount = Math.min(linear.x.length, maxPoints);
             const seedStart = Math.max(0, linear.x.length - seedCount);
             for (let i = 0; i < seedCount; i++) {
               ring.x[i] = linear.x[seedStart + i]!;
               ring.y[i] = linear.y[seedStart + i]!;
+              if (ring.size && linear.size) {
+                const sv = linear.size[seedStart + i];
+                ring.size[i] = typeof sv === 'number' && Number.isFinite(sv) ? sv : Number.NaN;
+              }
             }
             ring.count = seedCount;
             ring.start = 0;

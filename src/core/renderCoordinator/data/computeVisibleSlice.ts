@@ -35,14 +35,27 @@ const monotonicTimestampCache = new WeakMap<ReadonlyArray<OHLCDataPoint>, boolea
 
 /**
  * Checks if cartesian data is monotonic non-decreasing by X coordinate with all finite values.
- * Results are cached in a WeakMap to avoid repeated O(n) scans.
+ * Results are cached in a WeakMap to avoid repeated O(n) scans for **immutable**
+ * DataPoint[] / typed arrays / XYArraysData.
  *
- * Supports all CartesianSeriesData formats: DataPoint[], XYArraysData, InterleavedXYData.
+ * **Mutable ring / staging:** `RingXYColumns` and `StagingRingView` mutate content
+ * under a stable object identity. WeakMap caching is **disabled** for those shapes
+ * so a mono=true result cannot stick after content becomes non-monotonic (issue 1.5).
+ *
+ * Supports all CartesianSeriesData formats: DataPoint[], XYArraysData, InterleavedXYData,
+ * plus internal ring/staging (always scanned).
  */
 export function isMonotonicNonDecreasingFiniteX(data: CartesianSeriesData): boolean {
-  // For primitive arrays and typed arrays, we can cache by object reference
-  // For XYArraysData, we cache by the object itself
-  const cacheKey = typeof data === 'object' && data !== null ? data : null;
+  // Mutable modular storage: never cache by identity (content mutates in place).
+  const isMutableRingOrStaging =
+    typeof data === 'object' &&
+    data !== null &&
+    ((data as { __ring?: boolean }).__ring === true ||
+      (data as { __stagingRing?: boolean }).__stagingRing === true);
+
+  // For immutable arrays / XY objects, cache by object reference.
+  const cacheKey =
+    !isMutableRingOrStaging && typeof data === 'object' && data !== null ? (data as object) : null;
   if (cacheKey) {
     const cached = monotonicXCache.get(cacheKey);
     if (cached !== undefined) return cached;

@@ -32,6 +32,17 @@ describe('resolveLineDrawPolicy', () => {
     expect(r.effectiveLineWidthCssPx).toBe(DENSE_LINE_MIN_WIDTH_CSS);
   });
 
+  it('forceStandard (performance.lod strict) keeps configured width at high N (issue 2.1)', () => {
+    const r = resolveLineDrawPolicy({
+      pointCount: DENSE_HAIRLINE_POINT_THRESHOLD,
+      lineWidthCssPx: 2,
+      msaaSampleCount: 4,
+      forceStandard: true,
+    });
+    expect(r.policy).toBe('standard');
+    expect(r.effectiveLineWidthCssPx).toBe(2);
+  });
+
   it('msaaSampleCount 1 never enters denseHairline (multi-chart antialias:false)', () => {
     const r = resolveLineDrawPolicy({
       pointCount: 1_000_000,

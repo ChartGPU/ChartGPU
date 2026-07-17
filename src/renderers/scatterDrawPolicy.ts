@@ -21,6 +21,11 @@ export type ScatterDrawPolicyInput = Readonly<{
   readonly plotHeightDevicePx: number;
   /** Nominal const radius in device pixels (symbolSize × dpr). */
   readonly radiusDevicePx: number;
+  /**
+   * When true (`performance.lod: 'strict'`), keep configured marker radius —
+   * never compact toward 1 device px.
+   */
+  readonly forceStandard?: boolean;
 }>;
 
 export type ScatterDrawPolicyResult = Readonly<{
@@ -48,6 +53,10 @@ export const DENSE_SCATTER_MIN_RADIUS_DEVICE_PX = 1.0;
 export function resolveScatterDrawPolicy(input: ScatterDrawPolicyInput): ScatterDrawPolicyResult {
   const radius = Number.isFinite(input.radiusDevicePx) && input.radiusDevicePx > 0 ? input.radiusDevicePx : 0;
   if (!input.constRadius || input.pointCount <= 0 || radius <= 0) {
+    return { policy: 'standard', effectiveRadiusDevicePx: radius };
+  }
+  // Strict LOD: honor configured marker size at any density.
+  if (input.forceStandard === true) {
     return { policy: 'standard', effectiveRadiusDevicePx: radius };
   }
 

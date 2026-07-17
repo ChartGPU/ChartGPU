@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyEqualNYOnlyRewrite,
+  indexSortedXFingerprint,
   isEqualNSortedXYOnlyRewrite,
   isIndexSortedX,
   isYOnlyRewriteAgainstStaging,
@@ -81,15 +82,33 @@ describe('seriesRewriteDetect', () => {
       expect(classifyEqualNYOnlyRewrite(prev, next)).toBe('indexSorted');
     });
 
-    it('sticky prevIndexSortedProven skips full re-scan when samples still match', () => {
+    it('sticky prevIndexSortedProven + matching fingerprint skips full re-scan', () => {
       const n = 200;
-      // Interior corruption that full isIndexSortedX would reject, but samples at
-      // 0/50/100/150/199 still look like x=i. Sticky trusts continuity after full proof.
+      // Equal-N y-only with true x=i on both sides: sticky + fingerprint → indexSorted.
       const prev: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i] as DataPoint);
       const next: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i + 1] as DataPoint);
-      next[77] = [77.5, 1]; // would fail cold full scan
+      expect(classifyEqualNYOnlyRewrite(prev, next)).toBe('indexSorted'); // cold full proof
+      expect(
+        classifyEqualNYOnlyRewrite(prev, next, {
+          prevIndexSortedProven: true,
+          prevIndexSortedFingerprint: indexSortedXFingerprint(prev),
+        })
+      ).toBe('indexSorted');
+    });
+
+    it('sticky rejects interior x mutation even when quartile probes still look index-sorted (issue 1.6)', () => {
+      const n = 200;
+      const prev: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i] as DataPoint);
+      const next: DataPoint[] = Array.from({ length: n }, (_, i) => [i, i + 1] as DataPoint);
+      next[77] = [77.5, 1]; // interior corruption between quartile probes
       expect(classifyEqualNYOnlyRewrite(prev, next)).toBe(false); // cold: full proof fails
-      expect(classifyEqualNYOnlyRewrite(prev, next, { prevIndexSortedProven: true })).toBe('indexSorted');
+      // Sticky + fingerprint mismatch → fall through to cold full scan → not indexSorted.
+      expect(
+        classifyEqualNYOnlyRewrite(prev, next, {
+          prevIndexSortedProven: true,
+          prevIndexSortedFingerprint: indexSortedXFingerprint(prev),
+        })
+      ).toBe(false);
     });
 
     it('sticky still rejects when sample probes fail (Brownian)', () => {

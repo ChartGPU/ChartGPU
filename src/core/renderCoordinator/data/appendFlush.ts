@@ -85,7 +85,7 @@ export interface AppendFlushDeps {
   getX: (data: unknown, i: number) => number;
   getY: (data: unknown, i: number) => number;
   getSize: (data: unknown, i: number) => number | undefined;
-  createRingXYColumns: (capacity: number) => unknown;
+  createRingXYColumns: (capacity: number, withSize?: boolean) => unknown;
   appendIntoRingXY: (
     ring: unknown,
     data: unknown,
@@ -231,12 +231,36 @@ function flushPendingAppendsImplInner(d: any): boolean {
           }
         }
 
+        // Effective window after GPU append may be device-derived when caller
+        // omitted maxPoints (storage binding auto-window). Dual-store must match.
+        let effectiveMaxPoints = maxPoints;
         if (canUseFastPath) {
           try {
             // Pass CartesianSeriesData directly to DataStore (avoids per-point allocations).
             // Shared d.planMaxPointsWindow policy keeps GPU length in sync with columns below.
             d.dataStore.appendSeries(seriesIndex, cartesianData, appendGpuOptions);
             d.appendedGpuThisFrame.add(seriesIndex);
+            if (effectiveMaxPoints == null) {
+              try {
+                const deviceCap = d.dataStore.getSeriesEffectiveMaxPoints(seriesIndex);
+                if (deviceCap != null && deviceCap > 0) {
+                  // Prefer tighter of caller (none) and device — device is the only cap.
+                  effectiveMaxPoints = deviceCap;
+                }
+              } catch {
+                // Series missing — ignore.
+              }
+            } else {
+              // Caller maxPoints still hard-clamped by device when tighter.
+              try {
+                const deviceCap = d.dataStore.getSeriesEffectiveMaxPoints(seriesIndex);
+                if (deviceCap != null && deviceCap > 0 && deviceCap < effectiveMaxPoints) {
+                  effectiveMaxPoints = deviceCap;
+                }
+              } catch {
+                // ignore
+              }
+            }
           } catch (err) {
             // Cold path: DataStore has no series yet ("Call setSeries first") — fall
             // through to dual-pack + full upload on prepare. Device capacity errors
@@ -283,7 +307,7 @@ function flushPendingAppendsImplInner(d: any): boolean {
         // + new-batch y. FIFO (maxPoints) and unbounded pure growth both qualify.
         if (useStagingThinPath && d.appendedGpuThisFrame.has(seriesIndex)) {
           const n = d.getPointCount(cartesianData);
-          const plan = d.planMaxPointsWindow(prevLen, n, maxPoints);
+          const plan = d.planMaxPointsWindow(prevLen, n, effectiveMaxPoints);
           try {
             const layout = d.dataStore.getSeriesRingLayout(seriesIndex);
             const staging = d.dataStore.getSeriesStagingBuffer(seriesIndex);
@@ -359,36 +383,47 @@ function flushPendingAppendsImplInner(d: any): boolean {
           raw = d.ensureMutableRuntimeColumns(seriesIndex, s);
         }
 
-        // Update runtime columnar storage with the same window policy as DataStore.
+        // Update runtime columnar storage with the same window policy as DataStore
+        // (including device auto-window effectiveMaxPoints).
         const n = d.getPointCount(cartesianData);
-        let plan = d.planMaxPointsWindow(prevLen, n, maxPoints);
+        let plan = d.planMaxPointsWindow(prevLen, n, effectiveMaxPoints);
 
         // Leave-ring or capacity mismatch: demote RingXY → chronological linear
         // so we match DataStore rebuild (linearize + ringStart=0).
         if (d.isRingXYColumns(raw)) {
           const capMismatch = plan.isRing && plan.ringCapacity > 0 && raw.capacity !== plan.ringCapacity;
           if (!plan.isRing || capMismatch) {
+            // Preserve size channel on demote so re-promote keeps per-point radii (1.4).
+            const hasSize = raw.size != null;
             const demoted = d.brandOwnedColumns({
               x: [] as number[],
               y: [] as number[],
-            });
+              ...(hasSize ? { size: [] as (number | undefined)[] } : {}),
+            }) as { x: number[]; y: number[]; size?: (number | undefined)[] };
             const count = raw.count;
             for (let i = 0; i < count; i++) {
               demoted.x.push(d.getX(raw as unknown as CartesianSeriesData, i));
               demoted.y.push(d.getY(raw as unknown as CartesianSeriesData, i));
+              if (hasSize && demoted.size) {
+                const sz = d.getSize(raw as unknown as CartesianSeriesData, i);
+                demoted.size.push(sz);
+              }
             }
             raw = demoted;
             d.runtimeRawDataByIndex[seriesIndex] = demoted;
             prevLen = demoted.x.length;
-            plan = d.planMaxPointsWindow(prevLen, n, maxPoints);
+            plan = d.planMaxPointsWindow(prevLen, n, effectiveMaxPoints);
           }
         }
 
-        // Promote to modular ring when maxPoints is active so steady-state
-        // FIFO is O(append) on CPU columns (no O(n) dropPrefix every frame).
+        // Promote to modular ring when maxPoints / device window is active so
+        // steady-state FIFO is O(append) on CPU columns (no O(n) dropPrefix every frame).
         if (plan.isRing && plan.ringCapacity > 0 && !d.isRingXYColumns(raw)) {
           const linear = raw as any;
-          const ring = d.createRingXYColumns(plan.ringCapacity);
+          const hasSize =
+            Array.isArray(linear.size) &&
+            linear.size.some((v: unknown) => typeof v === 'number' && Number.isFinite(v as number));
+          const ring = d.createRingXYColumns(plan.ringCapacity, hasSize);
           // Tail of linear matches d.planMaxPointsWindow drop semantics when
           // prevCount > capacity (keep last min(prev, cap) before packing new).
           const seedCount = Math.min(linear.x.length, plan.ringCapacity);
@@ -396,13 +431,17 @@ function flushPendingAppendsImplInner(d: any): boolean {
           for (let i = 0; i < seedCount; i++) {
             ring.x[i] = linear.x[seedStart + i]!;
             ring.y[i] = linear.y[seedStart + i]!;
+            if (ring.size && linear.size) {
+              const sv = linear.size[seedStart + i];
+              ring.size[i] = typeof sv === 'number' && Number.isFinite(sv) ? sv : Number.NaN;
+            }
           }
           ring.count = seedCount;
           ring.start = 0;
           raw = ring;
           d.runtimeRawDataByIndex[seriesIndex] = ring;
           // Re-plan against the ring's current length (may have trimmed seed).
-          const plan2 = d.planMaxPointsWindow(ring.count, n, maxPoints);
+          const plan2 = d.planMaxPointsWindow(ring.count, n, effectiveMaxPoints);
           d.appendIntoRingXY(ring, cartesianData, plan2.newSrcOffset, plan2.keepNewCount, plan2.dropPrevCount);
           if (plan2.didWindow) {
             // Promote+window: cheap endpoint bounds (same as steady ring path).

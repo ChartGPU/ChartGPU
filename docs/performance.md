@@ -56,6 +56,29 @@ When only axis ranges / grid change and each series config object is identity-st
 
 Many short line series (e.g. 1000×1000) can exceed a **~500k total-segment** budget and switch to **1 device-px hairline** draw (post-resolve sampleCount 1) even when each series is under the 25k per-series threshold. This is draw-only; sampling and data residency are unchanged. Prefer fewer series or lower N for thick AA strokes. Details: [options.md — multi-series dense hairline](api/options.md#series-configuration).
 
+### Adaptive draw LOD (`performance.lod`)
+
+Chart-level option controlling dense draw fidelity:
+
+| Value | Lines | Scatter | Equal-N LTTB |
+|-------|-------|---------|--------------|
+| `'auto'` (default) | ≥25k points or multi-series segment budget ≥500k → 1 device-px hairline | High points/pixel → compact marker radius toward ~1 device px | Index-sorted equal-N rewrites may freeze prior LTTB indices (O(k) y remap) |
+| `'strict'` | Always honor `lineStyle.width` + AA quads | Always honor `symbolSize` | Full LTTB recompute on every y change (honest sampling) |
+
+**Thresholds (auto only):**
+
+- Dense hairline: `DENSE_HAIRLINE_POINT_THRESHOLD = 25_000` points per series, or multi-series total segments ≥ `500_000`
+- Dense scatter: density LO `0.5` / HI `3.0` points per plot pixel (see `scatterDrawPolicy.ts`)
+
+Use `performance: { lod: 'strict' }` for fidelity-sensitive benchmarks or when SciChart harness geometry (width 2 / full markers) must match. Default `'auto'` remains the product FPS path.
+
+```ts
+ChartGPU.create(el, {
+  performance: { lod: 'strict' },
+  series: [{ type: 'line', data, lineStyle: { width: 2 } }],
+});
+```
+
 ## Memory & disposal
 
 - Call `chart.dispose()` when chart is no longer needed.

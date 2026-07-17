@@ -1,8 +1,116 @@
-import type { DataPoint, DataPointTuple } from '../config/types';
+import type { CartesianSeriesData, DataPoint, DataPointTuple } from '../config/types';
+import { getPointCount, getSize, getX, getY } from './cartesianData';
 
 function isTupleDataPoint(point: DataPoint): point is DataPointTuple {
   // `DataPoint` uses a readonly tuple; `Array.isArray` doesn't narrow it well without a predicate.
   return Array.isArray(point);
+}
+
+/**
+ * LTTB index selection over cartesian data using Float64 domain x via {@link getX}.
+ * Avoids packing absolute epoch-ms into Float32 before index choice (which collapses
+ * second-spaced timestamps at modern epoch scale).
+ */
+export function lttbIndicesForCartesian(data: CartesianSeriesData, targetPoints: number): Int32Array {
+  const n = getPointCount(data);
+  const lastIndex = n - 1;
+
+  if (targetPoints <= 0 || n === 0) return new Int32Array(0);
+  if (targetPoints === 1) return new Int32Array([0]);
+  if (targetPoints === 2) return n >= 2 ? new Int32Array([0, lastIndex]) : new Int32Array([0]);
+  if (n <= targetPoints) {
+    const indices = new Int32Array(n);
+    for (let i = 0; i < n; i++) indices[i] = i;
+    return indices;
+  }
+
+  const indices = new Int32Array(targetPoints);
+  indices[0] = 0;
+  indices[targetPoints - 1] = lastIndex;
+
+  const bucketSize = (n - 2) / (targetPoints - 2);
+
+  let a = 0;
+  let out = 1;
+
+  const lastX = getX(data, lastIndex);
+  const lastY = getY(data, lastIndex);
+
+  for (let bucket = 0; bucket < targetPoints - 2; bucket++) {
+    let rangeStart = Math.floor(bucketSize * bucket) + 1;
+    let rangeEndExclusive = Math.min(Math.floor(bucketSize * (bucket + 1)) + 1, lastIndex);
+    if (rangeStart >= rangeEndExclusive) {
+      rangeStart = Math.min(rangeStart, lastIndex - 1);
+      rangeEndExclusive = Math.min(rangeStart + 1, lastIndex);
+    }
+
+    const nextRangeStart = Math.floor(bucketSize * (bucket + 1)) + 1;
+    const nextRangeEndExclusive = Math.min(Math.floor(bucketSize * (bucket + 2)) + 1, lastIndex);
+
+    let avgX = lastX;
+    let avgY = lastY;
+    if (nextRangeStart < nextRangeEndExclusive) {
+      let sumX = 0;
+      let sumY = 0;
+      let avgCount = 0;
+      for (let i = nextRangeStart; i < nextRangeEndExclusive; i++) {
+        sumX += getX(data, i);
+        sumY += getY(data, i);
+        avgCount++;
+      }
+      if (avgCount > 0) {
+        avgX = sumX / avgCount;
+        avgY = sumY / avgCount;
+      }
+    }
+
+    const ax = getX(data, a);
+    const ay = getY(data, a);
+
+    let maxArea = -1;
+    let maxIndex = rangeStart;
+    for (let i = rangeStart; i < rangeEndExclusive; i++) {
+      const bx = getX(data, i);
+      const by = getY(data, i);
+      const area2 = (ax - avgX) * (by - ay) - (ax - bx) * (avgY - ay);
+      const absArea2 = area2 < 0 ? -area2 : area2;
+      if (absArea2 > maxArea) {
+        maxArea = absArea2;
+        maxIndex = i;
+      }
+    }
+
+    indices[out++] = maxIndex;
+    a = maxIndex;
+  }
+
+  return indices;
+}
+
+/**
+ * Sample cartesian series via Float64-domain LTTB indices, returning DataPoint tuples
+ * with original domain x (and optional size).
+ */
+export function lttbSampleCartesian(data: CartesianSeriesData, targetPoints: number): DataPoint[] {
+  const n = getPointCount(data);
+  const threshold = Math.floor(targetPoints);
+  if (threshold <= 0 || n === 0) return [];
+  if (n <= threshold) {
+    const out: DataPoint[] = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const size = getSize(data, i);
+      out[i] = size !== undefined ? [getX(data, i), getY(data, i), size] : [getX(data, i), getY(data, i)];
+    }
+    return out;
+  }
+  const indices = lttbIndicesForCartesian(data, threshold);
+  const out: DataPoint[] = new Array(indices.length);
+  for (let i = 0; i < indices.length; i++) {
+    const idx = indices[i]!;
+    const size = getSize(data, idx);
+    out[i] = size !== undefined ? [getX(data, idx), getY(data, idx), size] : [getX(data, idx), getY(data, idx)];
+  }
+  return out;
 }
 
 function lttbIndicesForInterleavedXY(data: Float32Array, targetPoints: number): Int32Array {

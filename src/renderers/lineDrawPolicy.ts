@@ -34,6 +34,11 @@ export type LineDrawPolicyInput = Readonly<{
    *   selecting hairline at sampleCount 1 would draw nothing (blank stroke)
    */
   readonly msaaSampleCount?: number;
+  /**
+   * When true (`performance.lod: 'strict'`), always use standard AA quads and
+   * honor configured line width — never enter dense hairline.
+   */
+  readonly forceStandard?: boolean;
 }>;
 
 export type LineDrawPolicyResult = Readonly<{
@@ -81,6 +86,10 @@ export function resolveLineDrawPolicy(input: LineDrawPolicyInput): LineDrawPolic
     Number.isFinite(input.lineSeriesCount) && (input.lineSeriesCount as number) > 0
       ? Math.floor(input.lineSeriesCount as number)
       : 1;
+  // Strict LOD: always honor configured width + AA quads (no dense hairline).
+  if (input.forceStandard === true) {
+    return { policy: 'standard', effectiveLineWidthCssPx: w };
+  }
   // Default allow hairline when msaaSampleCount omitted (unit tests / 4× default path).
   const msaa =
     Number.isFinite(input.msaaSampleCount) && (input.msaaSampleCount as number) > 0

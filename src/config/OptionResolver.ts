@@ -27,6 +27,7 @@ import type {
   SeriesSampling,
   SeriesType,
   CartesianSeriesData,
+  PerformanceLod,
 } from './types';
 import {
   candlestickDefaults,
@@ -50,6 +51,7 @@ import {
 import { cheapCartesianContentStamp, cheapOHLCContentStamp } from '../data/seriesContentHash';
 import {
   classifyEqualNYOnlyRewrite,
+  indexSortedXFingerprint,
   isIndexSortedX,
   remapIndexSortedSampleY,
   sampleLooksIndexSortedX,
@@ -194,6 +196,8 @@ export type ResolvedScatterSeriesConfig = Readonly<
     readonly indexSortedProven?: boolean;
     /** @internal Point count when {@link indexSortedProven} was set. */
     readonly indexSortedPointCount?: number;
+    /** @internal X fingerprint when {@link indexSortedProven} was set (issue 1.6). */
+    readonly indexSortedFingerprint?: number;
     /** @internal How rawBounds was derived (synthetic / xDataYAxis / data). */
     readonly rawBoundsMode?: RawBoundsMode;
   }
@@ -258,9 +262,13 @@ export type ResolvedSeriesConfig =
   | ResolvedPieSeriesConfig
   | ResolvedCandlestickSeriesConfig;
 
+export type ResolvedPerformanceConfig = Readonly<{
+  readonly lod: PerformanceLod;
+}>;
+
 export interface ResolvedChartGPUOptions extends Omit<
   ChartGPUOptions,
-  'grid' | 'gridLines' | 'xAxis' | 'yAxis' | 'axes' | 'theme' | 'palette' | 'series' | 'legend'
+  'grid' | 'gridLines' | 'xAxis' | 'yAxis' | 'axes' | 'theme' | 'palette' | 'series' | 'legend' | 'performance'
 > {
   readonly grid: ResolvedGridConfig;
   readonly gridLines: ResolvedGridLinesConfig;
@@ -272,6 +280,7 @@ export interface ResolvedChartGPUOptions extends Omit<
   readonly series: ReadonlyArray<ResolvedSeriesConfig>;
   readonly annotations?: ReadonlyArray<AnnotationConfig>;
   readonly legend?: import('./types').LegendConfig;
+  readonly performance: ResolvedPerformanceConfig;
 }
 
 const sanitizeDataZoom = (input: unknown): ReadonlyArray<DataZoomConfig> | undefined => {
@@ -940,6 +949,12 @@ export function resolveOptions(
   const autoScrollRaw = (userOptions as unknown as { readonly autoScroll?: unknown }).autoScroll;
   const autoScroll = typeof autoScrollRaw === 'boolean' ? autoScrollRaw : defaultOptions.autoScroll;
 
+  // performance.lod: 'auto' (default product) | 'strict' (honor width/radius; full LTTB).
+  const userLodRaw = userOptions.performance?.lod;
+  const performanceLod: PerformanceLod = userLodRaw === 'strict' ? 'strict' : 'auto';
+  const performance: ResolvedPerformanceConfig = { lod: performanceLod };
+  const forceFullLttbOnEqualN = performanceLod === 'strict';
+
   // runtime safety for JS callers
   const animationRaw = (userOptions as unknown as { readonly animation?: unknown }).animation;
   const animationCandidate: ChartGPUOptions['animation'] =
@@ -1415,9 +1430,14 @@ export function resolveOptions(
             // min/max/average always re-sample (bucket extrema depend on y).
             // Brownian xy (group 2) fails classifyEqualNYOnlyRewrite → full path.
             // Classify before bounds so sticky/full proof is shared (one O(n) max cold).
+            // performance.lod === 'strict': full LTTB on every y change (issue 2.3 C).
             let sampledData: CartesianSeriesData;
             /** True when this frame still has a valid index-sorted proof (sticky or cold). */
             let indexSortedThisFrame = false;
+            let indexSortedFp: number | undefined =
+              stickyIndexSorted && prevScatterResolved?.indexSortedFingerprint !== undefined
+                ? prevScatterResolved.indexSortedFingerprint
+                : undefined;
             if (prevScatter) {
               sampledData = prevScatter.data;
               // Identity-reuse: keep prior sticky proof when present.
@@ -1430,18 +1450,35 @@ export function resolveOptions(
             ) {
               const yOnlyKind = classifyEqualNYOnlyRewrite(prevScatterResolved.rawData as CartesianSeriesData, s.data, {
                 prevIndexSortedProven: stickyIndexSorted,
+                prevIndexSortedFingerprint: prevScatterResolved.indexSortedFingerprint,
               });
               if (yOnlyKind === 'indexSorted') {
                 indexSortedThisFrame = true;
-                const remapped = remapIndexSortedSampleY(prevScatterResolved.data as CartesianSeriesData, s.data);
-                sampledData = remapped ?? sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
+                indexSortedFp = indexSortedXFingerprint(s.data);
+                if (forceFullLttbOnEqualN) {
+                  // Strict LOD: plain LTTB always full recompute on y change.
+                  sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
+                } else {
+                  const remapped = remapIndexSortedSampleY(prevScatterResolved.data as CartesianSeriesData, s.data);
+                  sampledData = remapped ?? sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
+                }
               } else {
                 // Clears sticky for this frame (Brownian / equalX) — do not trustIndexSorted.
                 sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
               }
             } else if (stickyIndexSorted && sampleLooksIndexSortedX(s.data)) {
               // Non-LTTB equal-N stream (e.g. sampling:'none'): keep sticky for bounds O(1).
-              indexSortedThisFrame = true;
+              // Still require fingerprint continuity (issue 1.6).
+              const nextFp = indexSortedXFingerprint(s.data);
+              const prevFp =
+                prevScatterResolved?.indexSortedFingerprint ??
+                (prevScatterResolved?.rawData != null
+                  ? indexSortedXFingerprint(prevScatterResolved.rawData as CartesianSeriesData)
+                  : nextFp);
+              if (nextFp === prevFp) {
+                indexSortedThisFrame = true;
+                indexSortedFp = nextFp;
+              }
               sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
             } else {
               sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
@@ -1449,6 +1486,7 @@ export function resolveOptions(
               // subsequent equal-N frames can sticky-skip. Cheap sample reject first.
               if (sampleLooksIndexSortedX(s.data) && isIndexSortedX(s.data)) {
                 indexSortedThisFrame = true;
+                indexSortedFp = indexSortedXFingerprint(s.data);
               }
             }
 
@@ -1463,6 +1501,9 @@ export function resolveOptions(
             });
 
             const indexSortedProven = Boolean(indexSortedThisFrame || indexSortedHit);
+            if (indexSortedProven && indexSortedFp === undefined) {
+              indexSortedFp = indexSortedXFingerprint(s.data);
+            }
             const mode =
               normalizeScatterMode((s as unknown as { readonly mode?: unknown }).mode) ?? scatterDefaults.mode;
             const binSize =
@@ -1492,7 +1533,13 @@ export function resolveOptions(
               rawBoundsMode,
               yAxis,
               contentHash,
-              ...(indexSortedProven ? { indexSortedProven: true as const, indexSortedPointCount: rawPointCount } : {}),
+              ...(indexSortedProven
+                ? {
+                    indexSortedProven: true as const,
+                    indexSortedPointCount: rawPointCount,
+                    ...(indexSortedFp !== undefined ? { indexSortedFingerprint: indexSortedFp } : {}),
+                  }
+                : {}),
             };
           }
           case 'pie': {
@@ -1609,6 +1656,7 @@ export function resolveOptions(
     legend: userOptions.legend,
     // Default true (4× MSAA). Explicit false → sampleCount 1 for multi-chart fill/memory.
     antialias: userOptions.antialias !== false,
+    performance,
   };
 }
 

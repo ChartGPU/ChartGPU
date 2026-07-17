@@ -63,6 +63,24 @@ export function sampleLooksIndexSortedX(data: CartesianSeriesData): boolean {
 }
 
 /**
+ * Full x-channel fingerprint for sticky index-sorted continuity (issue 1.6).
+ * O(n) over every finite x — sticky may skip `isIndexSortedX` only when this
+ * matches the prior proven frame. Five quartile probes alone are not enough
+ * for LTTB remap (interior mutations would freeze wrong indices).
+ */
+export function indexSortedXFingerprint(data: CartesianSeriesData): number {
+  const n = getPointCount(data);
+  if (n <= 0) return 0;
+  let h = (n | 0) * 0x9e3779b1;
+  for (let i = 0; i < n; i++) {
+    const x = getX(data, i);
+    const bits = Number.isFinite(x) ? Math.round(x * 1000) | 0 : 0x7fffffff;
+    h = Math.imul(h ^ bits, 0x85ebca6b) + i;
+  }
+  return h | 0;
+}
+
+/**
  * Classify equal-length y-only rewrites.
  *
  * - `indexSorted`: both series are `x = i` — safe for O(k)
@@ -81,7 +99,11 @@ export function sampleLooksIndexSortedX(data: CartesianSeriesData): boolean {
 export function classifyEqualNYOnlyRewrite(
   prev: CartesianSeriesData | null | undefined,
   next: CartesianSeriesData,
-  options?: Readonly<{ prevIndexSortedProven?: boolean }>
+  options?: Readonly<{
+    prevIndexSortedProven?: boolean;
+    /** Prior frame x fingerprint; sticky requires a match on `next`. */
+    prevIndexSortedFingerprint?: number;
+  }>
 ): EqualNYOnlyKind {
   if (prev == null) return false;
   const n = getPointCount(next);
@@ -102,9 +124,18 @@ export function classifyEqualNYOnlyRewrite(
 
   // Group 4 shape: samples look like x=i on both series.
   if (nextLooksIndex && prevLooksIndex) {
-    // Sticky: prior resolve fully proved x=i at this N; samples still continuous → trust.
+    // Sticky: prior resolve fully proved x=i at this N; samples still continuous
+    // AND x fingerprint matches — not five probes alone (issue 1.6).
     if (options?.prevIndexSortedProven) {
-      return 'indexSorted';
+      const nextFp = indexSortedXFingerprint(next);
+      const prevFp =
+        options.prevIndexSortedFingerprint !== undefined
+          ? options.prevIndexSortedFingerprint
+          : indexSortedXFingerprint(prev);
+      if (nextFp === prevFp && sampleLooksIndexSortedX(next)) {
+        return 'indexSorted';
+      }
+      // Fingerprint mismatch: fall through to full cold proof (may still be true).
     }
     // Cold: full O(n) proof of next (no probabilistic short-circuit).
     if (isIndexSortedX(next)) {
