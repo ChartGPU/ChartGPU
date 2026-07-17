@@ -238,19 +238,25 @@ function flushPendingAppendsImplInner(d: any): boolean {
             d.dataStore.appendSeries(seriesIndex, cartesianData, appendGpuOptions);
             d.appendedGpuThisFrame.add(seriesIndex);
           } catch (err) {
-            // Do NOT fall through to dual-pack + bounds extension: that grew the
-            // CPU/domain past the GPU-resident buffer when append threw at the
-            // storage-binding hard cap (empty-right gutter at ~16.7M pts / 128 MiB).
-            // Unbounded oversize is auto-windowed in DataStore; remaining failures
-            // skip this batch so domain stays tied to GPU data.
-            if (typeof console !== 'undefined' && typeof console.warn === 'function') {
-              console.warn(
-                `[ChartGPU] appendData() GPU append failed for series ${seriesIndex}; ` +
-                  `skipping batch to keep domain in sync with GPU-resident data.`,
-                err
-              );
+            // Cold path: DataStore has no series yet ("Call setSeries first") — fall
+            // through to dual-pack + full upload on prepare. Device capacity errors
+            // must NOT fall through: that grew CPU/domain past GPU-resident data
+            // (empty-right gutter at ~16.7M pts / 128 MiB). Unbounded oversize is
+            // normally auto-windowed in DataStore; if a hard-cap throw still escapes,
+            // skip the batch so domain stays tied to GPU data.
+            const msg = err instanceof Error ? err.message : String(err);
+            const isDeviceCapacity = /maxStorageBufferBindingSize|maxBufferSize|required buffer size/i.test(msg);
+            if (isDeviceCapacity) {
+              if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+                console.warn(
+                  `[ChartGPU] appendData() hit device buffer limit for series ${seriesIndex}; ` +
+                    `skipping batch to keep domain in sync with GPU-resident data.`,
+                  err
+                );
+              }
+              continue;
             }
-            continue;
+            // Recoverable (cold series / other): dual-pack below + setSeries later.
           }
         } else if (
           (s.type === 'line' || s.type === 'area') &&
