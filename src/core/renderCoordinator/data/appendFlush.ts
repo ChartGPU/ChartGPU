@@ -237,9 +237,20 @@ function flushPendingAppendsImplInner(d: any): boolean {
             // Shared d.planMaxPointsWindow policy keeps GPU length in sync with columns below.
             d.dataStore.appendSeries(seriesIndex, cartesianData, appendGpuOptions);
             d.appendedGpuThisFrame.add(seriesIndex);
-          } catch {
-            // If the DataStore has not been initialized for this index (or any other error occurs),
-            // fall back to the normal full upload path later in render().
+          } catch (err) {
+            // Do NOT fall through to dual-pack + bounds extension: that grew the
+            // CPU/domain past the GPU-resident buffer when append threw at the
+            // storage-binding hard cap (empty-right gutter at ~16.7M pts / 128 MiB).
+            // Unbounded oversize is auto-windowed in DataStore; remaining failures
+            // skip this batch so domain stays tied to GPU data.
+            if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+              console.warn(
+                `[ChartGPU] appendData() GPU append failed for series ${seriesIndex}; ` +
+                  `skipping batch to keep domain in sync with GPU-resident data.`,
+                err
+              );
+            }
+            continue;
           }
         } else if (
           (s.type === 'line' || s.type === 'area') &&

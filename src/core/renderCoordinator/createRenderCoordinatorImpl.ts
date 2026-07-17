@@ -64,6 +64,7 @@ import { enqueueDeviceSubmit, flushDeviceSubmit } from '../gpu/submitBatcher';
 import {
   applyStickyAutoDomain,
   DEFAULT_STICKY_DOMAIN_HEADROOM,
+  DEFAULT_STICKY_X_DOMAIN_HEADROOM,
   resolveStickyOrDataDomain,
   shouldApplyStickyAutoDomain,
   shouldSkipStickyAutoXDomain,
@@ -968,11 +969,11 @@ export function createRenderCoordinator(
   let cachedVisibleYBoundsByAxis: Map<string, { yMin: number; yMax: number }> = new Map();
 
   /**
-   * Sticky auto-range domains (multi-chart / series compression).
-   * Expanding data every frame otherwise forces grid+axis prepare + label rebuild
-   * every append. Hold ~10% headroom and only expand when data breaches the sticky
-   * domain — grow-by style amortization without changing the
-   * sampling contract. Cleared on full setOption / explicit axis domains.
+   * Sticky auto-range domains.
+   * Y: ~10% growBy headroom amortizes overlay rebuild under amplitude noise.
+   * X: headroom 0 so unbounded appendData stays full-width (non-zero pad caused
+   * the ultimate-benchmark empty-right grow/reset loop). Cleared on full
+   * setOption / explicit axis domains / autoScroll.
    */
   let stickyAutoXDomain: { min: number; max: number } | null = null;
   const stickyAutoYDomainByAxis = new Map<string, { min: number; max: number }>();
@@ -980,7 +981,7 @@ export function createRenderCoordinator(
   /**
    * Base X domain used for zoom→visible window, sampling, and slice.
    * Must match paint's sticky / autoScroll / explicit-end gates so decimation
-   * windows agree with GPU scales when sticky headroom is active.
+   * windows agree with GPU scales when sticky is active.
    *
    * - `mode: 'read'`: use existing sticky if active; do not mutate sticky state.
    * - `mode: 'paint'`: applyStickyAutoDomain / clear sticky when skipped or mid-transition.
@@ -1011,7 +1012,8 @@ export function createRenderCoordinator(
         stickyAutoXDomain = null;
         return dataXDomain;
       }
-      const next = applyStickyAutoDomain(dataXDomain, stickyAutoXDomain, DEFAULT_STICKY_DOMAIN_HEADROOM);
+      // X headroom must be 0 — see DEFAULT_STICKY_X_DOMAIN_HEADROOM.
+      const next = applyStickyAutoDomain(dataXDomain, stickyAutoXDomain, DEFAULT_STICKY_X_DOMAIN_HEADROOM);
       stickyAutoXDomain = next;
       return next;
     }

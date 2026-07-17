@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **GPU line decimation** - Compute-shader sampling (`lttb` / `min` / `max`, null-gap-free lines) keeps raw points resident in `DataStore` and swaps the line/area bind buffer to the decimation output each frame.
 - **Dense hairline draw policy** - High displayed-point-count line series (and multi-series segment budgets) switch draw-only to 1 device-px `line-list` outside main MSAA overdraw.
 - **Submit batcher** - Multi-chart dashboards sharing one `GPUDevice` coalesce `queue.submit` on a microtask after `renderFrame()` encode.
-- **Sticky auto-range domains** - Grow-by style headroom on auto axes reduces domain thrash under streaming append.
+- **Sticky auto-range domains** - Y uses ~10% growBy headroom under streaming amplitude noise; X tracks data max tightly (headroom 0) so unbounded `appendData` stays full-width.
+- **Device storage-cap streaming** - Unbounded `appendData` that would exceed `maxStorageBufferBindingSize` (often ~16.7M points / 128 MiB) auto-windows like `maxPoints` instead of silently desyncing domain past GPU-resident data.
 - **Multi-Chart Dashboard Cookbook** - Added comprehensive guide at `docs/guides/multichart-dashboard-cookbook.md` covering shared device, pipeline cache, external render mode, and chart synchronization patterns.
 - **Streaming Dashboard example** - Added 5-chart APM-style dashboard with correlated metric streaming, programmatic annotations, dark theme support, and shared device + pipeline cache.
 - **Acceptance: auto-scroll + zoom sync** - Added an acceptance example that covers auto-scroll behavior with zoom synchronization.

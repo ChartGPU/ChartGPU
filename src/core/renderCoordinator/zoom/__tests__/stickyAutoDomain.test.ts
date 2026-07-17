@@ -44,6 +44,21 @@ describe('applyStickyAutoDomain', () => {
     expect(next.max).toBeCloseTo(100_001 + 100_001 * 0.1, 5);
   });
 
+  it('X headroom 0 tracks exact max so streaming stays full-width (no empty-right gutter)', () => {
+    // Ultimate-benchmark pattern: generate N points, then append forever with auto X.
+    // Non-zero headroom left ~10% empty on the right that filled then re-jumped.
+    let sticky = applyStickyAutoDomain({ min: 0, max: 100_000 }, null, 0);
+    expect(sticky.max).toBe(100_000);
+    sticky = applyStickyAutoDomain({ min: 0, max: 100_001 }, sticky, 0);
+    expect(sticky.min).toBe(0);
+    expect(sticky.max).toBe(100_001);
+    sticky = applyStickyAutoDomain({ min: 0, max: 1_270_000 }, sticky, 0);
+    expect(sticky.max).toBe(1_270_000);
+    // Static frame reuses identity once max stops growing.
+    const held = applyStickyAutoDomain({ min: 0, max: 1_270_000 }, sticky, 0);
+    expect(held).toBe(sticky);
+  });
+
   it('expands min with headroom when data breaches sticky min', () => {
     const sticky = { min: 0, max: 100 };
     const next = applyStickyAutoDomain({ min: -10, max: 90 }, sticky, 0.1);

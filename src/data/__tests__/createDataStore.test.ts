@@ -253,6 +253,37 @@ describe('createDataStore', () => {
       // Must not allocate the unclamped 256MiB headroom.
       expect(buf.size).toBeLessThan(256 * 1024 * 1024);
     });
+
+    it('auto-windows unbounded append when growth would exceed maxStorageBufferBindingSize', () => {
+      // 64 pts × 8 B = 512 B hard cap (simulates 128 MiB / 16.7M pts at tiny scale).
+      const tight = createMockDevice();
+      (tight.limits as { maxBufferSize: number; maxStorageBufferBindingSize: number }).maxBufferSize = 512;
+      (tight.limits as { maxBufferSize: number; maxStorageBufferBindingSize: number }).maxStorageBufferBindingSize =
+        512;
+      const store = createDataStore(tight);
+
+      const seed: Array<[number, number]> = [];
+      for (let i = 0; i < 64; i++) seed.push([i, i]);
+      store.setSeries(0, seed);
+      expect(store.getSeriesPointCount(0)).toBe(64);
+
+      const batch: Array<[number, number]> = [];
+      for (let i = 64; i < 74; i++) batch.push([i, i]);
+      // Must not throw — auto-window to device max (64) like maxPoints ring.
+      expect(() => store.appendSeries(0, batch)).not.toThrow();
+      expect(store.getSeriesPointCount(0)).toBe(64);
+
+      // Chronological ends: dropped 0..9, retained 10..63 + 64..73.
+      const layout = store.getSeriesRingLayout(0);
+      expect(layout.capacity).toBe(64);
+      const staging = store.getSeriesStagingBuffer(0);
+      const start = layout.start;
+      const x0 = staging[start * 2]!;
+      const lastPhys = (start + 63) % 64;
+      const xLast = staging[lastPhys * 2]!;
+      expect(x0).toBe(10);
+      expect(xLast).toBe(73);
+    });
   });
 
   describe('appendSeries with maxPoints (fixed-capacity ring FIFO)', () => {

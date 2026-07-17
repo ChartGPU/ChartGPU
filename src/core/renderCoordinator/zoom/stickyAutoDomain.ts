@@ -1,16 +1,24 @@
 /**
- * Sticky auto-range domain with headroom (grow-by style amortization).
+ * Sticky auto-range domain with optional grow-by headroom.
  *
- * Streaming appends that expand data bounds every frame would otherwise force
- * grid/axis prepare + label rebuild every frame. Holding ~10% headroom and only
- * expanding when data breaches the sticky domain stabilizes overlay signatures
- * for many frames without changing the sampling contract.
+ * **Y axes** use ~10% headroom so streaming amplitude noise does not rebuild
+ * overlays every frame. **X axes** use zero headroom so unbounded `appendData`
+ * (e.g. ultimate-benchmark streaming) keeps the series full-width: non-zero X
+ * pad left an empty right gutter that filled then re-jumped on every breach.
  *
  * @module stickyAutoDomain
  * @internal
  */
 
+/** Default sticky headroom for Y (and generic callers). */
 export const DEFAULT_STICKY_DOMAIN_HEADROOM = 0.1;
+
+/**
+ * Sticky headroom for the **X** axis. Must stay 0 so auto-range streaming
+ * tracks data max tightly (full plot width). Non-zero pad reintroduces the
+ * empty-right grow/reset cycle under continuous `appendData`.
+ */
+export const DEFAULT_STICKY_X_DOMAIN_HEADROOM = 0;
 
 type StickyDomain = { min: number; max: number };
 
@@ -66,15 +74,17 @@ export function resolveStickyOrDataDomain(
  * mountain ascending X) must fill the plot — padding max by 10% on
  * establish left a permanent empty band on the right (100k pts → axis to ~110k).
  *
- * **Later breaches:** pad only the edge that moved (~10% growBy) so streaming
- * compression amortizes overlay rebuilds while data creeps within headroom.
+ * **Later breaches:** pad only the edge that moved (`headroom` growBy). Pass
+ * {@link DEFAULT_STICKY_DOMAIN_HEADROOM} for Y; pass
+ * {@link DEFAULT_STICKY_X_DOMAIN_HEADROOM} (0) for X so streaming max growth
+ * stays full-width instead of oscillating empty-right gutters.
  *
  * **Sliding windows (FIFO / maxPoints):** when the data min moves *up* (oldest
  * points dropped), do **not** freeze the historical min — re-establish from the
  * current data domain. Freezing min at the series origin while max scrolls
  * compresses the entire waveform into a thin strip on the right edge of the
  * plot (FIFO/ECG visual regression). Unbounded compression keeps min stable at
- * 0, so the reuse path still amortizes overlay prepare.
+ * 0; with X headroom 0 the sticky max tracks data max exactly while streaming.
  */
 export function applyStickyAutoDomain(
   dataDomain: { readonly min: number; readonly max: number },

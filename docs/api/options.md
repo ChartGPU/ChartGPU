@@ -118,8 +118,10 @@ Notes (density mode):
   - **Precedence**: explicit `min`/`max` always override any auto-bounds behavior.
   - **One-sided explicit**: if only `min` or only `max` is set, the other end is still data-derived; sticky auto-domain headroom (below) is **disabled** whenever either end is explicit so growBy padding never extends past a locked edge.
 - **Sticky auto-domain headroom (streaming / multi-chart)**:
-  - When **both** ends of an axis are auto (no explicit `min`/`max`), ChartGPU uses a sticky domain: **first establish matches the data extrema exactly** (static column/mountain charts fill the plot), then ~**10% growBy headroom** is added only when data **breaches** that domain (streaming compression amortization). If the data **min slides upward** (FIFO/`maxPoints` drop-oldest), sticky **follows** the new min instead of freezing the historical origin. Sticky X is off entirely when `autoScroll: true`.
-  - Purpose: high-rate `appendData` (series compression, multi-chart line slots) would otherwise force grid/axis prepare + label rebuild every frame as the domain creeps by a few points.
+  - When **both** ends of an axis are auto (no explicit `min`/`max`), ChartGPU uses a sticky domain: **first establish matches the data extrema exactly** (static column/mountain charts fill the plot).
+  - **Y**: ~**10% growBy headroom** is added only when data **breaches** that domain (amortizes overlay rebuild under amplitude noise).
+  - **X**: headroom is **0** so unbounded `appendData` tracks data max tightly and the series stays **full plot width**. Non-zero X pad previously left an empty right gutter that filled then re-expanded on every breach (visible as a grow/reset loop in examples like ultimate-benchmark streaming).
+  - If the data **min slides upward** (FIFO/`maxPoints` drop-oldest), sticky **follows** the new min instead of freezing the historical origin. Sticky X is off entirely when `autoScroll: true`.
   - Cleared on `setOption` (including axes-only rewrites) and when any end becomes explicit.
   - Does **not** change sampling contracts (`lttb` stays `lttb`).
 - **Y-axis auto-bounds during x-zoom (new default)**:
