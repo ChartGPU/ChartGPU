@@ -574,7 +574,7 @@ export function createDataStore(device: GPUDevice): DataStore {
       }
 
       const grownCapacityBytes = computeGrownCapacityBytes(capacityBytes, targetBytes);
-      // SciChart-parity streaming headroom: series compression / multi-chart line
+      // Streaming headroom: series compression / multi-chart line
       // slots seed ~100k then append 10k/frame unbounded. Pre-reserve headroom for
       // mid-size seeds, but **do not** 4× multi-M seeds (5M×5 FIFO was reserving
       // ~256MB/series → multi-GB + Invalid BindGroup under memory pressure).

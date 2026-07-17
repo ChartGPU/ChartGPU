@@ -6,8 +6,8 @@
  * O(1) when the data reference is unchanged — full scans are not performed on
  * every axes-only / presentation-only `setOption`.
  *
- * **Full rewrite path:** When the data reference changes every frame (SciChart-
- * style harnesses regenerating arrays), use {@link cheapCartesianContentStamp}.
+ * **Full rewrite path:** When the data reference changes every frame (harnesses
+ * regenerating arrays), use {@link cheapCartesianContentStamp}.
  *
  * @module seriesContentHash
  */

@@ -552,7 +552,7 @@ const computeBaseXDomain = (
   runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null
 ): { readonly min: number; readonly max: number } => {
   // Short-circuit when both ends are explicit — avoids O(series) bounds aggregation
-  // on full rewrite frames with fixed axes (SciChart groups 2/3).
+  // on full rewrite frames with fixed axes.
   const explicitMin = finiteOrUndefined(options.xAxis.min);
   const explicitMax = finiteOrUndefined(options.xAxis.max);
   if (explicitMin !== undefined && explicitMax !== undefined) {
@@ -1026,7 +1026,7 @@ export function createRenderCoordinator(
    * Sticky auto-range domains (multi-chart / series compression).
    * Expanding data every frame otherwise forces grid+axis prepare + label rebuild
    * every append. Hold ~10% headroom and only expand when data breaches the sticky
-   * domain — matches SciChart-style growBy amortization without changing the
+   * domain — grow-by style amortization without changing the
    * sampling contract. Cleared on full setOption / explicit axis domains.
    */
   let stickyAutoXDomain: { min: number; max: number } | null = null;
@@ -1920,7 +1920,7 @@ export function createRenderCoordinator(
 
       const raw = (s.rawData ?? s.data) as CartesianSeriesData;
       // Full rewrite path: keep the raw data reference to avoid O(n) MutableXYColumns
-      // allocations every setOption (SciChart groups 2/3/4). appendData promotes to
+      // allocations every setOption on full-rewrite frames. appendData promotes to
       // branded owned columns / ring on the first stream batch — never mutates the
       // caller's {x,y} arrays or DataPoint[] in place.
       runtimeRawDataByIndex[i] = raw;
@@ -2233,7 +2233,7 @@ export function createRenderCoordinator(
         recomputeRuntimeBaseSeries();
       } else {
         // Full data rewrite: OptionResolver already sampled `currentOptions.series`.
-        // Do NOT re-run LTTB/OHLC here — that was a double O(n) on every SciChart
+        // Do NOT re-run LTTB/OHLC here — that was a double O(n) on every
         // full-setOption frame. Align rawData/rawBounds with the runtime store only.
         runtimeBaseSeries = buildSetOptionsReuseSeries(
           currentOptions.series,

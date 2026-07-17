@@ -1820,7 +1820,7 @@ describe('ChartGPU - hit-test store identity reuse (axes-only setOption)', () =>
   });
 
   it('tooltip-off setOption full rewrite resyncs hit-test on demand (dual-store)', async () => {
-    // SciChart groups 2/3/4: tooltip false + new data array every frame.
+    // Full-rewrite stress: tooltip false + new data array every frame.
     // Columns must not be required for render; hitTest after rewrite still works.
     const chart = await ChartGPU.create(mockContainer, {
       animation: false,

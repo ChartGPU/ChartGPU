@@ -419,7 +419,7 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     const count = getPointCount(data);
 
     // Constant series.symbolSize and no per-point size channel → xy-only instances
-    // (radius in VS uniform). Halves upload bandwidth for SciChart groups 2/4.
+    // (radius in VS uniform). Halves upload bandwidth for equal-N / dense scatter paths.
     // Size detection matches getSize semantics: tuples [x,y,size], object.size,
     // XYArraysData.size, and sparse size on later points (not only data[0]).
     const constantRadiusDevicePx =
@@ -569,7 +569,7 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
           ys[i] = y;
         }
       } else if (
-        // SciChart-parity XY columns. Float32Array channels can zero-copy
+        // Split XY columns. Float32Array channels can zero-copy
         // writeBuffer when every value is finite (scanned once; non-finite
         // falls through to the pack path below). Exclude internal ring /
         // staging aliases (modular getX/getY).

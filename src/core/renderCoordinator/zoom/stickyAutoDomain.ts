@@ -1,5 +1,5 @@
 /**
- * Sticky auto-range domain with headroom (SciChart-style growBy amortization).
+ * Sticky auto-range domain with headroom (grow-by style amortization).
  *
  * Streaming appends that expand data bounds every frame would otherwise force
  * grid/axis prepare + label rebuild every frame. Holding ~10% headroom and only
@@ -66,7 +66,7 @@ export function resolveStickyOrDataDomain(
  * Expand sticky domain with headroom when data breaches; otherwise reuse sticky.
  *
  * **First establish:** exact data domain (no pad). Static suite charts (column /
- * mountain ascending X) must fill the plot like SciChart — padding max by 10% on
+ * mountain ascending X) must fill the plot — padding max by 10% on
  * establish left a permanent empty band on the right (100k pts → axis to ~110k).
  *
  * **Later breaches:** pad only the edge that moved (~10% growBy) so streaming

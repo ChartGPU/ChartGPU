@@ -67,7 +67,7 @@ See [ChartGPU.ts](../../src/ChartGPU.ts) for the full interface and lifecycle be
   - Optional `{ maxPoints }` (**per call**, not sticky series state — omit later for unbounded growth):
     - If a single batch is ≥ `maxPoints`, keep only that batch’s tail (strict replace; prior points discarded).
     - Otherwise **fixed-capacity ring**: fill up to `maxPoints`, then overwrite oldest slots (GPU modular writes — O(append), no full retained-window rewrite). Peak retained length / GPU reservation = **`maxPoints`**.
-    - Prefer over sliding-window full `setOption` for high-rate streaming (SciChart `fifoCapacity` **intent**, not identical sticky construction state).
+    - Prefer over sliding-window full `setOption` for high-rate streaming (fixed-capacity ring; not sticky series construction state).
     - When both `maxPoints` is set and `tooltip.show === false`, ChartGPU’s hit-test columnar store is not updated on append (dual-store relief); coordinator/GPU still apply the ring.
   - Types: [`src/config/types.ts`](../../src/config/types.ts)
 - `resize()`, `dispose()`
@@ -98,7 +98,7 @@ loop();
 `renderFrame()` **encodes** the frame but **defers** `device.queue.submit` to a
 `queueMicrotask`. Multi-chart dashboards that share one `GPUDevice` and call
 `renderFrame()` on every surface in the same JS turn therefore collapse into a
-single batched submit (SciChart-parity multi-surface present).
+single batched submit (shared-device multi-chart present).
 
 If you need GPU work on the queue before `onSubmittedWorkDone()` (or any
 immediate post-submit fence), drain the microtask first:

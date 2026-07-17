@@ -602,7 +602,7 @@ export function packXYInto(
   }
 
   if (useTupleFastPath) {
-    // Fast path when first non-null is a tuple (SciChart group 3 / 2).
+    // Fast path when first non-null is a tuple (dense homogeneous [x,y]).
     // Dense homogeneous [x,y] (no nulls): skip per-point Array.isArray + null checks.
     //
     // Dense eligibility (must not miss sparse mid-nulls off a coarse lattice):
@@ -810,7 +810,7 @@ export function computeRawBoundsFromCartesianData(data: CartesianSeriesData): Bo
 
 /**
  * X-extent only (skips y). Used when all y-axis domains are explicit so full
- * rawBounds only needs data-driven xMin/xMax (SciChart group 4 shape).
+ * rawBounds only needs data-driven xMin/xMax (index-sorted / y-axis-fixed shape).
  */
 export function computeRawXExtentFromCartesianData(
   data: CartesianSeriesData

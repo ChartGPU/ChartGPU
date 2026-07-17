@@ -26,7 +26,7 @@ This document is intentionally **short**. It’s a map to the internal modules t
 | **CPU zoom pan** (2.2) | **Debounced resample** | Non–GPU-eligible series still full-`setSeries` on zoom debounce fire. GPU-eligible lines keep raw resident (zero raw re-upload on pan). Holding previous sample under clip mid-pan is not wired (would need a dedicated hold buffer). |
 | **Update animation** (2.3) | **Full re-upload while interpolating** | Identity caches clear every frame (correctness under in-place mutation). N>20k skips lerp. GPU-side lerp dual-buffer is deferred. |
 
-### Full-series rewrite contracts (SciChart-style setOption)
+### Full-series rewrite contracts (`setOption` every frame)
 
 1. **Cheap stamps**: On data-ref change, `cheapCartesianContentStamp` / `cheapOHLCContentStamp` (O(1)). Full `hashCartesianSeriesData` is not used on that path. Stamps use a module-global generation counter (dirty tokens only; multi-chart stamp coupling is harmless).
 2. **rawBounds modes**: `synthetic` (all axes explicit), `xDataYAxis` (y fixed, x from data), `data` (full scan). Mode is stored so switching axes back to auto under a stable data ref cannot keep synthetic extents.

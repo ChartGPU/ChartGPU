@@ -73,3 +73,7 @@ CLAUDE.md
 
 # Linter reports
 report/
+# Local benchmark / session notes (not for publish)
+docs/*-session-handoff.md
+docs/*-local-baseline.md
+docs/architecture-cpu-gpu-upload-review.md

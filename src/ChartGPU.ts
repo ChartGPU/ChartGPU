@@ -2059,7 +2059,7 @@ export async function createChartGPU(
       coordinator?.setOptions(resolvedOptions);
 
       // Dual-store relief on full rewrite: when tooltips are off, skip O(n)
-      // hit-test columnar rebuild every setOption (SciChart groups 2/3/4).
+      // hit-test columnar rebuild every setOption on full-rewrite frames.
       // Resync on tooltip re-enable / hitTest() — same contract as maxPoints append.
       //
       // Contract: skipped store is rebuilt on hitTest() or tooltip show:true via

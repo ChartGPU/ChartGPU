@@ -724,7 +724,7 @@ export interface ChartGPUOptions {
   /**
    * Canvas backing-store pixel ratio. Defaults to `window.devicePixelRatio`.
    * Set to `1` on multi-chart dashboards to cap GPU fill rate on high-DPI displays
-   * (SciChart-style multi-surface grids often present at 1×).
+   * (multi-chart dashboards often present at 1× to cap fill rate).
    *
    * **Create-only:** applied at `ChartGPU.create` / coordinator construction
    * (GPU canvas configure + text-overlay DPR). Changing this via `setOption` /

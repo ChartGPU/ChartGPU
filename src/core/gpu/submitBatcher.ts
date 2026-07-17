@@ -1,10 +1,10 @@
 /**
  * Coalesce `device.queue.submit` across ChartGPU instances that share one
- * GPUDevice (multi-chart dashboards / SciChart-parity shared wasmContext).
+ * GPUDevice (multi-chart dashboards sharing one device).
  *
  * Without batching, N charts → N queue.submit calls per frame. WebGPU drivers
  * pay non-trivial validation / fence cost per submit; a single microtask-batched
- * submit([cb0..cbN]) matches SciChart multi-surface present amortization.
+ * submit([cb0..cbN]) amortizes multi-surface present cost.
  *
  * **Submit is deferred** to a `queueMicrotask` after `renderFrame()` / `render()`
  * returns. Callers that need GPU work on the queue before

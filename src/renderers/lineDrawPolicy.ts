@@ -54,7 +54,7 @@ export const DENSE_HAIRLINE_POINT_THRESHOLD = 25_000;
  *
  * Group 1 rows (seriesNum === pointsNum):
  * - 500×500 → ~249k segments → **standard** (protect display-refresh win)
- * - 1000×1000 → ~999k segments → **denseHairline** (mid cliff vs SciChart)
+ * - 1000×1000 → ~999k segments → **denseHairline** (mid multi-series cliff)
  * - 2000×2000+ → multi-M segments → **denseHairline**
  *
  * **Approximation:** budget uses `lineSeriesCount * max(0, pointCount - 1)` with

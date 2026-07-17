@@ -40,7 +40,7 @@ export interface TextOverlay {
  * Canvas-backed text overlay for high-frequency axis label updates.
  *
  * Auto-ranging multi-chart / series compression rebuilds labels every frame.
- * DOM `createElement` + layout was a steady-state tax vs SciChart native text.
+ * DOM `createElement` + layout was a steady-state tax under multi-chart label churn.
  * A single canvas `fillText` pass matches the TextOverlay API (addLabel still
  * returns a dummy span for callers that style it — styles are applied via
  * options on the next fill). Anchors use canvas `textAlign` (not CSS transforms).

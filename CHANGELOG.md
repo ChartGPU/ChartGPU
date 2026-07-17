@@ -14,7 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Shared Pipeline Cache** - Opt-in `createPipelineCache(device)` deduplicates `GPUShaderModule`, `GPURenderPipeline`, and `GPUComputePipeline` across charts on the same device, reducing shader compilation overhead in multi-chart dashboards.
 - **External Render Mode** - Application-driven render scheduling via `setRenderMode('external')`, `renderFrame()`, and `needsRender()` for multi-chart dashboards coordinating their own `requestAnimationFrame` loop.
 - **`dataAppend` event** - Charts emit a `'dataAppend'` event when data is appended via `appendData()` for real-time data tracking and dashboard coordination.
-- **4x MSAA rendering** - Render coordinator now uses 3-pass MSAA strategy (main scene @ 4x MSAA → blit → overlay @ 1x) for improved visual quality.
+- **4× MSAA rendering** - Main scene and annotation overlay both use **4×** MSAA by default (`antialias: true` at create; `antialias: false` uses sampleCount 1). Optional dense-hairline lines draw in a post-resolve sampleCount-1 pass. WebGPU portable multisample counts are only 1 or 4.
+- **GPU line decimation** - Compute-shader sampling (`lttb` / `min` / `max`, null-gap-free lines) keeps raw points resident in `DataStore` and swaps the line/area bind buffer to the decimation output each frame.
+- **Dense hairline draw policy** - High displayed-point-count line series (and multi-series segment budgets) switch draw-only to 1 device-px `line-list` outside main MSAA overdraw.
+- **Submit batcher** - Multi-chart dashboards sharing one `GPUDevice` coalesce `queue.submit` on a microtask after `renderFrame()` encode.
+- **Sticky auto-range domains** - Grow-by style headroom on auto axes reduces domain thrash under streaming append.
 - **Multi-Chart Dashboard Cookbook** - Added comprehensive guide at `docs/guides/multichart-dashboard-cookbook.md` covering shared device, pipeline cache, external render mode, and chart synchronization patterns.
 - **Streaming Dashboard example** - Added 5-chart APM-style dashboard with correlated metric streaming, programmatic annotations, dark theme support, and shared device + pipeline cache.
 - **Acceptance: auto-scroll + zoom sync** - Added an acceptance example that covers auto-scroll behavior with zoom synchronization.
@@ -23,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Chart creation context injection** - `ChartGPU.create(...)` supports injecting a device/adapter context for shared device mode while preserving existing initialization behavior.
 - **Zoom range change events** - Enhanced zoom range change event behavior for better multi-chart synchronization.
+- **Modular render coordinator** - Shell re-export at `createRenderCoordinator.ts`; composition root and domain modules under `src/core/renderCoordinator/` (data policies, frame graph, overlays, pools).
+- **Streaming / full-rewrite upload paths** - Ranged append for full-raw and GPU-decimation line buffers; equal-N y-only rewrite; dual-store hit-test skip when tooltips are off; fixed-capacity ring `appendData({ maxPoints })`.
+- **Axes-only `setOption` reuse** - Stable series element identities skip full series re-resolution and avoid O(n) work on axis-range-only ticks.
 
 ## [0.2.5] - 2026-02-10
 

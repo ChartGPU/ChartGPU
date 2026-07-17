@@ -784,7 +784,7 @@ const warnCandlestickNotImplemented = (): void => {
  * Treat the outer `series` array **and each series config object** as immutable for this
  * fast path. Element replace is detected; property mutation under a stable element
  * (e.g. `series[i].data = newData`) is **not** (same as per-series data-ref contract).
- * Group-1 SciChart harness axes-only y-range rewrites re-pass the same stored series objects.
+ * Axes-only y-range rewrites typically re-pass the same stored series objects.
  */
 export type ResolveOptionsReuse = Readonly<{
   readonly previousResolved?: ResolvedChartGPUOptions | null;
@@ -1107,8 +1107,8 @@ export function resolveOptions(
   const defaultYAxisId = yAxes[0]!.id ?? 'y';
 
   // When all axis domains are explicit, rawBounds is unused for scale derivation.
-  // Skip O(n) bounds scans on full-series rewrite frames (SciChart groups 2/3).
-  // When only Y is explicit (group 4), only scan X extent.
+  // Skip O(n) bounds scans on full-series rewrite frames with fixed axes.
+  // When only Y is explicit, only scan X extent.
   const finiteAxisBound = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
   const xFullyExplicit = finiteAxisBound(xAxis.min) && finiteAxisBound(xAxis.max);
   const yFullyExplicit = yAxes.length > 0 && yAxes.every((ax) => finiteAxisBound(ax.min) && finiteAxisBound(ax.max));
@@ -1163,7 +1163,7 @@ export function resolveOptions(
           mode: 'xDataYAxis',
         };
       }
-      // Index-sorted x (x=i, SciChart group 4): full O(n) once, or sticky trust.
+      // Index-sorted x (x=i): full O(n) once, or sticky trust.
       // Fail-fast on non-index data, then full x scan.
       let xMin: number;
       let xMax: number;

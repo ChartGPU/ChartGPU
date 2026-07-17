@@ -160,7 +160,7 @@ const computePlotClipRect = (
 /**
  * Identity + layout signature for domain-space instance geometry.
  * Pure y-scale range changes that leave baselineDomain and domain bar widths
- * unchanged must NOT force a rebuild (axes-only SciChart column path).
+ * unchanged must NOT force a rebuild (axes-only column redraw path).
  */
 type GeometryCacheKey = {
   readonly seriesCount: number;
@@ -199,7 +199,7 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
 
   // WebGPU default maxBufferSize is 256 MiB. Bar instances are 32 B each; nextPow2
   // growth of a 10M-point column series would request 512 MiB → GPUValidationError
-  // on Chrome/Metal (SciChart suite group 5 last row). Cap allocation + pack density.
+  // on Chrome/Metal at multi-million column counts. Cap allocation + pack density.
   const maxBufferSizeRaw = device.limits?.maxBufferSize;
   const maxBufferSize =
     typeof maxBufferSizeRaw === 'number' && Number.isFinite(maxBufferSizeRaw) && maxBufferSizeRaw > 0
@@ -312,7 +312,7 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
    * Minimum positive adjacent X gap across series (category width).
    *
    * At multi-million points a full collect+sort is O(N log N) and allocates a
-   * huge scratch array — deadly for the SciChart suite 5M/10M column rows.
+   * huge scratch array — deadly for multi-million column redraw rows.
    * Prefer O(N) consecutive deltas (correct for ascending/time-series data);
    * only fall back to a bounded sort sample when a series is non-monotonic.
    */
@@ -659,7 +659,7 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
 
     // Density stride: when N×32B would exceed maxBufferSize (10M columns → 320MB
     // raw, 512MB after nextPow2), keep ≤ maxInstancesByBuffer and widen bars so
-    // the silhouette still fills the plot (SciChart suite group 5 last row).
+    // the silhouette still fills the plot at multi-million cap.
     //
     // Per-series fair budgets: a shared global packCap + sequential fill can fully
     // drop trailing series (sum-of-counts stride + early break). Give each series

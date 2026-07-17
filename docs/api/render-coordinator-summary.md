@@ -1,10 +1,15 @@
 # Render Coordinator Summary
 
-**⚠️ IMPORTANT FOR LLMs**: Use this summary instead of reading the full `createRenderCoordinator.ts` file (3,599 lines). This document contains only the essential public interfaces and factory function signature needed for understanding the RenderCoordinator API.
+**⚠️ IMPORTANT FOR LLMs**: Use this summary instead of reading the full implementation. The public factory is a thin re-export; the composition root lives in `createRenderCoordinatorImpl.ts` (~3.6k LOC). This document covers public interfaces and the high-level frame graph only.
 
-The render coordinator uses a modular architecture under `src/core/renderCoordinator/` (overview: [INTERNALS.md](INTERNALS.md#render-coordinator-internal)).
+| Layer | Path |
+|-------|------|
+| **Shell (public factory)** | [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts) |
+| **Composition root** | [`createRenderCoordinatorImpl.ts`](../../src/core/renderCoordinator/createRenderCoordinatorImpl.ts) |
+| **Pass graph / encode helpers** | [`frameRender.ts`](../../src/core/renderCoordinator/render/frameRender.ts) |
+| **Domain modules** | [`src/core/renderCoordinator/`](../../src/core/renderCoordinator/) |
 
-For complete implementation details, see [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
+Overview: [INTERNALS.md](INTERNALS.md#render-coordinator-internal).
 
 ## Public Interfaces
 
@@ -109,23 +114,18 @@ export function createRenderCoordinator(
 
 ## Rendering Pipeline
 
-The render coordinator implements a **2-pass MSAA strategy** (Phase 4b — no third single-sample top overlay):
+Default frame graph (`planGpuFrame` in `frameRender.ts`):
 
-### Pass 1: Main Scene (`MAIN_SCENE_MSAA_SAMPLE_COUNT` = **4×**)
-- **Target**: 4× MSAA texture (`mainColorTexture`)
-- **Resolve**: Single-sample texture (`mainResolveTexture`)
-- **Renderers**: grid, area, line, bar, scatter, candlestick, **below-series** reference lines / markers
-- **Sample count**: All main-pass series/grid/below-annotation pipelines use `MAIN_SCENE_MSAA_SAMPLE_COUNT` (4; WebGPU allows only 1 or 4)
-
-### Pass 2: Annotation Overlay (`ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT` = **4×**)
-- **Target**: 4× MSAA overlay texture, resolved to swapchain
-- **Contents**: Blit resolved main scene → above-series annotations → **axes / crosshair / highlight**
-- **Sample count**: Axes, crosshair, highlight, and above-series annotation pipelines use `ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT` (4)
+1. **Compute** (dirty-gated): scatter density binning + line GPU decimation
+2. **Main scene** (`MAIN_SCENE_MSAA_SAMPLE_COUNT` = **4×**, or **1×** when `antialias: false`): series + grid + below-series annotations → resolve to `mainResolveTexture`
+3. **Optional dense hairline** (`sampleCount: 1` on resolve): high-N line-list strokes deferred out of main MSAA
+4. **Overlay** (`ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT` = **4×** or **1×**): blit resolved main → above-series annotations → **axes / crosshair / highlight** → swapchain
+5. **Submit**: one `queue.submit` per frame via `submitBatcher` (microtask-coalesced across charts on the same device)
 
 **Critical for renderer implementations:**
-- `MAIN_SCENE_MSAA_SAMPLE_COUNT` (4) and `ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT` (4) are exported from `textureManager.ts`
+- `MAIN_SCENE_MSAA_SAMPLE_COUNT` and `ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT` are exported from `textureManager.ts` (portable WebGPU multisample counts are only **1 or 4**)
 - Main-pass pipelines **must** match main sample count; overlay UI/annotation pipelines **must** match overlay sample count
-- Do **not** reintroduce a third single-sample top overlay pass
+- Dense hairline is a legal sampleCount-1 load-pass on the resolve texture — not a third MSAA overlay pass
 
 ## Related Types
 

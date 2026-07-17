@@ -1,8 +1,8 @@
 /**
  * Detect full-series rewrite shapes for setOption fast paths.
  *
- * Used when harnesses regenerate a new data array every frame (SciChart suite
- * groups 2/4). Detection must not false-positive Brownian scatter (x and y
+ * Used when harnesses regenerate a new data array every frame (e.g. scatter /
+ * sorted-Y update stress paths). Detection must not false-positive Brownian scatter (x and y
  * both change) as y-only.
  *
  * @module seriesRewriteDetect
@@ -16,7 +16,7 @@ const INDEX_X_EPS = 1e-6;
 
 /**
  * True when every finite x equals its index (0..n-1) within a tight epsilon.
- * Matches SciChart group 4 (`x = i`) without matching Brownian scatter (group 2).
+ * Matches index-sorted x (`x = i`) without matching Brownian scatter.
  *
  * Always fully verifies all points after a cheap endpoints/mid reject (plan 1.1:
  * no false positives for indexSorted O(k) remap or O(1) axis extents). Empty
@@ -65,7 +65,7 @@ export function sampleLooksIndexSortedX(data: CartesianSeriesData): boolean {
 /**
  * Classify equal-length y-only rewrites.
  *
- * - `indexSorted`: both series are `x = i` (SciChart group 4) — safe for O(k)
+ * - `indexSorted`: both series are `x = i` — safe for O(k)
  *   LTTB sample y-remap via {@link remapIndexSortedSampleY}
  * - `equalX`: every x matches prev but not index-sorted — y-only GPU pack OK;
  *   must not use index-as-x sample remap
@@ -247,7 +247,7 @@ export function packYOnlyChannel(
 /**
  * For index-sorted (`x = i`) equal-N y-only rewrites under **LTTB** sampling:
  * rebuild a prior LTTB sample in O(k) by re-reading y at each retained x index.
- * Avoids full O(N) re-sampling every frame when only y changed (SciChart group 4).
+ * Avoids full O(N) re-sampling every frame when only y changed on index-sorted x.
  *
  * Freezes the prior LTTB index set (approximate hold — newly emerging extrema
  * between retained indices will not appear until a full LTTB resumes on
