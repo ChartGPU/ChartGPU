@@ -604,13 +604,7 @@ describe('StagingRingView (zero-copy DataStore staging alias)', () => {
 
   it('preserves per-point size through create + append + wrap (issue 1.4)', () => {
     const ring = createRingXYColumns(4, true);
-    appendIntoRingXY(
-      ring,
-      { x: [0, 1, 2, 3], y: [10, 11, 12, 13], size: [1, 2, 3, 4] },
-      0,
-      4,
-      0
-    );
+    appendIntoRingXY(ring, { x: [0, 1, 2, 3], y: [10, 11, 12, 13], size: [1, 2, 3, 4] }, 0, 4, 0);
     expect(getSize(ring as any, 0)).toBe(1);
     expect(getSize(ring as any, 3)).toBe(4);
     appendIntoRingXY(ring, { x: [100], y: [50], size: [9] }, 0, 1, 1);
@@ -638,8 +632,7 @@ describe('StagingRingView (zero-copy DataStore staging alias)', () => {
       size: [1, 2, 3, 4, 5] as (number | undefined)[],
     };
     const maxPoints = 4;
-    const hasSize =
-      linear.size != null && linear.size.some((v) => v !== undefined && Number.isFinite(v as number));
+    const hasSize = linear.size != null && linear.size.some((v) => v !== undefined && Number.isFinite(v as number));
     const ring = createRingXYColumns(maxPoints, hasSize);
     const seedCount = Math.min(linear.x.length, maxPoints);
     const seedStart = Math.max(0, linear.x.length - seedCount);
@@ -668,13 +661,7 @@ describe('StagingRingView (zero-copy DataStore staging alias)', () => {
 
   it('demote ring with size → linear → re-promote preserves sizes', () => {
     const ring = createRingXYColumns(3, true);
-    appendIntoRingXY(
-      ring,
-      { x: [0, 1, 2], y: [10, 11, 12], size: [1, 2, 3] },
-      0,
-      3,
-      0
-    );
+    appendIntoRingXY(ring, { x: [0, 1, 2], y: [10, 11, 12], size: [1, 2, 3] }, 0, 3, 0);
     // Demote chronological (mirrors appendFlush capacity-mismatch demote).
     const linear: { x: number[]; y: number[]; size: (number | undefined)[] } = {
       x: [],

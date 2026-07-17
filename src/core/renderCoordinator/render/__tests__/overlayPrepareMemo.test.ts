@@ -204,6 +204,47 @@ describe('overlayPrepareMemo signatures (P1-6)', () => {
     });
     expect(axisPrepareSignaturesEqual(a, c)).toBe(false);
   });
+
+  it('axisPrepareSignaturesEqual tracks explicit tick values (same count, different values)', () => {
+    const scale = createLinearScale().domain(0, 100).range(0, 1);
+    const area = makeGridArea();
+    const axis = { type: 'time' as const, id: 'x' };
+    const a = buildAxisPrepareSignature({
+      axisConfig: axis,
+      scale,
+      orientation: 'x',
+      axisId: 'x',
+      gridArea: area,
+      axisLineColor: '#888',
+      axisTickColor: '#666',
+      tickCount: 3,
+      tickValues: [10, 20, 30],
+    });
+    const b = buildAxisPrepareSignature({
+      axisConfig: axis,
+      scale,
+      orientation: 'x',
+      axisId: 'x',
+      gridArea: area,
+      axisLineColor: '#888',
+      axisTickColor: '#666',
+      tickCount: 3,
+      tickValues: [10, 20, 30],
+    });
+    expect(axisPrepareSignaturesEqual(a, b)).toBe(true);
+    const c = buildAxisPrepareSignature({
+      axisConfig: axis,
+      scale,
+      orientation: 'x',
+      axisId: 'x',
+      gridArea: area,
+      axisLineColor: '#888',
+      axisTickColor: '#666',
+      tickCount: 3,
+      tickValues: [15, 25, 35],
+    });
+    expect(axisPrepareSignaturesEqual(a, c)).toBe(false);
+  });
 });
 
 describe('prepareOverlays with OverlayPrepareMemo (P1-6)', () => {
@@ -277,6 +318,40 @@ describe('prepareOverlays with OverlayPrepareMemo (P1-6)', () => {
     expect(renderers.xAxisRenderer.prepare).toHaveBeenCalledTimes(2);
     // Grid signature does not include scale — still skipped.
     expect(renderers.gridRenderer.prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes xTickValues to xAxisRenderer.prepare and re-prepares when values change', () => {
+    const memo = createOverlayPrepareMemo();
+    const renderers = makeMockRenderers();
+    const ticksA = [0, 25, 50, 75, 100];
+    const ticksB = [10, 30, 50, 70, 90];
+    const ctx = baseContext(renderers, memo, {
+      xTickCount: ticksA.length,
+      xTickValues: ticksA,
+    });
+
+    prepareOverlays(renderers as any, ctx as any);
+    expect(renderers.xAxisRenderer.prepare).toHaveBeenCalledTimes(1);
+    const firstArgs = renderers.xAxisRenderer.prepare.mock.calls[0]!;
+    expect(firstArgs[6]).toBe(ticksA.length);
+    expect(firstArgs[7]).toEqual(ticksA);
+
+    // Same values → skip
+    prepareOverlays(renderers as any, ctx as any);
+    expect(renderers.xAxisRenderer.prepare).toHaveBeenCalledTimes(1);
+
+    // Same count, different values → re-prepare
+    prepareOverlays(
+      renderers as any,
+      {
+        ...ctx,
+        xTickCount: ticksB.length,
+        xTickValues: ticksB,
+      } as any
+    );
+    expect(renderers.xAxisRenderer.prepare).toHaveBeenCalledTimes(2);
+    const secondArgs = renderers.xAxisRenderer.prepare.mock.calls[1]!;
+    expect(secondArgs[7]).toEqual(ticksB);
   });
 
   it('always prepares crosshair even when grid/axis memo hits', () => {

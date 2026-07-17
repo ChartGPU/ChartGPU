@@ -168,8 +168,15 @@ type ZoomedSeriesResult = {
 };
 
 /**
- * One zoomed series entry. GPU-eligible cartesian keeps full raw (not zoom-sliced sample).
- * CPU path samples buffered window at zoom-scaled target.
+ * One zoomed series entry.
+ *
+ * - GPU-eligible cartesian (`lttb`/`min`/`max` without null gaps): keep full raw;
+ *   prepare scopes via visibleStart/End on the compute path.
+ * - `sampling: 'none'`: also keep full raw. Zoom must not replace `data` with a
+ *   visible slice — DataStore is tagged `fullRawLine` for ranged append, and
+ *   uploading a windowed subset then append-streaming corrupts the buffer and
+ *   makes right-side zoom show the wrong prefix (live-streaming regression).
+ * - Other CPU sampling: sample a buffered X window at a zoom-scaled target.
  */
 export function resolveZoomedSeriesEntry(input: {
   readonly series: ResolvedSeriesConfig;
@@ -214,6 +221,20 @@ export function resolveZoomedSeriesEntry(input: {
 
   const rawCartesian: CartesianSeriesData =
     (input.rawSlot as CartesianSeriesData | null | undefined) ?? ((anyS.rawData ?? anyS.data) as CartesianSeriesData);
+
+  // sampling:'none' → full raw resident at any zoom (matches fullRawLine append contract).
+  // Visibility is via xScale domain, not by shrinking series.data / DataStore contents.
+  if (anyS.sampling === 'none') {
+    return {
+      series: {
+        ...s,
+        rawData: rawCartesian,
+        data: rawCartesian,
+      } as ResolvedSeriesConfig,
+      cacheEntry: null,
+    };
+  }
+
   const bufferedRaw = input.sliceX(rawCartesian, input.bufferedMin, input.bufferedMax);
 
   // GPU decimation: keep full raw; compute scopes via visibleStart/End in prepare.

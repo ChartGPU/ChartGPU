@@ -382,14 +382,7 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     lastViewportPx = [w, h];
   };
 
-  const prepare: ScatterRenderer['prepare'] = (
-    seriesConfig,
-    data,
-    xScale,
-    yScale,
-    gridArea,
-    forceStandardDraw
-  ) => {
+  const prepare: ScatterRenderer['prepare'] = (seriesConfig, data, xScale, yScale, gridArea, forceStandardDraw) => {
     assertNotDisposed();
 
     // Linear scales: affine is independent of data bounds — sample at 0 and 1

@@ -2764,6 +2764,7 @@ export function createRenderCoordinator(
         yScales: currentYScales,
         gridArea,
         xTickCount,
+        xTickValues,
         hasCartesianSeries,
         effectivePointer,
         interactionScales,

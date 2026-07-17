@@ -45,6 +45,11 @@ interface AxisPrepareSignature {
   /** Affine sample: scale.scale(1) */
   readonly scaleAt1: number;
   readonly tickCount: number;
+  /**
+   * Explicit tick domain values (e.g. nice time ticks). Empty when using linear-from-count only.
+   * Must be compared element-wise so mark positions stay aligned with DOM labels.
+   */
+  readonly tickValues: readonly number[];
   readonly tickLength: number | undefined;
   readonly position: string | undefined;
   readonly min: number | undefined;
@@ -122,6 +127,14 @@ export function gridPrepareSignaturesEqual(a: GridPrepareSignature | null, b: Gr
   );
 }
 
+const tickValuesEqual = (a: readonly number[], b: readonly number[]): boolean => {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+};
+
 export function buildAxisPrepareSignature(input: {
   readonly axisConfig: AxisConfig;
   readonly scale: LinearScale;
@@ -131,8 +144,11 @@ export function buildAxisPrepareSignature(input: {
   readonly axisLineColor: string;
   readonly axisTickColor: string;
   readonly tickCount: number;
+  /** Explicit tick domain values; omit or empty for linear-from-count axes. */
+  readonly tickValues?: readonly number[];
 }): AxisPrepareSignature {
   const { gridArea, scale, axisConfig } = input;
+  const tickValues = input.tickValues != null && input.tickValues.length > 0 ? input.tickValues.slice() : [];
   return {
     orientation: input.orientation,
     axisId: input.axisId,
@@ -146,6 +162,7 @@ export function buildAxisPrepareSignature(input: {
     scaleAt0: scale.scale(0),
     scaleAt1: scale.scale(1),
     tickCount: input.tickCount,
+    tickValues,
     tickLength: axisConfig.tickLength,
     position: axisConfig.position,
     min: axisConfig.min,
@@ -173,6 +190,7 @@ export function axisPrepareSignaturesEqual(
     a.scaleAt0 === b.scaleAt0 &&
     a.scaleAt1 === b.scaleAt1 &&
     a.tickCount === b.tickCount &&
+    tickValuesEqual(a.tickValues, b.tickValues) &&
     a.tickLength === b.tickLength &&
     a.position === b.position &&
     a.min === b.min &&

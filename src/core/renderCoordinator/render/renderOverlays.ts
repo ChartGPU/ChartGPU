@@ -49,6 +49,11 @@ interface OverlayPrepareContext {
   yScales: Map<string, LinearScale>;
   gridArea: GridArea;
   xTickCount: number;
+  /**
+   * Explicit x-axis tick domain values (nice time ticks or linear).
+   * When non-empty, GPU axis marks use these values so they align with DOM labels.
+   */
+  xTickValues?: readonly number[];
   hasCartesianSeries: boolean;
   effectivePointer: {
     hasPointer: boolean;
@@ -95,6 +100,7 @@ export function prepareOverlays(renderers: OverlayRenderers, context: OverlayPre
     yScales,
     gridArea,
     xTickCount,
+    xTickValues,
     hasCartesianSeries,
     effectivePointer,
     interactionScales,
@@ -167,6 +173,7 @@ export function prepareOverlays(renderers: OverlayRenderers, context: OverlayPre
       axisLineColor,
       axisTickColor,
       tickCount: xTickCount,
+      tickValues: xTickValues,
     });
     const xUnchanged = memo != null && axisPrepareSignaturesEqual(memo.xAxis, xSig);
     if (!xUnchanged) {
@@ -177,7 +184,8 @@ export function prepareOverlays(renderers: OverlayRenderers, context: OverlayPre
         gridArea,
         axisLineColor,
         axisTickColor,
-        xTickCount
+        xTickCount,
+        xTickValues
       );
       if (memo) memo.xAxis = xSig;
     }

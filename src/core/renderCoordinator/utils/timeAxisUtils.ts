@@ -15,11 +15,57 @@ import { clipXToCanvasCssPx } from './axisUtils';
 import { finiteOrNull } from './dataPointUtils';
 
 /**
- * Time constants for axis formatting decisions.
+ * Time constants for axis formatting decisions and nice tick steps.
  */
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const MS_PER_SECOND = 1000;
+const MS_PER_MINUTE = 60_000;
+const MS_PER_HOUR = 3_600_000;
+const MS_PER_DAY = 24 * MS_PER_HOUR;
 const MS_PER_MONTH_APPROX = 30 * MS_PER_DAY;
 const MS_PER_YEAR_APPROX = 365 * MS_PER_DAY;
+
+/**
+ * Ascending ladder of nice time tick steps (milliseconds).
+ * Used by {@link generateTimeTicks} for epoch-aligned nice positions
+ * (absolute multiples of each step from Unix epoch — not local midnights
+ * or calendar month boundaries). Larger steps use approximate durations
+ * (30d / 90d / 365d) so long-range views match format tiers.
+ */
+const TIME_TICK_STEPS_MS: readonly number[] = [
+  1,
+  2,
+  5,
+  10,
+  20,
+  50,
+  100,
+  200,
+  500,
+  1_000,
+  2_000,
+  5_000,
+  10_000,
+  15_000,
+  30_000,
+  60_000,
+  120_000,
+  300_000,
+  600_000,
+  900_000,
+  1_800_000,
+  3_600_000,
+  7_200_000,
+  10_800_000,
+  21_600_000,
+  43_200_000,
+  86_400_000,
+  2 * 86_400_000,
+  7 * 86_400_000,
+  14 * 86_400_000,
+  30 * 86_400_000,
+  90 * 86_400_000,
+  365 * 86_400_000,
+];
 
 /**
  * Tick configuration constants.
@@ -145,13 +191,23 @@ export const resolvePieRadiiCss = (
 const pad2 = (n: number): string => String(Math.trunc(n)).padStart(2, '0');
 
 /**
+ * Pads milliseconds to 3 digits for `HH:mm:ss.SSS` labels.
+ *
+ * @param n - Milliseconds component (0–999)
+ * @returns Zero-padded string (3 digits)
+ */
+const pad3 = (n: number): string => String(Math.trunc(n)).padStart(3, '0');
+
+/**
  * Formats millisecond timestamps with adaptive precision based on visible range.
- * Format tiers:
- * - < 1 day: HH:mm
- * - 1-7 days: MM/DD HH:mm
- * - 1-12 weeks (up to ~3 months): MM/DD
- * - 3-12 months: MMM DD
- * - > 1 year: YYYY/MM
+ * Format tiers (local timezone via `Date`):
+ * - &lt; 2 s: HH:mm:ss.SSS
+ * - &lt; 5 min: HH:mm:ss (covers deep zoom ~2–5 min without duplicate HH:mm)
+ * - &lt; 1 day: HH:mm
+ * - 1–7 days: MM/DD HH:mm
+ * - 1–12 weeks (up to ~3 months): MM/DD
+ * - 3–12 months: MMM DD
+ * - &gt; 1 year: YYYY/MM
  *
  * @param timestampMs - Timestamp in milliseconds
  * @param visibleRangeMs - Visible range width in milliseconds
@@ -169,7 +225,16 @@ export const formatTimeTickValue = (timestampMs: number, visibleRangeMs: number)
   const dd = d.getDate();
   const hh = d.getHours();
   const min = d.getMinutes();
+  const sec = d.getSeconds();
+  const ms = d.getMilliseconds();
 
+  if (visibleRangeMs < 2 * MS_PER_SECOND) {
+    return `${pad2(hh)}:${pad2(min)}:${pad2(sec)}.${pad3(ms)}`;
+  }
+  // Seconds through ~5 min so dense 30s steps at deep zoom stay unique (#161).
+  if (visibleRangeMs < 5 * MS_PER_MINUTE) {
+    return `${pad2(hh)}:${pad2(min)}:${pad2(sec)}`;
+  }
   if (visibleRangeMs < MS_PER_DAY) {
     return `${pad2(hh)}:${pad2(min)}`;
   }
@@ -189,18 +254,154 @@ export const formatTimeTickValue = (timestampMs: number, visibleRangeMs: number)
 };
 
 /**
+ * Chooses a nice time tick step (ms) from the ladder for the given visible range
+ * and target tick count.
+ *
+ * Ideal step is `rangeMs / max(1, targetCount - 1)`; returns the smallest ladder
+ * step that is ≥ ideal, or the largest ladder step if the range is huge.
+ *
+ * @param rangeMs - Visible domain width in milliseconds
+ * @param targetCount - Desired approximate tick count
+ * @returns Step size in milliseconds
+ */
+const chooseTimeTickStepMs = (rangeMs: number, targetCount: number): number => {
+  if (!Number.isFinite(rangeMs) || rangeMs <= 0) {
+    return TIME_TICK_STEPS_MS[0]!;
+  }
+  const n = Math.max(1, Math.floor(targetCount) - 1);
+  const ideal = rangeMs / n;
+  for (let i = 0; i < TIME_TICK_STEPS_MS.length; i++) {
+    const step = TIME_TICK_STEPS_MS[i]!;
+    if (step >= ideal) return step;
+  }
+  return TIME_TICK_STEPS_MS[TIME_TICK_STEPS_MS.length - 1]!;
+};
+
+/**
+ * First epoch-aligned lattice point ≥ min for the given step, or null if none ≤ max.
+ */
+const firstLatticeTick = (min: number, max: number, step: number): number | null => {
+  let t = Math.ceil(min / step) * step;
+  if (t < min) t += step;
+  return t <= max ? t : null;
+};
+
+/**
+ * Emits up to {@link MAX_TIME_X_TICK_COUNT} ticks spanning `[first, max]` with
+ * effective step `stride * baseStep`, without materializing the full lattice.
+ */
+const emitStridedLattice = (first: number, max: number, baseStep: number, fullCount: number): number[] => {
+  const stride = Math.ceil(fullCount / MAX_TIME_X_TICK_COUNT);
+  const effectiveStep = stride * baseStep;
+  const ticks: number[] = [];
+  for (let i = 0; ticks.length < MAX_TIME_X_TICK_COUNT; i++) {
+    const v = first + i * effectiveStep;
+    if (v > max) break;
+    ticks.push(v);
+  }
+  return ticks;
+};
+
+/**
+ * Emits ticks on nice time-step boundaries within `[domainMin, domainMax]`.
+ * Does not force exactly `targetCount` ticks — nice steps produce ~target ± a few.
+ * If a step would yield more than {@link MAX_TIME_X_TICK_COUNT} ticks, the next
+ * larger ladder step is used. On the last ladder step, ticks are stride-sampled
+ * across the full domain (not a truncated prefix).
+ *
+ * @param domainMin - Domain minimum (epoch-ms or any ms scale)
+ * @param domainMax - Domain maximum
+ * @param targetCount - Approximate desired tick count (used for step selection)
+ * @returns Tick values in ascending order within the domain
+ */
+const generateTimeTicks = (domainMin: number, domainMax: number, targetCount: number): number[] => {
+  if (!Number.isFinite(domainMin) || !Number.isFinite(domainMax)) return [];
+
+  let min = domainMin;
+  let max = domainMax;
+  if (max < min) {
+    const tmp = min;
+    min = max;
+    max = tmp;
+  }
+  if (max === min) return [min];
+
+  const range = max - min;
+  let step = chooseTimeTickStepMs(range, targetCount);
+  let stepIdx = TIME_TICK_STEPS_MS.indexOf(step);
+  if (stepIdx < 0) stepIdx = 0;
+
+  for (;;) {
+    const first = firstLatticeTick(min, max, step);
+    if (first == null) {
+      // Range ≪ step: fall back to endpoints (max === min already returned above).
+      return [min, max];
+    }
+
+    const isLastStep = stepIdx >= TIME_TICK_STEPS_MS.length - 1;
+
+    // On the last ladder step, estimate full lattice count and stride-sample so
+    // multi-year (or larger) domains span the window instead of clustering near min.
+    if (isLastStep) {
+      const fullCount = Math.floor((max - first) / step) + 1;
+      if (fullCount <= MAX_TIME_X_TICK_COUNT) {
+        const ticks: number[] = [];
+        for (let i = 0; i < fullCount; i++) {
+          ticks.push(first + i * step);
+        }
+        return ticks;
+      }
+      return emitStridedLattice(first, max, step, fullCount);
+    }
+
+    const ticks: number[] = [];
+    let t = first;
+    while (t <= max) {
+      ticks.push(t);
+      t += step;
+      // Safety: stop pathological growth before enlarging step.
+      if (ticks.length > MAX_TIME_X_TICK_COUNT + 2) break;
+    }
+
+    if (ticks.length <= MAX_TIME_X_TICK_COUNT) {
+      return ticks;
+    }
+
+    stepIdx += 1;
+    step = TIME_TICK_STEPS_MS[stepIdx]!;
+  }
+};
+
+/**
  * Generates evenly-spaced tick values across domain.
  * Single implementation lives in `axis/computeAxisTicks` (re-exported here).
  */
 export const generateLinearTicks = generateLinearTicksCanonical;
 
 /**
+ * Subsamples a nice tick set by keeping every `stride`-th value (1-based stride).
+ * Used when adjacent adaptive targetCounts map to the same ladder step so density
+ * can thin step-wise without waiting for the next larger nice step.
+ */
+const subsampleTicks = (ticks: readonly number[], stride: number): number[] => {
+  if (stride <= 1) return ticks.slice();
+  const out: number[] = [];
+  for (let i = 0; i < ticks.length; i += stride) {
+    out.push(ticks[i]!);
+  }
+  return out;
+};
+
+/**
  * Computes optimal tick count + values to avoid label overlap on time x-axis.
- * Uses text measurement context to test label widths.
- * Tries tick counts from MAX (9) down to MIN (1) until labels fit without overlap.
+ * Uses nice time steps ({@link generateTimeTicks}) and text measurement to test
+ * label widths. Tries target counts from MAX (9) down to MIN (1); when a candidate
+ * set overlaps, also tries stride-2 / stride-3 subsamples of that nice set before
+ * dropping further. Density control is therefore **step-wise** (ladder rung +
+ * within-set subsample), not an exact linear tick count.
  *
  * @param params - Configuration object with axis, scale, canvas, and measurement settings
- * @returns Object with tickCount and tickValues
+ * @returns Object with tickCount (actual tickValues.length) and tickValues
  */
 export const computeAdaptiveTimeXAxisTicks = (params: {
   readonly axisMin: number | null;
@@ -236,9 +437,10 @@ export const computeAdaptiveTimeXAxisTicks = (params: {
   const domainMax = finiteOrNull(axisMax) ?? xScale.invert(plotClipRight);
 
   if (!measureCtx || canvasCssWidth <= 0) {
+    const tickValues = generateTimeTicks(domainMin, domainMax, DEFAULT_TICK_COUNT);
     return {
-      tickCount: DEFAULT_TICK_COUNT,
-      tickValues: generateLinearTicks(domainMin, domainMax, DEFAULT_TICK_COUNT),
+      tickCount: tickValues.length > 0 ? tickValues.length : DEFAULT_TICK_COUNT,
+      tickValues: tickValues.length > 0 ? tickValues : generateLinearTicks(domainMin, domainMax, DEFAULT_TICK_COUNT),
     };
   }
 
@@ -249,14 +451,11 @@ export const computeAdaptiveTimeXAxisTicks = (params: {
   // Pre-construct the font part of the cache key to avoid repeated concatenation.
   const cacheKeyPrefix = measureCache ? `${fontSize}px ${fontFamily}@@` : null;
 
-  for (let tickCount = MAX_TIME_X_TICK_COUNT; tickCount >= MIN_TIME_X_TICK_COUNT; tickCount--) {
-    const tickValues = generateLinearTicks(domainMin, domainMax, tickCount);
-
-    // Compute label extents in *canvas-local CSS px* and ensure adjacent labels don't overlap.
+  const labelsFit = (tickValues: readonly number[]): boolean => {
     let prevRight = Number.NEGATIVE_INFINITY;
-    let ok = true;
+    const n = tickValues.length;
 
-    for (let i = 0; i < tickValues.length; i++) {
+    for (let i = 0; i < n; i++) {
       const v = tickValues[i]!;
       const label = tickFormatter ? tickFormatter(v) : formatTimeTickValue(v, visibleRangeMs);
       if (label == null) continue;
@@ -273,26 +472,44 @@ export const computeAdaptiveTimeXAxisTicks = (params: {
       const xClip = xScale.scale(v);
       const xCss = clipXToCanvasCssPx(xClip, canvasCssWidth);
 
-      const anchor: TextOverlayAnchor =
-        tickCount === 1 ? 'middle' : i === 0 ? 'start' : i === tickValues.length - 1 ? 'end' : 'middle';
+      const anchor: TextOverlayAnchor = n === 1 ? 'middle' : i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle';
 
       const left = anchor === 'start' ? xCss : anchor === 'end' ? xCss - w : xCss - w * 0.5;
       const right = anchor === 'start' ? xCss + w : anchor === 'end' ? xCss : xCss + w * 0.5;
 
       if (left < prevRight + MIN_X_LABEL_GAP_CSS_PX) {
-        ok = false;
-        break;
+        return false;
       }
       prevRight = right;
     }
+    return true;
+  };
 
-    if (ok) {
-      return { tickCount, tickValues };
+  // Skip identical nice sets produced by adjacent targetCounts (same ladder step).
+  let lastSignature: string | null = null;
+
+  for (let targetCount = MAX_TIME_X_TICK_COUNT; targetCount >= MIN_TIME_X_TICK_COUNT; targetCount--) {
+    const baseTicks = generateTimeTicks(domainMin, domainMax, targetCount);
+    if (baseTicks.length === 0) continue;
+
+    const signature = baseTicks.join(',');
+    if (signature === lastSignature) continue;
+    lastSignature = signature;
+
+    // Full nice set, then every 2nd / 3rd tick before the next ladder target.
+    const maxStride = Math.max(1, baseTicks.length - 1);
+    for (let stride = 1; stride <= maxStride && stride <= 3; stride++) {
+      const tickValues = stride === 1 ? baseTicks : subsampleTicks(baseTicks, stride);
+      if (tickValues.length === 0) continue;
+      if (labelsFit(tickValues)) {
+        return { tickCount: tickValues.length, tickValues };
+      }
     }
   }
 
+  const fallback = generateTimeTicks(domainMin, domainMax, MIN_TIME_X_TICK_COUNT);
   return {
-    tickCount: MIN_TIME_X_TICK_COUNT,
-    tickValues: generateLinearTicks(domainMin, domainMax, MIN_TIME_X_TICK_COUNT),
+    tickCount: fallback.length > 0 ? fallback.length : MIN_TIME_X_TICK_COUNT,
+    tickValues: fallback.length > 0 ? fallback : generateLinearTicks(domainMin, domainMax, MIN_TIME_X_TICK_COUNT),
   };
 };

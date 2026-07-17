@@ -2004,7 +2004,6 @@ describe('ChartGPU - hit-test store identity reuse (axes-only setOption)', () =>
   });
 });
 
-
 describe('ChartGPU - dual-store correctness (PR167 review)', () => {
   let mockContainer: HTMLElement;
   let warnSpy: ReturnType<typeof vi.spyOn> | null = null;
@@ -2036,8 +2035,7 @@ describe('ChartGPU - dual-store correctness (PR167 review)', () => {
     vi.unstubAllGlobals();
   });
 
-  const makePointer = (clientX: number, clientY: number): PointerEvent =>
-    ({ clientX, clientY }) as PointerEvent;
+  const makePointer = (clientX: number, clientY: number): PointerEvent => ({ clientX, clientY }) as PointerEvent;
 
   it('device auto-window caps hit-test length with tooltip on (issue 1.1)', async () => {
     // deviceMax = floor(1024/8) = 128. Seed 20, append 200 unbounded → retained = 128.
@@ -2053,10 +2051,7 @@ describe('ChartGPU - dual-store correctness (PR167 review)', () => {
     });
 
     // Newest point uses y=50 so right-edge hit matches existing suite coords.
-    const batch: Array<[number, number]> = Array.from({ length: 200 }, (_, i) => [
-      20 + i,
-      i === 199 ? 50 : 25,
-    ]);
+    const batch: Array<[number, number]> = Array.from({ length: 200 }, (_, i) => [20 + i, i === 199 ? 50 : 25]);
     chart.appendData(0, batch);
     await new Promise((r) => setTimeout(r, 40));
 

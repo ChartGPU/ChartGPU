@@ -8,7 +8,8 @@
  * - Binary search slicing for O(log n) performance on sorted data
  * - WeakMap caching of monotonicity checks to avoid O(n) scans
  * - Separate implementations for cartesian (x-based) and OHLC (timestamp-based) data
- * - Support for DataPoint[], XYArraysData, and InterleavedXYData formats
+ * - Support for DataPoint[], XYArraysData, InterleavedXYData, plus internal
+ *   RingXYColumns / StagingRingView (materialized chronologically when sliced)
  */
 
 import type {
@@ -20,7 +21,14 @@ import type {
   XYArraysData,
   InterleavedXYData,
 } from '../../../config/types';
-import { getPointCount, getX, getY } from '../../../data/cartesianData';
+import {
+  getPointCount,
+  getX,
+  getY,
+  isRingXYColumns,
+  isStagingRingView,
+  type CoordinatorCartesianData,
+} from '../../../data/cartesianData';
 import { clampInt } from '../utils/canvasUtils';
 
 // Type guards for OHLC data
@@ -47,15 +55,10 @@ const monotonicTimestampCache = new WeakMap<ReadonlyArray<OHLCDataPoint>, boolea
  */
 export function isMonotonicNonDecreasingFiniteX(data: CartesianSeriesData): boolean {
   // Mutable modular storage: never cache by identity (content mutates in place).
-  const isMutableRingOrStaging =
-    typeof data === 'object' &&
-    data !== null &&
-    ((data as { __ring?: boolean }).__ring === true ||
-      (data as { __stagingRing?: boolean }).__stagingRing === true);
+  const isMutableRingOrStaging = isRingXYColumns(data) || isStagingRingView(data);
 
   // For immutable arrays / XY objects, cache by object reference.
-  const cacheKey =
-    !isMutableRingOrStaging && typeof data === 'object' && data !== null ? (data as object) : null;
+  const cacheKey = !isMutableRingOrStaging && typeof data === 'object' && data !== null ? (data as object) : null;
   if (cacheKey) {
     const cached = monotonicXCache.get(cacheKey);
     if (cached !== undefined) return cached;
@@ -184,8 +187,11 @@ function upperBoundTimestampObject(data: ReadonlyArray<OHLCDataPointObject>, tim
 
 /**
  * Helper: Check if data is XYArraysData format.
+ * Excludes modular ring / staging views (they also expose x/y or object shape but
+ * must not be linear-sliced by logical index).
  */
 function isXYArraysData(data: CartesianSeriesData): data is XYArraysData {
+  if (isRingXYColumns(data) || isStagingRingView(data)) return false;
   return (
     typeof data === 'object' &&
     data !== null &&
@@ -207,8 +213,24 @@ function isInterleavedXYData(data: CartesianSeriesData): data is InterleavedXYDa
 }
 
 /**
+ * Materialize a chronological [start, end) window via getX/getY.
+ * Used for modular ring columns and StagingRingView (no Array.prototype.slice).
+ */
+function materializeCartesianSlice(data: CoordinatorCartesianData, start: number, end: number): DataPoint[] {
+  const out: DataPoint[] = new Array(Math.max(0, end - start));
+  for (let i = start, j = 0; i < end; i++, j++) {
+    out[j] = [getX(data, i), getY(data, i)];
+  }
+  return out;
+}
+
+/**
  * Helper: Slice CartesianSeriesData to index range [start, end).
  * Returns appropriate view/slice for each format.
+ *
+ * RingXYColumns / StagingRingView (internal streaming shapes) are materialized
+ * to DataPoint[] in chronological order — they are not Array-like and modular
+ * storage cannot be linear-subarray'd by logical index.
  */
 function sliceCartesianData(data: CartesianSeriesData, start: number, end: number): CartesianSeriesData {
   // Clamp indices
@@ -231,6 +253,11 @@ function sliceCartesianData(data: CartesianSeriesData, start: number, end: numbe
       return new TypedArrayConstructor(0);
     }
     return [];
+  }
+
+  // Modular ring / zero-copy staging: chronological materialize (getX/getY).
+  if (isRingXYColumns(data) || isStagingRingView(data)) {
+    return materializeCartesianSlice(data, s, e);
   }
 
   // XYArraysData: slice x, y, and optional size arrays
@@ -270,7 +297,12 @@ function sliceCartesianData(data: CartesianSeriesData, start: number, end: numbe
   }
 
   // ReadonlyArray<DataPoint>: standard slice
-  return (data as ReadonlyArray<DataPoint>).slice(s, e);
+  if (Array.isArray(data)) {
+    return (data as ReadonlyArray<DataPoint>).slice(s, e);
+  }
+
+  // Unknown object form: safe chronological materialize via accessors.
+  return materializeCartesianSlice(data as CoordinatorCartesianData, s, e);
 }
 
 /**

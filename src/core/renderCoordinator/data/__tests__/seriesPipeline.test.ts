@@ -27,6 +27,14 @@ const lineAverage = {
   rawData: raw100,
 } as unknown as ResolvedSeriesConfig;
 
+const lineNone = {
+  type: 'line',
+  sampling: 'none',
+  samplingThreshold: 2500,
+  data: { x: [0], y: [0] },
+  rawData: raw100,
+} as unknown as ResolvedSeriesConfig;
+
 describe('buildRuntimeBaseSeries', () => {
   it('GPU-eligible lttb keeps full raw on data', () => {
     const out = buildRuntimeBaseSeries([lineLttb], [raw100], [null]);
@@ -84,6 +92,50 @@ describe('resolveZoomedSeriesEntry', () => {
     });
     expect(r.series.data).toBe(raw100);
     expect(r.cacheEntry).toBeNull();
+  });
+
+  it('sampling none keeps full raw at any zoom (no visible slice upload)', () => {
+    let sliceCalls = 0;
+    const countingSlice = (data: any, min: number, max: number) => {
+      sliceCalls++;
+      return sliceX(data, min, max);
+    };
+    const r = resolveZoomedSeriesEntry({
+      series: lineNone,
+      rawSlot: raw100,
+      bufferedMin: 10,
+      bufferedMax: 50,
+      visibleMin: 20,
+      visibleMax: 40,
+      spanFraction: 0.3,
+      sliceX: countingSlice as any,
+      sliceOHLC: sliceOHLC as any,
+    });
+    // Must not window series.data — fullRawLine append + right-side zoom depend on it.
+    expect(r.series.data).toBe(raw100);
+    expect((r.series as { rawData?: unknown }).rawData).toBe(raw100);
+    expect(r.cacheEntry).toBeNull();
+    expect(sliceCalls).toBe(0);
+  });
+
+  it('sampling none prefers rawSlot over series.data when zoomed', () => {
+    const slot = {
+      x: Float64Array.from([100, 101, 102]),
+      y: Float64Array.from([1, 2, 3]),
+    };
+    const r = resolveZoomedSeriesEntry({
+      series: lineNone,
+      rawSlot: slot,
+      bufferedMin: 0,
+      bufferedMax: 200,
+      visibleMin: 100,
+      visibleMax: 102,
+      spanFraction: 0.1,
+      sliceX: sliceX as any,
+      sliceOHLC: sliceOHLC as any,
+    });
+    expect(r.series.data).toBe(slot);
+    expect((r.series as { rawData?: unknown }).rawData).toBe(slot);
   });
 
   it('CPU path samples and returns cache entry', () => {

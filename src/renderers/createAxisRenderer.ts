@@ -14,7 +14,14 @@ export interface AxisRenderer {
     gridArea: GridArea,
     axisLineColor?: string,
     axisTickColor?: string,
-    tickCount?: number
+    tickCount?: number,
+    /**
+     * Optional explicit tick domain values (e.g. nice time ticks).
+     * When provided and non-empty, marks are placed at `scale.scale(tickValues[i])`
+     * and `tickCount` is ignored in favor of `tickValues.length`.
+     * When omitted, evenly spaced linear domain splits use `tickCount`.
+     */
+    tickValues?: readonly number[]
   ): void;
   render(passEncoder: GPURenderPassEncoder): void;
   dispose(): void;
@@ -87,12 +94,45 @@ const normalizeDomain = (
   return { min, max };
 };
 
+/**
+ * Domain values for axis tick marks: explicit nice ticks when provided,
+ * otherwise evenly spaced linear splits of [domainMin, domainMax].
+ */
+const resolveTickDomainValues = (
+  tickCountOverride: number | undefined,
+  domainMin: number,
+  domainMax: number,
+  tickValues?: readonly number[]
+): number[] => {
+  if (tickValues != null && tickValues.length > 0) {
+    const out: number[] = [];
+    for (let i = 0; i < tickValues.length; i++) {
+      const v = tickValues[i]!;
+      if (Number.isFinite(v)) out.push(v);
+    }
+    if (out.length > 0) return out;
+  }
+
+  const tickCountRaw = tickCountOverride ?? DEFAULT_TICK_COUNT;
+  const tickCount = Math.max(1, Math.floor(tickCountRaw));
+  if (!Number.isFinite(tickCountRaw) || tickCount < 1) {
+    throw new Error('AxisRenderer.prepare: tickCount must be a finite number >= 1.');
+  }
+  const values = new Array<number>(tickCount);
+  for (let i = 0; i < tickCount; i++) {
+    const t = tickCount === 1 ? 0.5 : i / (tickCount - 1);
+    values[i] = domainMin + t * (domainMax - domainMin);
+  }
+  return values;
+};
+
 const generateAxisVertices = (
   axisConfig: AxisConfig,
   scale: LinearScale,
   orientation: 'x' | 'y',
   gridArea: GridArea,
-  tickCountOverride?: number
+  tickCountOverride?: number,
+  tickValues?: readonly number[]
 ): Float32Array => {
   const { left, right, top, bottom, canvasWidth, canvasHeight } = gridArea;
   // Be resilient: older call sites may omit/incorrectly pass DPR. Defaulting avoids hard crashes.
@@ -124,11 +164,6 @@ const generateAxisVertices = (
     throw new Error('AxisRenderer.prepare: tickLength must be a finite non-negative number.');
   }
 
-  const tickCountRaw = tickCountOverride ?? DEFAULT_TICK_COUNT;
-  const tickCount = Math.max(1, Math.floor(tickCountRaw));
-  if (!Number.isFinite(tickCountRaw) || tickCount < 1) {
-    throw new Error('AxisRenderer.prepare: tickCount must be a finite number >= 1.');
-  }
   const tickLengthDevicePx = tickLengthCssPx * devicePixelRatio;
   const tickDeltaClipX = (tickLengthDevicePx / canvasWidth) * 2.0;
   const tickDeltaClipY = (tickLengthDevicePx / canvasHeight) * 2.0;
@@ -144,6 +179,9 @@ const generateAxisVertices = (
   const domain = normalizeDomain(domainMinRaw, domainMaxRaw);
   const domainMin = domain.min;
   const domainMax = domain.max;
+
+  const domainTickValues = resolveTickDomainValues(tickCountOverride, domainMin, domainMax, tickValues);
+  const tickCount = domainTickValues.length;
 
   // Line-list segments:
   // - 1 baseline segment
@@ -165,9 +203,7 @@ const generateAxisVertices = (
     const y1 = y0 - tickDeltaClipY;
 
     for (let i = 0; i < tickCount; i++) {
-      const t = tickCount === 1 ? 0.5 : i / (tickCount - 1);
-      const v = domainMin + t * (domainMax - domainMin);
-      const x = scale.scale(v);
+      const x = scale.scale(domainTickValues[i]!);
 
       vertices[idx++] = x;
       vertices[idx++] = y0;
@@ -189,9 +225,7 @@ const generateAxisVertices = (
     const x1 = isRight ? x0 + tickDeltaClipX : x0 - tickDeltaClipX;
 
     for (let i = 0; i < tickCount; i++) {
-      const t = tickCount === 1 ? 0.5 : i / (tickCount - 1);
-      const v = domainMin + t * (domainMax - domainMin);
-      const y = scale.scale(v);
+      const y = scale.scale(domainTickValues[i]!);
 
       vertices[idx++] = x0;
       vertices[idx++] = y;
@@ -305,7 +339,8 @@ export function createAxisRenderer(device: GPUDevice, options?: AxisRendererOpti
     gridArea,
     axisLineColor,
     axisTickColor,
-    tickCount
+    tickCount,
+    tickValues
   ) => {
     assertNotDisposed();
 
@@ -313,7 +348,7 @@ export function createAxisRenderer(device: GPUDevice, options?: AxisRendererOpti
       throw new Error("AxisRenderer.prepare: orientation must be 'x' or 'y'.");
     }
 
-    const vertices = generateAxisVertices(axisConfig, scale, orientation, gridArea, tickCount);
+    const vertices = generateAxisVertices(axisConfig, scale, orientation, gridArea, tickCount, tickValues);
     const requiredSize = vertices.byteLength;
     const bufferSize = Math.max(4, requiredSize);
 

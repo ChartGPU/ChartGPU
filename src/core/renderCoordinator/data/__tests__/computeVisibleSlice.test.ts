@@ -449,3 +449,58 @@ describe('isMonotonicNonDecreasingFiniteX mutable ring/staging (issue 1.5)', () 
     expect(isMonotonicNonDecreasingFiniteX(view as any)).toBe(false);
   });
 });
+
+describe('sliceVisibleRangeByX ring / staging (live-streaming zoom)', () => {
+  it('slices StagingRingView without calling data.slice', async () => {
+    const { createStagingRingView } = await import('../../../../data/cartesianData');
+    // Linear staging: points (0,0) (1,10) (2,20) (3,30) (4,40)
+    const staging = new Float32Array([0, 0, 1, 10, 2, 20, 3, 30, 4, 40]);
+    const view = createStagingRingView(staging, 0, 0, 5, 0);
+
+    const result = sliceVisibleRangeByX(view as any, 1, 3) as DataPoint[];
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).toHaveLength(3);
+    expect(result[0]).toEqual([1, 10]);
+    expect(result[1]).toEqual([2, 20]);
+    expect(result[2]).toEqual([3, 30]);
+    // Full range returns original view identity
+    expect(sliceVisibleRangeByX(view as any, -1, 100)).toBe(view);
+  });
+
+  it('slices modular StagingRingView in chronological order', async () => {
+    const { createStagingRingView } = await import('../../../../data/cartesianData');
+    // capacity 4, start 2: logical order phys 2,3,0,1 → x = 2,3,4,5 (domain + offset)
+    // staging stores x - xOffset with xOffset=0: [4,y, 5,y, 2,y, 3,y]
+    const staging = new Float32Array([4, 40, 5, 50, 2, 20, 3, 30]);
+    const view = createStagingRingView(staging, 2, 4, 4, 0);
+
+    const result = sliceVisibleRangeByX(view as any, 3, 5) as DataPoint[];
+    expect(result.map((p) => (Array.isArray(p) ? p[0] : p.x))).toEqual([3, 4, 5]);
+  });
+
+  it('slices RingXYColumns with non-zero start without linear buffer slice', async () => {
+    const { createRingXYColumns, appendIntoRingXY } = await import('../../../../data/cartesianData');
+    const ring = createRingXYColumns(4);
+    // Fill to capacity then append more to wrap
+    appendIntoRingXY(ring, { x: [0, 1, 2, 3], y: [0, 10, 20, 30] }, 0, 4, 0);
+    appendIntoRingXY(ring, { x: [4, 5], y: [40, 50] }, 0, 2, 0);
+    // Logical: 2,3,4,5 after wrap (if maxPoints behavior) — check what append did
+    expect(ring.count).toBeLessThanOrEqual(4);
+
+    // Direct modular setup for clarity
+    const ring2 = createRingXYColumns(4);
+    ring2.x[0] = 10;
+    ring2.y[0] = 100;
+    ring2.x[1] = 11;
+    ring2.y[1] = 110;
+    ring2.x[2] = 8;
+    ring2.y[2] = 80;
+    ring2.x[3] = 9;
+    ring2.y[3] = 90;
+    ring2.start = 2;
+    ring2.count = 4;
+    // chronological: 8,9,10,11
+    const result = sliceVisibleRangeByX(ring2 as any, 9, 11) as DataPoint[];
+    expect(result.map((p) => (Array.isArray(p) ? p[0] : p.x))).toEqual([9, 10, 11]);
+  });
+});

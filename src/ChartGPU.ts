@@ -58,11 +58,7 @@ import {
   type RingXYColumns,
   type StagingRingView,
 } from './data/cartesianData';
-import {
-  normalizeMaxPoints,
-  planMaxPointsWindow,
-  resolveEffectiveMaxPointsForAppend,
-} from './data/maxPointsWindow';
+import { normalizeMaxPoints, planMaxPointsWindow, resolveEffectiveMaxPointsForAppend } from './data/maxPointsWindow';
 
 // --- Instance registry for auto-dispose on page unload (CGPU-OOM-139) ---
 const activeInstances = new Set<{ dispose(): void; disposed: boolean }>();
@@ -918,9 +914,7 @@ export async function createChartGPU(
     for (let i = 0; i < n; i++) {
       const s = resolvedOptions.series[i]!;
       const optionsRaw =
-        s.type === 'pie'
-          ? null
-          : (((s as unknown as { rawData?: unknown }).rawData ?? s.data) as unknown);
+        s.type === 'pie' ? null : (((s as unknown as { rawData?: unknown }).rawData ?? s.data) as unknown);
       if (s.type === 'pie') {
         nextData[i] = { x: [], y: [] };
         nextBounds[i] = null;
@@ -2228,12 +2222,7 @@ export async function createChartGPU(
         return 0;
       })();
       const deviceLimits = gpuContext?.device?.limits ?? null;
-      const maxPoints = resolveEffectiveMaxPointsForAppend(
-        callerMaxPoints,
-        prevHitLenForCap,
-        pointCount,
-        deviceLimits
-      );
+      const maxPoints = resolveEffectiveMaxPointsForAppend(callerMaxPoints, prevHitLenForCap, pointCount, deviceLimits);
 
       // Forward to coordinator (GPU buffers + render-state updates), then keep
       // ChartGPU's hit-testing runtime store in sync when tooltips / hit-test
@@ -2292,7 +2281,8 @@ export async function createChartGPU(
           // Promote linear hit-test store to ring (Issue 15). Preserve size channel.
           if (!isRingXYColumns(owned)) {
             const linear = owned as MutableXYColumns;
-            const hasSize = linear.size != null && linear.size.some((v) => v !== undefined && Number.isFinite(v as number));
+            const hasSize =
+              linear.size != null && linear.size.some((v) => v !== undefined && Number.isFinite(v as number));
             const ring = createRingXYColumns(maxPoints, hasSize);
             const seedCount = Math.min(linear.x.length, maxPoints);
             const seedStart = Math.max(0, linear.x.length - seedCount);
