@@ -431,6 +431,15 @@
       padding-block: var(--space-lg);
     }
 
+    /* Ready CTA → example index: avoid double section padding */
+    .band--cta {
+      padding-block: var(--space-lg) var(--space-sm);
+    }
+
+    .band--cta + .index {
+      padding-top: var(--space-md);
+    }
+
     .band-lede {
       font-family: var(--font-display);
       font-style: normal;
@@ -1110,7 +1119,7 @@
     <div class="plate-caption">
       <p class="plate-meta">Live stream</p>
       <h1 class="plate-title">1000 series streaming. It can do this all day.</h1>
-      <p class="plate-note">Continuous append on every series. WebGPU holds the field while you scroll past.</p>
+      <p class="plate-note">See what you can do below 👇</p>
     </div>
   </section>
 
@@ -1204,7 +1213,6 @@
       <div class="plate-caption">
         <p class="plate-meta">Stacked bar</p>
         <h2 class="plate-title">Negative + positive stacks</h2>
-        <a class="plate-link" href="/examples/grouped-bar/index.html" data-open-example="grouped-bar">Bar demo</a>
       </div>
     </div>
   </section>
@@ -1215,7 +1223,7 @@
     <div class="plate-status" data-status>Preparing panels…</div>
   </section>
 
-  <section class="band band--tight">
+  <section class="band band--tight band--cta">
     <p class="band-lede band-lede--cta"><span class="gold">Ready</span> to create your own?</p>
     <div class="install-row">
       <div class="install-bar">
@@ -1243,7 +1251,6 @@
       <div class="foot-links">
         <a href="https://github.com/ChartGPU/ChartGPU" target="_blank" rel="noopener">GitHub</a>
         <a href="https://www.npmjs.com/package/@chartgpu/chartgpu" target="_blank" rel="noopener">npm</a>
-        <a href="/examples/hello-world/index.html">Hello WebGPU</a>
       </div>
     </div>
   </footer>
