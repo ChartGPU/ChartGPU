@@ -272,9 +272,10 @@ export function renderYAxisLabels(ctx: YAxisLabelRenderContext): void {
   // Y-axis unit header (non-rotated, top of axis rail) — independent of rotated `name`.
   const yAxisHeader = yAxisConfig.header?.trim() ?? '';
   if (yAxisHeader.length > 0) {
-    // Sit just above the plot top in the top gutter so the header reads as a unit label
-    // for the price ladder (e.g. "USDT") without overlapping the densest top tick.
-    const headerY = plotTopCss - LABEL_PADDING_CSS_PX - theme.fontSize * 0.5;
+    // Center sits a full fontSize + padding above plot top so the header em-box clears
+    // the top domain tick (textBaseline middle places tick center at plotTopCss).
+    // AABB gap to top tick ≈ LABEL_PADDING + fontSize/2 (grows with theme.fontSize).
+    const headerY = plotTopCss - LABEL_PADDING_CSS_PX - theme.fontSize;
     const span = axisLabelOverlay.addLabel(yAxisHeader, offsetX + yLabelX, offsetY + headerY, {
       fontSize: theme.fontSize,
       color: theme.textColor,

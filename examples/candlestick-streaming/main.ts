@@ -117,7 +117,8 @@ async function init() {
   // Candle-primary defaults: first Y → right, grid left=20 / right=70 (no grid override needed).
   fullChartOptions = {
     xAxis: { type: 'time', name: 'Time' },
-    yAxis: { type: 'value', name: `${CONFIG.symbol}` },
+    // Non-rotated top-rail unit header (exchange-style); series name carries the symbol.
+    yAxis: { type: 'value', header: 'USD' },
     series: [
       {
         type: 'candlestick',

@@ -274,9 +274,12 @@ describe('renderAxisLabels', () => {
       expect(header!.options?.anchor).toBe('start');
       expect(header!.options?.fontWeight).toBe('600');
 
-      // Header Y is above plot top (plot top clip 0.8 → css y = ((1-0.8)/2)*400 = 40)
+      // Header Y is a full fontSize + padding above plot top
+      // (plot top clip 0.8 → css y = ((1-0.8)/2)*400 = 40; fontSize 12)
       const plotTopCss = ((1 - 0.8) / 2) * 400;
-      expect(header!.y).toBeLessThan(plotTopCss);
+      const fontSize = 12;
+      const labelPadding = 4;
+      expect(header!.y).toBe(plotTopCss - labelPadding - fontSize);
 
       // X aligns with right-side tick label column (past plot right)
       const plotRightCss = ((0.95 + 1) / 2) * 800;
