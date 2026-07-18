@@ -8,6 +8,11 @@ const repoRoot = resolve(__dirname, '..');
 const examplesDir = resolve(repoRoot, 'examples');
 const pagesDist = resolve(repoRoot, 'pages-dist');
 
+const packageJson = JSON.parse(
+  readFileSync(resolve(repoRoot, 'package.json'), 'utf8')
+) as { version?: string };
+const appVersion = packageJson.version ?? '0.0.0';
+
 const exampleDirs = readdirSync(examplesDir).filter((file) => {
   const path = resolve(examplesDir, file);
   return statSync(path).isDirectory() && readdirSync(path).includes('index.html');
@@ -34,6 +39,16 @@ exampleDirs.forEach((dir) => {
  *   dist/foo/index.html      (each demo)
  *   dist/examples/index.html (optional classic list)
  */
+/** Inject package.json version into the landing HTML (dev + build). */
+function injectAppVersionPlugin() {
+  return {
+    name: 'inject-app-version',
+    transformIndexHtml(html: string) {
+      return html.replaceAll('%APP_VERSION%', appVersion);
+    },
+  };
+}
+
 function flattenPagesPlugin() {
   return {
     name: 'flatten-pages',
@@ -97,7 +112,11 @@ export default defineConfig(({ command }) => ({
     port: 4173,
     open: '/ChartGPU/',
   },
-  plugins: [flattenPagesPlugin()],
+  define: {
+    // Available to landing TS as import.meta.env is not used for this constant.
+    __APP_VERSION__: JSON.stringify(appVersion),
+  },
+  plugins: [injectAppVersionPlugin(), flattenPagesPlugin()],
   build: {
     outDir: pagesDist,
     emptyOutDir: true,
