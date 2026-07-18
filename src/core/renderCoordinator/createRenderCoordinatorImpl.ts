@@ -166,11 +166,7 @@ import {
   isOHLCDataPoint,
 } from './ui/tooltipLegendHelpers';
 import { syncPriceLabelFrame, resolvePriceLabelCountdownDesired } from './ui/syncPriceLabelFrame';
-import {
-  selectPriceLabelSeries,
-  resolveLastCandleState,
-  type PriceLabelOwnershipSeries,
-} from './ui/priceLabelHelpers';
+import { selectPriceLabelSeries, resolveLastCandleState, type PriceLabelOwnershipSeries } from './ui/priceLabelHelpers';
 import { buildPriceLineInstances } from './ui/buildPriceLineInstances';
 import type { ReferenceLineInstance } from '../../renderers/createReferenceLineRenderer';
 import { createPriceLabelCountdownTimer } from './ui/createPriceLabelCountdownTimer';
@@ -3013,10 +3009,7 @@ export function createRenderCoordinator(
             const yAxisId = candle.yAxis;
             const priceYScale = currentYScales.get(yAxisId);
             if (priceYScale) {
-              const raw = runtimeRawDataByIndex[priceSeriesIndex] as
-                | ReadonlyArray<OHLCDataPoint>
-                | null
-                | undefined;
+              const raw = runtimeRawDataByIndex[priceSeriesIndex] as ReadonlyArray<OHLCDataPoint> | null | undefined;
               const last = resolveLastCandleState({
                 seriesIndex: priceSeriesIndex,
                 yAxisId,
