@@ -190,6 +190,92 @@
       min-height: 85dvh;
     }
 
+    /* Finale wall — dense multi-chart mosaic (not another multi-series field) */
+    .plate--wall {
+      min-height: 100vh;
+      min-height: 100dvh;
+      background: #03040a;
+    }
+
+    .plate--wall .plate-canvas.wall-grid {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      grid-template-rows: repeat(8, minmax(0, 1fr));
+      gap: 2px;
+      padding: 2px;
+      background: #03040a;
+      overflow: hidden;
+    }
+
+    .wall-cell {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      background: var(--color-paper-2);
+    }
+
+    /* Never force-size ChartGPU overlays (legend/priceLabel) — canvas only */
+    .wall-cell > canvas {
+      display: block;
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    .wall-cell__title {
+      position: absolute;
+      z-index: 3;
+      top: 6px;
+      left: 10px;
+      font-family: var(--font-display);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--color-ink-2);
+      pointer-events: none;
+      text-shadow: 0 1px 8px rgba(0, 0, 0, 0.85);
+    }
+
+    .wall-cell__meta {
+      position: absolute;
+      z-index: 3;
+      top: 6px;
+      right: 10px;
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--color-ink-3);
+      pointer-events: none;
+      text-shadow: 0 1px 8px rgba(0, 0, 0, 0.85);
+    }
+
+    /* 8 substantial panels — multi-series dashboards, not empty sparklines */
+    .wall-cell--apm     { grid-column: 1 / 7;  grid-row: 1 / 5; }
+    .wall-cell--trade   { grid-column: 7 / 13; grid-row: 1 / 5; }
+    .wall-cell--stack   { grid-column: 1 / 5;  grid-row: 5 / 7; }
+    .wall-cell--pool    { grid-column: 5 / 9;  grid-row: 5 / 7; }
+    .wall-cell--scatter { grid-column: 9 / 13; grid-row: 5 / 7; }
+    .wall-cell--pie     { grid-column: 1 / 4;  grid-row: 7 / 9; }
+    .wall-cell--errors  { grid-column: 4 / 8;  grid-row: 7 / 9; }
+    .wall-cell--combo   { grid-column: 8 / 13; grid-row: 7 / 9; }
+
+    /* Caption top-right — never covers bottom-left pie */
+    .plate--wall .plate-caption {
+      left: auto;
+      right: var(--page-gutter);
+      bottom: auto;
+      top: calc(var(--nav-height) + var(--space-md));
+      max-width: min(36ch, calc(100% - 2 * var(--page-gutter)));
+      padding: var(--space-xs) var(--space-sm);
+      background: rgba(5, 6, 10, 0.82);
+      border-radius: var(--radius-sm);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      text-align: right;
+    }
+
     .plate--split {
       min-height: 70vh;
       min-height: 70dvh;
@@ -784,6 +870,33 @@
         min-height: 55dvh;
       }
 
+      .plate--wall {
+        min-height: 160vh;
+        min-height: 160dvh;
+      }
+
+      .plate--wall .plate-canvas.wall-grid {
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        grid-template-rows: repeat(14, minmax(0, 1fr));
+      }
+
+      .wall-cell--apm     { grid-column: 1 / 7;  grid-row: 1 / 4; }
+      .wall-cell--trade   { grid-column: 1 / 7;  grid-row: 4 / 6; }
+      .wall-cell--stack   { grid-column: 1 / 4;  grid-row: 6 / 8; }
+      .wall-cell--pool    { grid-column: 4 / 7;  grid-row: 6 / 8; }
+      .wall-cell--scatter { grid-column: 1 / 4;  grid-row: 8 / 10; }
+      .wall-cell--pie     { grid-column: 4 / 7;  grid-row: 8 / 10; }
+      .wall-cell--errors  { grid-column: 1 / 4;  grid-row: 10 / 12; }
+      .wall-cell--combo   { grid-column: 4 / 7;  grid-row: 10 / 12; }
+
+      .plate--wall .plate-caption {
+        top: auto;
+        bottom: var(--space-md);
+        left: var(--page-gutter);
+        right: auto;
+        text-align: left;
+      }
+
       .gallery-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
@@ -895,15 +1008,15 @@
     </div>
   </section>
 
-  <!-- Hairline storm -->
-  <section class="plate plate--tall" id="plate-storm" data-demo="storm" aria-label="High series count line field">
-    <div class="plate-canvas" data-canvas></div>
-    <div class="plate-status" data-status>Spawning series…</div>
+  <!-- Finale: multi-chart wall — complete multi-series panels on shared GPU -->
+  <section class="plate plate--wall" id="plate-wall" data-demo="wall" aria-label="Multi-chart wall finale">
+    <div class="plate-canvas wall-grid" data-canvas></div>
+    <div class="plate-status" data-status>Raising the wall…</div>
     <div class="plate-caption">
-      <p class="plate-meta">Multi-series stress</p>
-      <h2 class="plate-title">Sixteen hairlines. Zoom freely.</h2>
-      <p class="plate-note">Dense multi-series line field — the kind of redraw that collapses 2D canvas.</p>
-      <a class="plate-link" href="/examples/ultimate-benchmark/index.html" data-open-example="ultimate-benchmark">Ultimate benchmark</a>
+      <p class="plate-meta">Shared GPU · 8 panels · multi-series</p>
+      <h2 class="plate-title">A wall of live charts. One device.</h2>
+      <p class="plate-note">Each panel is a full dataset — labels, annotations, dual axes — streaming on a shared adapter and pipeline cache.</p>
+      <a class="plate-link" href="/examples/streaming-dashboard/index.html" data-open-example="streaming-dashboard">Streaming dashboard</a>
     </div>
   </section>
 

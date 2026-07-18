@@ -1,7 +1,7 @@
 /**
  * ChartGPU dev-site showcase — live WebGPU plates + example index.
  */
-import { ChartGPU } from '../src/index';
+import { ChartGPU, createPipelineCache } from '../src/index';
 import type {
   ChartGPUInstance,
   ChartGPUOptions,
@@ -599,64 +599,821 @@ async function mountBars(container: HTMLElement): Promise<{ dispose: () => void 
   };
 }
 
-async function mountStorm(container: HTMLElement): Promise<{ dispose: () => void }> {
-  const seriesCount = 16;
-  const points = 8_000;
-  const series: LineSeries[] = [];
+/**
+ * Finale wall — substantial multi-series dashboard panels on one shared GPU.
+ * Each panel is a complete use-case dataset (labels, annotations, dual axes),
+ * not decorative empty sparklines. Top-left is APM (not a hero multi-line twin).
+ */
+async function mountWall(container: HTMLElement): Promise<{ dispose: () => void }> {
+  const adapter = await navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' });
+  if (!adapter) throw new Error('WebGPU adapter unavailable');
+  const device = await adapter.requestDevice();
+  const pipelineCache = createPipelineCache(device);
+  const shared = { adapter, device, pipelineCache };
 
-  for (let s = 0; s < seriesCount; s++) {
-    const data: DataPoint[] = new Array(points);
-    const phase = s * 0.41;
-    const freq = 0.012 + s * 0.0017;
-    for (let i = 0; i < points; i++) {
-      const x = i;
-      const y =
-        Math.sin(i * freq + phase) * (0.6 + (s % 4) * 0.08) +
-        Math.sin(i * freq * 3.1 + phase * 2) * 0.18 +
-        s * 0.35;
-      data[i] = [x, y];
-    }
-    series.push({
-      type: 'line',
-      name: `s${s}`,
-      data,
-      color: BRAND_PALETTE[s % BRAND_PALETTE.length],
-      lineStyle: { width: 1, opacity: 0.85 },
-      sampling: 'lttb',
-      samplingThreshold: 2_500,
-    });
-  }
-
-  const options: ChartGPUOptions = {
-    ...plateChrome(),
-    grid: { left: 4, right: 4, top: 8, bottom: 8 },
-    dataZoom: [{ type: 'inside' }],
-    xAxis: { type: 'value', tickFormatter: hideTicks },
-    yAxis: { type: 'value', tickFormatter: hideTicks },
-    palette: [...BRAND_PALETTE],
-    series,
+  const wallTheme: NonNullable<ChartGPUOptions['theme']> = {
+    backgroundColor: '#0c0e14',
+    textColor: '#C8CDD6',
+    axisLineColor: 'rgba(226,229,235,0.18)',
+    axisTickColor: 'rgba(226,229,235,0.32)',
+    gridLineColor: 'rgba(255,255,255,0.05)',
+    colorPalette: [...BRAND_PALETTE],
+    fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+    fontSize: 10,
   };
 
-  const chart = await ChartGPU.create(container, options);
-  const ro = attachResize(container, chart);
+  const softAnim: ChartGPUOptions['animation'] = { duration: 520, easing: 'cubicOut', delay: 0 };
+  const noAnim: ChartGPUOptions['animation'] = false;
+
+  type CellSpec = { id: string; className: string; title: string; meta: string };
+
+  const cells: CellSpec[] = [
+    { id: 'apm', className: 'wall-cell wall-cell--apm', title: 'API latency', meta: 'P50 · P95 · P99' },
+    { id: 'trade', className: 'wall-cell wall-cell--trade', title: 'MEME / USD', meta: 'OHLC + volume' },
+    { id: 'stack', className: 'wall-cell wall-cell--stack', title: 'Revenue by region', meta: 'Stacked · live' },
+    { id: 'pool', className: 'wall-cell wall-cell--pool', title: 'Connection pool', meta: 'Active · waiting' },
+    { id: 'scatter', className: 'wall-cell wall-cell--scatter', title: 'Latency vs size', meta: '3 cohorts' },
+    { id: 'pie', className: 'wall-cell wall-cell--pie', title: 'GPU frame budget', meta: 'ms / pass' },
+    { id: 'errors', className: 'wall-cell wall-cell--errors', title: 'Error rate', meta: '4xx · 5xx' },
+    { id: 'combo', className: 'wall-cell wall-cell--combo', title: 'Throughput + errors', meta: 'Dual axis' },
+  ];
+
+  container.replaceChildren();
+  const hosts = new Map<string, HTMLElement>();
+  for (const c of cells) {
+    const el = document.createElement('div');
+    el.className = c.className;
+    el.dataset.wallCell = c.id;
+
+    const title = document.createElement('span');
+    title.className = 'wall-cell__title';
+    title.textContent = c.title;
+    const meta = document.createElement('span');
+    meta.className = 'wall-cell__meta';
+    meta.textContent = c.meta;
+    el.append(title, meta);
+
+    container.appendChild(el);
+    hosts.set(c.id, el);
+  }
+
+  const requireHost = (id: string): HTMLElement => {
+    const h = hosts.get(id);
+    if (!h) throw new Error(`wall cell missing: ${id}`);
+    return h;
+  };
+
+  // ── Complete datasets (one coherent story per panel) ────────────────────
+  const seedN = 90;
+  const t0 = Date.now() - seedN * 1000;
+  const timeAt = (i: number): number => t0 + i * 1000;
+
+  /** APM: correlated latency percentiles from one service trace. */
+  type ApmRow = { t: number; p50: number; p95: number; p99: number };
+  const apmRows: ApmRow[] = [];
+  for (let i = 0; i < seedN; i++) {
+    const load = 0.55 + 0.35 * Math.sin(i * 0.11) + 0.12 * Math.sin(i * 0.37);
+    const incident = i > 48 && i < 58 ? 1.8 : 1;
+    const p50 = (18 + load * 22 + Math.sin(i * 0.2) * 3) * incident;
+    const p95 = p50 * (2.1 + 0.15 * Math.sin(i * 0.09));
+    const p99 = p95 * (1.45 + 0.1 * Math.sin(i * 0.07));
+    apmRows.push({ t: timeAt(i), p50, p95, p99 });
+  }
+  const SLO_MS = 120;
+  let apmCursor = seedN;
+
+  /** Trade: OHLC + volume from one tape. */
+  let tradeCandles = generateCandles(100, 148);
+  const tradeVolume = (ohlc: OHLCDataPoint[]): DataPoint[] =>
+    ohlc.map((c, i) => {
+      const body = Math.abs(c[2] - c[1]);
+      const vol = 40 + body * 28 + (i % 5) * 6 + Math.sin(i * 0.3) * 12;
+      return [c[0], Math.max(4, vol)] as DataPoint;
+    });
+  let tradeVol = tradeVolume(tradeCandles);
+  const tradeSupport = (() => {
+    const prices = tradeCandles.map((c) => c[3]);
+    return Math.min(...prices) + (Math.max(...prices) - Math.min(...prices)) * 0.22;
+  })();
+
+  /** Stacked revenue: 12 months × 4 regions. */
+  const regions = [
+    { name: 'NA', color: GOLD },
+    { name: 'EU', color: BLUE },
+    { name: 'APAC', color: CYAN },
+    { name: 'LATAM', color: ROSE },
+  ] as const;
+  const months = 12;
+  const monthLabel = (i: number): string => {
+    const names = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
+    return names[i % 12] ?? String(i);
+  };
+  let stackPhase = 0;
+  const buildStackSeries = (phase: number): NonNullable<ChartGPUOptions['series']> =>
+    regions.map((r, ri) => {
+      const data: DataPoint[] = new Array(months);
+      for (let m = 0; m < months; m++) {
+        // Even stack bands so all four regions read clearly
+        const base =
+          10 +
+          ri * 7 +
+          Math.sin(m * 0.55 + ri * 0.9 + phase) * 3.5 +
+          Math.cos(m * 0.3 + ri) * 2;
+        data[m] = [m, Math.max(4, base)];
+      }
+      return {
+        type: 'bar' as const,
+        name: r.name,
+        data,
+        stack: 'rev',
+        color: r.color,
+        barCategoryGap: 0.28,
+      };
+    });
+
+  /** Pool: active + waiting — own sliding window (avoid area+append ring collapse). */
+  type PoolRow = { t: number; active: number; waiting: number };
+  const POOL_MAX = 200;
+  const poolWindow = 80;
+  const poolSample = (i: number): PoolRow => {
+    // Stronger amplitude so dual areas read as real curves, not flat slabs
+    const surge = i > 40 && i < 52 ? 48 : 0;
+    const active = Math.min(
+      POOL_MAX + 8,
+      110 + Math.sin(i * 0.19) * 55 + Math.sin(i * 0.07) * 22 + surge
+    );
+    const waiting = Math.max(
+      6,
+      22 + Math.sin(i * 0.28 + 0.6) * 16 + Math.max(0, active - 150) * 0.9 + surge * 0.45
+    );
+    return { t: timeAt(i), active, waiting };
+  };
+  let poolCursor = seedN;
+  let poolRows: PoolRow[] = Array.from({ length: poolWindow }, (_, i) =>
+    poolSample(poolCursor - poolWindow + i)
+  );
+  const poolSeriesData = (
+    rows: PoolRow[]
+  ): { active: DataPoint[]; waiting: DataPoint[] } => ({
+    active: rows.map((r) => [r.t, r.active] as DataPoint),
+    waiting: rows.map((r) => [r.t, r.waiting] as DataPoint),
+  });
+
+  /** Scatter: three request cohorts (latency vs payload size). */
+  const scatterCohorts = (() => {
+    const rng = mulberry32(2026);
+    const mk = (n: number, cx: number, cy: number, sx: number, sy: number): ScatterPointTuple[] => {
+      const out: ScatterPointTuple[] = new Array(n);
+      for (let i = 0; i < n; i++) {
+        const u1 = Math.max(1e-12, rng());
+        const u2 = rng();
+        const r = Math.sqrt(-2 * Math.log(u1));
+        const th = 2 * Math.PI * u2;
+        out[i] = [cx + r * Math.cos(th) * sx, cy + r * Math.sin(th) * sy];
+      }
+      return out;
+    };
+    return {
+      cache: mk(420, 28, 18, 8, 5),
+      origin: mk(380, 72, 48, 14, 12),
+      heavy: mk(260, 140, 95, 22, 18),
+    };
+  })();
+
+  /** GPU frame budget pie. */
+  let pieSlices = [
+    { name: 'Main pass', value: 42, color: CYAN },
+    { name: 'Overlay', value: 22, color: BLUE },
+    { name: 'Decimate', value: 16, color: VIOLET },
+    { name: 'Upload', value: 12, color: GOLD },
+    { name: 'Idle', value: 8, color: STEEL },
+  ];
+
+  /** Errors 4xx/5xx. */
+  type ErrRow = { t: number; e4: number; e5: number };
+  const errRows: ErrRow[] = [];
+  for (let i = 0; i < seedN; i++) {
+    const e5 = Math.max(0, 0.4 + Math.sin(i * 0.18) * 0.5 + (i > 50 && i < 62 ? 4.5 : 0));
+    const e4 = 2.2 + Math.sin(i * 0.12 + 1) * 1.1 + Math.sin(i * 0.4) * 0.4;
+    errRows.push({ t: timeAt(i), e4, e5 });
+  }
+  let errCursor = seedN;
+
+  /** Combo: throughput (bars) + error % (line) dual axis from one traffic log. */
+  type ComboRow = { x: number; rps: number; errPct: number };
+  const comboRows: ComboRow[] = [];
+  for (let i = 0; i < 36; i++) {
+    const rps = 800 + Math.sin(i * 0.35) * 280 + Math.sin(i * 0.11) * 90 + (i % 4) * 20;
+    const errPct = Math.max(0.05, 1.8 - rps / 1200 + Math.sin(i * 0.5) * 0.4);
+    comboRows.push({ x: i, rps, errPct });
+  }
+  let comboPhase = 0;
+
+  const fmtMs = (v: number): string => `${Math.round(v)}`;
+  const fmtPct = (v: number): string => `${v.toFixed(1)}%`;
+  const fmtInt = (v: number): string => `${Math.round(v)}`;
+
+  const configs: { id: string; options: ChartGPUOptions }[] = [
+    // 1 · APM latency — top-left is NOT a multi-line hero twin
+    {
+      id: 'apm',
+      options: {
+        theme: wallTheme,
+        grid: { left: 44, right: 12, top: 28, bottom: 28 },
+        gridLines: { show: true, horizontal: { show: true, count: 4 }, vertical: { show: false } },
+        tooltip: { show: true, trigger: 'axis' },
+        legend: { show: true },
+        animation: noAnim,
+        autoScroll: true,
+        xAxis: { type: 'time' },
+        yAxis: { type: 'value', name: 'ms', min: 0 },
+        annotations: [
+          {
+            type: 'lineY',
+            y: SLO_MS,
+            layer: 'aboveSeries',
+            style: { color: ROSE, lineWidth: 1, lineDash: [5, 4], opacity: 0.85 },
+            label: {
+              text: `SLO ${SLO_MS}ms`,
+              offset: [6, -10],
+              anchor: 'start',
+              background: { color: '#0c0e14', opacity: 0.85, padding: [2, 5, 2, 5], borderRadius: 3 },
+            },
+          },
+          {
+            type: 'bandX',
+            from: timeAt(49),
+            to: timeAt(57),
+            layer: 'belowSeries',
+            style: { color: ROSE, opacity: 0.12 },
+            label: {
+              text: 'Incident',
+              offset: [4, 12],
+              anchor: 'start',
+            },
+          },
+        ],
+        series: [
+          {
+            type: 'line',
+            name: 'P50',
+            data: apmRows.map((r) => [r.t, r.p50] as DataPoint),
+            color: LIME,
+            lineStyle: { width: 2 },
+            sampling: 'none',
+          },
+          {
+            type: 'line',
+            name: 'P95',
+            data: apmRows.map((r) => [r.t, r.p95] as DataPoint),
+            color: GOLD,
+            lineStyle: { width: 2 },
+            sampling: 'none',
+          },
+          {
+            type: 'line',
+            name: 'P99',
+            data: apmRows.map((r) => [r.t, r.p99] as DataPoint),
+            color: ROSE,
+            lineStyle: { width: 1.5, opacity: 0.9 },
+            sampling: 'none',
+          },
+        ],
+      },
+    },
+    // 2 · Trade: OHLC + volume dual-axis, price label, support annotation
+    {
+      id: 'trade',
+      options: {
+        theme: wallTheme,
+        grid: { left: 48, right: 52, top: 28, bottom: 28 },
+        gridLines: { show: true, horizontal: { show: true, count: 4 }, vertical: { show: false } },
+        tooltip: { show: true, trigger: 'axis' },
+        legend: { show: true },
+        animation: noAnim,
+        autoScroll: true,
+        xAxis: { type: 'time' },
+        yAxis: { type: 'value', header: 'USD' },
+        axes: {
+          y: [
+            { id: 'price', position: 'right', name: 'USD' },
+            { id: 'vol', position: 'left', name: 'Vol', min: 0 },
+          ],
+        },
+        annotations: [
+          {
+            type: 'lineY',
+            y: tradeSupport,
+            layer: 'aboveSeries',
+            style: { color: CYAN, lineWidth: 1, lineDash: [4, 4], opacity: 0.7 },
+            label: {
+              text: 'Support',
+              offset: [8, -10],
+              anchor: 'start',
+              background: { color: '#0c0e14', opacity: 0.8, padding: [2, 5, 2, 5], borderRadius: 3 },
+            },
+          },
+        ],
+        series: [
+          {
+            type: 'bar',
+            name: 'Volume',
+            data: tradeVol,
+            color: BLUE,
+            yAxis: 'vol',
+            barCategoryGap: 0.15,
+          },
+          {
+            type: 'candlestick',
+            name: 'MEME',
+            data: tradeCandles,
+            yAxis: 'price',
+            itemStyle: {
+              upColor: LIME,
+              downColor: ROSE,
+              upBorderColor: LIME,
+              downBorderColor: ROSE,
+            },
+            priceLabel: { intervalMs: 1000, nowMs: () => Date.now() },
+          },
+        ],
+      },
+    },
+    // 3 · Stacked regional revenue
+    {
+      id: 'stack',
+      options: {
+        theme: wallTheme,
+        grid: { left: 36, right: 10, top: 28, bottom: 28 },
+        gridLines: { show: true, horizontal: { show: true, count: 3 }, vertical: { show: false } },
+        tooltip: { show: true, trigger: 'axis' },
+        legend: { show: true },
+        animation: softAnim,
+        xAxis: {
+          type: 'value',
+          min: 0,
+          max: months - 1,
+          tickFormatter: (v) => monthLabel(Math.round(v)),
+        },
+        yAxis: { type: 'value', name: '$k', min: 0, tickFormatter: fmtInt },
+        series: buildStackSeries(0),
+      },
+    },
+    // 4 · Connection pool dual area + max annotation
+    // Note: pure area + autoScroll + appendData ring storage was collapsing the mesh
+    // into a right-edge strip / solid slab. Use line+areaStyle and setOption windows.
+    {
+      id: 'pool',
+      options: {
+        theme: wallTheme,
+        grid: { left: 40, right: 12, top: 28, bottom: 28 },
+        gridLines: { show: true, horizontal: { show: true, count: 4 }, vertical: { show: false } },
+        tooltip: { show: true, trigger: 'axis' },
+        legend: { show: true },
+        animation: noAnim,
+        // Domain follows the sliding window we push via setOption (no autoScroll ring).
+        autoScroll: false,
+        xAxis: { type: 'time' },
+        yAxis: { type: 'value', name: 'conns', min: 0, max: 240 },
+        annotations: [
+          {
+            type: 'lineY',
+            y: POOL_MAX,
+            layer: 'aboveSeries',
+            style: { color: ROSE, lineWidth: 1, lineDash: [4, 4], opacity: 0.8 },
+            label: {
+              text: `Max ${POOL_MAX}`,
+              offset: [6, -10],
+              anchor: 'start',
+              background: { color: '#0c0e14', opacity: 0.85, padding: [2, 5, 2, 5], borderRadius: 3 },
+            },
+          },
+        ],
+        series: (() => {
+          const d = poolSeriesData(poolRows);
+          return [
+            {
+              type: 'line' as const,
+              name: 'Active',
+              data: d.active,
+              color: CYAN,
+              lineStyle: { width: 2 },
+              areaStyle: { opacity: 0.32 },
+              sampling: 'none' as const,
+            },
+            {
+              type: 'line' as const,
+              name: 'Waiting',
+              data: d.waiting,
+              color: ROSE,
+              lineStyle: { width: 2 },
+              areaStyle: { opacity: 0.22 },
+              sampling: 'none' as const,
+            },
+          ];
+        })(),
+      },
+    },
+    // 5 · Scatter cohorts with point annotations
+    {
+      id: 'scatter',
+      options: {
+        theme: wallTheme,
+        grid: { left: 40, right: 10, top: 28, bottom: 32 },
+        gridLines: { show: true, horizontal: { show: true, count: 3 }, vertical: { show: true, count: 3 } },
+        tooltip: { show: true, trigger: 'item' },
+        legend: { show: true },
+        animation: softAnim,
+        xAxis: { type: 'value', name: 'Payload KB', min: 0 },
+        yAxis: { type: 'value', name: 'ms', min: 0, tickFormatter: fmtMs },
+        annotations: [
+          {
+            type: 'point',
+            x: 28,
+            y: 18,
+            layer: 'aboveSeries',
+            marker: { size: 8, style: { color: LIME } },
+            label: { text: 'Cache hit', offset: [8, -8], anchor: 'start' },
+          },
+          {
+            type: 'point',
+            x: 140,
+            y: 95,
+            layer: 'aboveSeries',
+            marker: { size: 8, style: { color: ROSE } },
+            label: { text: 'Heavy', offset: [8, -8], anchor: 'start' },
+          },
+        ],
+        series: [
+          {
+            type: 'scatter',
+            name: 'Cache',
+            data: scatterCohorts.cache,
+            color: LIME,
+            symbolSize: 4,
+            sampling: 'none',
+          },
+          {
+            type: 'scatter',
+            name: 'Origin',
+            data: scatterCohorts.origin,
+            color: GOLD,
+            symbolSize: 4,
+            sampling: 'none',
+          },
+          {
+            type: 'scatter',
+            name: 'Heavy',
+            data: scatterCohorts.heavy,
+            color: VIOLET,
+            symbolSize: 5,
+            sampling: 'none',
+          },
+        ],
+      },
+    },
+    // 6 · GPU budget pie — bottom-left, caption is top-right so this stays visible
+    {
+      id: 'pie',
+      options: {
+        theme: wallTheme,
+        // Room for legend on the right; no cartesian chrome for a donut.
+        grid: { left: 12, right: 96, top: 28, bottom: 12 },
+        gridLines: { show: false },
+        tooltip: { show: true, trigger: 'item' },
+        legend: { show: true },
+        animation: softAnim,
+        // Axes are required by the coordinator but unused for pie — suppress all ticks.
+        xAxis: { type: 'value', min: 0, max: 1, tickLength: 0, name: '', tickFormatter: hideTicks },
+        yAxis: { type: 'value', min: 0, max: 1, tickLength: 0, name: '', tickFormatter: hideTicks },
+        series: [
+          {
+            type: 'pie',
+            name: 'Frame ms',
+            data: pieSlices,
+            radius: ['38%', '68%'],
+            center: ['38%', '54%'],
+          },
+        ],
+      },
+    },
+    // 7 · Error rates with budget annotation
+    {
+      id: 'errors',
+      options: {
+        theme: wallTheme,
+        grid: { left: 36, right: 10, top: 28, bottom: 28 },
+        gridLines: { show: true, horizontal: { show: true, count: 3 }, vertical: { show: false } },
+        tooltip: { show: true, trigger: 'axis' },
+        legend: { show: true },
+        animation: noAnim,
+        autoScroll: true,
+        xAxis: { type: 'time' },
+        yAxis: { type: 'value', name: 'err/s', min: 0 },
+        annotations: [
+          {
+            type: 'lineY',
+            y: 3,
+            layer: 'aboveSeries',
+            style: { color: AMBER, lineWidth: 1, lineDash: [4, 3], opacity: 0.85 },
+            label: {
+              text: 'Budget',
+              offset: [6, -10],
+              anchor: 'start',
+              background: { color: '#0c0e14', opacity: 0.85, padding: [2, 5, 2, 5], borderRadius: 3 },
+            },
+          },
+        ],
+        series: [
+          {
+            type: 'line',
+            name: '5xx',
+            data: errRows.map((r) => [r.t, r.e5] as DataPoint),
+            color: ROSE,
+            lineStyle: { width: 2 },
+            sampling: 'none',
+          },
+          {
+            type: 'line',
+            name: '4xx',
+            data: errRows.map((r) => [r.t, r.e4] as DataPoint),
+            color: AMBER,
+            lineStyle: { width: 1.5 },
+            sampling: 'none',
+          },
+        ],
+      },
+    },
+    // 8 · Throughput bars + error% line dual-axis
+    {
+      id: 'combo',
+      options: {
+        theme: wallTheme,
+        grid: { left: 44, right: 40, top: 28, bottom: 28 },
+        gridLines: { show: true, horizontal: { show: true, count: 3 }, vertical: { show: false } },
+        tooltip: { show: true, trigger: 'axis' },
+        legend: { show: true },
+        animation: softAnim,
+        xAxis: { type: 'value', name: 'Bucket', min: 0, max: 35 },
+        yAxis: { type: 'value' },
+        axes: {
+          y: [
+            { id: 'rps', position: 'left', name: 'req/s', min: 0 },
+            { id: 'err', position: 'right', name: 'err %', min: 0, max: 5, tickFormatter: fmtPct },
+          ],
+        },
+        series: [
+          {
+            type: 'bar',
+            name: 'RPS',
+            data: comboRows.map((r) => [r.x, r.rps] as DataPoint),
+            color: BLUE,
+            yAxis: 'rps',
+            barCategoryGap: 0.2,
+          },
+          {
+            type: 'line',
+            name: 'Error %',
+            data: comboRows.map((r) => [r.x, r.errPct] as DataPoint),
+            color: ROSE,
+            yAxis: 'err',
+            lineStyle: { width: 2.5 },
+            sampling: 'none',
+          },
+        ],
+      },
+    },
+  ];
+
+  const charts: ChartGPUInstance[] = [];
+  const observers: ResizeObserver[] = [];
+  const optionsById = new Map(configs.map((c) => [c.id, c.options]));
+
+  for (const cfg of configs) {
+    const host = requireHost(cfg.id);
+    const chart = await ChartGPU.create(host, cfg.options, shared);
+    charts.push(chart);
+    observers.push(attachResize(host, chart));
+  }
+
+  const byId = (id: string): ChartGPUInstance | undefined => {
+    const idx = configs.findIndex((c) => c.id === id);
+    return idx >= 0 ? charts[idx] : undefined;
+  };
+
+  let cancelled = false;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let tick = 0;
+
+  if (!reduced) {
+    timer = setInterval(() => {
+      if (cancelled) return;
+      tick += 1;
+
+      // Stream APM (~12.5 Hz)
+      const apm = byId('apm');
+      if (apm && !apm.disposed) {
+        const i = apmCursor;
+        const load = 0.55 + 0.35 * Math.sin(i * 0.11) + 0.12 * Math.sin(i * 0.37);
+        const p50 = 18 + load * 22 + Math.sin(i * 0.2) * 3;
+        const p95 = p50 * (2.1 + 0.15 * Math.sin(i * 0.09));
+        const p99 = p95 * (1.45 + 0.1 * Math.sin(i * 0.07));
+        const t = timeAt(i);
+        apm.appendData(0, [[t, p50]], { maxPoints: seedN });
+        apm.appendData(1, [[t, p95]], { maxPoints: seedN });
+        apm.appendData(2, [[t, p99]], { maxPoints: seedN });
+        apmCursor += 1;
+      }
+
+      // Stream pool via sliding setOption (stable geometry for dual area fills)
+      const pool = byId('pool');
+      if (pool && !pool.disposed && tick % 2 === 0) {
+        poolRows = [...poolRows.slice(1), poolSample(poolCursor)];
+        poolCursor += 1;
+        const d = poolSeriesData(poolRows);
+        const base = optionsById.get('pool')!;
+        pool.setOption({
+          ...base,
+          series: [
+            {
+              type: 'line',
+              name: 'Active',
+              data: d.active,
+              color: CYAN,
+              lineStyle: { width: 2 },
+              areaStyle: { opacity: 0.32 },
+              sampling: 'none',
+            },
+            {
+              type: 'line',
+              name: 'Waiting',
+              data: d.waiting,
+              color: ROSE,
+              lineStyle: { width: 2 },
+              areaStyle: { opacity: 0.22 },
+              sampling: 'none',
+            },
+          ],
+        });
+      }
+
+      // Stream errors
+      const errors = byId('errors');
+      if (errors && !errors.disposed) {
+        const i = errCursor;
+        const e5 = Math.max(0, 0.4 + Math.sin(i * 0.18) * 0.5);
+        const e4 = 2.2 + Math.sin(i * 0.12 + 1) * 1.1 + Math.sin(i * 0.4) * 0.4;
+        const t = timeAt(i);
+        errors.appendData(0, [[t, e5]], { maxPoints: seedN });
+        errors.appendData(1, [[t, e4]], { maxPoints: seedN });
+        errCursor += 1;
+      }
+
+      // Heavier setOption paths ~3 Hz
+      if (tick % 4 !== 0) return;
+
+      // Trade candle + volume
+      const trade = byId('trade');
+      if (trade && !trade.disposed) {
+        const last = tradeCandles[tradeCandles.length - 1];
+        if (last && Array.isArray(last)) {
+          const open = last[2];
+          const close = Math.max(1, open + (Math.random() - 0.48) * 2.0);
+          const high = Math.max(open, close) + Math.random() * 0.6;
+          const low = Math.min(open, close) - Math.random() * 0.6;
+          const next: OHLCDataPoint = [last[0] + 1000, open, close, low, high];
+          tradeCandles = [...tradeCandles.slice(-99), next];
+          tradeVol = tradeVolume(tradeCandles);
+          const base = optionsById.get('trade')!;
+          trade.setOption({
+            ...base,
+            series: [
+              {
+                type: 'bar',
+                name: 'Volume',
+                data: tradeVol,
+                color: BLUE,
+                yAxis: 'vol',
+                barCategoryGap: 0.15,
+              },
+              {
+                type: 'candlestick',
+                name: 'MEME',
+                data: tradeCandles,
+                yAxis: 'price',
+                itemStyle: {
+                  upColor: LIME,
+                  downColor: ROSE,
+                  upBorderColor: LIME,
+                  downBorderColor: ROSE,
+                },
+                priceLabel: { intervalMs: 1000, nowMs: () => Date.now() },
+              },
+            ],
+          });
+        }
+      }
+
+      // Stacked revenue animate
+      stackPhase += 0.18;
+      const stack = byId('stack');
+      if (stack && !stack.disposed) {
+        stack.setOption({
+          ...optionsById.get('stack')!,
+          series: buildStackSeries(stackPhase),
+        });
+      }
+
+      // Pie drift
+      pieSlices = pieSlices.map((s, i) => ({
+        ...s,
+        value: Math.max(5, s.value + Math.sin(tick * 0.08 + i) * 0.45),
+      }));
+      const pie = byId('pie');
+      if (pie && !pie.disposed) {
+        pie.setOption({
+          ...optionsById.get('pie')!,
+          series: [
+            {
+              type: 'pie',
+              name: 'Frame ms',
+              data: pieSlices,
+              radius: ['38%', '68%'],
+              center: ['38%', '54%'],
+            },
+          ],
+        });
+      }
+
+      // Combo dual-axis refresh
+      comboPhase += 0.2;
+      const combo = byId('combo');
+      if (combo && !combo.disposed) {
+        const rows: ComboRow[] = [];
+        for (let i = 0; i < 36; i++) {
+          const rps =
+            800 +
+            Math.sin(i * 0.35 + comboPhase) * 280 +
+            Math.sin(i * 0.11 + comboPhase) * 90 +
+            (i % 4) * 20;
+          const errPct = Math.max(0.05, 1.8 - rps / 1200 + Math.sin(i * 0.5 + comboPhase) * 0.4);
+          rows.push({ x: i, rps, errPct });
+        }
+        combo.setOption({
+          ...optionsById.get('combo')!,
+          series: [
+            {
+              type: 'bar',
+              name: 'RPS',
+              data: rows.map((r) => [r.x, r.rps] as DataPoint),
+              color: BLUE,
+              yAxis: 'rps',
+              barCategoryGap: 0.2,
+            },
+            {
+              type: 'line',
+              name: 'Error %',
+              data: rows.map((r) => [r.x, r.errPct] as DataPoint),
+              color: ROSE,
+              yAxis: 'err',
+              lineStyle: { width: 2 },
+              sampling: 'none',
+            },
+          ],
+        });
+      }
+    }, 80);
+  }
+
   return {
     dispose: () => {
-      ro.disconnect();
-      chart.dispose();
+      cancelled = true;
+      if (timer) clearInterval(timer);
+      for (const ro of observers) ro.disconnect();
+      for (const c of charts) {
+        if (!c.disposed) c.dispose();
+      }
+      try {
+        device.destroy();
+      } catch {
+        /* already destroyed */
+      }
+      container.replaceChildren();
     },
   };
 }
 
 // ── Lazy plate lifecycle ────────────────────────────────────────────────────
 
-type DemoId = 'aurora' | 'density' | 'candles' | 'bars' | 'storm';
+type DemoId = 'aurora' | 'density' | 'candles' | 'bars' | 'wall';
 
 const demoMount: Record<DemoId, (el: HTMLElement) => Promise<{ dispose: () => void }>> = {
   aurora: mountAurora,
   density: mountDensity,
   candles: mountCandles,
   bars: mountBars,
-  storm: mountStorm,
+  wall: mountWall,
 };
 
 const active = new Map<string, { dispose: () => void }>();
