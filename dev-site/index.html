@@ -824,12 +824,12 @@
     WebGPU is not available in this browser. Live plates need Chrome/Edge 113+ or Safari 18+. The example index below still works.
   </div>
 
-  <!-- Plate 01 · full-viewport interference field -->
+  <!-- Full-viewport interference field -->
   <section class="plate plate--hero" id="plate-aurora" data-demo="aurora" aria-label="Streaming multi-series field">
     <div class="plate-canvas" data-canvas></div>
     <div class="plate-status" data-status>Waiting for GPU…</div>
     <div class="plate-caption">
-      <p class="plate-meta">Plate 01 · live stream</p>
+      <p class="plate-meta">Live stream</p>
       <h1 class="plate-title">Eight series. One GPU pass. No canvas 2D.</h1>
       <p class="plate-note">Harmonic interference field with continuous append — WebGPU only.</p>
       <a class="plate-link" href="/examples/live-streaming/index.html" data-open-example="live-streaming">Open full demo</a>
@@ -848,25 +848,25 @@
     </div>
   </section>
 
-  <!-- Plate 02 · density -->
+  <!-- Density -->
   <section class="plate plate--tall" id="plate-density" data-demo="density" aria-label="Scatter density heatmap">
     <div class="plate-canvas" data-canvas></div>
     <div class="plate-status" data-status>Binning points…</div>
     <div class="plate-caption plate-caption--tr">
-      <p class="plate-meta">Plate 02 · GPU density</p>
+      <p class="plate-meta">GPU density</p>
       <h2 class="plate-title">Half a million points. Binned on the device.</h2>
       <p class="plate-note">Scatter density heatmap — compute-side binning, not CPU canvas stamps.</p>
       <a class="plate-link" href="/examples/scatter-density-1m/index.html" data-open-example="scatter-density-1m">Open 1M demo</a>
     </div>
   </section>
 
-  <!-- Plate 03 · candles + bars diptych -->
-  <section class="plate plate--split" aria-label="Candlestick and stacked bar plates">
+  <!-- Candles + bars diptych -->
+  <section class="plate plate--split" aria-label="Candlestick and stacked bar charts">
     <div class="plate-panel" id="plate-candles" data-demo="candles">
       <div class="plate-canvas" data-canvas></div>
       <div class="plate-status" data-status>Building tape…</div>
       <div class="plate-caption">
-        <p class="plate-meta">Plate 03 · live OHLC</p>
+        <p class="plate-meta">Live OHLC</p>
         <h2 class="plate-title">Streaming candles</h2>
         <a class="plate-link" href="/examples/candlestick-streaming/index.html" data-open-example="candlestick-streaming">Trading terminal</a>
       </div>
@@ -875,19 +875,19 @@
       <div class="plate-canvas" data-canvas></div>
       <div class="plate-status" data-status>Stacking…</div>
       <div class="plate-caption">
-        <p class="plate-meta">Plate 04 · stacked bar</p>
+        <p class="plate-meta">Stacked bar</p>
         <h2 class="plate-title">Negative + positive stacks</h2>
         <a class="plate-link" href="/examples/grouped-bar/index.html" data-open-example="grouped-bar">Bar demo</a>
       </div>
     </div>
   </section>
 
-  <!-- Plate 05 · hairline storm -->
+  <!-- Hairline storm -->
   <section class="plate plate--tall" id="plate-storm" data-demo="storm" aria-label="High series count line field">
     <div class="plate-canvas" data-canvas></div>
     <div class="plate-status" data-status>Spawning series…</div>
     <div class="plate-caption">
-      <p class="plate-meta">Plate 05 · multi-series stress</p>
+      <p class="plate-meta">Multi-series stress</p>
       <h2 class="plate-title">Sixteen hairlines. Zoom freely.</h2>
       <p class="plate-note">Dense multi-series line field — the kind of redraw that collapses 2D canvas.</p>
       <a class="plate-link" href="/examples/ultimate-benchmark/index.html" data-open-example="ultimate-benchmark">Ultimate benchmark</a>
