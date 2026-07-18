@@ -161,3 +161,8 @@ export { RenderScheduler } from './core/RenderScheduler';
 // Pipeline cache - Functional API
 export type { PipelineCache, PipelineCacheStats } from './core/PipelineCache';
 export { createPipelineCache, getPipelineCacheStats, destroyPipelineCache } from './core/createPipelineCache';
+
+// Price label badge (DOM overlay + default formatter) — K15 public export
+export { createPriceLabel } from './components/createPriceLabel';
+export type { PriceLabel, PriceLabelUpdateState } from './components/createPriceLabel';
+export { formatPriceLabelValue } from './core/renderCoordinator/ui/priceLabelHelpers';
