@@ -34,20 +34,59 @@ Chart configuration. Full types: [`types.ts`](../../src/config/types.ts).
 
 - **Data**: `OHLCDataPoint` — tuple `[timestamp, open, close, low, high]` or object.
 - **`style?: 'classic' | 'hollow'`**. **`sampling?: 'none' | 'ohlc'`** for bucket aggregation. Body-only hit-testing. Demos: [`candlestick/`](../../examples/candlestick/), [`candlestick-streaming/`](../../examples/candlestick-streaming/).
-- **`priceLabel?: boolean | CandlestickPriceLabelConfig`**: exchange-style last-price badge and optional horizontal price line on the series Y-axis rail.
-  - **`undefined`**: auto-enables when the chart is **candle-primary** (`series[0].type === 'candlestick'`); off otherwise.
-  - **`true` / `false`**: force on/off with field defaults.
-  - **Object**: enables unless `show: false`. Key fields:
-    - `show?`, `showLine?` (default same as resolved `show`)
-    - `intervalMs?` (finite `> 0` required for countdown)
-    - `showCountdown?` (default `true` when interval is set; otherwise forced off)
-    - `nowMs?: () => number` (injectable clock for countdown; default wall clock at use site)
-    - `formatter?: (close: number) => string` (badge text; not axis `tickFormatter`)
-    - `outOfDomain?: 'clamp' | 'hide'` (default `'clamp'`)
-    - `color?`, `lineColor?`, `lineWidth?` (default line width `1`)
-  - **Identity contract**: changing `priceLabel` requires a **new series element object** under axes-only `setOption` reuse (same as other series fields). In-place mutation on a stable element is not re-resolved. `setOption` replaces options wholesale — keep `priceLabel` / `intervalMs` / `nowMs` on the full options object you re-pass.
-  - Types: `CandlestickPriceLabelConfig`, resolved shape `ResolvedCandlestickPriceLabel` (public exports). Badge DOM / coordinator wiring ships in follow-up PRs; resolution is available via `resolveOptions` / `resolvePriceLabel` today.
-- **Acceptance test**: for OHLC sampling validation (endpoint preservation, aggregation rules, edge cases), see [`examples/acceptance/ohlc-sample.ts`](../../examples/acceptance/ohlc-sample.ts).
+- **`priceLabel?: boolean | CandlestickPriceLabelConfig`**: exchange-style **last-price badge** (DOM) and optional **horizontal price line** (GPU) on the series Y-axis rail. v1: **one badge + one line per chart** — first visible candlestick series with resolved `priceLabel.show` wins.
+  - **Sugar**: `true` / `false` force on/off with field defaults; object form enables unless `show: false`.
+  - **`undefined` (default)**: auto-enables when the chart is **candle-primary** (`series[0].type === 'candlestick'`); off when candlestick is not first. See **Migration (P1 default badge)** under Axis Configuration.
+  - **Full options** (`CandlestickPriceLabelConfig`):
+
+    | Field | Default | Notes |
+    |-------|---------|-------|
+    | `show?` | `true` when object form; else sugar / auto | Hard off with `false` or `priceLabel: false` |
+    | `showLine?` | same as resolved `show` | Horizontal last-close line; always omitted when `show` is false |
+    | `intervalMs?` | — | Finite `> 0` candle period (ms). Required for countdown; omitted → price-only badge |
+    | `showCountdown?` | `true` when `intervalMs` valid; else forced `false` | Secondary countdown line under the price |
+    | `nowMs?: () => number` | wall clock (`Date.now`) at use site | Injectable clock for accelerated / simulated streams |
+    | `formatter?: (close) => string` | library `formatPriceLabelValue` | **Not** axis `tickFormatter` (which may return `null` / sparse precision). Output is plain text (`textContent`), never HTML |
+    | `outOfDomain?` | `'clamp'` | `'clamp'`: pin badge to plot edge (dimmed); price line still draws at true Y (scissor may clip). `'hide'`: hide **badge and line** |
+    | `color?` | `#ffffff` | Badge **text** color |
+    | `lineColor?` | candle direction color | Line only; badge **background** is always up/down from last open/close |
+    | `lineWidth?` | `1` | CSS px |
+
+  - **Direction color**: last candle `close >= open` → `itemStyle.upColor` (default green); else `itemStyle.downColor` (default red). Flat candles count as up.
+  - **Countdown**: DOM-only timer (does **not** call `requestRender` / GPU). Streaming demos with simulated time must pass a **stable** `nowMs` function identity across `setOption` rewrites (see [`candlestick-streaming/`](../../examples/candlestick-streaming/)).
+  - **setOption replace semantics**: `setOption` **replaces** the full options object (not deep-merge). Always re-pass `priceLabel` (including `intervalMs` / `nowMs`) on every options rewrite that should keep the badge/countdown. Prefer caching a full options object and updating fields, as the streaming example does.
+  - **Series element identity**: under axes-only `setOption` reuse, changing `priceLabel` requires a **new series element object** in `series[]`. In-place mutation (`series[i].priceLabel = false` on a stable element) is **not** re-resolved. Same contract as other series fields (see **Series array identity reuse** above).
+  - **Public exports**: `CandlestickPriceLabelConfig`, `ResolvedCandlestickPriceLabel`, `resolvePriceLabel`, `createPriceLabel`, `PriceLabel`, `formatPriceLabelValue`, `isCandlePrimaryChart` (package entry / `resolveOptions`).
+  - **Examples**:
+```ts
+// Candle-primary: badge + line auto-on (omit priceLabel or leave undefined)
+series: [{ type: 'candlestick', data }]
+
+// Opt out (keep right axis defaults but no badge/line)
+series: [{ type: 'candlestick', data, priceLabel: false }]
+
+// Countdown + simulated clock (streaming)
+series: [{
+  type: 'candlestick',
+  data,
+  priceLabel: {
+    intervalMs: 60_000,
+    nowMs: () => simulatedTimeMs, // stable function ref across setOption
+  },
+}]
+
+// Badge only, custom format, hide when zoomed past last close
+series: [{
+  type: 'candlestick',
+  data,
+  priceLabel: {
+    showLine: false,
+    formatter: (c) => c.toFixed(2),
+    outOfDomain: 'hide',
+  },
+}]
+```
+- **Acceptance**: OHLC sampling — [`examples/acceptance/ohlc-sample.ts`](../../examples/acceptance/ohlc-sample.ts). Candle-primary layout + `priceLabel` resolve — [`examples/acceptance/candle-price-axis.ts`](../../examples/acceptance/candle-price-axis.ts).
 
 ### LineSeriesConfig
 
@@ -142,29 +181,61 @@ Notes (density mode):
   - Axes can be positioned on the right using `position: "right"`. Default position is `"left"`, except for **candle-primary** charts (see below).
   - Dual Y may mix log + linear (e.g. log pressure + linear temperature). Horizontal grid follows the **primary** (first) Y axis ticks when that axis is log.
 - **Candle-primary layout defaults** (when `series[0].type === 'candlestick'`):
+  - **Predicate**: only the first series type matters. Overlay lines as `series[0]` mean the chart is **not** candle-primary (set `position: 'right'` explicitly if needed). Helper: `isCandlePrimaryChart(userOptions)`.
   - **Y position**: the **first** Y axis defaults to `position: 'right'` when the user leaves `position` unset (`yAxis` or `axes.y[0]`). Secondary Y axes still default to `'left'`. Explicit `position` always wins.
-  - **Soft grid gutters** (per-key only — each of `grid.left` / `grid.right` is set only when that key is `undefined` on user options):
-    - `grid.right` → `70` (room for the price ladder)
-    - `grid.left` → `20` if no Y axis remains on the left after position defaults; else `60` when any left-positioned Y exists (dual-Y safety for volume, etc.)
-  - Non-candle-primary charts keep the standard grid defaults (`left: 60`, `right: 20`) and left Y.
-  - Recommended candle + volume dual-Y:
+  - **Soft grid gutters** (per-key only — each of `grid.left` / `grid.right` is set only when that key is `undefined` on user options; `0` is preserved):
+
+    | Scenario | `grid.left` if unset | `grid.right` if unset |
+    |----------|----------------------|------------------------|
+    | Single candle, price on right | `20` | `70` |
+    | Candle + volume (left Y remains) | `60` | `70` |
+    | User set `grid.left: 80` only | `80` (kept) | `70` |
+    | User set both margins | unchanged | unchanged |
+    | Non-candle-primary | `60` | `20` |
+
+  - Non-candle-primary charts keep the standard grid defaults and left Y.
+  - **Migration (P1 default badge)**: candle-primary charts also **auto-enable** `priceLabel` (last-price badge + price line) when `priceLabel` is omitted. This is a **default visual change** for existing candle consumers. Opt out with `priceLabel: false`. To restore a pre-upgrade left-axis look:
 
 ```ts
 {
-  // Or omit both left/right — dual-Y policy yields left 60 / right 70
+  yAxis: { type: 'value', position: 'left' },
+  grid: { left: 70, right: 24 },
+  series: [{ type: 'candlestick', data, priceLabel: false }],
+}
+```
+
+  - Recommended candle + volume dual-Y (or omit both gutters — dual-Y policy yields left `60` / right `70`):
+
+```ts
+{
   grid: { left: 60, right: 70 },
   axes: {
     y: [
-      { id: 'price', position: 'right', type: 'value' },
+      { id: 'price', position: 'right', type: 'value', header: 'USDT' },
       { id: 'vol', position: 'left', type: 'value' },
     ],
   },
   series: [
-    { type: 'candlestick', yAxis: 'price', data },
+    {
+      type: 'candlestick',
+      yAxis: 'price',
+      data,
+      // Optional: countdown needs intervalMs (and nowMs for simulated clocks)
+      priceLabel: { intervalMs: 60_000 },
+    },
     { type: 'bar', yAxis: 'vol', data: volumes },
   ],
 }
 ```
+
+  - **Visual / acceptance checklist** (manual or example review):
+    1. Candle-only, no axis/grid overrides → right price rail, thicker right gutter (~70), last-price badge + horizontal line at last close.
+    2. `priceLabel: false` → no badge/line; axis defaults still apply unless you also set `position` / `grid`.
+    3. Explicit `yAxis.position: 'left'` → left rail; badge anchors on the left when still shown.
+    4. Dual-Y volume on left → left gutter ≥ 60, right 70; badge follows the **price** candlestick series only.
+    5. Streaming with `intervalMs` + stable `nowMs` → countdown ticks under the price without extra GPU frames.
+    6. `yAxis.header: 'USDT'` (or quote unit) → non-rotated top-rail label (not the rotated `name` title).
+    7. Unit tests / acceptance: [`src/config/__tests__/OptionResolver.test.ts`](../../src/config/__tests__/OptionResolver.test.ts), [`resolvePriceLabel.test.ts`](../../src/config/__tests__/resolvePriceLabel.test.ts), [`examples/acceptance/candle-price-axis.ts`](../../examples/acceptance/candle-price-axis.ts).
 - **Explicit domains (override auto-bounds)**:
   - **`AxisConfig.min?: number` / `AxisConfig.max?: number`**: when set, ChartGPU uses these explicit axis bounds and does **not** auto-derive bounds from data for that axis.
   - **Precedence**: explicit `min`/`max` always override any auto-bounds behavior.

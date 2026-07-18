@@ -65,8 +65,6 @@ import {
 } from '../data/seriesRewriteDetect';
 import { parseCssColorToRgba01 } from '../utils/colors';
 
-export { isCandlePrimaryChart };
-
 export type ResolvedGridConfig = Readonly<Required<GridConfig>>;
 export type ResolvedLineStyleConfig = Readonly<Required<Omit<LineStyleConfig, 'color'>> & { readonly color: string }>;
 export type ResolvedAreaStyleConfig = Readonly<Required<Omit<AreaStyleConfig, 'color'>> & { readonly color: string }>;
@@ -1298,8 +1296,6 @@ export function resolveOptions(
     userOptions,
     lastUserSeriesElements: reuse?.lastUserSeriesElements,
   });
-
-  const candlePrimary = isCandlePrimaryChart(userOptions);
 
   const series: ReadonlyArray<ResolvedSeriesConfig> = canReuseEntireSeriesArray
     ? previousSeries!

@@ -5,7 +5,7 @@
 ## Public API
 
 - [Chart API](chart.md) — `ChartGPU.create()`, instance methods, sync, shared device, pipeline cache
-- [Options](options.md) — `ChartGPUOptions`, series, axes, zoom, tooltip, animation
+- [Options](options.md) — `ChartGPUOptions`, series, axes (incl. candle-primary price axis / `priceLabel`), zoom, tooltip, animation
 - [Annotations](annotations.md) — annotation types, interactive authoring
 - [Themes](themes.md) — `ThemeConfig`, presets
 - [Scales](scales.md) — `createLinearScale`, `createCategoryScale`
