@@ -39,11 +39,7 @@ export type PriceLabelOwnershipSeries = Readonly<{
    * Resolved `{ show }`, boolean sugar, full config object, or undefined
    * (undefined + candlePrimary → treated as show when scanning ownership).
    */
-  priceLabel?:
-    | boolean
-    | CandlestickPriceLabelConfig
-    | Pick<ResolvedCandlestickPriceLabel, 'show'>
-    | null;
+  priceLabel?: boolean | CandlestickPriceLabelConfig | Pick<ResolvedCandlestickPriceLabel, 'show'> | null;
 }>;
 
 /**
@@ -120,8 +116,7 @@ export function resolveLastCandleState(args: {
   const isUp = close >= open;
   const directionColor = isUp ? args.upColor : args.downColor;
   const intervalMs = args.intervalMs;
-  const barEndMs =
-    intervalMs != null && Number.isFinite(timestamp) ? timestamp + intervalMs : null;
+  const barEndMs = intervalMs != null && Number.isFinite(timestamp) ? timestamp + intervalMs : null;
 
   return {
     seriesIndex: args.seriesIndex,
@@ -183,9 +178,7 @@ export function selectPriceLabelSeries(
     // Single warn per call regardless of how many extras qualify.
     if (!warnedExtra) {
       warnedExtra = true;
-      options?.onWarn?.(
-        'ChartGPU: multiple candlestick series have priceLabel.show; only the first is used (v1).'
-      );
+      options?.onWarn?.('ChartGPU: multiple candlestick series have priceLabel.show; only the first is used (v1).');
     }
   }
 

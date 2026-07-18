@@ -126,9 +126,7 @@ describe('resolveLastCandleState', () => {
   });
 
   it('supports object OHLC format', () => {
-    const raw: OHLCDataPoint[] = [
-      { timestamp: 5_000, open: 100, close: 105, low: 99, high: 106 },
-    ];
+    const raw: OHLCDataPoint[] = [{ timestamp: 5_000, open: 100, close: 105, low: 99, high: 106 }];
     const s = resolveLastCandleState({ ...base, raw });
     expect(s!.open).toBe(100);
     expect(s!.close).toBe(105);
@@ -144,12 +142,8 @@ describe('resolveLastCandleState', () => {
   });
 
   it('returns null when open or close is non-finite', () => {
-    expect(
-      resolveLastCandleState({ ...base, raw: [[1, NaN, 2, 0, 3]] })
-    ).toBe(null);
-    expect(
-      resolveLastCandleState({ ...base, raw: [[1, 1, Infinity, 0, 3]] })
-    ).toBe(null);
+    expect(resolveLastCandleState({ ...base, raw: [[1, NaN, 2, 0, 3]] })).toBe(null);
+    expect(resolveLastCandleState({ ...base, raw: [[1, 1, Infinity, 0, 3]] })).toBe(null);
   });
 
   it('sets barEndMs = timestamp + intervalMs when interval set', () => {
@@ -269,10 +263,7 @@ describe('selectPriceLabelSeries', () => {
   });
 
   it('returns null when no candle has show', () => {
-    const series: PriceLabelOwnershipSeries[] = [
-      { type: 'candlestick', priceLabel: { show: false } },
-      { type: 'bar' },
-    ];
+    const series: PriceLabelOwnershipSeries[] = [{ type: 'candlestick', priceLabel: { show: false } }, { type: 'bar' }];
     expect(selectPriceLabelSeries(series, { candlePrimary: true })).toBe(null);
   });
 });

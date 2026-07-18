@@ -48,6 +48,18 @@ let autoScrollEnabled = true;
 // Cache the full chart options to avoid resetting fields on partial setOption calls
 let fullChartOptions: Parameters<ChartGPUInstance['setOption']>[0];
 
+/** Keep priceLabel.intervalMs aligned with the active timeframe on every series rewrite. */
+function withPriceLabelInterval<T extends { type: string }>(series0: T): T {
+  if (series0.type !== 'candlestick') return series0;
+  return {
+    ...series0,
+    priceLabel: {
+      intervalMs: candleIntervalMs,
+      nowMs: () => simulatedTimeMs,
+    },
+  };
+}
+
 // Stats
 let frameCount = 0;
 let lastFpsTime = performance.now();
@@ -133,7 +145,11 @@ async function init() {
         },
         sampling: 'ohlc',
         samplingThreshold: 2000,
-        // Candle-primary auto-enables last-price badge. Countdown timer + nowMs in PR5.
+        // Exchange-style last-price badge + bar-close countdown (simulated clock).
+        priceLabel: {
+          intervalMs: candleIntervalMs,
+          nowMs: () => simulatedTimeMs,
+        },
       },
     ],
     dataZoom: getDataZoomConfig(currentCandleCount),
@@ -199,7 +215,7 @@ function handleTick(tick: Tick) {
             ...fullChartOptions,
             series: [
               {
-                ...series0,
+                ...withPriceLabelInterval(series0),
                 data,
               },
             ],
@@ -227,12 +243,12 @@ function throttledUpdateCurrentCandle() {
   const lastIdx = data.length - 1;
   const series0 = fullChartOptions.series?.[0];
   if (lastIdx >= 0 && series0 && series0.type === 'candlestick') {
-    // Preserve full series config and only update data
+    // Preserve full series config and only update data (refresh interval for timeframe switches).
     fullChartOptions = {
       ...fullChartOptions,
       series: [
         {
-          ...series0,
+          ...withPriceLabelInterval(series0),
           data,
         },
       ],
@@ -322,14 +338,14 @@ function switchTimeframe(tf: string) {
     onTick: handleTick,
   });
 
-  // Update chart with new data (full replacement)
+  // Update chart with new data (full replacement) + refreshed intervalMs
   const series0 = fullChartOptions.series?.[0];
   if (series0 && series0.type === 'candlestick') {
     fullChartOptions = {
       ...fullChartOptions,
       series: [
         {
-          ...series0,
+          ...withPriceLabelInterval(series0),
           data,
         },
       ],
@@ -410,7 +426,7 @@ function switchCandleCount(count: number) {
       dataZoom: getDataZoomConfig(currentCandleCount),
       series: [
         {
-          ...series0,
+          ...withPriceLabelInterval(series0),
           data,
         },
       ],
@@ -445,7 +461,7 @@ function setupControls() {
         ...fullChartOptions,
         series: [
           {
-            ...series0,
+            ...withPriceLabelInterval(series0),
             style: isHollow ? 'hollow' : 'classic',
             data,
           },

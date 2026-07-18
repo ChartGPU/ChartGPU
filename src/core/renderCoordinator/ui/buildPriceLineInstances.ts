@@ -52,9 +52,7 @@ export type BuildPriceLineInstancesArgs = Readonly<{
  * Does **not** inject into user `annotations[]`. Color via `parseCssColorToRgba01`
  * from `lineColor` then direction, then white fallback.
  */
-export function buildPriceLineInstances(
-  args: BuildPriceLineInstancesArgs
-): ReferenceLineInstance[] {
+export function buildPriceLineInstances(args: BuildPriceLineInstancesArgs): ReferenceLineInstance[] {
   const { last, showLine, outOfDomain, yScale, canvasCssHeight, lineWidth, lineColor } = args;
 
   if (!showLine || last == null) return [];
@@ -79,10 +77,7 @@ export function buildPriceLineInstances(
   if (!Number.isFinite(positionCssPx)) return [];
 
   const lineCss = lineColor ?? last.directionColor;
-  const rgba =
-    parseCssColorToRgba01(lineCss) ??
-    parseCssColorToRgba01(last.directionColor) ??
-    FALLBACK_RGBA;
+  const rgba = parseCssColorToRgba01(lineCss) ?? parseCssColorToRgba01(last.directionColor) ?? FALLBACK_RGBA;
 
   return [
     {

@@ -165,7 +165,7 @@ import {
   clearTooltipCache,
   isOHLCDataPoint,
 } from './ui/tooltipLegendHelpers';
-import { syncPriceLabelFrame } from './ui/syncPriceLabelFrame';
+import { syncPriceLabelFrame, resolvePriceLabelCountdownDesired } from './ui/syncPriceLabelFrame';
 import {
   selectPriceLabelSeries,
   resolveLastCandleState,
@@ -173,6 +173,8 @@ import {
 } from './ui/priceLabelHelpers';
 import { buildPriceLineInstances } from './ui/buildPriceLineInstances';
 import type { ReferenceLineInstance } from '../../renderers/createReferenceLineRenderer';
+import { createPriceLabelCountdownTimer } from './ui/createPriceLabelCountdownTimer';
+import type { PriceLabelCountdownTimer } from './ui/createPriceLabelCountdownTimer';
 
 export interface GPUContextLike {
   readonly device: GPUDevice | null;
@@ -1374,6 +1376,44 @@ export function createRenderCoordinator(
     console.warn(message);
   };
 
+  // PR5: DOM-only bar-close countdown. Never calls requestRender — only setCountdown.
+  let priceLabelCountdownTimer: PriceLabelCountdownTimer | null = priceLabelUi
+    ? createPriceLabelCountdownTimer({
+        setCountdown: (text) => {
+          priceLabelUi?.setCountdown(text);
+        },
+      })
+    : null;
+
+  const disposePriceLabelCountdownTimer = (): void => {
+    priceLabelCountdownTimer?.dispose();
+    priceLabelCountdownTimer = null;
+  };
+
+  const ensurePriceLabelCountdownTimer = (): PriceLabelCountdownTimer | null => {
+    if (!priceLabelUi) {
+      disposePriceLabelCountdownTimer();
+      return null;
+    }
+    if (!priceLabelCountdownTimer) {
+      priceLabelCountdownTimer = createPriceLabelCountdownTimer({
+        setCountdown: (text) => {
+          priceLabelUi?.setCountdown(text);
+        },
+      });
+    }
+    return priceLabelCountdownTimer;
+  };
+
+  const syncPriceLabelCountdownFromSeries = (): void => {
+    const timer = ensurePriceLabelCountdownTimer();
+    if (!timer) return;
+    const desired = resolvePriceLabelCountdownDesired(currentOptions.series, {
+      onWarn: warnMultiPriceLabel,
+    });
+    timer.setDesired(desired);
+  };
+
   // Cache tooltip state to avoid unnecessary DOM updates
   const tooltipCache = createTooltipCache();
 
@@ -2555,8 +2595,11 @@ export function createRenderCoordinator(
           side: 'right',
         });
       }
+      // Timer lifecycle on setOptions: start / clear / restart per transition table.
+      syncPriceLabelCountdownFromSeries();
     } else {
       hideTooltip();
+      disposePriceLabelCountdownTimer();
       if (priceLabelUi) {
         priceLabelUi.dispose();
         priceLabelUi = null;
@@ -3824,12 +3867,13 @@ export function createRenderCoordinator(
     });
 
     // Last-price badge DOM: always run after scales/layout (do NOT nest under
-    // axis-label signature skip). Price line is GPU-merged above (PR4b); countdown timer is PR5.
+    // axis-label signature skip). Price line is GPU-merged above (PR4b).
+    // Countdown timer (PR5) is DOM-only — setDesired/setBarEndMs never call requestRender.
     {
       const canvasEl = canvas as HTMLCanvasElement | null;
       const offX = canvasEl && isHTMLCanvasElement(canvasEl) ? canvasEl.offsetLeft || 0 : 0;
       const offY = canvasEl && isHTMLCanvasElement(canvasEl) ? canvasEl.offsetTop || 0 : 0;
-      syncPriceLabelFrame({
+      const frameResult = syncPriceLabelFrame({
         priceLabelUi,
         series: currentOptions.series,
         runtimeRawDataByIndex,
@@ -3843,6 +3887,11 @@ export function createRenderCoordinator(
         offsetY: offY,
         onWarn: warnMultiPriceLabel,
       });
+      const timer = ensurePriceLabelCountdownTimer();
+      if (timer) {
+        timer.setDesired(frameResult.countdownDesired);
+        timer.setBarEndMs(frameResult.barEndMs);
+      }
     }
   };
 
@@ -3923,6 +3972,7 @@ export function createRenderCoordinator(
     // Dispose tooltip/legend/price badge before the text overlay (all touch container positioning).
     tooltip?.dispose();
     tooltip = null;
+    disposePriceLabelCountdownTimer();
     priceLabelUi?.dispose();
     priceLabelUi = null;
     legend?.dispose();

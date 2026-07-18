@@ -3,7 +3,9 @@
  *
  * Pure extract so createRenderCoordinatorImpl stays thin: ownership scan,
  * last-candle derivation from owned raw OHLC, clip→container-local coords,
- * OOD clamp/hide. No price line (PR4b) and no countdown timer (PR5).
+ * OOD clamp/hide. No price line (PR4b). Countdown timer (PR5) is owned by
+ * the coordinator; this module returns frame state so the timer can update
+ * its closed-over barEndMs without calling requestRender.
  *
  * Must be called **every frame after scales/layout**, outside the axis-label
  * DOM signature skip block.
@@ -25,6 +27,10 @@ import {
   type LastCandleState,
   type PriceLabelOwnershipSeries,
 } from './priceLabelHelpers';
+import {
+  priceLabelCountdownDesiredFromConfig,
+  type PriceLabelCountdownDesired,
+} from './createPriceLabelCountdownTimer';
 
 const DEFAULT_TICK_LENGTH_CSS_PX = 6;
 /** Gap past the tick mark to the badge anchor (design: tickLength + 2). */
@@ -70,7 +76,26 @@ type SyncPriceLabelFrameArgs = Readonly<{
   readonly onWarn?: (message: string) => void;
 }>;
 
-/** Frame-time countdown text when showCountdown; no timer (PR5 owns setCountdown). */
+/**
+ * Countdown timer inputs derived during the frame sync.
+ * Coordinator applies these to `createPriceLabelCountdownTimer` (DOM-only).
+ */
+export type SyncPriceLabelFrameResult = Readonly<{
+  readonly countdownDesired: PriceLabelCountdownDesired;
+  /** Last bar end ms when known; null when no last candle / inactive. */
+  readonly barEndMs: number | null;
+}>;
+
+const COUNTDOWN_OFF: SyncPriceLabelFrameResult = Object.freeze({
+  countdownDesired: Object.freeze({
+    active: false,
+    intervalMs: null,
+    nowMs: null,
+  }),
+  barEndMs: null,
+});
+
+/** Frame-time countdown text when showCountdown; timer ticks via setCountdown between frames. */
 function frameCountdownText(
   last: LastCandleState,
   showCountdown: boolean,
@@ -97,14 +122,59 @@ function hideBadge(ui: PriceLabel): void {
 }
 
 /**
+ * Resolve countdown desired from the owning priceLabel series (config only).
+ * Used by setOptions when a full frame has not run yet.
+ */
+export function resolvePriceLabelCountdownDesired(
+  series: ReadonlyArray<ResolvedSeriesConfig>,
+  options?: {
+    readonly onWarn?: (message: string) => void;
+  }
+): PriceLabelCountdownDesired {
+  const seriesIndex = selectPriceLabelSeries(series as ReadonlyArray<PriceLabelOwnershipSeries>, {
+    candlePrimary: false,
+    onWarn: options?.onWarn,
+  });
+  if (seriesIndex == null) {
+    return COUNTDOWN_OFF.countdownDesired;
+  }
+  const seriesItem = series[seriesIndex];
+  if (!seriesItem || seriesItem.type !== 'candlestick') {
+    return COUNTDOWN_OFF.countdownDesired;
+  }
+  const candle = seriesItem as ResolvedCandlestickSeriesConfig;
+  const pl = candle.priceLabel;
+  if (!pl) return COUNTDOWN_OFF.countdownDesired;
+  return priceLabelCountdownDesiredFromConfig({
+    show: pl.show,
+    showCountdown: pl.showCountdown,
+    intervalMs: pl.intervalMs,
+    nowMs: pl.nowMs,
+  });
+}
+
+function countdownDesiredFromCandle(candle: ResolvedCandlestickSeriesConfig): PriceLabelCountdownDesired {
+  const pl = candle.priceLabel;
+  if (!pl) return COUNTDOWN_OFF.countdownDesired;
+  return priceLabelCountdownDesiredFromConfig({
+    show: pl.show,
+    showCountdown: pl.showCountdown,
+    intervalMs: pl.intervalMs,
+    nowMs: pl.nowMs,
+  });
+}
+
+/**
  * Sync the last-price badge DOM for the current frame.
  *
  * Hide paths: no UI, no owning series, missing raw/scale, non-finite close Y,
  * empty canvas, or out-of-domain with `outOfDomain: 'hide'`.
+ *
+ * @returns Countdown timer inputs (desired config + barEndMs). Always defined.
  */
-export function syncPriceLabelFrame(args: SyncPriceLabelFrameArgs): void {
+export function syncPriceLabelFrame(args: SyncPriceLabelFrameArgs): SyncPriceLabelFrameResult {
   const ui = args.priceLabelUi;
-  if (!ui) return;
+  if (!ui) return COUNTDOWN_OFF;
 
   const {
     series,
@@ -119,11 +189,6 @@ export function syncPriceLabelFrame(args: SyncPriceLabelFrameArgs): void {
     onWarn,
   } = args;
 
-  if (!(canvasCssWidth > 0) || !(canvasCssHeight > 0)) {
-    hideBadge(ui);
-    return;
-  }
-
   // Ownership: first visible candlestick with priceLabel.show (v1 one badge).
   // Resolved series already have `priceLabel.show`; candlePrimary only matters for raw/unresolved.
   const seriesIndex = selectPriceLabelSeries(series as ReadonlyArray<PriceLabelOwnershipSeries>, {
@@ -133,27 +198,35 @@ export function syncPriceLabelFrame(args: SyncPriceLabelFrameArgs): void {
 
   if (seriesIndex == null) {
     hideBadge(ui);
-    return;
+    return COUNTDOWN_OFF;
   }
 
   const seriesItem = series[seriesIndex];
   if (!seriesItem || seriesItem.type !== 'candlestick') {
     hideBadge(ui);
-    return;
+    return COUNTDOWN_OFF;
   }
 
   const candle = seriesItem as ResolvedCandlestickSeriesConfig;
   const priceLabel = candle.priceLabel;
+  // Config-driven countdown desired (even when badge is temporarily hidden).
+  const countdownDesired = countdownDesiredFromCandle(candle);
+
   if (!priceLabel?.show) {
     hideBadge(ui);
-    return;
+    return COUNTDOWN_OFF;
+  }
+
+  if (!(canvasCssWidth > 0) || !(canvasCssHeight > 0)) {
+    hideBadge(ui);
+    return { countdownDesired, barEndMs: null };
   }
 
   const yAxisId = candle.yAxis;
   const yScale = yScales.get(yAxisId);
   if (!yScale) {
     hideBadge(ui);
-    return;
+    return { countdownDesired, barEndMs: null };
   }
 
   const yAxisConfig = yAxes.find((ax) => (ax.id ?? 'y') === yAxisId) ?? yAxes[0] ?? null;
@@ -177,13 +250,13 @@ export function syncPriceLabelFrame(args: SyncPriceLabelFrameArgs): void {
 
   if (!last) {
     hideBadge(ui);
-    return;
+    return { countdownDesired, barEndMs: null };
   }
 
   const yClip = yScale.scale(last.close);
   if (!Number.isFinite(yClip)) {
     hideBadge(ui);
-    return;
+    return { countdownDesired, barEndMs: last.barEndMs };
   }
 
   const yCanvas = clipYToCanvasCssPx(yClip, canvasCssHeight);
@@ -199,7 +272,8 @@ export function syncPriceLabelFrame(args: SyncPriceLabelFrameArgs): void {
 
   if (!inDomain && priceLabel.outOfDomain === 'hide') {
     hideBadge(ui);
-    return;
+    // Timer still tracks bar end; badge hidden but countdown desired follows config.
+    return { countdownDesired, barEndMs: last.barEndMs };
   }
 
   let yBadge = yCanvas;
@@ -223,8 +297,8 @@ export function syncPriceLabelFrame(args: SyncPriceLabelFrameArgs): void {
   const priceText =
     typeof priceLabel.formatter === 'function' ? priceLabel.formatter(last.close) : formatPriceLabelValue(last.close);
 
-  // Frame-synced countdown when enabled (updates only on render frames).
-  // PR5 adds a DOM-only timer + setCountdown for idle ticks without requestRender.
+  // Frame-synced countdown when enabled (keeps text fresh on data/zoom frames).
+  // Between frames, createPriceLabelCountdownTimer ticks via setCountdown only.
   const countdownText = frameCountdownText(last, priceLabel.showCountdown, priceLabel.nowMs);
 
   ui.update({
@@ -238,4 +312,6 @@ export function syncPriceLabelFrame(args: SyncPriceLabelFrameArgs): void {
     side,
     opacity,
   });
+
+  return { countdownDesired, barEndMs: last.barEndMs };
 }
