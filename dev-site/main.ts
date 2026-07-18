@@ -254,6 +254,52 @@ const attachResize = (el: HTMLElement, chart: ChartGPUInstance): ResizeObserver 
   return ro;
 };
 
+/**
+ * Smooth streaming pump — rAF + fixed timestep, max one sample per frame.
+ * Replaces setInterval (which coalesces under load and looks stop-start).
+ */
+type StreamPump = { readonly stop: () => void };
+
+const startStreamPump = (
+  sample: (now: number, tick: number) => void,
+  opts?: { readonly hz?: number; readonly reduced?: boolean }
+): StreamPump => {
+  const reduced =
+    opts?.reduced ?? window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduced) return { stop: () => undefined };
+
+  const sampleMs = 1000 / (opts?.hz ?? 48);
+  let raf = 0;
+  let cancelled = false;
+  let lastSampleAt = performance.now();
+  let tick = 0;
+
+  const pump = (now: number): void => {
+    if (cancelled) return;
+    raf = requestAnimationFrame(pump);
+    if (now - lastSampleAt < sampleMs) return;
+    // Snap to now (no multi-step catch-up → no domain multi-jumps after a stall).
+    lastSampleAt = now;
+    tick += 1;
+    sample(now, tick);
+  };
+  raf = requestAnimationFrame(pump);
+
+  return {
+    stop: () => {
+      cancelled = true;
+      if (raf) cancelAnimationFrame(raf);
+    },
+  };
+};
+
+/** Per-series 1-point columnar buffers (identity-stable for pending append). */
+const createAppendBufs = (count: number): ReadonlyArray<{ x: Float64Array; y: Float64Array }> =>
+  Array.from({ length: count }, () => ({
+    x: new Float64Array(1),
+    y: new Float64Array(1),
+  }));
+
 // ── Demo builders ───────────────────────────────────────────────────────────
 
 type LineSeries = Extract<NonNullable<ChartGPUOptions['series']>[number], { type: 'line' }>;
@@ -342,47 +388,22 @@ async function mountAurora(container: HTMLElement): Promise<{ dispose: () => voi
   const chart = await ChartGPU.create(container, options);
   const ro = attachResize(container, chart);
 
-  let cancelled = false;
-  let raf = 0;
-  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-  if (!reduced) {
-    // Per-series 1-point columnar buffers (identity-stable for pending append).
-    // Coordinator stores refs until flush — never reuse one buffer across series.
-    const appendBufs = Array.from({ length: seriesCount }, () => ({
-      x: new Float64Array(1),
-      y: new Float64Array(1),
-    }));
-
-    // rAF + fixed timestep: avoids setInterval coalescing (stop-start under load).
-    // Cap catch-up at 1 sample/frame so a long frame never multi-jumps the domain.
-    const sampleHz = 48;
-    const sampleMs = 1000 / sampleHz;
-    let lastSampleAt = performance.now();
-
-    const pump = (now: number): void => {
-      if (cancelled || chart.disposed) return;
-      raf = requestAnimationFrame(pump);
-
-      if (now - lastSampleAt < sampleMs) return;
-      lastSampleAt = now;
-
-      const t = tCursor;
-      for (let s = 0; s < seriesCount; s++) {
-        const buf = appendBufs[s]!;
-        buf.x[0] = t;
-        buf.y[0] = waveY(t, s, seriesCount);
-        chart.appendData(s, buf, { maxPoints });
-      }
-      tCursor += dt;
-    };
-    raf = requestAnimationFrame(pump);
-  }
+  const appendBufs = createAppendBufs(seriesCount);
+  const stream = startStreamPump(() => {
+    if (chart.disposed) return;
+    const t = tCursor;
+    for (let s = 0; s < seriesCount; s++) {
+      const buf = appendBufs[s]!;
+      buf.x[0] = t;
+      buf.y[0] = waveY(t, s, seriesCount);
+      chart.appendData(s, buf, { maxPoints });
+    }
+    tCursor += dt;
+  }, { hz: 48 });
 
   return {
     dispose: () => {
-      cancelled = true;
-      if (raf) cancelAnimationFrame(raf);
+      stream.stop();
       ro.disconnect();
       chart.dispose();
     },
@@ -524,34 +545,28 @@ async function mountCandles(container: HTMLElement): Promise<{ dispose: () => vo
   const chart = await ChartGPU.create(container, options);
   const ro = attachResize(container, chart);
 
-  let cancelled = false;
-  let timer: ReturnType<typeof setInterval> | null = null;
-  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-  if (!reduced) {
-    timer = setInterval(() => {
-      if (cancelled || chart.disposed) return;
-      const last = data[data.length - 1];
-      if (!last || !Array.isArray(last)) return;
-      const [, , prevClose] = last;
-      const open = prevClose;
-      const close = Math.max(1, open + (Math.random() - 0.48) * 2.2);
-      const high = Math.max(open, close) + Math.random() * 0.7;
-      const low = Math.min(open, close) - Math.random() * 0.7;
-      const next: OHLCDataPoint = [last[0] + candleIntervalMs, open, close, low, high];
-      data = [...data.slice(-199), next];
-      simulatedNowMs = next[0] + candleIntervalMs * 0.35;
-      chart.setOption({
-        ...options,
-        series: [makeCandleSeries(data)],
-      });
-    }, 280);
-  }
+  // ~6 Hz candle ticks via rAF pump (was setInterval 280ms — stuttered under load).
+  const stream = startStreamPump(() => {
+    if (chart.disposed) return;
+    const last = data[data.length - 1];
+    if (!last || !Array.isArray(last)) return;
+    const [, , prevClose] = last;
+    const open = prevClose;
+    const close = Math.max(1, open + (Math.random() - 0.48) * 2.2);
+    const high = Math.max(open, close) + Math.random() * 0.7;
+    const low = Math.min(open, close) - Math.random() * 0.7;
+    const next: OHLCDataPoint = [last[0] + candleIntervalMs, open, close, low, high];
+    data = [...data.slice(-199), next];
+    simulatedNowMs = next[0] + candleIntervalMs * 0.35;
+    chart.setOption({
+      ...options,
+      series: [makeCandleSeries(data)],
+    });
+  }, { hz: 6 });
 
   return {
     dispose: () => {
-      cancelled = true;
-      if (timer) clearInterval(timer);
+      stream.stop();
       ro.disconnect();
       chart.dispose();
     },
@@ -585,31 +600,25 @@ async function mountBars(container: HTMLElement): Promise<{ dispose: () => void 
   const chart = await ChartGPU.create(container, options);
   const ro = attachResize(container, chart);
 
-  let cancelled = false;
-  let timer: ReturnType<typeof setInterval> | null = null;
-  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  let tick = 0;
-
-  if (!reduced) {
-    timer = setInterval(() => {
-      if (cancelled || chart.disposed) return;
-      tick += 0.18;
-      chart.setOption({
-        ...options,
-        series: [
-          { type: 'bar', name: 'a', data: mk(tick, 2.2, 1.5), stack: 's', color: GOLD },
-          { type: 'bar', name: 'b', data: mk(tick + 1.2, 1.8, 0.8), stack: 's', color: BLUE },
-          { type: 'bar', name: 'c', data: mk(tick + 2.1, 1.4, -0.6), stack: 's', color: ROSE },
-          { type: 'bar', name: 'd', data: mk(tick + 0.7, 1.1, -1.2), stack: 's', color: CYAN },
-        ],
-      });
-    }, 900);
-  }
+  // Morph stacks smoothly (~12 Hz, small phase steps) instead of 900ms jumps.
+  let phase = 0;
+  const stream = startStreamPump(() => {
+    if (chart.disposed) return;
+    phase += 0.05;
+    chart.setOption({
+      ...options,
+      series: [
+        { type: 'bar', name: 'a', data: mk(phase, 2.2, 1.5), stack: 's', color: GOLD },
+        { type: 'bar', name: 'b', data: mk(phase + 1.2, 1.8, 0.8), stack: 's', color: BLUE },
+        { type: 'bar', name: 'c', data: mk(phase + 2.1, 1.4, -0.6), stack: 's', color: ROSE },
+        { type: 'bar', name: 'd', data: mk(phase + 0.7, 1.1, -1.2), stack: 's', color: CYAN },
+      ],
+    });
+  }, { hz: 12 });
 
   return {
     dispose: () => {
-      cancelled = true;
-      if (timer) clearInterval(timer);
+      stream.stop();
       ro.disconnect();
       chart.dispose();
     },
@@ -1218,34 +1227,50 @@ async function mountWall(container: HTMLElement): Promise<{ dispose: () => void 
     return idx >= 0 ? charts[idx] : undefined;
   };
 
-  let cancelled = false;
-  let timer: ReturnType<typeof setInterval> | null = null;
-  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  let tick = 0;
+  // Preallocated 1-pt buffers for autoScroll append panels (APM + errors).
+  const apmBufs = createAppendBufs(3);
+  const errBufs = createAppendBufs(2);
 
-  if (!reduced) {
-    timer = setInterval(() => {
-      if (cancelled) return;
-      tick += 1;
-
-      // Stream APM (~12.5 Hz)
-      const apm = byId('apm');
-      if (apm && !apm.disposed) {
-        const i = apmCursor;
-        const load = 0.55 + 0.35 * Math.sin(i * 0.11) + 0.12 * Math.sin(i * 0.37);
-        const p50 = 18 + load * 22 + Math.sin(i * 0.2) * 3;
-        const p95 = p50 * (2.1 + 0.15 * Math.sin(i * 0.09));
-        const p99 = p95 * (1.45 + 0.1 * Math.sin(i * 0.07));
-        const t = timeAt(i);
-        apm.appendData(0, [[t, p50]], { maxPoints: seedN });
-        apm.appendData(1, [[t, p95]], { maxPoints: seedN });
-        apm.appendData(2, [[t, p99]], { maxPoints: seedN });
-        apmCursor += 1;
+  // Single wall pump: high-rate append streams + throttled setOption panels.
+  const stream = startStreamPump((_now, tick) => {
+    // ── AutoScroll append streams (every sample @ 40 Hz) ──
+    const apm = byId('apm');
+    if (apm && !apm.disposed) {
+      const i = apmCursor;
+      const load = 0.55 + 0.35 * Math.sin(i * 0.11) + 0.12 * Math.sin(i * 0.37);
+      const p50 = 18 + load * 22 + Math.sin(i * 0.2) * 3;
+      const p95 = p50 * (2.1 + 0.15 * Math.sin(i * 0.09));
+      const p99 = p95 * (1.45 + 0.1 * Math.sin(i * 0.07));
+      const t = timeAt(i);
+      const vals = [p50, p95, p99];
+      for (let s = 0; s < 3; s++) {
+        const buf = apmBufs[s]!;
+        buf.x[0] = t;
+        buf.y[0] = vals[s]!;
+        apm.appendData(s, buf, { maxPoints: seedN });
       }
+      apmCursor += 1;
+    }
 
-      // Stream pool via sliding setOption (stable geometry for dual area fills)
+    const errors = byId('errors');
+    if (errors && !errors.disposed) {
+      const i = errCursor;
+      const e5 = Math.max(0, 0.4 + Math.sin(i * 0.18) * 0.5);
+      const e4 = 2.2 + Math.sin(i * 0.12 + 1) * 1.1 + Math.sin(i * 0.4) * 0.4;
+      const t = timeAt(i);
+      errBufs[0]!.x[0] = t;
+      errBufs[0]!.y[0] = e5;
+      errBufs[1]!.x[0] = t;
+      errBufs[1]!.y[0] = e4;
+      errors.appendData(0, errBufs[0]!, { maxPoints: seedN });
+      errors.appendData(1, errBufs[1]!, { maxPoints: seedN });
+      errCursor += 1;
+    }
+
+    // ── Pool sliding window (~20 Hz) ──
+    if (tick % 2 === 0) {
       const pool = byId('pool');
-      if (pool && !pool.disposed && tick % 2 === 0) {
+      if (pool && !pool.disposed) {
         poolRows = [...poolRows.slice(1), poolSample(poolCursor)];
         poolCursor += 1;
         const d = poolSeriesData(poolRows);
@@ -1274,139 +1299,122 @@ async function mountWall(container: HTMLElement): Promise<{ dispose: () => void 
           ],
         });
       }
+    }
 
-      // Stream errors
-      const errors = byId('errors');
-      if (errors && !errors.disposed) {
-        const i = errCursor;
-        const e5 = Math.max(0, 0.4 + Math.sin(i * 0.18) * 0.5);
-        const e4 = 2.2 + Math.sin(i * 0.12 + 1) * 1.1 + Math.sin(i * 0.4) * 0.4;
-        const t = timeAt(i);
-        errors.appendData(0, [[t, e5]], { maxPoints: seedN });
-        errors.appendData(1, [[t, e4]], { maxPoints: seedN });
-        errCursor += 1;
-      }
+    // ── Heavier setOption panels (~10 Hz) ──
+    if (tick % 4 !== 0) return;
 
-      // Heavier setOption paths ~3 Hz
-      if (tick % 4 !== 0) return;
-
-      // Trade candle + volume
-      const trade = byId('trade');
-      if (trade && !trade.disposed) {
-        const last = tradeCandles[tradeCandles.length - 1];
-        if (last && Array.isArray(last)) {
-          const open = last[2];
-          const close = Math.max(1, open + (Math.random() - 0.48) * 2.0);
-          const high = Math.max(open, close) + Math.random() * 0.6;
-          const low = Math.min(open, close) - Math.random() * 0.6;
-          const next: OHLCDataPoint = [last[0] + 1000, open, close, low, high];
-          tradeCandles = [...tradeCandles.slice(-99), next];
-          tradeVol = tradeVolume(tradeCandles);
-          const base = optionsById.get('trade')!;
-          trade.setOption({
-            ...base,
-            series: [
-              {
-                type: 'bar',
-                name: 'Volume',
-                data: tradeVol,
-                color: BLUE,
-                yAxis: 'vol',
-                barCategoryGap: 0.15,
-              },
-              {
-                type: 'candlestick',
-                name: 'MEME',
-                data: tradeCandles,
-                yAxis: 'price',
-                itemStyle: {
-                  upColor: LIME,
-                  downColor: ROSE,
-                  upBorderColor: LIME,
-                  downBorderColor: ROSE,
-                },
-                priceLabel: { intervalMs: 1000, nowMs: () => Date.now() },
-              },
-            ],
-          });
-        }
-      }
-
-      // Stacked revenue animate
-      stackPhase += 0.18;
-      const stack = byId('stack');
-      if (stack && !stack.disposed) {
-        stack.setOption({
-          ...optionsById.get('stack')!,
-          series: buildStackSeries(stackPhase),
-        });
-      }
-
-      // Pie drift
-      pieSlices = pieSlices.map((s, i) => ({
-        ...s,
-        value: Math.max(5, s.value + Math.sin(tick * 0.08 + i) * 0.45),
-      }));
-      const pie = byId('pie');
-      if (pie && !pie.disposed) {
-        pie.setOption({
-          ...optionsById.get('pie')!,
-          series: [
-            {
-              type: 'pie',
-              name: 'Frame ms',
-              data: pieSlices,
-              radius: ['38%', '68%'],
-              center: ['38%', '54%'],
-            },
-          ],
-        });
-      }
-
-      // Combo dual-axis refresh
-      comboPhase += 0.2;
-      const combo = byId('combo');
-      if (combo && !combo.disposed) {
-        const rows: ComboRow[] = [];
-        for (let i = 0; i < 36; i++) {
-          const rps =
-            800 +
-            Math.sin(i * 0.35 + comboPhase) * 280 +
-            Math.sin(i * 0.11 + comboPhase) * 90 +
-            (i % 4) * 20;
-          const errPct = Math.max(0.05, 1.8 - rps / 1200 + Math.sin(i * 0.5 + comboPhase) * 0.4);
-          rows.push({ x: i, rps, errPct });
-        }
-        combo.setOption({
-          ...optionsById.get('combo')!,
+    const trade = byId('trade');
+    if (trade && !trade.disposed) {
+      const last = tradeCandles[tradeCandles.length - 1];
+      if (last && Array.isArray(last)) {
+        const open = last[2];
+        const close = Math.max(1, open + (Math.random() - 0.48) * 2.0);
+        const high = Math.max(open, close) + Math.random() * 0.6;
+        const low = Math.min(open, close) - Math.random() * 0.6;
+        const next: OHLCDataPoint = [last[0] + 1000, open, close, low, high];
+        tradeCandles = [...tradeCandles.slice(-99), next];
+        tradeVol = tradeVolume(tradeCandles);
+        const base = optionsById.get('trade')!;
+        trade.setOption({
+          ...base,
           series: [
             {
               type: 'bar',
-              name: 'RPS',
-              data: rows.map((r) => [r.x, r.rps] as DataPoint),
+              name: 'Volume',
+              data: tradeVol,
               color: BLUE,
-              yAxis: 'rps',
-              barCategoryGap: 0.2,
+              yAxis: 'vol',
+              barCategoryGap: 0.15,
             },
             {
-              type: 'line',
-              name: 'Error %',
-              data: rows.map((r) => [r.x, r.errPct] as DataPoint),
-              color: ROSE,
-              yAxis: 'err',
-              lineStyle: { width: 2 },
-              sampling: 'none',
+              type: 'candlestick',
+              name: 'MEME',
+              data: tradeCandles,
+              yAxis: 'price',
+              itemStyle: {
+                upColor: LIME,
+                downColor: ROSE,
+                upBorderColor: LIME,
+                downBorderColor: ROSE,
+              },
+              priceLabel: { intervalMs: 1000, nowMs: () => Date.now() },
             },
           ],
         });
       }
-    }, 80);
-  }
+    }
+
+    stackPhase += 0.09;
+    const stack = byId('stack');
+    if (stack && !stack.disposed) {
+      stack.setOption({
+        ...optionsById.get('stack')!,
+        series: buildStackSeries(stackPhase),
+      });
+    }
+
+    pieSlices = pieSlices.map((s, i) => ({
+      ...s,
+      value: Math.max(5, s.value + Math.sin(tick * 0.04 + i) * 0.35),
+    }));
+    const pie = byId('pie');
+    if (pie && !pie.disposed) {
+      pie.setOption({
+        ...optionsById.get('pie')!,
+        series: [
+          {
+            type: 'pie',
+            name: 'Frame ms',
+            data: pieSlices,
+            radius: ['38%', '68%'],
+            center: ['38%', '54%'],
+          },
+        ],
+      });
+    }
+
+    comboPhase += 0.1;
+    const combo = byId('combo');
+    if (combo && !combo.disposed) {
+      const rows: ComboRow[] = [];
+      for (let i = 0; i < 36; i++) {
+        const rps =
+          800 +
+          Math.sin(i * 0.35 + comboPhase) * 280 +
+          Math.sin(i * 0.11 + comboPhase) * 90 +
+          (i % 4) * 20;
+        const errPct = Math.max(0.05, 1.8 - rps / 1200 + Math.sin(i * 0.5 + comboPhase) * 0.4);
+        rows.push({ x: i, rps, errPct });
+      }
+      combo.setOption({
+        ...optionsById.get('combo')!,
+        series: [
+          {
+            type: 'bar',
+            name: 'RPS',
+            data: rows.map((r) => [r.x, r.rps] as DataPoint),
+            color: BLUE,
+            yAxis: 'rps',
+            barCategoryGap: 0.2,
+          },
+          {
+            type: 'line',
+            name: 'Error %',
+            data: rows.map((r) => [r.x, r.errPct] as DataPoint),
+            color: ROSE,
+            yAxis: 'err',
+            lineStyle: { width: 2 },
+            sampling: 'none',
+          },
+        ],
+      });
+    }
+  }, { hz: 40 });
 
   return {
     dispose: () => {
-      cancelled = true;
-      if (timer) clearInterval(timer);
+      stream.stop();
       for (const ro of observers) ro.disconnect();
       for (const c of charts) {
         if (!c.disposed) c.dispose();
