@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { resolveOptions, resolveSeriesContentHash, type ResolvedSeriesConfig } from '../OptionResolver';
+import {
+  isCandlePrimaryChart,
+  resolveOptions,
+  resolveSeriesContentHash,
+  type ResolvedSeriesConfig,
+} from '../OptionResolver';
 import type { DataPoint, OHLCDataPoint } from '../types';
 import { getPointCount } from '../../data/cartesianData';
 import * as seriesContentHashModule from '../../data/seriesContentHash';
@@ -1018,5 +1023,158 @@ describe('OptionResolver equal-N LTTB y-remap (group 4)', () => {
     }
     expect(strictHasSpike).toBe(true);
     remapSpy.mockRestore();
+  });
+});
+
+describe('isCandlePrimaryChart', () => {
+  it('returns false for empty options / empty series', () => {
+    expect(isCandlePrimaryChart({})).toBe(false);
+    expect(isCandlePrimaryChart({ series: [] })).toBe(false);
+  });
+
+  it('returns true when first series is candlestick', () => {
+    expect(
+      isCandlePrimaryChart({
+        series: [{ type: 'candlestick', data: [[0, 1, 1, 1, 1]] }],
+      })
+    ).toBe(true);
+  });
+
+  it('returns false when first series is line', () => {
+    expect(
+      isCandlePrimaryChart({
+        series: [{ type: 'line', data: [[0, 1]] }],
+      })
+    ).toBe(false);
+  });
+
+  it('returns false when candlestick is not first', () => {
+    expect(
+      isCandlePrimaryChart({
+        series: [
+          { type: 'line', data: [[0, 1]] },
+          { type: 'candlestick', data: [[0, 1, 1, 1, 1]] },
+        ],
+      })
+    ).toBe(false);
+  });
+});
+
+describe('OptionResolver - candle-primary Y-axis and grid defaults', () => {
+  const candleSeries = {
+    type: 'candlestick' as const,
+    data: [[1_700_000_000_000, 100, 101, 99, 102]] as const satisfies ReadonlyArray<OHLCDataPoint>,
+  };
+
+  it('defaults first Y position to right and gutters left=20 / right=70 when unset', () => {
+    const resolved = resolveOptions({ series: [candleSeries] });
+    expect(resolved.yAxes[0]!.position).toBe('right');
+    expect(resolved.grid.left).toBe(20);
+    expect(resolved.grid.right).toBe(70);
+    // Non-gutter keys still use standard defaults
+    expect(resolved.grid.top).toBe(40);
+    expect(resolved.grid.bottom).toBe(40);
+  });
+
+  it('honors explicit yAxis.position left', () => {
+    const resolved = resolveOptions({
+      series: [candleSeries],
+      yAxis: { type: 'value', position: 'left' },
+    });
+    expect(resolved.yAxes[0]!.position).toBe('left');
+    // Left Y remains → dual-Y-safe left gutter 60; right still soft-defaults to 70
+    expect(resolved.grid.left).toBe(60);
+    expect(resolved.grid.right).toBe(70);
+  });
+
+  it('soft-sets only unset grid keys (user left only → keep left, right 70)', () => {
+    const resolved = resolveOptions({
+      series: [candleSeries],
+      grid: { left: 80 },
+    });
+    expect(resolved.grid.left).toBe(80);
+    expect(resolved.grid.right).toBe(70);
+    expect(resolved.yAxes[0]!.position).toBe('right');
+  });
+
+  it('soft-sets only unset grid keys (user right only → keep right, left 20)', () => {
+    const resolved = resolveOptions({
+      series: [candleSeries],
+      grid: { right: 90 },
+    });
+    expect(resolved.grid.left).toBe(20);
+    expect(resolved.grid.right).toBe(90);
+  });
+
+  it('honors both explicit grid margins', () => {
+    const resolved = resolveOptions({
+      series: [candleSeries],
+      grid: { left: 12, right: 34 },
+    });
+    expect(resolved.grid.left).toBe(12);
+    expect(resolved.grid.right).toBe(34);
+  });
+
+  it('dual-Y with left secondary keeps left gutter 60 and right 70', () => {
+    const resolved = resolveOptions({
+      series: [
+        { ...candleSeries, yAxis: 'price' },
+        { type: 'bar', data: [[0, 10]], yAxis: 'vol' },
+      ],
+      axes: {
+        y: [
+          { id: 'price', type: 'value' }, // position unset → right (first Y, candle-primary)
+          { id: 'vol', type: 'value' }, // position unset → left (secondary)
+        ],
+      },
+    });
+    expect(resolved.yAxes[0]!.position).toBe('right');
+    expect(resolved.yAxes[1]!.position).toBe('left');
+    expect(resolved.grid.left).toBe(60);
+    expect(resolved.grid.right).toBe(70);
+  });
+
+  it('does not flip secondary Y position when first is candle-primary', () => {
+    const resolved = resolveOptions({
+      series: [candleSeries],
+      axes: {
+        y: [
+          { id: 'price', type: 'value', position: 'right' },
+          { id: 'vol', type: 'value' }, // must stay left default
+        ],
+      },
+    });
+    expect(resolved.yAxes[1]!.position).toBe('left');
+  });
+
+  it('non-candle charts keep default left Y and left-biased gutters', () => {
+    const resolved = resolveOptions({
+      series: [{ type: 'line', data: [[0, 1], [1, 2]] }],
+    });
+    expect(resolved.yAxes[0]!.position).toBe('left');
+    expect(resolved.grid.left).toBe(60);
+    expect(resolved.grid.right).toBe(20);
+  });
+
+  it('candle-not-first is not candle-primary (left Y, standard gutters)', () => {
+    const resolved = resolveOptions({
+      series: [
+        { type: 'line', data: [[0, 1]] },
+        candleSeries,
+      ],
+    });
+    expect(isCandlePrimaryChart({ series: [{ type: 'line', data: [[0, 1]] }, candleSeries] })).toBe(
+      false
+    );
+    expect(resolved.yAxes[0]!.position).toBe('left');
+    expect(resolved.grid.left).toBe(60);
+    expect(resolved.grid.right).toBe(20);
+  });
+
+  it('applies right default via synthetic y when both yAxis and axes.y omitted', () => {
+    const resolved = resolveOptions({ series: [candleSeries] });
+    expect(resolved.yAxes).toHaveLength(1);
+    expect(resolved.yAxes[0]!.id).toBe('y');
+    expect(resolved.yAxes[0]!.position).toBe('right');
   });
 });

@@ -30,6 +30,7 @@ import type {
   PerformanceLod,
 } from './types';
 import {
+  candlePrimaryGridDefaults,
   candlestickDefaults,
   defaultAreaStyle,
   defaultGridLines,
@@ -38,6 +39,7 @@ import {
   defaultPalette,
   scatterDefaults,
 } from './defaults';
+import { isCandlePrimaryChart } from './isCandlePrimaryChart';
 import { getTheme } from '../themes';
 import type { ThemeConfig } from '../themes/types';
 import { sampleSeriesDataPoints } from '../data/sampleSeries';
@@ -57,6 +59,8 @@ import {
   sampleLooksIndexSortedX,
 } from '../data/seriesRewriteDetect';
 import { parseCssColorToRgba01 } from '../utils/colors';
+
+export { isCandlePrimaryChart } from './isCandlePrimaryChart';
 
 export type ResolvedGridConfig = Readonly<Required<GridConfig>>;
 export type ResolvedLineStyleConfig = Readonly<Required<Omit<LineStyleConfig, 'color'>> & { readonly color: string }>;
@@ -1032,12 +1036,9 @@ export function resolveOptions(
     };
   }
 
-  const grid: ResolvedGridConfig = {
-    left: userOptions.grid?.left ?? defaultOptions.grid.left,
-    right: userOptions.grid?.right ?? defaultOptions.grid.right,
-    top: userOptions.grid?.top ?? defaultOptions.grid.top,
-    bottom: userOptions.grid?.bottom ?? defaultOptions.grid.bottom,
-  };
+  // grid.left / grid.right depend on candle-primary + Y-axis positions (resolved below).
+  // top/bottom can use standard defaults immediately; left/right filled after yAxes.
+  const candlePrimary = isCandlePrimaryChart(userOptions);
 
   // Resolve grid lines configuration with color hierarchy:
   // 1. per-direction color (horizontal.color / vertical.color)
@@ -1122,16 +1123,21 @@ export function resolveOptions(
       : { ...defaultOptions.xAxis }
   );
 
+  // First Y axis defaults to 'right' on candle-primary charts when position is unset.
+  // Secondary Y axes keep the existing default ('left' when unset).
+  const defaultFirstYPosition: 'left' | 'right' = candlePrimary ? 'right' : 'left';
+
   const yAxes: AxisConfig[] = [];
   if (userOptions.axes?.y && userOptions.axes.y.length > 0) {
     for (let index = 0; index < userOptions.axes.y.length; index++) {
       const yConfig = userOptions.axes.y[index]!;
+      const positionDefault = index === 0 ? defaultFirstYPosition : 'left';
       yAxes.push(
         finalizeAxisConfig({
           ...defaultOptions.yAxis,
           ...yConfig,
           id: yConfig.id ?? (index === 0 ? 'y' : `y${index}`),
-          position: yConfig.position ?? 'left',
+          position: yConfig.position ?? positionDefault,
           type: normalizeAxisType(yConfig.type, defaultOptions.yAxis.type),
           autoBounds:
             normalizeAxisAutoBounds((yConfig as unknown as { readonly autoBounds?: unknown }).autoBounds) ??
@@ -1147,7 +1153,7 @@ export function resolveOptions(
               ...defaultOptions.yAxis,
               ...userOptions.yAxis,
               id: userOptions.yAxis.id ?? 'y',
-              position: userOptions.yAxis.position ?? 'left',
+              position: userOptions.yAxis.position ?? defaultFirstYPosition,
               type: normalizeAxisType(
                 (userOptions.yAxis as unknown as Partial<AxisConfig>).type,
                 defaultOptions.yAxis.type
@@ -1157,10 +1163,25 @@ export function resolveOptions(
                   (userOptions.yAxis as unknown as { readonly autoBounds?: unknown }).autoBounds
                 ) ?? defaultOptions.yAxis.autoBounds,
             }
-          : { ...defaultOptions.yAxis, id: 'y', position: 'left' }
+          : { ...defaultOptions.yAxis, id: 'y', position: defaultFirstYPosition }
       )
     );
   }
+
+  // Soft gutters for candle-primary: per-key only when user left that key undefined.
+  // Dual-Y safety: keep left 60 when any Y remains on the left after position defaults.
+  const hasLeftY = yAxes.some((a) => (a.position ?? 'left') === 'left');
+  const candleLeftDefault = hasLeftY
+    ? candlePrimaryGridDefaults.leftWithLeftY
+    : candlePrimaryGridDefaults.leftNoLeftY;
+  const grid: ResolvedGridConfig = {
+    left: userOptions.grid?.left ?? (candlePrimary ? candleLeftDefault : defaultOptions.grid.left),
+    right:
+      userOptions.grid?.right ??
+      (candlePrimary ? candlePrimaryGridDefaults.right : defaultOptions.grid.right),
+    top: userOptions.grid?.top ?? defaultOptions.grid.top,
+    bottom: userOptions.grid?.bottom ?? defaultOptions.grid.bottom,
+  };
 
   const defaultYAxisId = yAxes[0]!.id ?? 'y';
 

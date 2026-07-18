@@ -123,11 +123,35 @@ Notes (density mode):
   - **No library UI log toggle** — config only (`setOption({ yAxis: { type: 'log' } })`). Examples may include demo chrome.
   - Showcase: [`examples/log-axis-y/`](../../examples/log-axis-y/), [`log-axis-x/`](../../examples/log-axis-x/), [`log-axis-scatter/`](../../examples/log-axis-scatter/), [`log-axis-multi/`](../../examples/log-axis-multi/), [`log-axis-compare/`](../../examples/log-axis-compare/).
 - **Multiple Y-Axes**:
-  - Instead of a single `yAxis` object, ChartGPU supports an array of `yAxes` objects for independent scales (e.g. Price vs Volume).
-  - Each `yAxis` in the `yAxes` array must specify an `id: string` (default is `"primary"` for the first axis).
+  - Instead of a single `yAxis` object, ChartGPU supports an array of Y axes via `axes.y` for independent scales (e.g. Price vs Volume).
+  - Each axis in `axes.y` may specify an `id: string` (defaults: first axis `"y"`, then `"y1"`, …).
   - Series map to a specific axis via `yAxis` id in their config.
-  - Axes can be positioned on the right using `position: "right"` (default is `"left"`).
+  - Axes can be positioned on the right using `position: "right"`. Default position is `"left"`, except for **candle-primary** charts (see below).
   - Dual Y may mix log + linear (e.g. log pressure + linear temperature). Horizontal grid follows the **primary** (first) Y axis ticks when that axis is log.
+- **Candle-primary layout defaults** (when `series[0].type === 'candlestick'`):
+  - **Y position**: the **first** Y axis defaults to `position: 'right'` when the user leaves `position` unset (`yAxis` or `axes.y[0]`). Secondary Y axes still default to `'left'`. Explicit `position` always wins.
+  - **Soft grid gutters** (per-key only — each of `grid.left` / `grid.right` is set only when that key is `undefined` on user options):
+    - `grid.right` → `70` (room for the price ladder)
+    - `grid.left` → `20` if no Y axis remains on the left after position defaults; else `60` when any left-positioned Y exists (dual-Y safety for volume, etc.)
+  - Non-candle-primary charts keep the standard grid defaults (`left: 60`, `right: 20`) and left Y.
+  - Recommended candle + volume dual-Y:
+
+```ts
+{
+  // Or omit both left/right — dual-Y policy yields left 60 / right 70
+  grid: { left: 60, right: 70 },
+  axes: {
+    y: [
+      { id: 'price', position: 'right', type: 'value' },
+      { id: 'vol', position: 'left', type: 'value' },
+    ],
+  },
+  series: [
+    { type: 'candlestick', yAxis: 'price', data },
+    { type: 'bar', yAxis: 'vol', data: volumes },
+  ],
+}
+```
 - **Explicit domains (override auto-bounds)**:
   - **`AxisConfig.min?: number` / `AxisConfig.max?: number`**: when set, ChartGPU uses these explicit axis bounds and does **not** auto-derive bounds from data for that axis.
   - **Precedence**: explicit `min`/`max` always override any auto-bounds behavior.
@@ -299,7 +323,7 @@ See [`defaults.ts`](../../src/config/defaults.ts) for the defaults (including gr
 
 **Behavior notes (essential):**
 
-- **Default grid**: `left: 60`, `right: 20`, `top: 40`, `bottom: 40`
+- **Default grid**: `left: 60`, `right: 20`, `top: 40`, `bottom: 40` (non-candle-primary). Candle-primary soft gutters: see **Candle-primary layout defaults** under Axis Configuration (`right: 70`; `left: 20` or `60` depending on left Y axes).
 - **Palette / series colors**: `ChartGPUOptions.palette` acts as an override for the resolved theme palette (`resolvedOptions.theme.colorPalette`). When `series[i].color` is missing, the default series color comes from `resolvedOptions.theme.colorPalette[i % ...]`. For backward compatibility, the resolved `palette` is the resolved theme palette. See [`resolveOptions`](../../src/config/OptionResolver.ts) and [`ThemeConfig`](themes.md#themeconfig).
 - **Line series stroke color precedence**: for `type: 'line'`, effective stroke color follows: `lineStyle.color` → `series.color` → theme palette. See [`resolveOptions`](../../src/config/OptionResolver.ts).
 - **Line series fill color precedence**: for `type: 'line'` with `areaStyle`, effective fill color follows: `areaStyle.color` → resolved stroke color (from above precedence). See [`resolveOptions`](../../src/config/OptionResolver.ts).

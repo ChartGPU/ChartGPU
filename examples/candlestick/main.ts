@@ -73,8 +73,10 @@ async function main() {
   const msPerSecond = 1000;
   const timestampPadding = msPerSecond;
 
+  // Candle-primary defaults: first Y → right, grid left=20 / right=70 when unset.
+  // Only override top/bottom for axis title room; leave left/right to the library.
   const initialOptions: ChartGPUOptions = {
-    grid: { left: 70, right: 24, top: 24, bottom: 56 },
+    grid: { top: 24, bottom: 56 },
     xAxis: {
       type: 'value',
       min: minTimestamp - timestampPadding,
