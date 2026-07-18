@@ -4,9 +4,6 @@
   "workspaces": {
     "": {
       "name": "@chartgpu/chartgpu",
-      "dependencies": {
-        "prettier": "^3.8.1",
-      },
       "devDependencies": {
         "@eslint/js": "^10.0.1",
         "@types/node": "^25.0.9",
@@ -15,6 +12,7 @@
         "jscpd": "^4.0.8",
         "jsdom": "^28.1.0",
         "knip": "^6.1.1",
+        "prettier": "^3.8.1",
         "tsx": "^4.21.0",
         "typescript": "^5.0.0",
         "typescript-eslint": "^8.58.0",

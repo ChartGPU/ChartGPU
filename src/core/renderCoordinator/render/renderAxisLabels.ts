@@ -38,7 +38,7 @@ interface AxisLabelRenderContext {
   readonly visibleXRangeMs: number;
 }
 
-/** Context for rendering a single Y-axis's tick labels and title. */
+/** Context for rendering a single Y-axis's tick labels, title, and optional header. */
 interface YAxisLabelRenderContext {
   readonly axisLabelOverlay: TextOverlay | null;
   readonly overlayContainer: HTMLElement | null;
@@ -269,7 +269,24 @@ export function renderYAxisLabels(ctx: YAxisLabelRenderContext): void {
     styleAxisLabelSpan(span, false, theme);
   }
 
-  // Y-axis title
+  // Y-axis unit header (non-rotated, top of axis rail) — independent of rotated `name`.
+  const yAxisHeader = yAxisConfig.header?.trim() ?? '';
+  if (yAxisHeader.length > 0) {
+    // Center sits a full fontSize + padding above plot top so the header em-box clears
+    // the top domain tick (textBaseline middle places tick center at plotTopCss).
+    // AABB gap to top tick ≈ LABEL_PADDING + fontSize/2 (grows with theme.fontSize).
+    const headerY = plotTopCss - LABEL_PADDING_CSS_PX - theme.fontSize;
+    const span = axisLabelOverlay.addLabel(yAxisHeader, offsetX + yLabelX, offsetY + headerY, {
+      fontSize: theme.fontSize,
+      color: theme.textColor,
+      fontFamily: theme.fontFamily,
+      fontWeight: AXIS_TITLE_FONT_WEIGHT,
+      anchor: isRight ? 'start' : 'end',
+    });
+    styleAxisLabelSpan(span, true, theme);
+  }
+
+  // Y-axis title (rotated side label)
   const axisNameFontSize = getAxisTitleFontSize(theme.fontSize);
   const yAxisName = yAxisConfig.name?.trim() ?? '';
   if (yAxisName.length > 0) {

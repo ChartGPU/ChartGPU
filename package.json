@@ -52,6 +52,7 @@
     "acceptance:line-style-color": "tsx examples/acceptance/line-style-color.ts",
     "acceptance:area-style-color": "tsx examples/acceptance/area-style-color.ts",
     "acceptance:ohlc-sample": "tsx examples/acceptance/ohlc-sample.ts",
+    "acceptance:candle-price-axis": "tsx examples/acceptance/candle-price-axis.ts",
     "acceptance:auto-scroll-zoom-sync": "tsx examples/acceptance/auto-scroll-zoom-sync.ts",
     "acceptance:line-gaps": "tsx examples/acceptance/line-gaps.ts",
     "benchmark:render": "tsx benchmarks/render-performance-benchmark.ts",

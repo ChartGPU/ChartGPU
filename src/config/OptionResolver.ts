@@ -30,6 +30,7 @@ import type {
   PerformanceLod,
 } from './types';
 import {
+  candlePrimaryGridDefaults,
   candlestickDefaults,
   defaultAreaStyle,
   defaultGridLines,
@@ -38,6 +39,8 @@ import {
   defaultPalette,
   scatterDefaults,
 } from './defaults';
+import { isCandlePrimaryChart } from './isCandlePrimaryChart';
+import { resolvePriceLabel, type ResolvedCandlestickPriceLabel } from './resolvePriceLabel';
 import { getTheme } from '../themes';
 import type { ThemeConfig } from '../themes/types';
 import { sampleSeriesDataPoints } from '../data/sampleSeries';
@@ -48,6 +51,10 @@ import {
   getPointCount,
   hasNullGaps,
 } from '../data/cartesianData';
+
+export type { ResolvedCandlestickPriceLabel } from './resolvePriceLabel';
+export { resolvePriceLabel } from './resolvePriceLabel';
+export { isCandlePrimaryChart } from './isCandlePrimaryChart';
 import { cheapCartesianContentStamp, cheapOHLCContentStamp } from '../data/seriesContentHash';
 import {
   classifyEqualNYOnlyRewrite,
@@ -231,6 +238,7 @@ export type ResolvedCandlestickSeriesConfig = Readonly<
     | 'sampling'
     | 'samplingThreshold'
     | 'data'
+    | 'priceLabel'
   > & {
     readonly color: string;
     readonly style: CandlestickStyle;
@@ -240,6 +248,8 @@ export type ResolvedCandlestickSeriesConfig = Readonly<
     readonly barMaxWidth: number;
     readonly sampling: 'none' | 'ohlc';
     readonly samplingThreshold: number;
+    /** Resolved last-price badge / line (always attached on the non-reuse path). */
+    readonly priceLabel: ResolvedCandlestickPriceLabel;
     /** Original (unsampled) series data. */
     readonly rawData: Readonly<CandlestickSeriesConfig['data']>;
     readonly data: Readonly<CandlestickSeriesConfig['data']>;
@@ -822,8 +832,10 @@ const warnCandlestickNotImplemented = (): void => {
  *
  * Treat the outer `series` array **and each series config object** as immutable for this
  * fast path. Element replace is detected; property mutation under a stable element
- * (e.g. `series[i].data = newData`) is **not** (same as per-series data-ref contract).
- * Axes-only y-range rewrites typically re-pass the same stored series objects.
+ * (e.g. `series[i].data = newData`, `series[i].priceLabel = …`) is **not** re-resolved
+ * (same as per-series data-ref contract). Changing candlestick `priceLabel` requires a
+ * **new series element reference**. Axes-only y-range rewrites typically re-pass the same
+ * stored series objects.
  */
 export type ResolveOptionsReuse = Readonly<{
   readonly previousResolved?: ResolvedChartGPUOptions | null;
@@ -855,9 +867,10 @@ export type ResolveOptionsReuse = Readonly<{
  *    (covers a new outer array wrapping the same element objects)
  *
  * **Immutable series contract:** Treat the outer `series` array and each config
- * object as immutable for this path. Mutating `series[i].data` / colors under a
- * stable element object is still not detected (same as per-series data-ref contract);
- * replace the series element or the whole array when content/style changes.
+ * object as immutable for this path. Mutating `series[i].data` / colors /
+ * `priceLabel` under a stable element object is still not detected (same as
+ * per-series data-ref contract); replace the series element or the whole array
+ * when content/style/priceLabel changes.
  */
 export function canReuseEntireUserSeriesArray(input: {
   readonly previousResolvedSeries: ReadonlyArray<unknown> | null | undefined;
@@ -1032,12 +1045,9 @@ export function resolveOptions(
     };
   }
 
-  const grid: ResolvedGridConfig = {
-    left: userOptions.grid?.left ?? defaultOptions.grid.left,
-    right: userOptions.grid?.right ?? defaultOptions.grid.right,
-    top: userOptions.grid?.top ?? defaultOptions.grid.top,
-    bottom: userOptions.grid?.bottom ?? defaultOptions.grid.bottom,
-  };
+  // grid.left / grid.right depend on candle-primary + Y-axis positions (resolved below).
+  // top/bottom can use standard defaults immediately; left/right filled after yAxes.
+  const candlePrimary = isCandlePrimaryChart(userOptions);
 
   // Resolve grid lines configuration with color hierarchy:
   // 1. per-direction color (horizontal.color / vertical.color)
@@ -1122,16 +1132,21 @@ export function resolveOptions(
       : { ...defaultOptions.xAxis }
   );
 
+  // First Y axis defaults to 'right' on candle-primary charts when position is unset.
+  // Secondary Y axes keep the existing default ('left' when unset).
+  const defaultFirstYPosition: 'left' | 'right' = candlePrimary ? 'right' : 'left';
+
   const yAxes: AxisConfig[] = [];
   if (userOptions.axes?.y && userOptions.axes.y.length > 0) {
     for (let index = 0; index < userOptions.axes.y.length; index++) {
       const yConfig = userOptions.axes.y[index]!;
+      const positionDefault = index === 0 ? defaultFirstYPosition : 'left';
       yAxes.push(
         finalizeAxisConfig({
           ...defaultOptions.yAxis,
           ...yConfig,
           id: yConfig.id ?? (index === 0 ? 'y' : `y${index}`),
-          position: yConfig.position ?? 'left',
+          position: yConfig.position ?? positionDefault,
           type: normalizeAxisType(yConfig.type, defaultOptions.yAxis.type),
           autoBounds:
             normalizeAxisAutoBounds((yConfig as unknown as { readonly autoBounds?: unknown }).autoBounds) ??
@@ -1147,7 +1162,7 @@ export function resolveOptions(
               ...defaultOptions.yAxis,
               ...userOptions.yAxis,
               id: userOptions.yAxis.id ?? 'y',
-              position: userOptions.yAxis.position ?? 'left',
+              position: userOptions.yAxis.position ?? defaultFirstYPosition,
               type: normalizeAxisType(
                 (userOptions.yAxis as unknown as Partial<AxisConfig>).type,
                 defaultOptions.yAxis.type
@@ -1157,10 +1172,21 @@ export function resolveOptions(
                   (userOptions.yAxis as unknown as { readonly autoBounds?: unknown }).autoBounds
                 ) ?? defaultOptions.yAxis.autoBounds,
             }
-          : { ...defaultOptions.yAxis, id: 'y', position: 'left' }
+          : { ...defaultOptions.yAxis, id: 'y', position: defaultFirstYPosition }
       )
     );
   }
+
+  // Soft gutters for candle-primary: per-key only when user left that key undefined.
+  // Dual-Y safety: keep left 60 when any Y remains on the left after position defaults.
+  const hasLeftY = yAxes.some((a) => (a.position ?? 'left') === 'left');
+  const candleLeftDefault = hasLeftY ? candlePrimaryGridDefaults.leftWithLeftY : candlePrimaryGridDefaults.leftNoLeftY;
+  const grid: ResolvedGridConfig = {
+    left: userOptions.grid?.left ?? (candlePrimary ? candleLeftDefault : defaultOptions.grid.left),
+    right: userOptions.grid?.right ?? (candlePrimary ? candlePrimaryGridDefaults.right : defaultOptions.grid.right),
+    top: userOptions.grid?.top ?? defaultOptions.grid.top,
+    bottom: userOptions.grid?.bottom ?? defaultOptions.grid.bottom,
+  };
 
   const defaultYAxisId = yAxes[0]!.id ?? 'y';
 
@@ -1261,6 +1287,8 @@ export function resolveOptions(
   // Group-1 axes-only: same series elements + theme/palette → reuse prior resolved
   // series wholesale (no per-series object allocation). Requires per-element identity
   // (and element snapshot when outer array is stable) so series[i]=… is not ignored.
+  // Note: wholesale reuse does not re-enter per-series resolve — changing candlestick
+  // `priceLabel` requires a new series element identity (same as other series fields).
   const prevUser = reuse?.previousUserOptions;
   const canReuseEntireSeriesArray = canReuseEntireUserSeriesArray({
     previousResolvedSeries: previousSeries,
@@ -1660,6 +1688,8 @@ export function resolveOptions(
                 ? ohlcSample(s.data, resolvedSamplingThreshold)
                 : s.data;
 
+            const resolvedPriceLabel = resolvePriceLabel(s.priceLabel, { candlePrimary });
+
             return {
               ...s,
               visible,
@@ -1673,6 +1703,7 @@ export function resolveOptions(
               barMaxWidth: s.barMaxWidth ?? candlestickDefaults.barMaxWidth,
               sampling: resolvedSampling,
               samplingThreshold: resolvedSamplingThreshold,
+              priceLabel: resolvedPriceLabel,
               rawBounds,
               yAxis,
               contentHash,

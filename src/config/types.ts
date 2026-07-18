@@ -116,6 +116,12 @@ export interface AxisConfig {
   readonly tickLength?: number;
   readonly name?: string;
   /**
+   * Non-rotated unit header at the top of a Y-axis rail (e.g. `"USDT"`).
+   * Independent of `name` (which remains a rotated side title).
+   * Only applied to Y axes (`yAxis` / `axes.y`); ignored for `xAxis`.
+   */
+  readonly header?: string;
+  /**
    * Axis domain auto-bounds mode (primarily used for y-axis):
    * - `'global'`: derive from full dataset (pre-zoom behavior)
    * - `'visible'`: derive from visible/zoomed data range (default for y-axis)
@@ -328,6 +334,72 @@ export interface CandlestickItemStyleConfig {
   readonly borderWidth?: number;
 }
 
+/**
+ * Last-price badge / horizontal price line on a candlestick series (exchange-style).
+ *
+ * Sugar: `priceLabel: true` enables with defaults; `priceLabel: false` forces off.
+ * Object form enables unless `show: false`. Countdown requires a finite `intervalMs > 0`.
+ *
+ * **Series element identity:** under axes-only `setOption` reuse, changing `priceLabel`
+ * requires a **new series config object** in `series[]`. In-place mutation of
+ * `series[i].priceLabel` on a stable element is not re-resolved.
+ */
+export interface CandlestickPriceLabelConfig {
+  /**
+   * Show the last-price badge on the series' Y-axis rail.
+   * When omitted inside an object form, treated as `true` (providing config implies enable).
+   */
+  readonly show?: boolean;
+
+  /**
+   * Draw a horizontal line at last close across the plot.
+   * Default: same as resolved `show`.
+   */
+  readonly showLine?: boolean;
+
+  /**
+   * Candle period in ms for countdown secondary line.
+   * Required for countdown; when omitted, price-only badge.
+   */
+  readonly intervalMs?: number;
+
+  /**
+   * Show countdown under price when `intervalMs` is set and bar end is known.
+   * Default: `true` if `intervalMs` is finite and > 0, else `false`.
+   */
+  readonly showCountdown?: boolean;
+
+  /**
+   * Clock for countdown remaining time. Default at use site: `() => Date.now()`.
+   * Streaming demos with accelerated time must pass their simulated clock.
+   */
+  readonly nowMs?: () => number;
+
+  /**
+   * Format last close for the badge. Default: library price formatter (not axis tickFormatter).
+   */
+  readonly formatter?: (close: number) => string;
+
+  /**
+   * Out-of-domain behavior when last close is outside the current Y domain.
+   * - `'clamp'`: pin badge to nearest plot edge, dimmed (default)
+   * - `'hide'`: hide badge and price line
+   */
+  readonly outOfDomain?: 'clamp' | 'hide';
+
+  /** Override badge text color (default `#ffffff`). */
+  readonly color?: string;
+
+  /**
+   * Override **line** color only (default: direction color).
+   * Badge background is always direction color.
+   */
+  readonly lineColor?: string;
+
+  /** Line stroke width in CSS px (default: 1). */
+  readonly lineWidth?: number;
+}
+
 export interface CandlestickSeriesConfig extends Omit<SeriesConfigBase, 'data'> {
   readonly type: 'candlestick';
   readonly data: ReadonlyArray<OHLCDataPoint>;
@@ -340,6 +412,15 @@ export interface CandlestickSeriesConfig extends Omit<SeriesConfigBase, 'data'> 
    * Sampling strategy for candlestick data. Only 'none' and 'ohlc' are supported.
    */
   readonly sampling?: 'none' | 'ohlc';
+  /**
+   * Exchange-style last-price badge and optional horizontal price line.
+   * - `undefined`: auto-enable when the chart is candle-primary (`series[0].type === 'candlestick'`)
+   * - `true` / `false`: force on/off with field defaults
+   * - object: enable unless `show: false`; see {@link CandlestickPriceLabelConfig}
+   *
+   * Changing this option requires a **new series element identity** (immutable `setOption` pattern).
+   */
+  readonly priceLabel?: boolean | CandlestickPriceLabelConfig;
 }
 
 export type SeriesConfig =

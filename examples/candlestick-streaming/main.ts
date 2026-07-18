@@ -60,6 +60,28 @@ let lastTickTime = performance.now();
 let simulatedTimeMs = Date.now();
 let lastSimPerfNow = performance.now();
 
+/**
+ * Stable nowMs identity for priceLabel countdown.
+ * Library compares nowMs by function reference — a new arrow on every setOption
+ * would thrash-restart the 250ms timer (~10 Hz streaming rewrites).
+ */
+const priceLabelNowMs = (): number => simulatedTimeMs;
+
+/**
+ * Keep priceLabel.intervalMs aligned with the active timeframe on every series rewrite.
+ * Reuses {@link priceLabelNowMs} so countdown timer identity is stable across setOption.
+ */
+function withPriceLabelInterval<T extends { type: string }>(series0: T): T {
+  if (series0.type !== 'candlestick') return series0;
+  return {
+    ...series0,
+    priceLabel: {
+      intervalMs: candleIntervalMs,
+      nowMs: priceLabelNowMs,
+    },
+  };
+}
+
 const isTupleOHLCDataPoint = (
   p: OHLCDataPoint
 ): p is readonly [timestamp: number, open: number, close: number, low: number, high: number] => Array.isArray(p);
@@ -114,9 +136,11 @@ async function init() {
   lastSimPerfNow = performance.now();
 
   // Create chart
+  // Candle-primary defaults: first Y → right, grid left=20 / right=70 (no grid override needed).
   fullChartOptions = {
     xAxis: { type: 'time', name: 'Time' },
-    yAxis: { type: 'value', name: `${CONFIG.symbol}` },
+    // Non-rotated top-rail unit header (exchange-style); series name carries the symbol.
+    yAxis: { type: 'value', header: 'USD' },
     series: [
       {
         type: 'candlestick',
@@ -131,6 +155,11 @@ async function init() {
         },
         sampling: 'ohlc',
         samplingThreshold: 2000,
+        // Exchange-style last-price badge + bar-close countdown (stable nowMs identity).
+        priceLabel: {
+          intervalMs: candleIntervalMs,
+          nowMs: priceLabelNowMs,
+        },
       },
     ],
     dataZoom: getDataZoomConfig(currentCandleCount),
@@ -196,7 +225,7 @@ function handleTick(tick: Tick) {
             ...fullChartOptions,
             series: [
               {
-                ...series0,
+                ...withPriceLabelInterval(series0),
                 data,
               },
             ],
@@ -224,12 +253,12 @@ function throttledUpdateCurrentCandle() {
   const lastIdx = data.length - 1;
   const series0 = fullChartOptions.series?.[0];
   if (lastIdx >= 0 && series0 && series0.type === 'candlestick') {
-    // Preserve full series config and only update data
+    // Preserve full series config and only update data (refresh interval for timeframe switches).
     fullChartOptions = {
       ...fullChartOptions,
       series: [
         {
-          ...series0,
+          ...withPriceLabelInterval(series0),
           data,
         },
       ],
@@ -319,14 +348,14 @@ function switchTimeframe(tf: string) {
     onTick: handleTick,
   });
 
-  // Update chart with new data (full replacement)
+  // Update chart with new data (full replacement) + refreshed intervalMs
   const series0 = fullChartOptions.series?.[0];
   if (series0 && series0.type === 'candlestick') {
     fullChartOptions = {
       ...fullChartOptions,
       series: [
         {
-          ...series0,
+          ...withPriceLabelInterval(series0),
           data,
         },
       ],
@@ -407,7 +436,7 @@ function switchCandleCount(count: number) {
       dataZoom: getDataZoomConfig(currentCandleCount),
       series: [
         {
-          ...series0,
+          ...withPriceLabelInterval(series0),
           data,
         },
       ],
@@ -442,7 +471,7 @@ function setupControls() {
         ...fullChartOptions,
         series: [
           {
-            ...series0,
+            ...withPriceLabelInterval(series0),
             style: isHollow ? 'hollow' : 'classic',
             data,
           },

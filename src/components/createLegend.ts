@@ -1,19 +1,23 @@
 import type { SeriesConfig } from '../config/types';
+import type { ResolvedSeriesConfig } from '../config/OptionResolver';
 import type { ThemeConfig } from '../themes/types';
 
 export type LegendPosition = 'top' | 'bottom' | 'left' | 'right';
 
+/** User or resolved series — legend only reads type/name/color/visible (+ pie slices). */
+export type LegendSeriesInput = SeriesConfig | ResolvedSeriesConfig;
+
 export interface Legend {
-  update(series: ReadonlyArray<SeriesConfig>, theme: ThemeConfig): void;
+  update(series: ReadonlyArray<LegendSeriesInput>, theme: ThemeConfig): void;
   dispose(): void;
 }
 
-const getSeriesName = (series: SeriesConfig, index: number): string => {
+const getSeriesName = (series: LegendSeriesInput, index: number): string => {
   const candidate = series.name?.trim();
   return candidate ? candidate : `Series ${index + 1}`;
 };
 
-const getSeriesColor = (series: SeriesConfig, index: number, theme: ThemeConfig): string => {
+const getSeriesColor = (series: LegendSeriesInput, index: number, theme: ThemeConfig): string => {
   const explicit = series.color?.trim();
   if (explicit) return explicit;
 
@@ -192,7 +196,7 @@ export function createLegend(
    * updates; per-item swatch borders use theme so theme identity changes force
    * a list rebuild.
    */
-  let lastSeriesRef: ReadonlyArray<SeriesConfig> | null = null;
+  let lastSeriesRef: ReadonlyArray<LegendSeriesInput> | null = null;
   let lastThemeRef: ThemeConfig | null = null;
   let lastListLen = -1;
 

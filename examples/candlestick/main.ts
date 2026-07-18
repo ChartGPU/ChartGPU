@@ -73,8 +73,10 @@ async function main() {
   const msPerSecond = 1000;
   const timestampPadding = msPerSecond;
 
+  // Candle-primary defaults: first Y → right, grid left=20 / right=70 when unset.
+  // Only override top/bottom for axis title room; leave left/right to the library.
   const initialOptions: ChartGPUOptions = {
-    grid: { left: 70, right: 24, top: 24, bottom: 56 },
+    grid: { top: 24, bottom: 56 },
     xAxis: {
       type: 'value',
       min: minTimestamp - timestampPadding,
@@ -85,7 +87,8 @@ async function main() {
       type: 'value',
       min: minPrice - pricePadding,
       max: maxPrice + pricePadding,
-      name: 'Price ($)',
+      // Non-rotated top-rail unit header (exchange-style). Rotated `name` remains available.
+      header: 'USD',
     },
     tooltip: { show: true, trigger: 'axis' },
     animation: { duration: 600, easing: 'cubicOut', delay: 0 },
@@ -105,6 +108,8 @@ async function main() {
         barWidth: '80%',
         barMinWidth: 2,
         barMaxWidth: 40,
+        // Candle-primary auto-enables the last-price badge (priceLabel).
+        // Opt out with priceLabel: false.
       },
     ],
   };

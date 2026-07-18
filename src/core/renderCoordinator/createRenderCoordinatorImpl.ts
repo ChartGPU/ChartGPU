@@ -99,6 +99,8 @@ import { createLegend } from '../../components/createLegend';
 import type { Legend } from '../../components/createLegend';
 import { createTooltip } from '../../components/createTooltip';
 import type { Tooltip } from '../../components/createTooltip';
+import { createPriceLabel } from '../../components/createPriceLabel';
+import type { PriceLabel } from '../../components/createPriceLabel';
 import type { TooltipParams } from '../../config/types';
 import { formatTooltipAxis, formatTooltipItem } from '../../components/formatTooltip';
 import { createAnimationController } from '../createAnimationController';
@@ -163,6 +165,12 @@ import {
   clearTooltipCache,
   isOHLCDataPoint,
 } from './ui/tooltipLegendHelpers';
+import { syncPriceLabelFrame, resolvePriceLabelCountdownDesired } from './ui/syncPriceLabelFrame';
+import { selectPriceLabelSeries, resolveLastCandleState, type PriceLabelOwnershipSeries } from './ui/priceLabelHelpers';
+import { buildPriceLineInstances } from './ui/buildPriceLineInstances';
+import type { ReferenceLineInstance } from '../../renderers/createReferenceLineRenderer';
+import { createPriceLabelCountdownTimer } from './ui/createPriceLabelCountdownTimer';
+import type { PriceLabelCountdownTimer } from './ui/createPriceLabelCountdownTimer';
 
 export interface GPUContextLike {
   readonly device: GPUDevice | null;
@@ -1353,6 +1361,55 @@ export function createRenderCoordinator(
   let tooltip: Tooltip | null =
     overlayContainer && currentOptions.tooltip?.show !== false ? createTooltip(overlayContainer) : null;
 
+  // Last-price badge (PR4a): single instance when overlay container exists.
+  // Visibility is driven per-frame by syncPriceLabelFrame (series ownership + last candle).
+  let priceLabelUi: PriceLabel | null = overlayContainer ? createPriceLabel(overlayContainer) : null;
+  /** Multi priceLabel.show ownership warn — at most once per chart lifetime. */
+  let multiPriceLabelWarned = false;
+  const warnMultiPriceLabel = (message: string): void => {
+    if (multiPriceLabelWarned) return;
+    multiPriceLabelWarned = true;
+    console.warn(message);
+  };
+
+  // PR5: DOM-only bar-close countdown. Never calls requestRender — only setCountdown.
+  let priceLabelCountdownTimer: PriceLabelCountdownTimer | null = priceLabelUi
+    ? createPriceLabelCountdownTimer({
+        setCountdown: (text) => {
+          priceLabelUi?.setCountdown(text);
+        },
+      })
+    : null;
+
+  const disposePriceLabelCountdownTimer = (): void => {
+    priceLabelCountdownTimer?.dispose();
+    priceLabelCountdownTimer = null;
+  };
+
+  const ensurePriceLabelCountdownTimer = (): PriceLabelCountdownTimer | null => {
+    if (!priceLabelUi) {
+      disposePriceLabelCountdownTimer();
+      return null;
+    }
+    if (!priceLabelCountdownTimer) {
+      priceLabelCountdownTimer = createPriceLabelCountdownTimer({
+        setCountdown: (text) => {
+          priceLabelUi?.setCountdown(text);
+        },
+      });
+    }
+    return priceLabelCountdownTimer;
+  };
+
+  const syncPriceLabelCountdownFromSeries = (): void => {
+    const timer = ensurePriceLabelCountdownTimer();
+    if (!timer) return;
+    const desired = resolvePriceLabelCountdownDesired(currentOptions.series, {
+      onWarn: warnMultiPriceLabel,
+    });
+    timer.setDesired(desired);
+  };
+
   // Cache tooltip state to avoid unnecessary DOM updates
   const tooltipCache = createTooltipCache();
 
@@ -2512,8 +2569,37 @@ export function createRenderCoordinator(
       if (!shouldHaveTooltip && tooltip) {
         hideTooltip();
       }
+
+      // Price badge: ensure instance; hide immediately when no series owns it
+      // (type switch / priceLabel: false) so we don't wait for the next frame.
+      if (!priceLabelUi) {
+        priceLabelUi = createPriceLabel(overlayContainer);
+      }
+      const owner = selectPriceLabelSeries(currentOptions.series, {
+        candlePrimary: false,
+        onWarn: warnMultiPriceLabel,
+      });
+      if (owner == null) {
+        priceLabelUi.update({
+          visible: false,
+          x: 0,
+          y: 0,
+          priceText: '',
+          countdownText: null,
+          background: '#000000',
+          color: '#ffffff',
+          side: 'right',
+        });
+      }
+      // Timer lifecycle on setOptions: start / clear / restart per transition table.
+      syncPriceLabelCountdownFromSeries();
     } else {
       hideTooltip();
+      disposePriceLabelCountdownTimer();
+      if (priceLabelUi) {
+        priceLabelUi.dispose();
+        priceLabelUi = null;
+      }
     }
 
     const nextCount = resolvedOptions.series.length;
@@ -2903,9 +2989,57 @@ export function createRenderCoordinator(
       theme: currentOptions.theme,
     });
 
+    // Last-price horizontal line (PR4b): coordinator-owned ReferenceLineInstance(s).
+    // Merge into linesAbove BEFORE counts + prepare so draw count matches prepare list.
+    // Does NOT inject into user annotations[] (setOption replaces options wholesale).
+    const linesBelow = annotationResult.linesBelow;
+    let linesAbove: ReadonlyArray<ReferenceLineInstance> = annotationResult.linesAbove;
+    if (hasCartesianSeries) {
+      const priceSeriesIndex = selectPriceLabelSeries(
+        currentOptions.series as ReadonlyArray<PriceLabelOwnershipSeries>,
+        { candlePrimary: false, onWarn: warnMultiPriceLabel }
+      );
+      if (priceSeriesIndex != null) {
+        const priceSeriesItem = currentOptions.series[priceSeriesIndex];
+        if (priceSeriesItem?.type === 'candlestick') {
+          const candle = priceSeriesItem as ResolvedCandlestickSeriesConfig;
+          const pl = candle.priceLabel;
+          // showLine only when badge is shown (resolvePriceLabel already forces showLine false if !show)
+          if (pl?.show && pl.showLine) {
+            const yAxisId = candle.yAxis;
+            const priceYScale = currentYScales.get(yAxisId);
+            if (priceYScale) {
+              const raw = runtimeRawDataByIndex[priceSeriesIndex] as ReadonlyArray<OHLCDataPoint> | null | undefined;
+              const last = resolveLastCandleState({
+                seriesIndex: priceSeriesIndex,
+                yAxisId,
+                raw,
+                upColor: candle.itemStyle.upColor,
+                downColor: candle.itemStyle.downColor,
+                intervalMs: pl.intervalMs,
+              });
+              const priceLines = buildPriceLineInstances({
+                last,
+                showLine: true,
+                outOfDomain: pl.outOfDomain,
+                yScale: priceYScale,
+                canvasCssHeight: canvasCssHeightForAnnotations,
+                lineWidth: pl.lineWidth,
+                lineColor: pl.lineColor,
+              });
+              if (priceLines.length > 0) {
+                linesAbove = [...annotationResult.linesAbove, ...priceLines];
+              }
+            }
+          }
+        }
+      }
+    }
+
     // Annotation layers prepared separately for main (below) vs overlay (above) MSAA.
-    const referenceLineBelowCount = annotationResult.linesBelow.length;
-    const referenceLineAboveCount = annotationResult.linesAbove.length;
+    // Counts include merged price lines so prepare list length matches draw count.
+    const referenceLineBelowCount = linesBelow.length;
+    const referenceLineAboveCount = linesAbove.length;
     const markerBelowCount = annotationResult.markersBelow.length;
     const markerAboveCount = annotationResult.markersAbove.length;
 
@@ -3378,9 +3512,10 @@ export function createRenderCoordinator(
     // Prepare each layer's list every frame (empty list clears prior-frame instances).
     // Render only when that layer's count > 0; draws start at 0 (not combined offsets).
     // Note: these renderers expect CANVAS-LOCAL CSS pixel coordinates.
+    // linesAbove includes coordinator-owned last-price line (merged before counts).
     if (hasCartesianSeries) {
-      referenceLineRenderer.prepare(gridArea, annotationResult.linesBelow);
-      referenceLineRendererMsaa.prepare(gridArea, annotationResult.linesAbove);
+      referenceLineRenderer.prepare(gridArea, linesBelow);
+      referenceLineRendererMsaa.prepare(gridArea, linesAbove);
       annotationMarkerRenderer.prepare({
         canvasWidth: gridArea.canvasWidth,
         canvasHeight: gridArea.canvasHeight,
@@ -3667,7 +3802,7 @@ export function createRenderCoordinator(
         const yd = yScaleForAxis.getDomain();
         const ys0 = yScaleForAxis.kind === 'log' ? yScaleForAxis.scale(yd.min) : yScaleForAxis.scale(0);
         const ys1 = yScaleForAxis.kind === 'log' ? yScaleForAxis.scale(yd.max) : yScaleForAxis.scale(1);
-        labelSig += `y:${axisId}:${yAxisConfig.name ?? ''}:${yAxisConfig.position ?? 'left'}:`;
+        labelSig += `y:${axisId}:${yAxisConfig.name?.trim() ?? ''}:${yAxisConfig.header?.trim() ?? ''}:${yAxisConfig.position ?? 'left'}:`;
         labelSig += `${ys0},${ys1}:${yTickCount}|`;
         // Y axis type can affect tick formatting when present.
         labelSig += `yt:${yAxisConfig.type ?? ''};yb:${yAxisConfig.logBase ?? ''};`;
@@ -3723,6 +3858,34 @@ export function createRenderCoordinator(
       plotHeightCss,
       canvas,
     });
+
+    // Last-price badge DOM: always run after scales/layout (do NOT nest under
+    // axis-label signature skip). Price line is GPU-merged above (PR4b).
+    // Countdown timer (PR5) is DOM-only — setDesired/setBarEndMs never call requestRender.
+    {
+      const canvasEl = canvas as HTMLCanvasElement | null;
+      const offX = canvasEl && isHTMLCanvasElement(canvasEl) ? canvasEl.offsetLeft || 0 : 0;
+      const offY = canvasEl && isHTMLCanvasElement(canvasEl) ? canvasEl.offsetTop || 0 : 0;
+      const frameResult = syncPriceLabelFrame({
+        priceLabelUi,
+        series: currentOptions.series,
+        runtimeRawDataByIndex,
+        yScales: currentYScales,
+        yAxes: currentOptions.yAxes,
+        plotClipRect,
+        // Same CSS size as annotation path so badge Y matches plot clip.
+        canvasCssWidth: canvasCssWidthForAnnotations,
+        canvasCssHeight: canvasCssHeightForAnnotations,
+        offsetX: offX,
+        offsetY: offY,
+        onWarn: warnMultiPriceLabel,
+      });
+      const timer = ensurePriceLabelCountdownTimer();
+      if (timer) {
+        timer.setDesired(frameResult.countdownDesired);
+        timer.setBarEndMs(frameResult.barEndMs);
+      }
+    }
   };
 
   const dispose: RenderCoordinator['dispose'] = () => {
@@ -3799,9 +3962,12 @@ export function createRenderCoordinator(
 
     dataStore.dispose();
 
-    // Dispose tooltip/legend before the text overlay (all touch container positioning).
+    // Dispose tooltip/legend/price badge before the text overlay (all touch container positioning).
     tooltip?.dispose();
     tooltip = null;
+    disposePriceLabelCountdownTimer();
+    priceLabelUi?.dispose();
+    priceLabelUi = null;
     legend?.dispose();
     axisLabelOverlay?.dispose();
     annotationOverlay?.dispose();

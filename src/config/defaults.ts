@@ -15,6 +15,20 @@ export const defaultGrid = {
   bottom: 40,
 } as const satisfies Required<GridConfig>;
 
+/**
+ * Soft grid gutter defaults for candle-primary charts (first series is candlestick).
+ * Applied only when the corresponding `grid.left` / `grid.right` key is unset.
+ * Left depends on whether any Y axis ends up on the left after position defaults.
+ */
+export const candlePrimaryGridDefaults = {
+  /** No left-positioned Y (price on right only). */
+  leftNoLeftY: 20,
+  /** At least one left-positioned Y (e.g. volume dual-Y). */
+  leftWithLeftY: 60,
+  /** Room for right-side price ladder labels. */
+  right: 70,
+} as const;
+
 export const defaultPalette = [
   '#5470C6',
   '#91CC75',

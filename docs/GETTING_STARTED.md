@@ -52,7 +52,8 @@ Run `npm run dev` and open the URL shown.
 ## Next Steps
 
 - **[API Reference](api/README.md)** — Options, series, axes, tooltip, zoom, themes
-- **[Examples](../examples/)** — `basic-line`, `interactive`, `live-streaming`, `scatter-density-1m`, `candlestick-streaming`, etc.
+- **[Examples](../examples/)** — `basic-line`, `interactive`, `live-streaming`, `scatter-density-1m`, `candlestick`, `candlestick-streaming`, etc.
+- **[Options](api/options.md)** — Series, axes, zoom, tooltip; candlestick **price axis** / `priceLabel` (right rail, last-price badge, dual-Y gutters)
 - **[Performance](performance.md)** — Sampling, streaming, zoom-aware resampling
 - **[Theming](api/themes.md)** — Built-in themes, custom themes
 - **[Annotations](api/annotations.md)** — Reference lines, point markers, interactive authoring

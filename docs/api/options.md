@@ -20,7 +20,7 @@ Chart configuration. Full types: [`types.ts`](../../src/config/types.ts).
 - **Sampling (cartesian)**: `sampling?: 'none' | 'lttb' | 'average' | 'max' | 'min'`, `samplingThreshold?: number` (default 5000). Zoom-aware resampling when data zoom enabled.
 - **`visible?: boolean`**: hide series from rendering and interaction. Legend toggle updates both.
 - **Data identity / in-place mutation**: ChartGPU treats series `data` by **reference identity** for hot paths (`setOption` resolve, content hashing, GPU upload skip, area geometry cache). Mutating point values under a stable array / columns object **without** replacing the reference may not be detected. Prefer a new array (or `appendData(...)`) when content changes. Axes-only / presentation-only updates that re-pass the same `data` reference are intentionally O(1) on the data path.
-- **Series array identity reuse (axes-only `setOption`)**: When consecutive `setOption` calls re-pass the **same series config object identities** (outer `series` array may be the same or a new array wrapping the same elements) and theme/palette refs are unchanged, ChartGPU may **reuse the entire previous resolved series array** without re-walking each series. Treat the outer `series` array **and each series config object** as **immutable** for this path: to change data, color, visibility, or style, pass a **new series element object** (or a new `series` array of new objects). Index assignment (`series[i] = {...}`) is detected; mutating properties under a stable element object (e.g. `series[i].data = newData`) is **not** detected on the full-array path.
+- **Series array identity reuse (axes-only `setOption`)**: When consecutive `setOption` calls re-pass the **same series config object identities** (outer `series` array may be the same or a new array wrapping the same elements) and theme/palette refs are unchanged, ChartGPU may **reuse the entire previous resolved series array** without re-walking each series. Treat the outer `series` array **and each series config object** as **immutable** for this path: to change data, color, visibility, style, or candlestick **`priceLabel`**, pass a **new series element object** (or a new `series` array of new objects). Index assignment (`series[i] = {...}`) is detected; mutating properties under a stable element object (e.g. `series[i].data = newData`, `series[i].priceLabel = false`) is **not** detected on the full-array path.
 - **Full rewrite (`setOption` with a new `data` array every frame)**: When the data **reference** changes, ChartGPU uses an O(1) content **stamp** (not a full float hash) for dirty tracking. GPU buffers are reused when capacity fits; pack goes into retained staging. Tooltip off skips ChartGPU hit-test columnar rebuild until `hitTest()` or tooltip re-enable (dual-store relief). The coordinator may keep your data array by reference until `appendData` — append always **copies** into owned columns and never mutates caller `{ x, y }` arrays.
 - **Y-only DataStore rewrite (lines)**: When length is stable and every x matches the previous pack, only y floats are rewritten in CPU staging; GPU uploads a dense **N×4** y channel and a compute pass rewrites y lanes into interleaved storage (not a full N×8 `writeBuffer`). Length change, any x change, **any non-finite x** in the series or staging (including stable null gaps), or modular ring layout force a full interleaved rewrite. Unsorted Brownian xy (group 3) never hits this path.
 - **Equal-N y-only scatter (const radius)**: When x is stable (e.g. `x = i`), scatter uses dual x/y instance buffers and uploads only the y channel (N×4). Index-sorted equal-N rewrites with `sampling: 'lttb'` (matching prior sampling + threshold) under **`performance.lod: 'auto'`** re-bind y at the **frozen prior LTTB index set** in O(k) instead of full O(N) LTTB — approximate hold: newly emerging y extrema between retained indices do not appear until full LTTB resumes (length, x change, sampling/threshold change, or `performance.lod: 'strict'`). Under **`strict`**, plain `'lttb'` always full-recomputes on y change. min/max/average always re-sample. Brownian xy updates stay on the full path.
@@ -34,7 +34,59 @@ Chart configuration. Full types: [`types.ts`](../../src/config/types.ts).
 
 - **Data**: `OHLCDataPoint` — tuple `[timestamp, open, close, low, high]` or object.
 - **`style?: 'classic' | 'hollow'`**. **`sampling?: 'none' | 'ohlc'`** for bucket aggregation. Body-only hit-testing. Demos: [`candlestick/`](../../examples/candlestick/), [`candlestick-streaming/`](../../examples/candlestick-streaming/).
-- **Acceptance test**: for OHLC sampling validation (endpoint preservation, aggregation rules, edge cases), see [`examples/acceptance/ohlc-sample.ts`](../../examples/acceptance/ohlc-sample.ts).
+- **`priceLabel?: boolean | CandlestickPriceLabelConfig`**: exchange-style **last-price badge** (DOM) and optional **horizontal price line** (GPU) on the series Y-axis rail. v1: **one badge + one line per chart** — first visible candlestick series with resolved `priceLabel.show` wins.
+  - **Sugar**: `true` / `false` force on/off with field defaults; object form enables unless `show: false`.
+  - **`undefined` (default)**: auto-enables when the chart is **candle-primary** (`series[0].type === 'candlestick'`); off when candlestick is not first. See **Migration (P1 default badge)** under Axis Configuration.
+  - **Full options** (`CandlestickPriceLabelConfig`):
+
+    | Field | Default | Notes |
+    |-------|---------|-------|
+    | `show?` | `true` when object form; else sugar / auto | Hard off with `false` or `priceLabel: false` |
+    | `showLine?` | same as resolved `show` | Horizontal last-close line; always omitted when `show` is false |
+    | `intervalMs?` | — | Finite `> 0` candle period (ms). Required for countdown; omitted → price-only badge |
+    | `showCountdown?` | `true` when `intervalMs` valid; else forced `false` | Secondary countdown line under the price |
+    | `nowMs?: () => number` | wall clock (`Date.now`) at use site | Injectable clock for accelerated / simulated streams |
+    | `formatter?: (close) => string` | library `formatPriceLabelValue` | **Not** axis `tickFormatter` (which may return `null` / sparse precision). Output is plain text (`textContent`), never HTML |
+    | `outOfDomain?` | `'clamp'` | `'clamp'`: pin badge to plot edge (dimmed); price line still draws at true Y (scissor may clip). `'hide'`: hide **badge and line** |
+    | `color?` | `#ffffff` | Badge **text** color |
+    | `lineColor?` | candle direction color | Line only; badge **background** is always up/down from last open/close |
+    | `lineWidth?` | `1` | CSS px |
+
+  - **Direction color**: last candle `close >= open` → `itemStyle.upColor` (default green); else `itemStyle.downColor` (default red). Flat candles count as up.
+  - **Countdown**: DOM-only timer (does **not** call `requestRender` / GPU). Streaming demos with simulated time must pass a **stable** `nowMs` function identity across `setOption` rewrites (see [`candlestick-streaming/`](../../examples/candlestick-streaming/)).
+  - **setOption replace semantics**: `setOption` **replaces** the full options object (not deep-merge). Always re-pass `priceLabel` (including `intervalMs` / `nowMs`) on every options rewrite that should keep the badge/countdown. Prefer caching a full options object and updating fields, as the streaming example does.
+  - **Series element identity**: under axes-only `setOption` reuse, changing `priceLabel` requires a **new series element object** in `series[]`. In-place mutation (`series[i].priceLabel = false` on a stable element) is **not** re-resolved. Same contract as other series fields (see **Series array identity reuse** above).
+  - **Public exports**: `CandlestickPriceLabelConfig`, `ResolvedCandlestickPriceLabel`, `resolvePriceLabel`, `createPriceLabel`, `PriceLabel`, `formatPriceLabelValue`, `isCandlePrimaryChart` (package entry / `resolveOptions`).
+  - **Examples**:
+```ts
+// Candle-primary: badge + line auto-on (omit priceLabel or leave undefined)
+series: [{ type: 'candlestick', data }]
+
+// Opt out (keep right axis defaults but no badge/line)
+series: [{ type: 'candlestick', data, priceLabel: false }]
+
+// Countdown + simulated clock (streaming)
+series: [{
+  type: 'candlestick',
+  data,
+  priceLabel: {
+    intervalMs: 60_000,
+    nowMs: () => simulatedTimeMs, // stable function ref across setOption
+  },
+}]
+
+// Badge only, custom format, hide when zoomed past last close
+series: [{
+  type: 'candlestick',
+  data,
+  priceLabel: {
+    showLine: false,
+    formatter: (c) => c.toFixed(2),
+    outOfDomain: 'hide',
+  },
+}]
+```
+- **Acceptance**: OHLC sampling — [`examples/acceptance/ohlc-sample.ts`](../../examples/acceptance/ohlc-sample.ts). Candle-primary layout + `priceLabel` resolve — [`examples/acceptance/candle-price-axis.ts`](../../examples/acceptance/candle-price-axis.ts).
 
 ### LineSeriesConfig
 
@@ -123,11 +175,67 @@ Notes (density mode):
   - **No library UI log toggle** — config only (`setOption({ yAxis: { type: 'log' } })`). Examples may include demo chrome.
   - Showcase: [`examples/log-axis-y/`](../../examples/log-axis-y/), [`log-axis-x/`](../../examples/log-axis-x/), [`log-axis-scatter/`](../../examples/log-axis-scatter/), [`log-axis-multi/`](../../examples/log-axis-multi/), [`log-axis-compare/`](../../examples/log-axis-compare/).
 - **Multiple Y-Axes**:
-  - Instead of a single `yAxis` object, ChartGPU supports an array of `yAxes` objects for independent scales (e.g. Price vs Volume).
-  - Each `yAxis` in the `yAxes` array must specify an `id: string` (default is `"primary"` for the first axis).
+  - Instead of a single `yAxis` object, ChartGPU supports an array of Y axes via `axes.y` for independent scales (e.g. Price vs Volume).
+  - Each axis in `axes.y` may specify an `id: string` (defaults: first axis `"y"`, then `"y1"`, …).
   - Series map to a specific axis via `yAxis` id in their config.
-  - Axes can be positioned on the right using `position: "right"` (default is `"left"`).
+  - Axes can be positioned on the right using `position: "right"`. Default position is `"left"`, except for **candle-primary** charts (see below).
   - Dual Y may mix log + linear (e.g. log pressure + linear temperature). Horizontal grid follows the **primary** (first) Y axis ticks when that axis is log.
+- **Candle-primary layout defaults** (when `series[0].type === 'candlestick'`):
+  - **Predicate**: only the first series type matters. Overlay lines as `series[0]` mean the chart is **not** candle-primary (set `position: 'right'` explicitly if needed). Helper: `isCandlePrimaryChart(userOptions)`.
+  - **Y position**: the **first** Y axis defaults to `position: 'right'` when the user leaves `position` unset (`yAxis` or `axes.y[0]`). Secondary Y axes still default to `'left'`. Explicit `position` always wins.
+  - **Soft grid gutters** (per-key only — each of `grid.left` / `grid.right` is set only when that key is `undefined` on user options; `0` is preserved):
+
+    | Scenario | `grid.left` if unset | `grid.right` if unset |
+    |----------|----------------------|------------------------|
+    | Single candle, price on right | `20` | `70` |
+    | Candle + volume (left Y remains) | `60` | `70` |
+    | User set `grid.left: 80` only | `80` (kept) | `70` |
+    | User set both margins | unchanged | unchanged |
+    | Non-candle-primary | `60` | `20` |
+
+  - Non-candle-primary charts keep the standard grid defaults and left Y.
+  - **Migration (P1 default badge)**: candle-primary charts also **auto-enable** `priceLabel` (last-price badge + price line) when `priceLabel` is omitted. This is a **default visual change** for existing candle consumers. Opt out with `priceLabel: false`. To restore a pre-upgrade left-axis look:
+
+```ts
+{
+  yAxis: { type: 'value', position: 'left' },
+  grid: { left: 70, right: 24 },
+  series: [{ type: 'candlestick', data, priceLabel: false }],
+}
+```
+
+  - Recommended candle + volume dual-Y (or omit both gutters — dual-Y policy yields left `60` / right `70`):
+
+```ts
+{
+  grid: { left: 60, right: 70 },
+  axes: {
+    y: [
+      { id: 'price', position: 'right', type: 'value', header: 'USDT' },
+      { id: 'vol', position: 'left', type: 'value' },
+    ],
+  },
+  series: [
+    {
+      type: 'candlestick',
+      yAxis: 'price',
+      data,
+      // Optional: countdown needs intervalMs (and nowMs for simulated clocks)
+      priceLabel: { intervalMs: 60_000 },
+    },
+    { type: 'bar', yAxis: 'vol', data: volumes },
+  ],
+}
+```
+
+  - **Visual / acceptance checklist** (manual or example review):
+    1. Candle-only, no axis/grid overrides → right price rail, thicker right gutter (~70), last-price badge + horizontal line at last close.
+    2. `priceLabel: false` → no badge/line; axis defaults still apply unless you also set `position` / `grid`.
+    3. Explicit `yAxis.position: 'left'` → left rail; badge anchors on the left when still shown.
+    4. Dual-Y volume on left → left gutter ≥ 60, right 70; badge follows the **price** candlestick series only.
+    5. Streaming with `intervalMs` + stable `nowMs` → countdown ticks under the price without extra GPU frames.
+    6. `yAxis.header: 'USDT'` (or quote unit) → non-rotated top-rail label (not the rotated `name` title).
+    7. Unit tests / acceptance: [`src/config/__tests__/OptionResolver.test.ts`](../../src/config/__tests__/OptionResolver.test.ts), [`resolvePriceLabel.test.ts`](../../src/config/__tests__/resolvePriceLabel.test.ts), [`examples/acceptance/candle-price-axis.ts`](../../examples/acceptance/candle-price-axis.ts).
 - **Explicit domains (override auto-bounds)**:
   - **`AxisConfig.min?: number` / `AxisConfig.max?: number`**: when set, ChartGPU uses these explicit axis bounds and does **not** auto-derive bounds from data for that axis.
   - **Precedence**: explicit `min`/`max` always override any auto-bounds behavior.
@@ -197,7 +305,14 @@ yAxis: { tickFormatter: (v) => `${v.toFixed(1)} ms` }
   Notes: month/year thresholds are **approximate** (30d / 365d), and formatting uses the browser's `Date` semantics (**local timezone**). Sub-5-minute / sub-second tiers keep labels unique when deeply zoomed and update as you pan. Implementation: [`timeAxisUtils.ts`](../../src/core/renderCoordinator/utils/timeAxisUtils.ts) (`formatTimeTickValue`); wired from [`createRenderCoordinatorImpl.ts`](../../src/core/renderCoordinator/createRenderCoordinatorImpl.ts) (public shell: [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts)).
 - **Nice time tick positions (time x-axis only)**: for `xAxis.type === 'time'`, tick **values** are snapped to a ladder of **epoch-aligned nice steps** (ms → s → min → h → day → week → ~month/~quarter/~year), not raw equal splits of `dataMin`→`dataMax`. Steps are absolute multiples of each ladder duration from Unix epoch (e.g. whole-hour UTC boundaries for hour steps)—not local midnights, week starts, or true calendar month boundaries. Label text still uses local `Date` formatting, so wall-clock labels can differ from the absolute grid depending on timezone offset. That still avoids awkward mid-interval times like `02:41` / `08:40` on a full-day view in favor of nice hour/day spacing. Non-time (`value`) axes still use evenly spaced linear ticks. See [`timeAxisUtils.ts`](../../src/core/renderCoordinator/utils/timeAxisUtils.ts).
 - **Adaptive tick count (overlap avoidance, time x-axis only)**: when `xAxis.type === 'time'`, ChartGPU may **vary tick density per render** to avoid DOM label overlap. Density is **step-wise**, not an exact linear count: it tries denser nice-step sets first (target count in **\[1, 9]**), and when a candidate set's labels overlap it may **subsample** that set (every 2nd / 3rd tick) before dropping to a coarser ladder target. The densest non-overlapping set is kept (minimum gap **6 CSS px**); if measurement isn't available it falls back to a default-density nice tick set. **GPU tick marks and DOM tick labels share the same computed tick values** (nice time steps for time axes; linear domain splits for value axes). See [`timeAxisUtils.ts`](../../src/core/renderCoordinator/utils/timeAxisUtils.ts) (`computeAdaptiveTimeXAxisTicks`), [`createRenderCoordinatorImpl.ts`](../../src/core/renderCoordinator/createRenderCoordinatorImpl.ts), and [`createAxisRenderer.ts`](../../src/renderers/createAxisRenderer.ts).
-- **`AxisConfig.name?: string`**: renders an axis title for cartesian charts when provided (and non-empty after `trim()`): x-axis titles are centered below x-axis tick labels, and y-axis titles are rotated \(-90°\) and placed left of y-axis tick labels; titles can be clipped if `grid.bottom` / `grid.left` margins are too small. When `dataZoom` includes a slider (see below), ChartGPU reserves extra bottom space so the x-axis title remains visible above the slider overlay and is centered within the remaining space above the slider track. See [`createRenderCoordinatorImpl.ts`](../../src/core/renderCoordinator/createRenderCoordinatorImpl.ts) (public shell: [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts)) and option resolution in [`OptionResolver.ts`](../../src/config/OptionResolver.ts).
+- **`AxisConfig.name?: string`**: renders an axis title for cartesian charts when provided (and non-empty after `trim()`): x-axis titles are centered below x-axis tick labels, and y-axis titles are rotated \(-90°\) and placed left of y-axis tick labels (or \(+90°\) on the right rail); titles can be clipped if `grid.bottom` / `grid.left` / `grid.right` margins are too small. When `dataZoom` includes a slider (see below), ChartGPU reserves extra bottom space so the x-axis title remains visible above the slider overlay and is centered within the remaining space above the slider track. See [`createRenderCoordinatorImpl.ts`](../../src/core/renderCoordinator/createRenderCoordinatorImpl.ts) (public shell: [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts)) and option resolution in [`OptionResolver.ts`](../../src/config/OptionResolver.ts).
+- **`AxisConfig.header?: string`**: optional **non-rotated** unit header at the **top of a Y-axis rail** (e.g. `"USDT"` for a quote currency). Independent of `name` — use `header` for short exchange-style unit labels and keep `name` for a longer rotated side title if needed. Applies to `yAxis` / `axes.y` only (ignored for `xAxis`). Place it with enough `grid.top` margin so it is not clipped. Rendered via the same axis text overlay as tick labels (bold, theme `textColor` / `fontFamily`).
+
+```ts
+// Exchange-style right price axis with unit header
+yAxis: { type: 'value', header: 'USDT' } // candle-primary defaults position to 'right'
+```
+
 - **Axis title styling**: titles are rendered via the internal DOM text overlay and use the resolved theme's `textColor` and `fontFamily` with slightly larger, bold text (label elements also set `dir='auto'`).
 
 ## Grid Lines Configuration
@@ -299,7 +414,7 @@ See [`defaults.ts`](../../src/config/defaults.ts) for the defaults (including gr
 
 **Behavior notes (essential):**
 
-- **Default grid**: `left: 60`, `right: 20`, `top: 40`, `bottom: 40`
+- **Default grid**: `left: 60`, `right: 20`, `top: 40`, `bottom: 40` (non-candle-primary). Candle-primary soft gutters: see **Candle-primary layout defaults** under Axis Configuration (`right: 70`; `left: 20` or `60` depending on left Y axes).
 - **Palette / series colors**: `ChartGPUOptions.palette` acts as an override for the resolved theme palette (`resolvedOptions.theme.colorPalette`). When `series[i].color` is missing, the default series color comes from `resolvedOptions.theme.colorPalette[i % ...]`. For backward compatibility, the resolved `palette` is the resolved theme palette. See [`resolveOptions`](../../src/config/OptionResolver.ts) and [`ThemeConfig`](themes.md#themeconfig).
 - **Line series stroke color precedence**: for `type: 'line'`, effective stroke color follows: `lineStyle.color` → `series.color` → theme palette. See [`resolveOptions`](../../src/config/OptionResolver.ts).
 - **Line series fill color precedence**: for `type: 'line'` with `areaStyle`, effective fill color follows: `areaStyle.color` → resolved stroke color (from above precedence). See [`resolveOptions`](../../src/config/OptionResolver.ts).
