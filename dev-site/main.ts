@@ -258,43 +258,72 @@ const attachResize = (el: HTMLElement, chart: ChartGPUInstance): ResizeObserver 
 
 type LineSeries = Extract<NonNullable<ChartGPUOptions['series']>[number], { type: 'line' }>;
 
+/**
+ * Spectrum colors across N series (gold → cyan → blue → violet → rose).
+ * ChartGPU only parses hex / comma-rgb — not modern `hsl()` syntax.
+ */
+const seriesColor = (index: number, total: number): string => {
+  const t = total <= 1 ? 0 : index / (total - 1);
+  const h = (42 + t * 280) / 360;
+  const s = (62 + Math.sin(t * Math.PI) * 18) / 100;
+  const l = (52 + Math.sin(t * Math.PI * 2) * 8) / 100;
+  const a = s * Math.min(l, 1 - l);
+  const channel = (n: number): number => {
+    const k = (n + h * 12) % 12;
+    const c = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    return Math.round(255 * Math.min(1, Math.max(0, c)));
+  };
+  const r = channel(0);
+  const g = channel(8);
+  const b = channel(4);
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+};
+
+const waveY = (t: number, s: number, seriesCount: number): number => {
+  const phase = (s / seriesCount) * Math.PI * 2;
+  const freq = 0.42 + (s % 17) * 0.09 + (s % 7) * 0.03;
+  const amp = 0.55 + (s % 11) * 0.07;
+  const drift = Math.sin(s * 0.37) * 0.85 + Math.cos(s * 0.19) * 0.4;
+  return (
+    Math.sin(t * freq + phase) * amp +
+    Math.sin(t * freq * 2.15 + phase * 1.4) * 0.28 +
+    Math.sin(t * 0.09 + s * 0.11) * 0.45 +
+    drift
+  );
+};
+
 const buildWaveSeries = (
   seriesCount: number,
   points: number,
   t0: number
 ): { series: LineSeries[]; nextT: number } => {
   const series: LineSeries[] = [];
+  const dt = 0.04;
   for (let s = 0; s < seriesCount; s++) {
     const data: DataPoint[] = new Array(points);
-    const phase = (s / seriesCount) * Math.PI * 2;
-    const freq = 0.55 + s * 0.17;
-    const amp = 0.95 + (s % 4) * 0.18;
-    const drift = Math.sin(s * 1.7) * 0.35;
     for (let i = 0; i < points; i++) {
-      const t = t0 + i * 0.035;
-      const y =
-        Math.sin(t * freq + phase) * amp +
-        Math.sin(t * freq * 2.4 + phase * 1.6) * 0.35 +
-        Math.sin(t * 0.11 + s) * 0.55 +
-        drift;
-      data[i] = [t, y];
+      const t = t0 + i * dt;
+      data[i] = [t, waveY(t, s, seriesCount)];
     }
     series.push({
       type: 'line',
       name: `w${s}`,
       data,
-      color: BRAND_PALETTE[s % BRAND_PALETTE.length],
-      lineStyle: { width: s < 3 ? 2.25 : 1.35, opacity: 0.95 },
-      areaStyle: s < 5 ? { opacity: 0.1 + (s % 3) * 0.03 } : undefined,
+      color: seriesColor(s, seriesCount),
+      // Hairlines for density; a few slightly thicker accents.
+      lineStyle: { width: s % 19 === 0 ? 1.6 : 1, opacity: 0.88 },
       sampling: 'none',
     });
   }
-  return { series, nextT: t0 + points * 0.035 };
+  return { series, nextT: t0 + points * dt };
 };
 
 async function mountAurora(container: HTMLElement): Promise<{ dispose: () => void }> {
-  const seriesCount = 8;
-  const seedPoints = 420;
+  const seriesCount = 500;
+  // Keep seed + ring modest — 500 × N still fills the viewport; stream carries motion.
+  const seedPoints = 160;
+  const maxPoints = 480;
+  const dt = 0.04;
   let tCursor = 0;
   const built = buildWaveSeries(seriesCount, seedPoints, tCursor);
   tCursor = built.nextT;
@@ -304,7 +333,7 @@ async function mountAurora(container: HTMLElement): Promise<{ dispose: () => voi
     ...plateChrome(MIDNIGHT_THEME),
     autoScroll: true,
     xAxis: { type: 'value', tickFormatter: hideTicks },
-    yAxis: { type: 'value', min: -2.8, max: 2.8, tickFormatter: hideTicks },
+    yAxis: { type: 'value', min: -3.2, max: 3.2, tickFormatter: hideTicks },
     palette: [...BRAND_PALETTE],
     series: built.series,
   };
@@ -317,28 +346,20 @@ async function mountAurora(container: HTMLElement): Promise<{ dispose: () => voi
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   if (!reduced) {
+    // 500 series: 1 pt / series @ ~16 Hz — live without choking the main thread.
     timer = setInterval(() => {
       if (cancelled || chart.disposed) return;
-      const step = 6;
+      const step = 1;
       for (let s = 0; s < seriesCount; s++) {
-        const phase = (s / seriesCount) * Math.PI * 2;
-        const freq = 0.55 + s * 0.17;
-        const amp = 0.95 + (s % 4) * 0.18;
-        const drift = Math.sin(s * 1.7) * 0.35;
-        const pts: DataPoint[] = [];
+        const pts: DataPoint[] = new Array(step);
         for (let i = 0; i < step; i++) {
-          const t = tCursor + i * 0.035;
-          const y =
-            Math.sin(t * freq + phase) * amp +
-            Math.sin(t * freq * 2.4 + phase * 1.6) * 0.35 +
-            Math.sin(t * 0.11 + s) * 0.55 +
-            drift;
-          pts.push([t, y]);
+          const t = tCursor + i * dt;
+          pts[i] = [t, waveY(t, s, seriesCount)];
         }
-        chart.appendData(s, pts, { maxPoints: 2_000 });
+        chart.appendData(s, pts, { maxPoints });
       }
-      tCursor += step * 0.035;
-    }, 48);
+      tCursor += step * dt;
+    }, 64);
   }
 
   return {

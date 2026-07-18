@@ -104,12 +104,16 @@
     .nav-version {
       font-family: var(--font-mono);
       font-size: var(--text-xs);
-      color: var(--color-ink-3);
-      padding: 2px 7px;
-      border: var(--rule-hair) solid var(--color-rule);
+      color: var(--color-ink-2);
+      padding: 3px 8px;
+      background: var(--color-paper);
+      border: var(--rule-hair) solid var(--color-rule-strong);
       border-radius: var(--radius-sm);
       letter-spacing: 0.02em;
       white-space: nowrap;
+      /* Solid chip over live canvas — no chart strokes bleeding through */
+      isolation: isolate;
+      box-shadow: 0 0 0 1px var(--color-paper);
     }
 
     .nav-actions {
@@ -809,7 +813,9 @@
     </a>
     <div class="nav-actions">
       <a href="https://www.npmjs.com/package/@chartgpu/chartgpu" class="nav-link" target="_blank" rel="noopener">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M0 0v16h16V0H0zm13 13H8V5h2.5v5.5H13V3H3v10z"/></svg>
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path fill="currentColor" fill-rule="evenodd" d="M0 0v16h16V0H0zm13 13h-2V5H8v8H3V3h10v10z"/>
+        </svg>
         <span>npm</span>
       </a>
       <a href="https://github.com/ChartGPU/ChartGPU" class="nav-link" target="_blank" rel="noopener">
@@ -830,9 +836,8 @@
     <div class="plate-status" data-status>Waiting for GPU…</div>
     <div class="plate-caption">
       <p class="plate-meta">Live stream</p>
-      <h1 class="plate-title">Eight series. One GPU pass. No canvas 2D.</h1>
-      <p class="plate-note">Harmonic interference field with continuous append — WebGPU only.</p>
-      <a class="plate-link" href="/examples/live-streaming/index.html" data-open-example="live-streaming">Open full demo</a>
+      <h1 class="plate-title">500 series streaming. It can do this all day.</h1>
+      <p class="plate-note">Continuous append on every series. WebGPU holds the field while you scroll past.</p>
     </div>
   </section>
 
