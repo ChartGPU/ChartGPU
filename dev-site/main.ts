@@ -449,7 +449,7 @@ async function createDensityPoints(count: number, seed: number): Promise<Scatter
 }
 
 async function mountDensity(container: HTMLElement): Promise<{ dispose: () => void }> {
-  const n = 500_000;
+  const n = 1_000_000;
   const points = await createDensityPoints(n, 2026);
   const options: ChartGPUOptions = {
     ...plateChrome(),
@@ -1502,30 +1502,116 @@ function setupGallery(): void {
   if (!filtersEl || !galleryEl || !viewerEl || !viewerIframe) return;
 
   let activeCategory = 'all';
+  /** True while the example modal is open and we own a history entry for it. */
+  let viewerOpen = false;
+  /**
+   * When Escape/UI closes the modal we call history.back(). That fires popstate;
+   * ignore that single pop so we don't treat it as a second close path.
+   */
+  let ignoreNextPopstate = false;
+
+  const isViewerHistoryState = (state: unknown): boolean =>
+    typeof state === 'object' &&
+    state !== null &&
+    (state as { chartgpuViewer?: unknown }).chartgpuViewer === true;
+
+  /**
+   * Navigate the iframe without stacking joint-session history entries.
+   * Assigning `iframe.src` pushes a history step in Chromium; `location.replace`
+   * swaps the document in place so one Back always means "close modal".
+   */
+  const setIframeUrl = (url: string): void => {
+    const abs = new URL(url, location.href).href;
+    try {
+      const win = viewerIframe.contentWindow;
+      if (win && win.location) {
+        win.location.replace(abs);
+        return;
+      }
+    } catch {
+      /* cross-origin or not ready */
+    }
+    viewerIframe.src = abs;
+  };
+
+  const unloadIframe = (): void => {
+    try {
+      viewerIframe.contentWindow?.location.replace('about:blank');
+    } catch {
+      try {
+        viewerIframe.removeAttribute('src');
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
+  const dismissViewerUi = (): void => {
+    viewerEl.classList.remove('active');
+    viewerEl.setAttribute('aria-hidden', 'true');
+    document.body.style.overflow = '';
+    // Unload after the close transition; replace (not src=) so we don't push history.
+    window.setTimeout(() => unloadIframe(), 250);
+  };
 
   const openViewer = (ex: Example): void => {
     if (viewerTitle) viewerTitle.textContent = ex.title;
     if (viewerCategory) viewerCategory.textContent = categoryLabels[ex.category] ?? ex.category;
     if (viewerNewTab) viewerNewTab.href = ex.path;
-    viewerIframe.src = ex.path;
+
     viewerEl.classList.add('active');
     viewerEl.setAttribute('aria-hidden', 'false');
     document.body.style.overflow = 'hidden';
+
+    // History first, then replace-load the frame so iframe nav doesn't stack a second entry.
+    const nextState = { chartgpuViewer: true as const, exampleId: ex.id };
+    if (!viewerOpen) {
+      history.pushState(nextState, '', location.href);
+      viewerOpen = true;
+    } else {
+      history.replaceState(nextState, '', location.href);
+    }
+
+    setIframeUrl(ex.path);
   };
 
-  const closeViewer = (): void => {
-    viewerEl.classList.remove('active');
-    viewerEl.setAttribute('aria-hidden', 'true');
-    document.body.style.overflow = '';
-    setTimeout(() => {
-      viewerIframe.src = 'about:blank';
-    }, 250);
+  /**
+   * Close the example modal (Escape, UI back, backdrop, or browser Back).
+   * - fromPopstate: browser already moved history — only tear down UI.
+   * - otherwise: tear down UI, then history.back() to drop our pushState entry.
+   */
+  const closeViewer = (opts?: { fromPopstate?: boolean }): void => {
+    if (!viewerOpen && !viewerEl.classList.contains('active')) return;
+
+    const shouldPopHistory =
+      !opts?.fromPopstate && viewerOpen && isViewerHistoryState(history.state);
+
+    viewerOpen = false;
+    dismissViewerUi();
+
+    if (shouldPopHistory) {
+      ignoreNextPopstate = true;
+      history.back();
+    }
   };
 
-  document.getElementById('viewerBack')?.addEventListener('click', closeViewer);
-  document.getElementById('viewerBackdrop')?.addEventListener('click', closeViewer);
+  window.addEventListener('popstate', () => {
+    if (ignoreNextPopstate) {
+      ignoreNextPopstate = false;
+      return;
+    }
+    // Browser Back/Forward while modal is up → same as Escape.
+    if (viewerOpen || viewerEl.classList.contains('active')) {
+      closeViewer({ fromPopstate: true });
+    }
+  });
+
+  document.getElementById('viewerBack')?.addEventListener('click', () => closeViewer());
+  document.getElementById('viewerBackdrop')?.addEventListener('click', () => closeViewer());
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && viewerEl.classList.contains('active')) closeViewer();
+    if (e.key === 'Escape' && (viewerOpen || viewerEl.classList.contains('active'))) {
+      closeViewer();
+    }
   });
 
   const renderGallery = (): void => {
