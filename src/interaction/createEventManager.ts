@@ -1,15 +1,18 @@
 import type { GridArea } from '../renderers/createGridRenderer';
+import { pointerClientToLayoutCss } from '../core/renderCoordinator/utils/canvasUtils';
 
 export type ChartGPUEventName = 'mousemove' | 'click' | 'mouseleave';
 
 export type ChartGPUEventPayload = {
+  /** Canvas-local X in **layout** CSS pixels (`clientWidth` space). */
   readonly x: number;
+  /** Canvas-local Y in **layout** CSS pixels (`clientHeight` space). */
   readonly y: number;
   readonly gridX: number;
   readonly gridY: number;
-  /** Plot (grid) width in CSS pixels. */
+  /** Plot (grid) width in layout CSS pixels. */
   readonly plotWidthCss: number;
-  /** Plot (grid) height in CSS pixels. */
+  /** Plot (grid) height in layout CSS pixels. */
   readonly plotHeightCss: number;
   readonly isInGrid: boolean;
   readonly originalEvent: PointerEvent;
@@ -51,16 +54,18 @@ export function createEventManager(canvas: HTMLCanvasElement, initialGridArea: G
   let suppressNextLostPointerCaptureId: number | null = null;
 
   const toPayload = (e: PointerEvent): ChartGPUEventPayload | null => {
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return null;
+    // Layout CSS (clientWidth) — must match getPlotSizeCssPx / lastInteractionScales under CSS zoom.
+    // Visual getBoundingClientRect alone under-sizes plotWidth and desyncs invert(gridX).
+    const layout = pointerClientToLayoutCss(canvas, e.clientX, e.clientY);
+    if (!layout) return null;
 
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const x = layout.x;
+    const y = layout.y;
 
     const plotLeftCss = gridArea.left;
     const plotTopCss = gridArea.top;
-    const plotWidthCss = rect.width - gridArea.left - gridArea.right;
-    const plotHeightCss = rect.height - gridArea.top - gridArea.bottom;
+    const plotWidthCss = layout.layoutWidth - gridArea.left - gridArea.right;
+    const plotHeightCss = layout.layoutHeight - gridArea.top - gridArea.bottom;
 
     const gridX = x - plotLeftCss;
     const gridY = y - plotTopCss;

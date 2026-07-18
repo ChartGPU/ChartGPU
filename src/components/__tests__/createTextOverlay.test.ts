@@ -113,4 +113,28 @@ describe('createTextOverlay', () => {
 
     expect(mockCtx.font).toBe('12px monospace');
   });
+
+  it('tracks live window.devicePixelRatio when options.devicePixelRatio is omitted', async () => {
+    host = mountHost(100, 50);
+    vi.stubGlobal('devicePixelRatio', 2);
+    overlay = createTextOverlay(host); // no fixed DPR
+    overlay.addLabel('a', 0, 0);
+    await Promise.resolve();
+
+    let canvas = host.querySelector('canvas')!;
+    expect(canvas.width).toBe(200); // 100 × 2
+    expect(canvas.height).toBe(100);
+
+    // Page zoom changes window DPR; next flush must re-size backing store.
+    vi.stubGlobal('devicePixelRatio', 1.5);
+    overlay.clear();
+    overlay.addLabel('b', 0, 0);
+    await Promise.resolve();
+
+    canvas = host.querySelector('canvas')!;
+    expect(canvas.width).toBe(150); // 100 × 1.5
+    expect(canvas.height).toBe(75);
+
+    vi.unstubAllGlobals();
+  });
 });

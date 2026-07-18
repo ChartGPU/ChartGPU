@@ -419,6 +419,45 @@ describe('GPUContext - Shared Device Ownership', () => {
     });
   });
 
+  describe('setDevicePixelRatio', () => {
+    it('updates devicePixelRatio for computeGridArea without resizing canvas', async () => {
+      const { computeGridArea } = await import('../renderCoordinator/utils/axisUtils');
+      const ctx = await GPUContext.create(mockCanvas, { devicePixelRatio: 1 });
+      expect(ctx.devicePixelRatio).toBe(1);
+
+      const widthBefore = mockCanvas.width;
+      ctx.setDevicePixelRatio(2);
+      expect(ctx.devicePixelRatio).toBe(2);
+      // Caller owns canvas backing size; setDevicePixelRatio does not resize.
+      expect(mockCanvas.width).toBe(widthBefore);
+
+      // Multi-layer: layout helpers must see the updated DPR.
+      mockCanvas.width = 800;
+      mockCanvas.height = 600;
+      const gridArea = computeGridArea(ctx, {
+        grid: { left: 40, right: 20, top: 10, bottom: 30 },
+      } as any);
+      expect(gridArea.devicePixelRatio).toBe(2);
+      expect(gridArea.canvasWidth).toBe(800);
+      expect(gridArea.canvasHeight).toBe(600);
+
+      await ctx.destroy();
+    });
+
+    it.each([
+      [0, 1],
+      [NaN, 1],
+      [-1, 1],
+      [Infinity, 1],
+      [2.5, 2.5],
+    ] as const)('setDevicePixelRatio(%s) → %s', async (input, expected) => {
+      const ctx = await GPUContext.create(mockCanvas, { devicePixelRatio: 1 });
+      ctx.setDevicePixelRatio(input);
+      expect(ctx.devicePixelRatio).toBe(expected);
+      await ctx.destroy();
+    });
+  });
+
   describe('canvasContext.unconfigure always called', () => {
     it('unconfigures canvas context even when device is null', () => {
       const context: GPUContextState = {

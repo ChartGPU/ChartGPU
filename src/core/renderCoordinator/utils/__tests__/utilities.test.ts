@@ -4,7 +4,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { getCanvasCssWidth, getCanvasCssHeight, getCanvasCssSizeFromDevicePixels, clampInt } from '../canvasUtils';
+import {
+  getCanvasCssWidth,
+  getCanvasCssHeight,
+  getCanvasCssSizeFromDevicePixels,
+  getCanvasLayoutSizeCss,
+  pointerClientToLayoutCss,
+  clampInt,
+} from '../canvasUtils';
 import { finiteOrNull, finiteOrUndefined, isTupleDataPoint, getPointXY, isTupleOHLCDataPoint } from '../dataPointUtils';
 import { normalizeDomain } from '../boundsComputation';
 import { clamp01 } from '../axisUtils';
@@ -142,6 +149,121 @@ describe('Canvas Utilities', () => {
     // With DPR of 2
     const size = getCanvasCssSizeFromDevicePixels(mockCanvas, 2);
     expect(size).toEqual({ width: 400, height: 300 });
+  });
+
+  it('pointerClientToLayoutCss maps visual offset into layout space under CSS zoom', () => {
+    // Layout 1000×500; visual rect 300×150 (CSS zoom 0.3)
+    const mockCanvas = {
+      clientWidth: 1000,
+      clientHeight: 500,
+      getBoundingClientRect: () => ({
+        left: 10,
+        top: 20,
+        width: 300,
+        height: 150,
+        right: 310,
+        bottom: 170,
+        x: 10,
+        y: 20,
+        toJSON: () => ({}),
+      }),
+    } as HTMLCanvasElement;
+
+    // Pointer at visual center of canvas (10+150, 20+75)
+    const mapped = pointerClientToLayoutCss(mockCanvas, 160, 95);
+    expect(mapped).not.toBeNull();
+    expect(mapped!.layoutWidth).toBe(1000);
+    expect(mapped!.layoutHeight).toBe(500);
+    // (150 visual-x) * (1000/300) = 500 layout-x
+    expect(mapped!.x).toBeCloseTo(500);
+    expect(mapped!.y).toBeCloseTo(250);
+  });
+
+  it('pointerClientToLayoutCss returns null when visual rect is empty', () => {
+    const mockCanvas = {
+      clientWidth: 100,
+      clientHeight: 100,
+      getBoundingClientRect: () => ({
+        left: 0,
+        top: 0,
+        width: 0,
+        height: 0,
+        right: 0,
+        bottom: 0,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }),
+    } as HTMLCanvasElement;
+    expect(pointerClientToLayoutCss(mockCanvas, 10, 10)).toBeNull();
+  });
+
+  it('pointerClientToLayoutCss falls back to visual when layout client size is 0', () => {
+    // Pre-layout / display:none: intentional fallback so callers still get finite coords.
+    const mockCanvas = {
+      clientWidth: 0,
+      clientHeight: 0,
+      getBoundingClientRect: () => ({
+        left: 5,
+        top: 10,
+        width: 200,
+        height: 100,
+        right: 205,
+        bottom: 110,
+        x: 5,
+        y: 10,
+        toJSON: () => ({}),
+      }),
+    } as HTMLCanvasElement;
+
+    const mapped = pointerClientToLayoutCss(mockCanvas, 55, 40);
+    expect(mapped).not.toBeNull();
+    expect(mapped!.layoutWidth).toBe(200);
+    expect(mapped!.layoutHeight).toBe(100);
+    expect(mapped!.x).toBeCloseTo(50); // 55 - 5
+    expect(mapped!.y).toBeCloseTo(30); // 40 - 10
+  });
+
+  describe('getCanvasLayoutSizeCss', () => {
+    it('prefers clientWidth/Height over visual getBoundingClientRect', () => {
+      const mockCanvas = {
+        clientWidth: 1000,
+        clientHeight: 500,
+        getBoundingClientRect: () => ({
+          left: 0,
+          top: 0,
+          width: 300, // CSS zoom visual — must not win
+          height: 150,
+          right: 300,
+          bottom: 150,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        }),
+      } as HTMLCanvasElement;
+
+      expect(getCanvasLayoutSizeCss(mockCanvas)).toEqual({ width: 1000, height: 500 });
+    });
+
+    it('falls back to visual rect when client size is 0', () => {
+      const mockCanvas = {
+        clientWidth: 0,
+        clientHeight: 0,
+        getBoundingClientRect: () => ({
+          left: 0,
+          top: 0,
+          width: 200,
+          height: 100,
+          right: 200,
+          bottom: 100,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        }),
+      } as HTMLCanvasElement;
+
+      expect(getCanvasLayoutSizeCss(mockCanvas)).toEqual({ width: 200, height: 100 });
+    });
   });
 });
 

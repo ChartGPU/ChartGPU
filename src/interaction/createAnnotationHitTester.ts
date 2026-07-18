@@ -7,6 +7,7 @@
 
 import type { AnnotationConfig, DataPoint } from '../config/types.js';
 import type { ChartGPUInstance } from '../ChartGPU.js';
+import { getCanvasLayoutSizeCss } from '../core/renderCoordinator/utils/canvasUtils.js';
 
 export interface AnnotationHitTestResult {
   readonly annotationIndex: number;
@@ -164,7 +165,8 @@ export function createAnnotationHitTester(
    */
   function dataToCanvas(x: number | undefined, y: number | undefined): { x: number; y: number } {
     const chartOptions = chart.options;
-    const rect = canvas.getBoundingClientRect();
+    // Layout CSS — grid margins are layout px; visual rect would skew under CSS zoom.
+    const { width: canvasWidth, height: canvasHeight } = getCanvasLayoutSizeCss(canvas);
 
     const grid = chartOptions.grid ?? {
       left: 60,
@@ -172,8 +174,6 @@ export function createAnnotationHitTester(
       top: 40,
       bottom: 40,
     };
-    const canvasWidth = rect.width;
-    const canvasHeight = rect.height;
 
     const plotLeft = grid.left ?? 60;
     const plotRight = canvasWidth - (grid.right ?? 20);
@@ -227,7 +227,7 @@ export function createAnnotationHitTester(
    */
   function plotToCanvas(x: number, y: number): { x: number; y: number } {
     const chartOptions = chart.options;
-    const rect = canvas.getBoundingClientRect();
+    const { width: canvasWidth, height: canvasHeight } = getCanvasLayoutSizeCss(canvas);
 
     const grid = chartOptions.grid ?? {
       left: 60,
@@ -235,8 +235,6 @@ export function createAnnotationHitTester(
       top: 40,
       bottom: 40,
     };
-    const canvasWidth = rect.width;
-    const canvasHeight = rect.height;
 
     const plotLeft = grid.left ?? 60;
     const plotRight = canvasWidth - (grid.right ?? 20);

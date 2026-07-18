@@ -717,20 +717,26 @@ export function createRenderCoordinator(
 
   const targetFormat = gpuContext.preferredFormat ?? DEFAULT_TARGET_FORMAT;
   const pipelineCache = callbacks?.pipelineCache;
-  // Match chart canvas DPR (multi-chart harness often forces 1; avoid sharper labels than plot).
-  const overlayDpr =
-    Number.isFinite(gpuContext.devicePixelRatio) && (gpuContext.devicePixelRatio as number) > 0
-      ? (gpuContext.devicePixelRatio as number)
-      : 1;
+  // Explicit chart option freezes overlay DPR (multi-chart harness often forces 1).
+  // When unset, omit fixed DPR so createTextOverlay tracks live window.devicePixelRatio
+  // on each flush — same source resize uses for the WebGPU backing store under page zoom.
+  const explicitOverlayDpr =
+    typeof options.devicePixelRatio === 'number' &&
+    Number.isFinite(options.devicePixelRatio) &&
+    options.devicePixelRatio > 0
+      ? options.devicePixelRatio
+      : undefined;
+  const overlayDprOptions =
+    explicitOverlayDpr != null ? ({ devicePixelRatio: explicitOverlayDpr } as const) : undefined;
 
   // DOM-dependent features (overlays, legends) require HTMLCanvasElement.
   const overlayContainer = isHTMLCanvasElement(gpuContext.canvas) ? gpuContext.canvas.parentElement : null;
   const axisLabelOverlay: TextOverlay | null = overlayContainer
-    ? createTextOverlay(overlayContainer, { devicePixelRatio: overlayDpr })
+    ? createTextOverlay(overlayContainer, overlayDprOptions)
     : null;
   // Dedicated overlay for annotations (do not reuse axis label overlay).
   const annotationOverlay: TextOverlay | null = overlayContainer
-    ? createTextOverlay(overlayContainer, { clip: true, devicePixelRatio: overlayDpr })
+    ? createTextOverlay(overlayContainer, { clip: true, ...overlayDprOptions })
     : null;
 
   const handleSeriesToggle = (seriesIndex: number, sliceIndex?: number): void => {
@@ -1469,14 +1475,11 @@ export function createRenderCoordinator(
     readonly plotWidthCss: number;
     readonly plotHeightCss: number;
   } | null => {
-    let canvasWidthCss: number;
-    let canvasHeightCss: number;
-
-    // HTMLCanvasElement: use getBoundingClientRect() for actual CSS dimensions
-    const rect = canvas.getBoundingClientRect();
-    if (!(rect.width > 0) || !(rect.height > 0)) return null;
-    canvasWidthCss = rect.width;
-    canvasHeightCss = rect.height;
+    // Layout CSS (clientWidth/Height) — same space as grid margins and pointerClientToLayoutCss.
+    // Do not use getBoundingClientRect (visual under CSS zoom) here or scales skew vs hit-tests.
+    const canvasWidthCss = canvas.clientWidth;
+    const canvasHeightCss = canvas.clientHeight;
+    if (!(canvasWidthCss > 0) || !(canvasHeightCss > 0)) return null;
 
     const plotWidthCss = canvasWidthCss - gridArea.left - gridArea.right;
     const plotHeightCss = canvasHeightCss - gridArea.top - gridArea.bottom;
@@ -2580,7 +2583,11 @@ export function createRenderCoordinator(
     const canvas = gpuContext.canvas;
     // IMPORTANT: For GPU overlay annotations only, derive CSS size from device pixels to avoid
     // DOM `clientWidth/clientHeight` mismatch with the WebGPU render target size.
-    const canvasCssForAnnotations = getCanvasCssSizeFromDevicePixels(canvas);
+    // Use the same DPR as the backing store / computeGridArea (updated on resize).
+    const canvasCssForAnnotations = getCanvasCssSizeFromDevicePixels(
+      canvas,
+      gpuContext.devicePixelRatio ?? (typeof window !== 'undefined' ? window.devicePixelRatio : 1)
+    );
     const canvasCssWidthForAnnotations = canvasCssForAnnotations.width;
     const canvasCssHeightForAnnotations = canvasCssForAnnotations.height;
 

@@ -11,6 +11,7 @@ import { defaultGrid } from '../config/defaults';
 import { createAnnotationHitTester } from './createAnnotationHitTester';
 import { createAnnotationDragHandler } from './createAnnotationDragHandler';
 import { createAnnotationConfigDialog } from '../components/createAnnotationConfigDialog';
+import { getCanvasLayoutSizeCss, pointerClientToLayoutCss } from '../core/renderCoordinator/utils/canvasUtils';
 
 // Type guards and helpers
 const isTupleDataPoint = (p: DataPoint): p is DataPointTuple => Array.isArray(p);
@@ -303,10 +304,11 @@ export function createAnnotationAuthoring(
 
     lastHitTestResult = chart.hitTest(e);
 
-    // Perform annotation hit test
-    const rect = canvas.getBoundingClientRect();
-    const canvasX = e.clientX - rect.left;
-    const canvasY = e.clientY - rect.top;
+    // Perform annotation hit test (layout CSS — matches hitTester plot geometry)
+    const layout = pointerClientToLayoutCss(canvas, e.clientX, e.clientY);
+    if (!layout) return;
+    const canvasX = layout.x;
+    const canvasY = layout.y;
     const annotationHit = hitTester.hitTest(canvasX, canvasY);
 
     if (annotationHit) {
@@ -453,9 +455,9 @@ export function createAnnotationAuthoring(
 
   // Convert grid-space coordinates to data-space x
   const gridXToDataX = (gridX: number): number => {
-    const rect = canvas.getBoundingClientRect();
+    const { width: canvasWidth } = getCanvasLayoutSizeCss(canvas);
     const grid = chart.options.grid ?? defaultGrid;
-    const plotWidthCss = rect.width - (grid.left ?? defaultGrid.left) - (grid.right ?? defaultGrid.right);
+    const plotWidthCss = canvasWidth - (grid.left ?? defaultGrid.left) - (grid.right ?? defaultGrid.right);
 
     const xDomain = computeVisibleXDomain();
     const t = plotWidthCss > 0 ? gridX / plotWidthCss : 0;
@@ -464,10 +466,10 @@ export function createAnnotationAuthoring(
 
   // Convert grid-space coordinates to plot-space [0-1]
   const gridToPlotSpace = (gridX: number, gridY: number): { x: number; y: number } => {
-    const rect = canvas.getBoundingClientRect();
+    const { width: canvasWidth, height: canvasHeight } = getCanvasLayoutSizeCss(canvas);
     const grid = chart.options.grid ?? defaultGrid;
-    const plotWidthCss = rect.width - (grid.left ?? defaultGrid.left) - (grid.right ?? defaultGrid.right);
-    const plotHeightCss = rect.height - (grid.top ?? defaultGrid.top) - (grid.bottom ?? defaultGrid.bottom);
+    const plotWidthCss = canvasWidth - (grid.left ?? defaultGrid.left) - (grid.right ?? defaultGrid.right);
+    const plotHeightCss = canvasHeight - (grid.top ?? defaultGrid.top) - (grid.bottom ?? defaultGrid.bottom);
 
     const px = plotWidthCss > 0 ? gridX / plotWidthCss : 0;
     const py = plotHeightCss > 0 ? gridY / plotHeightCss : 0;
@@ -527,9 +529,9 @@ export function createAnnotationAuthoring(
       y = match.value[1];
     } else if (isInGrid) {
       // Compute y from grid position using actual visible Y domain
-      const rect = canvas.getBoundingClientRect();
+      const { height: canvasHeight } = getCanvasLayoutSizeCss(canvas);
       const grid = chart.options.grid ?? defaultGrid;
-      const plotHeightCss = rect.height - (grid.top ?? defaultGrid.top) - (grid.bottom ?? defaultGrid.bottom);
+      const plotHeightCss = canvasHeight - (grid.top ?? defaultGrid.top) - (grid.bottom ?? defaultGrid.bottom);
 
       // Get actual visible Y domain (not hardcoded defaults!)
       const yDomain = computeVisibleYDomain();
@@ -642,9 +644,10 @@ export function createAnnotationAuthoring(
   const onPointerDown = (e: PointerEvent): void => {
     if (disposed || e.button === 2) return; // Ignore right-click
 
-    const rect = canvas.getBoundingClientRect();
-    const canvasX = e.clientX - rect.left;
-    const canvasY = e.clientY - rect.top;
+    const layout = pointerClientToLayoutCss(canvas, e.clientX, e.clientY);
+    if (!layout) return;
+    const canvasX = layout.x;
+    const canvasY = layout.y;
 
     const annotationHit = hitTester.hitTest(canvasX, canvasY);
 

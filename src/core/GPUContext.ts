@@ -546,6 +546,23 @@ export class GPUContext {
   }
 
   /**
+   * Updates the device pixel ratio used by layout helpers (e.g. `computeGridArea`).
+   * Called from chart resize so grid margins stay consistent with the canvas backing store
+   * when live `window.devicePixelRatio` changes (page zoom) or an explicit option is applied.
+   *
+   * Does not reconfigure the canvas; callers size `canvas.width/height` separately.
+   */
+  setDevicePixelRatio(devicePixelRatio: number): void {
+    const sanitized = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1.0;
+    if (this._state.devicePixelRatio === sanitized) return;
+    const prev = this._state as GPUContextStateInternal;
+    this._state = {
+      ...prev,
+      devicePixelRatio: sanitized,
+    } as GPUContextStateInternal;
+  }
+
+  /**
    * Gets the canvas alpha mode.
    */
   get alphaMode(): 'opaque' | 'premultiplied' {
