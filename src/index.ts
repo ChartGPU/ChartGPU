@@ -48,6 +48,7 @@ export type {
   AxisType,
   BarItemStyleConfig,
   CandlestickItemStyleConfig,
+  CandlestickPriceLabelConfig,
   CandlestickSeriesConfig,
   CandlestickStyle,
   ChartGPUOptions,
@@ -82,8 +83,9 @@ export type {
 
 // Options defaults + resolution
 export { candlestickDefaults, defaultOptions } from './config/defaults';
-export { OptionResolver, resolveOptions } from './config/OptionResolver';
+export { isCandlePrimaryChart, OptionResolver, resolveOptions, resolvePriceLabel } from './config/OptionResolver';
 export type {
+  ResolvedCandlestickPriceLabel,
   ResolvedCandlestickSeriesConfig,
   ResolvedChartGPUOptions,
   ResolvedAreaSeriesConfig,

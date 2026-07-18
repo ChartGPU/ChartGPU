@@ -1149,7 +1149,15 @@ describe('OptionResolver - candle-primary Y-axis and grid defaults', () => {
 
   it('non-candle charts keep default left Y and left-biased gutters', () => {
     const resolved = resolveOptions({
-      series: [{ type: 'line', data: [[0, 1], [1, 2]] }],
+      series: [
+        {
+          type: 'line',
+          data: [
+            [0, 1],
+            [1, 2],
+          ],
+        },
+      ],
     });
     expect(resolved.yAxes[0]!.position).toBe('left');
     expect(resolved.grid.left).toBe(60);
@@ -1158,14 +1166,9 @@ describe('OptionResolver - candle-primary Y-axis and grid defaults', () => {
 
   it('candle-not-first is not candle-primary (left Y, standard gutters)', () => {
     const resolved = resolveOptions({
-      series: [
-        { type: 'line', data: [[0, 1]] },
-        candleSeries,
-      ],
+      series: [{ type: 'line', data: [[0, 1]] }, candleSeries],
     });
-    expect(isCandlePrimaryChart({ series: [{ type: 'line', data: [[0, 1]] }, candleSeries] })).toBe(
-      false
-    );
+    expect(isCandlePrimaryChart({ series: [{ type: 'line', data: [[0, 1]] }, candleSeries] })).toBe(false);
     expect(resolved.yAxes[0]!.position).toBe('left');
     expect(resolved.grid.left).toBe(60);
     expect(resolved.grid.right).toBe(20);

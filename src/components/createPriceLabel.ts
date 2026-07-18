@@ -58,8 +58,7 @@ export function createPriceLabel(container: HTMLElement): PriceLabel {
   root.style.zIndex = '12';
   root.style.padding = '2px 6px';
   root.style.borderRadius = '2px';
-  root.style.fontFamily =
-    'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+  root.style.fontFamily = 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
   root.style.fontSize = '11px';
   root.style.lineHeight = '1.25';
   root.style.fontVariantNumeric = 'tabular-nums';

@@ -191,9 +191,7 @@ export function resolvePriceLabel(
   const intervalMs = normalizeIntervalMs(obj.intervalMs);
 
   if (obj.showCountdown === true && intervalMs == null) {
-    options?.onWarn?.(
-      'ChartGPU: priceLabel.showCountdown requires a finite intervalMs > 0; countdown disabled.'
-    );
+    options?.onWarn?.('ChartGPU: priceLabel.showCountdown requires a finite intervalMs > 0; countdown disabled.');
   }
 
   // showCountdown = show && intervalMs != null && (input.showCountdown ?? true)
@@ -288,8 +286,7 @@ export function resolveLastCandleState(args: {
   const isUp = close >= open;
   const directionColor = isUp ? args.upColor : args.downColor;
   const intervalMs = args.intervalMs;
-  const barEndMs =
-    intervalMs != null && Number.isFinite(timestamp) ? timestamp + intervalMs : null;
+  const barEndMs = intervalMs != null && Number.isFinite(timestamp) ? timestamp + intervalMs : null;
 
   return {
     seriesIndex: args.seriesIndex,
@@ -305,10 +302,7 @@ export function resolveLastCandleState(args: {
   };
 }
 
-function seriesShowPriceLabel(
-  s: PriceLabelOwnershipSeries,
-  candlePrimary: boolean
-): boolean {
+function seriesShowPriceLabel(s: PriceLabelOwnershipSeries, candlePrimary: boolean): boolean {
   if (s.type !== 'candlestick') return false;
   if (s.visible === false) return false;
 
@@ -354,9 +348,7 @@ export function selectPriceLabelSeries(
     // Single warn per call regardless of how many extras qualify.
     if (!warnedExtra) {
       warnedExtra = true;
-      options?.onWarn?.(
-        'ChartGPU: multiple candlestick series have priceLabel.show; only the first is used (v1).'
-      );
+      options?.onWarn?.('ChartGPU: multiple candlestick series have priceLabel.show; only the first is used (v1).');
     }
   }
 
