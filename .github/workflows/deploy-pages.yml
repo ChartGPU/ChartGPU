@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - uses: oven-sh/setup-bun@v2
 
       - name: Install dependencies
@@ -28,19 +28,16 @@ jobs:
       - name: Build library
         run: bun run build
 
-      - name: Build examples
-        run: bun run build:examples
+      - name: Build GitHub Pages site (landing + examples)
+        run: bun run build:pages
 
-      - name: Add root redirect
-        run: cp examples/root-redirect.html examples/dist/index.html
-      
       - name: Setup Pages
         uses: actions/configure-pages@v4
-      
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './examples/dist'
+          path: './pages-dist'
 
   deploy:
     environment:

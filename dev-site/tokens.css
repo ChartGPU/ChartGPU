@@ -1,0 +1,72 @@
+/* Hallmark · pre-emit critique: P5 H5 E4 S5 R4 V5
+ * Hallmark · genre: atmospheric · macrostructure: Photographic
+ * tone: technical · theme: custom (brand ChartGPU dark · gold accent · blue secondary)
+ * paper: oklch(12% 0.012 265) · accent: oklch(74% 0.14 85) · display: Space Grotesk + body: DM Sans
+ * axes: dark / geometric-sans / warm · enrichment: live WebGPU charts · nav: N9 · footer: Ft5
+ * theme_axes: dark / geometric-sans / warm
+ */
+
+:root {
+  /* Brand paper / surfaces */
+  --color-paper: oklch(12% 0.012 265);
+  --color-paper-2: oklch(15% 0.014 265);
+  --color-paper-3: oklch(19% 0.016 265);
+  --color-paper-hover: oklch(22% 0.018 265);
+
+  /* Ink */
+  --color-ink: oklch(92% 0.01 265);
+  --color-ink-2: oklch(62% 0.02 265);
+  --color-ink-3: oklch(42% 0.015 265);
+
+  /* Brand accents — gold primary, blue secondary */
+  --color-accent: oklch(74% 0.14 85);
+  --color-accent-soft: oklch(74% 0.14 85 / 0.14);
+  --color-accent-ink: oklch(18% 0.03 85);
+  --color-blue: oklch(58% 0.14 250);
+  --color-blue-soft: oklch(58% 0.14 250 / 0.16);
+  --color-focus: oklch(74% 0.14 85);
+
+  --color-rule: oklch(92% 0.01 265 / 0.08);
+  --color-rule-strong: oklch(92% 0.01 265 / 0.14);
+  --color-overlay: oklch(0% 0 0 / 0.72);
+
+  /* Type */
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  --font-body: 'DM Sans', system-ui, sans-serif;
+  --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Mono', Consolas, monospace;
+
+  --text-xs: 0.6875rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.9375rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.5rem;
+  --text-2xl: clamp(1.75rem, 3.5vw, 2.5rem);
+  --text-display: clamp(2rem, 5vw, 3.5rem);
+
+  /* 4pt scale */
+  --space-3xs: 0.25rem;
+  --space-2xs: 0.5rem;
+  --space-xs: 0.75rem;
+  --space-sm: 1rem;
+  --space-md: 1.5rem;
+  --space-lg: 2rem;
+  --space-xl: 3rem;
+  --space-2xl: 4.5rem;
+  --space-3xl: 7rem;
+
+  --page-gutter: clamp(1rem, 4vw, 3rem);
+  --max-width: 1280px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-pill: 999px;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.45, 0, 0.55, 1);
+  --dur-short: 180ms;
+  --dur-mid: 280ms;
+
+  --rule-hair: 1px;
+  --nav-height: 56px;
+  --z-nav: 100;
+  --z-viewer: 200;
+}

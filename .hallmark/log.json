@@ -1,0 +1,35 @@
+[
+  {
+    "date": "2026-07-18",
+    "macrostructure": "Photographic",
+    "theme": "custom",
+    "theme_axes": "dark / geometric-sans / warm",
+    "vibe": "dashboard wall substance",
+    "enrichment": "8 multi-series panels labels annotations dual-axis",
+    "nav": "N9",
+    "footer": "Ft5",
+    "brief": "Wall panels: complete datasets, not empty sparklines; pie unoccluded"
+  },
+  {
+    "date": "2026-07-18",
+    "macrostructure": "Photographic",
+    "theme": "custom",
+    "theme_axes": "dark / geometric-sans / warm",
+    "vibe": "WebGPU multi-chart wall finale",
+    "enrichment": "12 live mixed-series charts shared GPU",
+    "nav": "N9",
+    "footer": "Ft5",
+    "brief": "Finale plate: abundance wall (not multi-series twin of hero)"
+  },
+  {
+    "date": "2026-07-18",
+    "macrostructure": "Photographic",
+    "theme": "custom",
+    "theme_axes": "dark / geometric-sans / warm",
+    "vibe": "WebGPU chart plates, brand gold",
+    "enrichment": "live WebGPU charts",
+    "nav": "N9",
+    "footer": "Ft5",
+    "brief": "ChartGPU dev-site \u2014 charts exclusively do the talking"
+  }
+]

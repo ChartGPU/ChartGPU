@@ -38,8 +38,11 @@
   },
   "scripts": {
     "dev:vite": "vite examples",
+    "dev:site": "vite --config dev-site/vite.config.ts",
     "dev:format": "bunx onchange \"src/**/*.{ts,tsx,js,jsx,json,css,md}\" -- bunx prettier --write src/",
     "dev": "bun run --parallel dev:vite dev:format",
+    "build:pages": "vite build --config dev-site/vite.config.ts",
+    "preview:pages": "vite preview --config dev-site/vite.config.ts --port 4173",
     "test": "vitest",
     "acceptance:animation-controller": "tsx examples/acceptance/animation-controller.ts",
     "acceptance:sampling-config": "tsx examples/acceptance/sampling-config.ts",

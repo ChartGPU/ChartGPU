@@ -3,49 +3,43 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ChartGPU</title>
-  <meta name="description" content="GPU-accelerated charting library for the modern web. WebGPU-native rendering with interactive examples.">
+  <title>ChartGPU — WebGPU charts that shouldn't be possible</title>
+  <meta name="description" content="WebGPU-native charting. Live demos of million-point density, streaming tapes, and multi-series fields — only possible on the GPU.">
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-Z6FHBJ5JKJ"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-Z6FHBJ5JKJ');
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./tokens.css">
   <style>
-    :root {
-      --bg-base: #07080C;
-      --bg-surface: #0C0E14;
-      --bg-elevated: #12141C;
-      --bg-hover: #181B25;
-
-      --border-subtle: rgba(148, 163, 184, 0.06);
-      --border-default: rgba(148, 163, 184, 0.10);
-      --border-hover: rgba(148, 163, 184, 0.16);
-
-      --text-primary: #E2E5EB;
-      --text-secondary: #7A8494;
-      --text-tertiary: #454D5C;
-
-      --brand-blue: #3B7DD8;
-      --brand-gold: #D4A520;
-      --brand-gold-soft: rgba(212, 165, 32, 0.12);
-
-      --font-display: 'Space Grotesk', system-ui, sans-serif;
-      --font-body: 'DM Sans', system-ui, sans-serif;
-      --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Mono', Consolas, monospace;
-
-      --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-      --max-width: 1280px;
-    }
+    /* Hallmark · genre: atmospheric · macrostructure: Photographic
+     * tone: technical · theme: custom (ChartGPU brand) · enrichment: live WebGPU
+     * nav: N9 · footer: Ft5
+     */
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      overflow-x: clip;
+      min-width: 0;
+    }
 
     html {
       -webkit-font-smoothing: antialiased;
       -moz-osx-font-smoothing: grayscale;
+      scroll-behavior: smooth;
     }
 
     body {
       font-family: var(--font-body);
-      background: var(--bg-base);
-      color: var(--text-primary);
+      background: var(--color-paper);
+      color: var(--color-ink);
       line-height: 1.5;
       min-height: 100vh;
     }
@@ -53,242 +47,725 @@
     a { color: inherit; text-decoration: none; }
     button { font: inherit; border: none; background: none; cursor: pointer; color: inherit; }
     img { display: block; max-width: 100%; }
+    code { font-family: var(--font-mono); }
 
-    /* ── Header ── */
-    .header {
-      position: sticky;
+    :focus-visible {
+      outline: 2px solid var(--color-focus);
+      outline-offset: 3px;
+    }
+
+    /* Soft atmospheric blooms — genre-allowed, fixed, unanimated */
+    body::before,
+    body::after {
+      content: '';
+      position: fixed;
+      pointer-events: none;
+      z-index: 0;
+      width: min(48vw, 520px);
+      height: min(48vw, 520px);
+      border-radius: 50%;
+      filter: blur(80px);
+      opacity: 0.22;
+    }
+
+    body::before {
+      top: -8%;
+      left: -6%;
+      background: var(--color-accent-soft);
+    }
+
+    body::after {
+      bottom: 10%;
+      right: -8%;
+      background: var(--color-blue-soft);
+    }
+
+    /* ── N9 Edge-aligned nav ── */
+    .nav {
+      position: fixed;
       top: 0;
-      z-index: 100;
-      background: rgba(7, 8, 12, 0.85);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border-bottom: 1px solid var(--border-subtle);
-    }
-
-    .header-inner {
-      max-width: var(--max-width);
-      margin: 0 auto;
-      padding: 0 48px;
-      height: 64px;
+      left: 0;
+      right: 0;
+      z-index: var(--z-nav);
+      height: var(--nav-height);
       display: flex;
       align-items: center;
-      gap: 20px;
+      justify-content: space-between;
+      padding: 0 var(--page-gutter);
+      pointer-events: none;
     }
 
-    .logo-link {
+    .nav > * { pointer-events: auto; }
+
+    .nav-brand {
       display: flex;
       align-items: center;
-      flex-shrink: 0;
+      gap: var(--space-2xs);
+      min-width: 0;
     }
 
-    .logo-link img {
-      height: 28px;
+    .nav-brand img {
+      height: 26px;
       width: auto;
     }
 
-    .version-badge {
+    .nav-version {
       font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--text-tertiary);
+      font-size: var(--text-xs);
+      color: var(--color-ink-2);
       padding: 3px 8px;
-      border: 1px solid var(--border-subtle);
-      border-radius: 6px;
+      background: var(--color-paper);
+      border: var(--rule-hair) solid var(--color-rule-strong);
+      border-radius: var(--radius-sm);
       letter-spacing: 0.02em;
-      flex-shrink: 0;
+      white-space: nowrap;
+      /* Solid chip over live canvas — no chart strokes bleeding through */
+      isolation: isolate;
+      box-shadow: 0 0 0 1px var(--color-paper);
     }
 
-    .header-spacer { flex: 1; }
-
-    .header-links {
+    .nav-actions {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: var(--space-2xs);
+      min-width: 0;
     }
 
-    .header-link {
+    .nav-link {
       display: inline-flex;
       align-items: center;
       gap: 6px;
       padding: 6px 12px;
-      font-size: 13px;
+      font-family: var(--font-display);
+      font-size: var(--text-sm);
       font-weight: 500;
-      color: var(--text-secondary);
-      border-radius: 6px;
-      transition: color 0.15s, background 0.15s;
+      color: var(--color-ink-2);
+      border-radius: var(--radius-sm);
+      white-space: nowrap;
+      transition: color var(--dur-short) var(--ease-out), background var(--dur-short) var(--ease-out);
     }
 
-    .header-link:hover {
-      color: var(--text-primary);
-      background: var(--bg-elevated);
+    .nav-link:hover {
+      color: var(--color-ink);
+      background: var(--color-paper-3);
     }
 
-    .header-link svg {
-      width: 16px;
-      height: 16px;
+    .nav-link:active { transform: translateY(1px); }
+
+    .nav-link svg {
+      width: 15px;
+      height: 15px;
       fill: currentColor;
       flex-shrink: 0;
     }
 
-    /* ── Intro ── */
-    .intro {
-      max-width: var(--max-width);
-      margin: 0 auto;
-      padding: 56px 48px 0;
+    .nav-cta {
+      display: inline-flex;
+      align-items: center;
+      padding: 7px 14px;
+      font-family: var(--font-display);
+      font-size: var(--text-sm);
+      font-weight: 600;
+      color: var(--color-accent-ink);
+      background: var(--color-accent);
+      border-radius: var(--radius-pill);
+      white-space: nowrap;
+      transition: filter var(--dur-short) var(--ease-out), transform var(--dur-short) var(--ease-out);
     }
 
-    .intro-tagline {
+    .nav-cta:hover { filter: brightness(1.08); }
+    .nav-cta:active { transform: translateY(1px); }
+
+    /* ── Photographic folds ── */
+    .plate {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      min-height: 100vh;
+      min-height: 100dvh;
+      display: grid;
+      grid-template-rows: 1fr;
+      isolation: isolate;
+    }
+
+    .plate--hero {
+      min-height: 100vh;
+      min-height: 100dvh;
+    }
+
+    .plate--tall {
+      min-height: 85vh;
+      min-height: 85dvh;
+    }
+
+    /* Finale wall — dense multi-chart mosaic (not another multi-series field) */
+    .plate--wall {
+      min-height: 100vh;
+      min-height: 100dvh;
+      background: #03040a;
+    }
+
+    .plate--wall .plate-canvas.wall-grid {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      grid-template-rows: repeat(8, minmax(0, 1fr));
+      gap: 2px;
+      padding: 2px;
+      background: #03040a;
+      overflow: hidden;
+    }
+
+    .wall-cell {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      background: var(--color-paper-2);
+    }
+
+    /* Never force-size ChartGPU overlays (legend/priceLabel) — canvas only */
+    .wall-cell > canvas {
+      display: block;
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    .wall-cell__title {
+      position: absolute;
+      z-index: 3;
+      top: 6px;
+      left: 10px;
       font-family: var(--font-display);
-      font-size: clamp(24px, 3vw, 36px);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--color-ink-2);
+      pointer-events: none;
+      text-shadow: 0 1px 8px rgba(0, 0, 0, 0.85);
+    }
+
+    .wall-cell__meta {
+      position: absolute;
+      z-index: 3;
+      top: 6px;
+      right: 10px;
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--color-ink-3);
+      pointer-events: none;
+      text-shadow: 0 1px 8px rgba(0, 0, 0, 0.85);
+    }
+
+    /* 8 substantial panels — multi-series dashboards, not empty sparklines */
+    .wall-cell--apm     { grid-column: 1 / 7;  grid-row: 1 / 5; }
+    .wall-cell--trade   { grid-column: 7 / 13; grid-row: 1 / 5; }
+    .wall-cell--stack   { grid-column: 1 / 5;  grid-row: 5 / 7; }
+    .wall-cell--pool    { grid-column: 5 / 9;  grid-row: 5 / 7; }
+    .wall-cell--scatter { grid-column: 9 / 13; grid-row: 5 / 7; }
+    .wall-cell--pie     { grid-column: 1 / 4;  grid-row: 7 / 9; }
+    .wall-cell--errors  { grid-column: 4 / 8;  grid-row: 7 / 9; }
+    .wall-cell--combo   { grid-column: 8 / 13; grid-row: 7 / 9; }
+
+    /* Caption top-right — never covers bottom-left pie */
+    .plate--wall .plate-caption {
+      left: auto;
+      right: var(--page-gutter);
+      bottom: auto;
+      top: calc(var(--nav-height) + var(--space-md));
+      max-width: min(36ch, calc(100% - 2 * var(--page-gutter)));
+      padding: var(--space-xs) var(--space-sm);
+      background: rgba(5, 6, 10, 0.82);
+      border-radius: var(--radius-sm);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      text-align: right;
+    }
+
+    .plate--split {
+      min-height: 70vh;
+      min-height: 70dvh;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--rule-hair);
+    }
+
+    .plate-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      background: var(--color-paper);
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    /* Hero plate: deeper midnight than other folds */
+    .plate--hero,
+    .plate--hero .plate-canvas {
+      background: #05060a;
+    }
+
+    /* Only size the WebGPU canvas — never blanket-size every div.
+       Price labels, legends, and axis overlays are also direct children of the
+       chart host; width/height 100% turns the last-price badge into a full-panel
+       green slab that spills into the sibling plate. */
+    .plate-canvas > canvas {
+      display: block;
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    .plate-panel {
+      position: relative;
+      min-height: 70vh;
+      min-height: 70dvh;
+      min-width: 0;
+      background: var(--color-paper-2);
+      overflow: hidden;
+    }
+
+    .plate-panel .plate-canvas {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+    }
+
+    /* Caption floats on the plate — photographic annotation, not marketing hero */
+    .plate-caption {
+      position: absolute;
+      z-index: 2;
+      left: var(--page-gutter);
+      bottom: var(--space-lg);
+      max-width: min(36ch, calc(100% - 2 * var(--page-gutter)));
+      min-width: 0;
+      pointer-events: none;
+    }
+
+    .plate-caption--tr {
+      left: auto;
+      right: var(--page-gutter);
+      bottom: auto;
+      top: calc(var(--nav-height) + var(--space-md));
+      text-align: right;
+    }
+
+    .plate-meta {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--color-accent);
+      letter-spacing: 0.04em;
+      margin-bottom: var(--space-2xs);
+    }
+
+    .plate-title {
+      font-family: var(--font-display);
+      font-style: normal;
+      font-size: var(--text-xl);
       font-weight: 600;
       letter-spacing: -0.02em;
       line-height: 1.2;
-      color: var(--text-primary);
+      color: var(--color-ink);
+      overflow-wrap: anywhere;
+      min-width: 0;
+      text-shadow: 0 1px 18px var(--color-paper);
     }
 
-    .intro-tagline .gold {
-      color: var(--brand-gold);
+    .plate-note {
+      margin-top: var(--space-2xs);
+      font-size: var(--text-sm);
+      color: var(--color-ink-2);
+      max-width: 32ch;
+      text-shadow: 0 1px 12px var(--color-paper);
     }
 
-    .intro-sub {
-      margin-top: 12px;
-      font-size: 15px;
-      color: var(--text-secondary);
-      max-width: 540px;
+    .plate-link {
+      pointer-events: auto;
+      display: inline-flex;
+      margin-top: var(--space-xs);
+      font-family: var(--font-display);
+      font-size: var(--text-sm);
+      font-weight: 500;
+      color: var(--color-accent);
+      border-bottom: 1px solid transparent;
+      transition: border-color var(--dur-short) var(--ease-out);
+      white-space: nowrap;
+    }
+
+    .plate-link:hover { border-bottom-color: var(--color-accent); }
+
+    .plate-status {
+      position: absolute;
+      z-index: 2;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--color-ink-3);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      pointer-events: none;
+      transition: opacity var(--dur-mid) var(--ease-out);
+    }
+
+    /* is-ready is set on the [data-demo] root — full plates OR split .plate-panel */
+    .plate.is-ready > .plate-status,
+    .plate-panel.is-ready > .plate-status {
+      opacity: 0;
+      visibility: hidden;
+    }
+
+    .plate.is-error > .plate-status,
+    .plate-panel.is-error > .plate-status {
+      color: var(--color-accent);
+      opacity: 1;
+      visibility: visible;
+    }
+
+    /* ── Text bands ── */
+    .band {
+      position: relative;
+      z-index: 1;
+      padding: var(--space-xl) var(--page-gutter);
+      max-width: var(--max-width);
+      margin: 0 auto;
+      min-width: 0;
+    }
+
+    .band--tight {
+      padding-block: var(--space-lg);
+    }
+
+    /* Ready CTA → example index: avoid double section padding */
+    .band--cta {
+      padding-block: var(--space-lg) var(--space-sm);
+    }
+
+    .band--cta + .index {
+      padding-top: var(--space-md);
+    }
+
+    .band-lede {
+      font-family: var(--font-display);
+      font-style: normal;
+      font-size: var(--text-2xl);
+      font-weight: 600;
+      letter-spacing: -0.03em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      max-width: 22ch;
+      overflow-wrap: anywhere;
+      min-width: 0;
+    }
+
+    .band-lede .gold {
+      color: var(--color-accent);
+    }
+
+    .band-lede--cta {
+      max-width: 28ch;
+    }
+
+    .band-body {
+      margin-top: var(--space-sm);
+      font-size: var(--text-md);
+      color: var(--color-ink-2);
+      max-width: 42ch;
+    }
+
+    /* Install band: lede left · press links right */
+    .band-install {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.9fr);
+      gap: var(--space-xl) var(--space-2xl);
+      align-items: stretch;
+    }
+
+    .band-install__main {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .install-row {
+      margin-top: var(--space-md);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--space-2xs);
     }
 
     .install-bar {
-      margin-top: 28px;
       display: inline-flex;
       align-items: center;
-      gap: 12px;
-      padding: 10px 16px;
-      background: var(--bg-surface);
-      border: 1px solid var(--border-default);
-      border-radius: 8px;
+      gap: var(--space-xs);
+      padding: 10px 14px;
+      background: var(--color-paper-2);
+      border: var(--rule-hair) solid var(--color-rule-strong);
+      border-radius: var(--radius-md);
+      min-width: 0;
     }
 
     .install-prompt {
-      color: var(--text-tertiary);
+      color: var(--color-ink-3);
       font-family: var(--font-mono);
-      font-size: 13px;
+      font-size: var(--text-sm);
       user-select: none;
     }
 
     .install-cmd {
       font-family: var(--font-mono);
-      font-size: 13px;
-      color: var(--text-primary);
+      font-size: var(--text-sm);
+      color: var(--color-ink);
       letter-spacing: 0.01em;
     }
 
     .install-copy {
-      padding: 4px 10px;
-      font-size: 12px;
-      font-weight: 500;
-      color: var(--text-secondary);
-      border: 1px solid var(--border-default);
-      border-radius: 5px;
-      transition: all 0.15s;
+      padding: 5px 11px;
+      font-family: var(--font-display);
+      font-size: var(--text-xs);
+      font-weight: 600;
+      color: var(--color-ink-2);
+      border: var(--rule-hair) solid var(--color-rule-strong);
+      border-radius: var(--radius-sm);
+      transition: color var(--dur-short), background var(--dur-short), border-color var(--dur-short);
+      white-space: nowrap;
     }
 
     .install-copy:hover {
-      color: var(--brand-gold);
-      border-color: var(--brand-gold-soft);
-      background: var(--brand-gold-soft);
+      color: var(--color-accent);
+      border-color: var(--color-accent-soft);
+      background: var(--color-accent-soft);
     }
 
-    .install-copy.copied {
-      color: var(--brand-gold);
+    .install-copy:active { transform: translateY(1px); }
+
+    .install-copy.is-copied {
+      color: var(--color-accent);
       border-color: transparent;
-      background: var(--brand-gold-soft);
+      background: var(--color-accent-soft);
     }
 
-    /* ── Filters ── */
-    .filters {
+    /* Hallmark · component: seen-on chips · genre: atmospheric · theme: ChartGPU dark
+     * states: default · hover · focus · active
+     * contrast: pass
+     */
+    .seen-on {
+      min-width: 0;
+      justify-self: end;
+      width: 100%;
+      max-width: 20rem;
+      display: flex;
+      flex-direction: column;
+      min-height: 100%;
+    }
+
+    .seen-on__label {
+      font-family: var(--font-display);
+      font-style: normal;
+      font-size: var(--text-xs);
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--color-ink-3);
+      margin-bottom: var(--space-2xs);
+      flex: 0 0 auto;
+    }
+
+    .seen-on__list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      gap: var(--space-2xs);
+      margin: 0;
+      padding: 0;
+      min-height: 0;
+    }
+
+    .seen-on__list > li {
+      flex: 1 1 0;
+      display: flex;
+      min-height: 0;
+    }
+
+    .seen-on__link {
+      display: flex;
+      align-items: center;
+      gap: var(--space-xs);
+      width: 100%;
+      min-width: 0;
+      min-height: 3.25rem;
+      padding: 12px 16px;
+      background: var(--color-paper-2);
+      border: var(--rule-hair) solid var(--color-rule-strong);
+      border-radius: var(--radius-md);
+      color: var(--color-ink);
+      font-family: var(--font-display);
+      font-size: var(--text-md);
+      font-weight: 500;
+      letter-spacing: -0.01em;
+      line-height: 1.2;
+      white-space: nowrap;
+      transition:
+        color var(--dur-short) var(--ease-out),
+        background var(--dur-short) var(--ease-out),
+        border-color var(--dur-short) var(--ease-out);
+    }
+
+    .seen-on__link:hover {
+      color: var(--color-accent);
+      border-color: var(--color-accent-soft);
+      background: var(--color-accent-soft);
+    }
+
+    .seen-on__link:active {
+      transform: translateY(1px);
+    }
+
+    .seen-on__icon {
+      flex: 0 0 auto;
+      width: 24px;
+      height: 24px;
+      border-radius: 5px;
+      object-fit: contain;
+    }
+
+    .seen-on__mark {
+      flex: 0 0 auto;
+      width: 24px;
+      height: 24px;
+      border-radius: 5px;
+      display: grid;
+      place-items: center;
+      font-family: var(--font-display);
+      font-size: 0.78rem;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: -0.02em;
+    }
+
+    .seen-on__mark--hn {
+      background: #ff6600;
+      color: #fff;
+    }
+
+    .seen-on__mark--awesome {
+      background: oklch(55% 0.14 145);
+      color: #fff;
+      font-size: 0.72rem;
+    }
+
+    .seen-on__text {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ── Example index (secondary — charts led; this is the map) ── */
+    .index {
+      position: relative;
+      z-index: 1;
+      padding: var(--space-2xl) var(--page-gutter) var(--space-xl);
       max-width: var(--max-width);
       margin: 0 auto;
-      padding: 0 48px;
-      margin-top: 48px;
-      border-bottom: 1px solid var(--border-subtle);
+      min-width: 0;
+    }
+
+    .index-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: var(--space-sm);
+      margin-bottom: var(--space-md);
+      min-width: 0;
+    }
+
+    .index-title {
+      font-family: var(--font-display);
+      font-style: normal;
+      font-size: var(--text-xl);
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      overflow-wrap: anywhere;
+      min-width: 0;
+    }
+
+    .index-count {
+      font-family: var(--font-mono);
+      font-size: var(--text-xs);
+      color: var(--color-ink-3);
+    }
+
+    .filters {
       display: flex;
       gap: 0;
       overflow-x: auto;
       scrollbar-width: none;
+      border-bottom: var(--rule-hair) solid var(--color-rule);
+      margin-bottom: var(--space-md);
     }
 
     .filters::-webkit-scrollbar { display: none; }
 
     .filter-tab {
-      padding: 10px 16px 12px;
+      padding: 10px 14px 12px;
       font-family: var(--font-display);
-      font-size: 13px;
+      font-size: var(--text-sm);
       font-weight: 500;
-      color: var(--text-tertiary);
+      color: var(--color-ink-3);
       white-space: nowrap;
       border-bottom: 2px solid transparent;
       margin-bottom: -1px;
-      transition: color 0.2s, border-color 0.2s;
+      transition: color var(--dur-short), border-color var(--dur-short);
     }
 
-    .filter-tab:hover {
-      color: var(--text-secondary);
-    }
+    .filter-tab:hover { color: var(--color-ink-2); }
 
     .filter-tab.active {
-      color: var(--text-primary);
-      border-bottom-color: var(--brand-gold);
+      color: var(--color-ink);
+      border-bottom-color: var(--color-accent);
     }
 
     .filter-count {
-      font-size: 11px;
-      color: var(--text-tertiary);
+      font-size: var(--text-xs);
+      color: var(--color-ink-3);
       margin-left: 4px;
     }
 
-    .filter-tab.active .filter-count {
-      color: var(--text-secondary);
-    }
-
-    /* ── Gallery ── */
-    .gallery {
-      max-width: var(--max-width);
-      margin: 0 auto;
-      padding: 32px 48px 80px;
-    }
+    .filter-tab.active .filter-count { color: var(--color-ink-2); }
 
     .gallery-grid {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 16px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: var(--space-xs);
     }
 
-    /* ── Card ── */
     .card {
       display: flex;
       flex-direction: column;
-      padding: 24px;
-      background: var(--bg-surface);
-      border: 1px solid var(--border-subtle);
-      border-radius: 10px;
-      transition: border-color 0.2s, background 0.2s, transform 0.25s var(--ease-out), opacity 0.3s;
+      padding: var(--space-md);
+      background: var(--color-paper-2);
+      border: var(--rule-hair) solid var(--color-rule);
+      border-radius: var(--radius-md);
+      transition: border-color var(--dur-short), background var(--dur-short), transform var(--dur-mid) var(--ease-out);
       cursor: pointer;
       position: relative;
+      min-width: 0;
     }
 
     .card:hover {
-      border-color: rgba(212, 165, 32, 0.15);
-      background: rgba(212, 165, 32, 0.025);
+      border-color: var(--color-accent-soft);
+      background: var(--color-accent-soft);
       transform: translateY(-2px);
     }
 
-    .card:focus-visible {
-      outline: 2px solid var(--brand-gold);
-      outline-offset: 2px;
-    }
-
-    .card:active {
-      transform: translateY(0);
-    }
+    .card:active { transform: translateY(0); }
 
     .card-category {
       font-family: var(--font-display);
@@ -296,60 +773,88 @@
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.08em;
-      color: var(--text-tertiary);
-      margin-bottom: 10px;
+      color: var(--color-ink-3);
+      margin-bottom: var(--space-2xs);
     }
 
     .card-title {
       font-family: var(--font-display);
-      font-size: 16px;
+      font-style: normal;
+      font-size: var(--text-md);
       font-weight: 600;
-      color: var(--text-primary);
+      color: var(--color-ink);
       letter-spacing: -0.01em;
-      margin-bottom: 6px;
-      transition: color 0.2s;
-    }
-
-    .card:hover .card-title {
-      color: #fff;
+      margin-bottom: 4px;
+      overflow-wrap: anywhere;
+      min-width: 0;
     }
 
     .card-desc {
-      font-size: 13px;
-      color: var(--text-secondary);
-      line-height: 1.5;
+      font-size: var(--text-sm);
+      color: var(--color-ink-2);
+      line-height: 1.45;
       flex: 1;
     }
 
-    .card-arrow {
-      position: absolute;
-      top: 24px;
-      right: 24px;
-      width: 16px;
-      height: 16px;
-      color: var(--text-tertiary);
-      opacity: 0;
-      transform: translate(-4px, 4px);
-      transition: opacity 0.2s, transform 0.2s var(--ease-out);
+    /* ── Ft5 Statement footer ── */
+    .foot-stmt {
+      position: relative;
+      z-index: 1;
+      padding: var(--space-2xl) var(--page-gutter) var(--space-xl);
+      max-width: var(--max-width);
+      margin: 0 auto;
+      display: grid;
+      gap: var(--space-lg);
+      min-width: 0;
     }
 
-    .card:hover .card-arrow {
-      opacity: 1;
-      transform: translate(0, 0);
+    .foot-stmt__line {
+      font-family: var(--font-display);
+      font-style: normal;
+      font-size: clamp(1.75rem, 5vw, 3rem);
+      font-weight: 600;
+      line-height: 1.05;
+      letter-spacing: -0.03em;
+      max-width: 18ch;
+      color: var(--color-ink);
+      overflow-wrap: anywhere;
+      min-width: 0;
     }
 
-    .card.hidden {
-      display: none;
+    .foot-stmt__meta {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: var(--space-sm);
+      padding-block-start: var(--space-sm);
+      border-top: var(--rule-hair) solid var(--color-rule);
+      font-size: var(--text-xs);
+      color: var(--color-ink-3);
     }
 
-    /* ── Viewer overlay ── */
+    .foot-stmt__meta a {
+      color: var(--color-ink-2);
+      transition: color var(--dur-short);
+      white-space: nowrap;
+    }
+
+    .foot-stmt__meta a:hover { color: var(--color-accent); }
+
+    .foot-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-sm);
+    }
+
+    /* ── Viewer ── */
     .viewer {
       position: fixed;
       inset: 0;
-      z-index: 200;
+      z-index: var(--z-viewer);
       opacity: 0;
       visibility: hidden;
-      transition: opacity 0.25s var(--ease-out), visibility 0.25s;
+      transition: opacity var(--dur-mid) var(--ease-out), visibility var(--dur-mid);
     }
 
     .viewer.active {
@@ -360,7 +865,7 @@
     .viewer-backdrop {
       position: absolute;
       inset: 0;
-      background: rgba(0, 0, 0, 0.7);
+      background: var(--color-overlay);
     }
 
     .viewer-panel {
@@ -368,23 +873,22 @@
       inset: 0;
       display: flex;
       flex-direction: column;
-      background: var(--bg-base);
-      transform: scale(0.97);
-      transition: transform 0.25s var(--ease-out);
+      background: var(--color-paper);
+      transform: scale(0.98);
+      transition: transform var(--dur-mid) var(--ease-out);
     }
 
-    .viewer.active .viewer-panel {
-      transform: scale(1);
-    }
+    .viewer.active .viewer-panel { transform: scale(1); }
 
     .viewer-header {
       display: flex;
       align-items: center;
-      gap: 16px;
-      padding: 0 20px;
+      gap: var(--space-sm);
+      padding: 0 var(--space-sm);
       height: 52px;
-      border-bottom: 1px solid var(--border-subtle);
+      border-bottom: var(--rule-hair) solid var(--color-rule);
       flex-shrink: 0;
+      min-width: 0;
     }
 
     .viewer-back {
@@ -393,16 +897,17 @@
       gap: 6px;
       padding: 6px 12px;
       font-family: var(--font-display);
-      font-size: 13px;
+      font-size: var(--text-sm);
       font-weight: 500;
-      color: var(--text-secondary);
-      border-radius: 6px;
-      transition: color 0.15s, background 0.15s;
+      color: var(--color-ink-2);
+      border-radius: var(--radius-sm);
+      white-space: nowrap;
+      transition: color var(--dur-short), background var(--dur-short);
     }
 
     .viewer-back:hover {
-      color: var(--text-primary);
-      background: var(--bg-elevated);
+      color: var(--color-ink);
+      background: var(--color-paper-3);
     }
 
     .viewer-back svg {
@@ -417,9 +922,13 @@
 
     .viewer-title {
       font-family: var(--font-display);
-      font-size: 14px;
+      font-size: var(--text-sm);
       font-weight: 600;
-      color: var(--text-primary);
+      color: var(--color-ink);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .viewer-category {
@@ -428,22 +937,22 @@
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.08em;
-      color: var(--text-tertiary);
+      color: var(--color-ink-3);
       padding: 3px 8px;
-      border: 1px solid var(--border-subtle);
+      border: var(--rule-hair) solid var(--color-rule);
       border-radius: 4px;
+      white-space: nowrap;
     }
 
     .viewer-spacer { flex: 1; }
 
     .viewer-esc {
       font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--text-tertiary);
+      font-size: var(--text-xs);
+      color: var(--color-ink-3);
       padding: 3px 7px;
-      border: 1px solid var(--border-subtle);
+      border: var(--rule-hair) solid var(--color-rule);
       border-radius: 4px;
-      margin-right: 8px;
     }
 
     .viewer-newtab {
@@ -451,16 +960,17 @@
       align-items: center;
       gap: 5px;
       padding: 6px 12px;
-      font-size: 13px;
+      font-size: var(--text-sm);
       font-weight: 500;
-      color: var(--text-secondary);
-      border-radius: 6px;
-      transition: color 0.15s, background 0.15s;
+      color: var(--color-ink-2);
+      border-radius: var(--radius-sm);
+      white-space: nowrap;
+      transition: color var(--dur-short), background var(--dur-short);
     }
 
     .viewer-newtab:hover {
-      color: var(--text-primary);
-      background: var(--bg-elevated);
+      color: var(--color-ink);
+      background: var(--color-paper-3);
     }
 
     .viewer-newtab svg {
@@ -477,169 +987,288 @@
       flex: 1;
       width: 100%;
       border: none;
-      background: var(--bg-base);
+      background: var(--color-paper);
     }
 
-    /* ── Footer ── */
-    .footer {
-      max-width: var(--max-width);
-      margin: 0 auto;
-      padding: 0 48px 40px;
-      font-size: 12px;
-      color: var(--text-tertiary);
-      display: flex;
-      align-items: center;
-      gap: 6px;
+    /* WebGPU gate */
+    .gpu-banner {
+      position: relative;
+      z-index: 1;
+      margin: calc(var(--nav-height) + var(--space-sm)) var(--page-gutter) 0;
+      padding: var(--space-sm) var(--space-md);
+      background: var(--color-accent-soft);
+      border: var(--rule-hair) solid var(--color-accent-soft);
+      border-radius: var(--radius-md);
+      font-size: var(--text-sm);
+      color: var(--color-ink);
+      display: none;
     }
 
-    .footer a {
-      color: var(--text-secondary);
-      transition: color 0.15s;
+    .gpu-banner.is-visible { display: block; }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .card:hover { transform: none; }
+      .viewer-panel { transition: none; transform: none; }
     }
 
-    .footer a:hover {
-      color: var(--brand-gold);
-    }
-
-    .footer-dot {
-      margin: 0 4px;
-    }
-
-    /* ── Entrance animation ── */
-    @media (prefers-reduced-motion: no-preference) {
-      .animate-in {
-        opacity: 0;
-        transform: translateY(10px);
-        animation: fadeInUp 0.6s var(--ease-out) forwards;
+    @media (max-width: 900px) {
+      .band-install {
+        grid-template-columns: minmax(0, 1fr);
+        gap: var(--space-lg);
+        align-items: start;
       }
 
-      @keyframes fadeInUp {
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
+      .seen-on {
+        justify-self: start;
+        max-width: none;
+        min-height: 0;
+        padding-top: var(--space-xs);
+        border-top: var(--rule-hair) solid var(--color-rule);
       }
-    }
 
-    /* ── Responsive ── */
-    @media (max-width: 960px) {
+      .seen-on__list > li {
+        flex: 0 0 auto;
+      }
+
+      .plate--split {
+        grid-template-columns: 1fr;
+      }
+
+      .plate-panel {
+        min-height: 55vh;
+        min-height: 55dvh;
+      }
+
+      .plate--wall {
+        min-height: 160vh;
+        min-height: 160dvh;
+      }
+
+      .plate--wall .plate-canvas.wall-grid {
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        grid-template-rows: repeat(14, minmax(0, 1fr));
+      }
+
+      .wall-cell--apm     { grid-column: 1 / 7;  grid-row: 1 / 4; }
+      .wall-cell--trade   { grid-column: 1 / 7;  grid-row: 4 / 6; }
+      .wall-cell--stack   { grid-column: 1 / 4;  grid-row: 6 / 8; }
+      .wall-cell--pool    { grid-column: 4 / 7;  grid-row: 6 / 8; }
+      .wall-cell--scatter { grid-column: 1 / 4;  grid-row: 8 / 10; }
+      .wall-cell--pie     { grid-column: 4 / 7;  grid-row: 8 / 10; }
+      .wall-cell--errors  { grid-column: 1 / 4;  grid-row: 10 / 12; }
+      .wall-cell--combo   { grid-column: 4 / 7;  grid-row: 10 / 12; }
+
+      .plate--wall .plate-caption {
+        top: auto;
+        bottom: var(--space-md);
+        left: var(--page-gutter);
+        right: auto;
+        text-align: left;
+      }
+
       .gallery-grid {
-        grid-template-columns: repeat(2, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
     }
 
     @media (max-width: 700px) {
-      .header-inner {
-        padding: 0 20px;
-        gap: 12px;
-      }
-
-      .header-link span { display: none; }
-
-      .intro {
-        padding: 40px 20px 0;
-      }
-
-      .intro-sub {
-        font-size: 14px;
-      }
-
-      .install-bar {
-        width: 100%;
-        justify-content: space-between;
-      }
-
-      .filters {
-        padding: 0 20px;
-        margin-top: 36px;
-      }
-
-      .gallery {
-        padding: 24px 20px 64px;
-      }
+      .nav-link span { display: none; }
+      .nav-version { display: none; }
+      .nav-cta { display: none; }
 
       .gallery-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: minmax(0, 1fr);
       }
-
-      .footer {
-        padding: 0 20px 32px;
-      }
-    }
-
-    @media (max-width: 480px) {
-      .install-bar {
-        flex-wrap: wrap;
-        gap: 8px;
-      }
-
-      .install-prompt { display: none; }
-
-      .install-cmd { font-size: 12px; }
-
-      .version-badge { display: none; }
 
       .viewer-category,
       .viewer-esc { display: none; }
+
+      .plate-caption {
+        bottom: var(--space-md);
+      }
+
+      .plate-title {
+        font-size: var(--text-lg);
+      }
     }
   </style>
 </head>
 <body>
 
-  <header class="header">
-    <div class="header-inner">
-      <a href="/" class="logo-link">
-        <img src="../docs/assets/chartgpu.png" alt="ChartGPU" height="28">
+  <nav class="nav" aria-label="Primary">
+    <a href="./" class="nav-brand" id="navBrand">
+      <img id="navLogo" alt="ChartGPU" height="26" width="auto">
+      <span class="nav-version">v0.3.4</span>
+    </a>
+    <div class="nav-actions">
+      <a href="https://www.npmjs.com/package/@chartgpu/chartgpu" class="nav-link" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path fill="currentColor" fill-rule="evenodd" d="M0 0v16h16V0H0zm13 13h-2V5H8v8H3V3h10v10z"/>
+        </svg>
+        <span>npm</span>
       </a>
-      <span class="version-badge">v0.3.2</span>
-      <div class="header-spacer"></div>
-      <div class="header-links">
-        <a href="https://www.npmjs.com/package/@chartgpu/chartgpu" class="header-link" target="_blank" rel="noopener">
-          <svg viewBox="0 0 16 16"><path d="M0 0v16h16V0H0zm13 13H8V5h2.5v5.5H13V3H3v10z"/></svg>
-          <span>npm</span>
-        </a>
-        <a href="https://github.com/ChartGPU/ChartGPU" class="header-link" target="_blank" rel="noopener">
-          <svg viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.17 6.839 9.49.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.167 22 16.418 22 12c0-5.523-4.477-10-10-10z"/></svg>
-          <span>GitHub</span>
-        </a>
-      </div>
+      <a href="https://github.com/ChartGPU/ChartGPU" class="nav-link" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.17 6.839 9.49.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.167 22 16.418 22 12c0-5.523-4.477-10-10-10z"/></svg>
+        <span>GitHub</span>
+      </a>
+      <a href="#examples" class="nav-cta">All demos</a>
     </div>
-  </header>
-
-  <section class="intro">
-    <h1 class="intro-tagline animate-in">GPU-accelerated charts for the <span class="gold">modern web</span></h1>
-    <p class="intro-sub animate-in" style="animation-delay: 60ms">WebGPU-native rendering. Million-point datasets at 60fps. MIT licensed.</p>
-    <div class="install-bar animate-in" style="animation-delay: 120ms">
-      <span class="install-prompt">$</span>
-      <code class="install-cmd">npm install @chartgpu/chartgpu</code>
-      <button class="install-copy" id="copyBtn" aria-label="Copy install command">Copy</button>
-    </div>
-  </section>
-
-  <nav class="filters animate-in" style="animation-delay: 180ms" id="filters" role="tablist" aria-label="Filter examples by category">
   </nav>
 
-  <section class="gallery">
-    <div class="gallery-grid" id="gallery">
+  <div class="gpu-banner" id="gpuBanner" role="status">
+    WebGPU is not available in this browser. Live plates need Chrome/Edge 113+ or Safari 18+. The example index below still works.
+  </div>
+
+  <!-- Full-viewport interference field -->
+  <section class="plate plate--hero" id="plate-aurora" data-demo="aurora" aria-label="Streaming multi-series field">
+    <div class="plate-canvas" data-canvas></div>
+    <div class="plate-status" data-status>Waiting for GPU…</div>
+    <div class="plate-caption">
+      <p class="plate-meta">Live stream</p>
+      <h1 class="plate-title">1000 series streaming. It can do this all day.</h1>
+      <p class="plate-note">See what you can do below 👇</p>
     </div>
   </section>
 
-  <footer class="footer">
-    <span>ChartGPU v0.3.2</span>
-    <span class="footer-dot">&middot;</span>
-    <span>MIT License</span>
-    <span class="footer-dot">&middot;</span>
-    <a href="https://github.com/ChartGPU/ChartGPU" target="_blank" rel="noopener">GitHub</a>
-    <span class="footer-dot">&middot;</span>
-    <a href="https://www.npmjs.com/package/@chartgpu/chartgpu" target="_blank" rel="noopener">npm</a>
+  <section class="band band--tight">
+    <div class="band-install">
+      <div class="band-install__main">
+        <p class="band-lede"><span class="gold">WebGPU</span> charts for dense data visualization needs.</p>
+        <p class="band-body">MIT licensed and completely open source.</p>
+        <div class="install-row">
+          <div class="install-bar">
+            <span class="install-prompt">$</span>
+            <code class="install-cmd">npm install @chartgpu/chartgpu</code>
+            <button class="install-copy" type="button" aria-label="Copy install command">Copy</button>
+          </div>
+        </div>
+      </div>
+
+      <aside class="seen-on" aria-label="As seen on">
+        <p class="seen-on__label">As seen on</p>
+        <ul class="seen-on__list">
+          <li>
+            <a
+              class="seen-on__link"
+              href="https://www.webgpu.com/showcase/chartgpu-webgpu-charts/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <img
+                class="seen-on__icon"
+                id="webgpuComIcon"
+                alt=""
+                width="24"
+                height="24"
+                decoding="async"
+              >
+              <span class="seen-on__text">WebGPU.com showcase</span>
+            </a>
+          </li>
+          <li>
+            <a
+              class="seen-on__link"
+              href="https://news.ycombinator.com/item?id=46706528"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <span class="seen-on__mark seen-on__mark--hn" aria-hidden="true">Y</span>
+              <span class="seen-on__text">Hacker News</span>
+            </a>
+          </li>
+          <li>
+            <a
+              class="seen-on__link"
+              href="https://github.com/mikbry/awesome-webgpu"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <span class="seen-on__mark seen-on__mark--awesome" aria-hidden="true">★</span>
+              <span class="seen-on__text">Awesome WebGPU</span>
+            </a>
+          </li>
+        </ul>
+      </aside>
+    </div>
+  </section>
+
+  <!-- Density -->
+  <section class="plate plate--tall" id="plate-density" data-demo="density" aria-label="Scatter density heatmap">
+    <div class="plate-canvas" data-canvas></div>
+    <div class="plate-status" data-status>Binning points…</div>
+    <div class="plate-caption plate-caption--tr">
+      <p class="plate-meta">GPU density</p>
+      <h2 class="plate-title">One million points. Binned on the device.</h2>
+      <p class="plate-note">Scatter density heatmap — compute-side binning, not CPU canvas stamps.</p>
+    </div>
+  </section>
+
+  <!-- Mountain + bars diptych -->
+  <section class="plate plate--split" aria-label="Streaming area mountain and stacked bar charts">
+    <div class="plate-panel" id="plate-mountain" data-demo="mountain">
+      <div class="plate-canvas" data-canvas></div>
+      <div class="plate-status" data-status>Filling series…</div>
+      <div class="plate-caption">
+        <p class="plate-meta">64 area series</p>
+        <h2 class="plate-title">Streaming mountain fills.</h2>
+        <p class="plate-note">Dozens of translucent series appending every frame.</p>
+      </div>
+    </div>
+    <div class="plate-panel" id="plate-bars" data-demo="bars">
+      <div class="plate-canvas" data-canvas></div>
+      <div class="plate-status" data-status>Stacking…</div>
+      <div class="plate-caption">
+        <p class="plate-meta">Stacked bar</p>
+        <h2 class="plate-title">Negative + positive stacks</h2>
+      </div>
+    </div>
+  </section>
+
+  <!-- Finale: multi-chart wall — complete multi-series panels on shared GPU -->
+  <section class="plate plate--wall" id="plate-wall" data-demo="wall" aria-label="Multi-chart wall finale">
+    <div class="plate-canvas wall-grid" data-canvas></div>
+    <div class="plate-status" data-status>Preparing panels…</div>
+  </section>
+
+  <section class="band band--tight band--cta">
+    <p class="band-lede band-lede--cta"><span class="gold">Ready</span> to create your own?</p>
+    <div class="install-row">
+      <div class="install-bar">
+        <span class="install-prompt">$</span>
+        <code class="install-cmd">npm install @chartgpu/chartgpu</code>
+        <button class="install-copy" type="button" aria-label="Copy install command">Copy</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Example index -->
+  <section class="index" id="examples">
+    <div class="index-head">
+      <h2 class="index-title">Full example index</h2>
+      <span class="index-count" id="indexCount"></span>
+    </div>
+    <nav class="filters" id="filters" role="tablist" aria-label="Filter examples by category"></nav>
+    <div class="gallery-grid" id="gallery"></div>
+  </section>
+
+  <footer class="foot-stmt">
+    <p class="foot-stmt__line">WebGPU charting for dense data needs.</p>
+    <div class="foot-stmt__meta">
+      <span>ChartGPU v0.3.4 · MIT</span>
+      <div class="foot-links">
+        <a href="https://github.com/ChartGPU/ChartGPU" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://www.npmjs.com/package/@chartgpu/chartgpu" target="_blank" rel="noopener">npm</a>
+      </div>
+    </div>
   </footer>
 
   <div class="viewer" id="viewer" aria-hidden="true">
     <div class="viewer-backdrop" id="viewerBackdrop"></div>
     <div class="viewer-panel">
       <div class="viewer-header">
-        <button class="viewer-back" id="viewerBack">
-          <svg viewBox="0 0 14 14"><polyline points="9 2 4 7 9 12"/></svg>
+        <button class="viewer-back" id="viewerBack" type="button">
+          <svg viewBox="0 0 14 14" aria-hidden="true"><polyline points="9 2 4 7 9 12"/></svg>
           Back
         </button>
         <span class="viewer-title" id="viewerTitle"></span>
@@ -648,169 +1277,13 @@
         <span class="viewer-esc">Esc</span>
         <a class="viewer-newtab" id="viewerNewTab" target="_blank" rel="noopener">
           Open
-          <svg viewBox="0 0 14 14"><polyline points="6 2 12 2 12 8"/><line x1="12" y1="2" x2="5" y2="9"/></svg>
+          <svg viewBox="0 0 14 14" aria-hidden="true"><polyline points="6 2 12 2 12 8"/><line x1="12" y1="2" x2="5" y2="9"/></svg>
         </a>
       </div>
       <iframe class="viewer-iframe" id="viewerIframe" title="Example preview" loading="lazy"></iframe>
     </div>
   </div>
 
-  <script>
-    const examples = [
-      { id: 'streaming-dashboard', title: 'Streaming Dashboard', desc: 'Five-chart APM dashboard with live latency percentiles, throughput, and real-time annotations', category: 'streaming', path: '/examples/streaming-dashboard/index.html' },
-      { id: 'candlestick-streaming', title: 'Candlestick Streaming', desc: 'Crypto trading terminal with live tick simulation and real-time candle aggregation', category: 'streaming', path: '/examples/candlestick-streaming/index.html' },
-      { id: 'scatter-density-1m', title: 'Scatter Density 1M', desc: 'One million points rendered as a GPU-binned density heatmap with colormap controls', category: 'performance', path: '/examples/scatter-density-1m/index.html' },
-      { id: 'basic-line', title: 'Basic Line', desc: 'Sine wave line chart with grid, axes, and tooltip interaction', category: 'series', path: '/examples/basic-line/index.html' },
-      { id: 'candlestick', title: 'Candlestick', desc: 'Financial OHLC chart with classic and hollow style toggle', category: 'series', path: '/examples/candlestick/index.html' },
-      { id: 'scatter', title: 'Scatter Plot', desc: 'Fixed size, per-point size, and dynamic size function variants', category: 'series', path: '/examples/scatter/index.html' },
-      { id: 'grouped-bar', title: 'Grouped & Stacked Bar', desc: 'Clustered bars with stacking, custom widths, and negative values', category: 'series', path: '/examples/grouped-bar/index.html' },
-      { id: 'pie', title: 'Pie & Donut', desc: 'Pie chart and donut chart with per-slice colors', category: 'series', path: '/examples/pie/index.html' },
-      { id: 'live-streaming', title: 'Live Streaming', desc: 'Streaming appendData with autoScroll toggle and dataZoom slider', category: 'streaming', path: '/examples/live-streaming/index.html' },
-      { id: 'million-points', title: 'Million Points', desc: '1M point benchmark with sampling toggle and FPS comparison', category: 'performance', path: '/examples/million-points/index.html' },
-      { id: 'ultimate-benchmark', title: 'Ultimate Benchmark', desc: 'Multi-series stress test with FPS, frame-time metrics, and streaming append', category: 'performance', path: '/examples/ultimate-benchmark/index.html' },
-      { id: 'sampling', title: 'Zoom-Aware Sampling', desc: 'Zoom in for detail, zoom out for performance with debounced re-sampling', category: 'performance', path: '/examples/sampling/index.html' },
-      { id: 'interactive', title: 'Interactive', desc: 'Synced crosshair and axis tooltip across two stacked charts with click logging', category: 'interaction', path: '/examples/interactive/index.html' },
-      { id: 'chart-sync', title: 'Chart Sync', desc: 'Two charts with synced crosshair position and axis tooltip values', category: 'interaction', path: '/examples/chart-sync/index.html' },
-      { id: 'annotation-authoring', title: 'Annotations', desc: 'Reference lines, point markers, text annotations with authoring and JSON export', category: 'interaction', path: '/examples/annotation-authoring/index.html' },
-      { id: 'exchange-gaps', title: 'Exchange Gaps', desc: 'Null gap entries for maintenance windows with connectNulls toggle', category: 'interaction', path: '/examples/exchange-gaps/index.html' },
-      { id: 'data-update-animation', title: 'Data Update Animation', desc: 'Animated transitions for y-values, scales, and pie slice angles', category: 'animation', path: '/examples/data-update-animation/index.html' },
-      { id: 'multi-series-animation', title: 'Multi-Series Animation', desc: 'Line, bar, scatter, and area series animating together on data update', category: 'animation', path: '/examples/multi-series-animation/index.html' },
-      { id: 'tick-formatter', title: 'Custom Tick Formatter', desc: 'Percentage, duration, locale time, and integer-only formatting', category: 'config', path: '/examples/tick-formatter/index.html' },
-      { id: 'external-render-mode', title: 'External Render Mode', desc: 'Application-controlled rendering with shared rAF loop and mode switching', category: 'config', path: '/examples/external-render-mode/index.html' },
-      { id: 'cartesian-data-formats', title: 'Data Formats', desc: 'XYArraysData, InterleavedXYData, and array-of-objects with 100k points', category: 'config', path: '/examples/cartesian-data-formats/index.html' },
-      { id: 'grid-test', title: 'Grid Renderer', desc: 'Configurable grid line counts for horizontal and vertical axes', category: 'config', path: '/examples/grid-test/index.html' },
-      { id: 'hello-world', title: 'Hello World', desc: 'Raw WebGPU clear color cycling through the color spectrum', category: 'config', path: '/examples/hello-world/index.html' },
-    ];
-
-    const categories = [
-      { id: 'all', label: 'All' },
-      { id: 'series', label: 'Series' },
-      { id: 'streaming', label: 'Streaming' },
-      { id: 'performance', label: 'Performance' },
-      { id: 'interaction', label: 'Interaction' },
-      { id: 'animation', label: 'Animation' },
-      { id: 'config', label: 'Configuration' },
-    ];
-
-    const categoryLabels = {
-      series: 'Series',
-      streaming: 'Streaming',
-      performance: 'Performance',
-      interaction: 'Interaction',
-      animation: 'Animation',
-      config: 'Configuration',
-    };
-
-    const filtersEl = document.getElementById('filters');
-    const galleryEl = document.getElementById('gallery');
-    const viewerEl = document.getElementById('viewer');
-    const viewerIframe = document.getElementById('viewerIframe');
-    const viewerTitle = document.getElementById('viewerTitle');
-    const viewerCategory = document.getElementById('viewerCategory');
-    const viewerNewTab = document.getElementById('viewerNewTab');
-    const copyBtn = document.getElementById('copyBtn');
-
-    let activeCategory = 'all';
-
-    // ── Filters ──
-    categories.forEach(cat => {
-      const count = cat.id === 'all' ? examples.length : examples.filter(e => e.category === cat.id).length;
-      const btn = document.createElement('button');
-      btn.className = 'filter-tab' + (cat.id === 'all' ? ' active' : '');
-      btn.setAttribute('role', 'tab');
-      btn.setAttribute('aria-selected', cat.id === 'all' ? 'true' : 'false');
-      btn.dataset.category = cat.id;
-      btn.innerHTML = `${cat.label}<span class="filter-count">${count}</span>`;
-      btn.addEventListener('click', () => setFilter(cat.id));
-      filtersEl.appendChild(btn);
-    });
-
-    function setFilter(catId) {
-      activeCategory = catId;
-      filtersEl.querySelectorAll('.filter-tab').forEach(tab => {
-        const isActive = tab.dataset.category === catId;
-        tab.classList.toggle('active', isActive);
-        tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
-      });
-      renderGallery();
-    }
-
-    // ── Gallery ──
-    function renderGallery() {
-      const filtered = activeCategory === 'all' ? examples : examples.filter(e => e.category === activeCategory);
-      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-      galleryEl.innerHTML = '';
-      filtered.forEach((ex, i) => {
-        const card = document.createElement('a');
-        card.href = ex.path;
-        card.className = 'card';
-        if (!reducedMotion) {
-          card.classList.add('animate-in');
-          card.style.animationDelay = `${240 + i * 40}ms`;
-        }
-        card.dataset.id = ex.id;
-        card.innerHTML = `
-          <span class="card-category">${categoryLabels[ex.category]}</span>
-          <h3 class="card-title">${ex.title}</h3>
-          <p class="card-desc">${ex.desc}</p>
-          <svg class="card-arrow" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="3" y1="13" x2="13" y2="3"/><polyline points="6 3 13 3 13 10"/>
-          </svg>
-        `;
-        card.addEventListener('click', e => {
-          e.preventDefault();
-          openViewer(ex);
-        });
-        galleryEl.appendChild(card);
-      });
-    }
-
-    // ── Viewer ──
-    function openViewer(ex) {
-      viewerTitle.textContent = ex.title;
-      viewerCategory.textContent = categoryLabels[ex.category];
-      viewerNewTab.href = ex.path;
-      viewerIframe.src = ex.path;
-      viewerEl.classList.add('active');
-      viewerEl.setAttribute('aria-hidden', 'false');
-      document.body.style.overflow = 'hidden';
-    }
-
-    function closeViewer() {
-      viewerEl.classList.remove('active');
-      viewerEl.setAttribute('aria-hidden', 'true');
-      document.body.style.overflow = '';
-      setTimeout(() => { viewerIframe.src = 'about:blank'; }, 250);
-    }
-
-    document.getElementById('viewerBack').addEventListener('click', closeViewer);
-    document.getElementById('viewerBackdrop').addEventListener('click', closeViewer);
-
-    document.addEventListener('keydown', e => {
-      if (e.key === 'Escape' && viewerEl.classList.contains('active')) {
-        closeViewer();
-      }
-    });
-
-    // ── Copy ──
-    copyBtn.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText('npm install @chartgpu/chartgpu');
-        copyBtn.textContent = 'Copied';
-        copyBtn.classList.add('copied');
-        setTimeout(() => {
-          copyBtn.textContent = 'Copy';
-          copyBtn.classList.remove('copied');
-        }, 2000);
-      } catch {
-        copyBtn.textContent = 'Failed';
-        setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
-      }
-    });
-
-    // ── Init ──
-    renderGallery();
-  </script>
+  <script type="module" src="./main.ts"></script>
 </body>
 </html>
