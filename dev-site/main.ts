@@ -462,27 +462,46 @@ function generateCandles(count: number, startPrice: number): OHLCDataPoint[] {
 }
 
 async function mountCandles(container: HTMLElement): Promise<{ dispose: () => void }> {
+  const candleIntervalMs = 1_000;
   let data = generateCandles(120, 100);
-  const candleSeries = {
-    type: 'candlestick' as const,
-    name: 'MEME',
-    data,
-    itemStyle: {
-      upColor: LIME,
-      downColor: ROSE,
-      upBorderColor: LIME,
-      downBorderColor: ROSE,
-    },
-  };
+  // Simulated clock for priceLabel countdown — stable function identity across setOption.
+  let simulatedNowMs = (() => {
+    const last = data[data.length - 1];
+    return Array.isArray(last) ? last[0] + candleIntervalMs : Date.now();
+  })();
+  const priceLabelNowMs = (): number => simulatedNowMs;
 
+  const makeCandleSeries = (ohlc: OHLCDataPoint[]) =>
+    ({
+      type: 'candlestick' as const,
+      name: 'MEME/USD',
+      data: ohlc,
+      itemStyle: {
+        upColor: LIME,
+        downColor: ROSE,
+        upBorderColor: LIME,
+        downBorderColor: ROSE,
+      },
+      // Exchange-style last-price badge + bar-close countdown (main candle-primary API).
+      priceLabel: {
+        intervalMs: candleIntervalMs,
+        nowMs: priceLabelNowMs,
+      },
+    }) as const;
+
+  // Candle-primary: library places first Y on the right and soft gutters left=20 / right=70
+  // when left/right are unset. Do not pin grid left/right to plateChrome's 4px.
   const options: ChartGPUOptions = {
-    ...plateChrome(),
-    grid: { left: 4, right: 4, top: 16, bottom: 8 },
+    theme: 'dark',
+    tooltip: { show: false },
+    animation: false,
+    legend: { show: false },
+    grid: { top: 28, bottom: 12 },
     autoScroll: true,
     dataZoom: [{ type: 'inside', start: 40, end: 100 }],
     xAxis: { type: 'time', tickFormatter: hideTicks },
-    yAxis: { type: 'value', tickFormatter: hideTicks },
-    series: [candleSeries],
+    yAxis: { type: 'value', header: 'USD' },
+    series: [makeCandleSeries(data)],
   };
 
   const chart = await ChartGPU.create(container, options);
@@ -502,11 +521,12 @@ async function mountCandles(container: HTMLElement): Promise<{ dispose: () => vo
       const close = Math.max(1, open + (Math.random() - 0.48) * 2.2);
       const high = Math.max(open, close) + Math.random() * 0.7;
       const low = Math.min(open, close) - Math.random() * 0.7;
-      const next: OHLCDataPoint = [last[0] + 1000, open, close, low, high];
+      const next: OHLCDataPoint = [last[0] + candleIntervalMs, open, close, low, high];
       data = [...data.slice(-199), next];
+      simulatedNowMs = next[0] + candleIntervalMs * 0.35;
       chart.setOption({
         ...options,
-        series: [{ ...candleSeries, data }],
+        series: [makeCandleSeries(data)],
       });
     }, 280);
   }

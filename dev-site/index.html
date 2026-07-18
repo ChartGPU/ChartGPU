@@ -205,6 +205,7 @@
       height: 100%;
       background: var(--color-paper);
       min-width: 0;
+      overflow: hidden;
     }
 
     /* Hero plate: deeper midnight than other folds */
@@ -213,8 +214,12 @@
       background: #05060a;
     }
 
-    .plate-canvas > canvas,
-    .plate-canvas > div {
+    /* Only size the WebGPU canvas — never blanket-size every div.
+       Price labels, legends, and axis overlays are also direct children of the
+       chart host; width/height 100% turns the last-price badge into a full-panel
+       green slab that spills into the sibling plate. */
+    .plate-canvas > canvas {
+      display: block;
       width: 100% !important;
       height: 100% !important;
     }
@@ -225,11 +230,13 @@
       min-height: 70dvh;
       min-width: 0;
       background: var(--color-paper-2);
+      overflow: hidden;
     }
 
     .plate-panel .plate-canvas {
       position: absolute;
       inset: 0;
+      overflow: hidden;
     }
 
     /* Caption floats on the plate — photographic annotation, not marketing hero */
@@ -873,6 +880,7 @@
       <div class="plate-caption">
         <p class="plate-meta">Live OHLC</p>
         <h2 class="plate-title">Streaming candles</h2>
+        <p class="plate-note">Right price rail, last-price badge, bar-close countdown.</p>
         <a class="plate-link" href="/examples/candlestick-streaming/index.html" data-open-example="candlestick-streaming">Trading terminal</a>
       </div>
     </div>
