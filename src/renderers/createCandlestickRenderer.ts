@@ -222,6 +222,22 @@ const nearEqual = (a: number, b: number): boolean => Math.abs(a - b) <= 1e-9 * M
 type CandleGeometryCache = {
   readonly data: ResolvedCandlestickSeriesConfig['data'];
   /**
+   * Source array length. Streaming `appendData` mutates the coordinator-owned
+   * OHLC array in place (stable ref + growing length). Identity skip must miss
+   * when length changes or new candles never reach the instance buffer.
+   */
+  readonly dataLength: number;
+  /**
+   * Last candle OHLC fingerprint for equal-N in-place updates (forming candle
+   * via setOption on a stable data array). Axes-only prepares keep the same
+   * values so the skip still hits.
+   */
+  readonly lastTimestamp: number;
+  readonly lastOpen: number;
+  readonly lastClose: number;
+  readonly lastLow: number;
+  readonly lastHigh: number;
+  /**
    * Absolute domain origin subtracted from each instance `x` before Float32
    * upload. Large time-axis timestamps (ms epoch) lose spacing as f32; packing
    * relative to this origin keeps candle x separable. VS transform bakes it
@@ -239,6 +255,28 @@ type CandleGeometryCache = {
   readonly backgroundColor: string | undefined;
   readonly instanceCount: number;
   readonly hollowInstanceCount: number;
+};
+
+/** Last candle OHLC for geometry-cache content fingerprint (or NaNs when empty). */
+const lastCandleFingerprint = (
+  data: ResolvedCandlestickSeriesConfig['data']
+): {
+  readonly timestamp: number;
+  readonly open: number;
+  readonly close: number;
+  readonly low: number;
+  readonly high: number;
+} => {
+  if (data.length === 0) {
+    return {
+      timestamp: Number.NaN,
+      open: Number.NaN,
+      close: Number.NaN,
+      low: Number.NaN,
+      high: Number.NaN,
+    };
+  }
+  return getOHLC(data[data.length - 1]!);
 };
 
 /** First finite OHLC timestamp — packing origin for f32 domain x. */
@@ -442,12 +480,21 @@ export function createCandlestickRenderer(
     const upBorderKey = series.itemStyle.upBorderColor;
     const downBorderKey = series.itemStyle.downBorderColor;
 
-    // Geometry identity skip: same data + domain layout → no instance rewrite.
-    // Policy verb shared via seriesResidency (issue 3.4).
+    // Geometry identity skip: same data ref + domain layout → no instance rewrite.
+    // Also require stable length and last-candle OHLC so streaming append
+    // (in-place push) and forming-candle setOption (mutate last bar) re-upload.
+    // Policy verb shared via seriesResidency (issue 3.4 / 1.3).
+    const lastFp = lastCandleFingerprint(data);
     const geometryHit =
       geometryCache != null &&
       instanceBuffer != null &&
       geometryCache.data === data &&
+      geometryCache.dataLength === data.length &&
+      nearEqual(geometryCache.lastTimestamp, lastFp.timestamp) &&
+      nearEqual(geometryCache.lastOpen, lastFp.open) &&
+      nearEqual(geometryCache.lastClose, lastFp.close) &&
+      nearEqual(geometryCache.lastLow, lastFp.low) &&
+      nearEqual(geometryCache.lastHigh, lastFp.high) &&
       nearEqual(geometryCache.packingOrigin, packingOrigin) &&
       nearEqual(geometryCache.categoryStep, categoryStep) &&
       nearEqual(geometryCache.bodyWidthDomain, bodyWidthDomain) &&
@@ -626,6 +673,12 @@ export function createCandlestickRenderer(
 
     geometryCache = {
       data,
+      dataLength: data.length,
+      lastTimestamp: lastFp.timestamp,
+      lastOpen: lastFp.open,
+      lastClose: lastFp.close,
+      lastLow: lastFp.low,
+      lastHigh: lastFp.high,
       packingOrigin,
       categoryStep,
       bodyWidthDomain,

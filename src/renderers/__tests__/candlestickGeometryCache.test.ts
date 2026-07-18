@@ -154,6 +154,54 @@ describe('candlestick geometry cache (issue 1.3)', () => {
     renderer.dispose();
   });
 
+  it('re-uploads when same data ref grows in length (streaming append)', () => {
+    // appendData mutates the coordinator-owned OHLC array in place; identity skip
+    // must miss when length changes or new candles never reach the GPU buffer.
+    const device = createMockDevice();
+    const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
+    const renderer = createCandlestickRenderer(device, { sampleCount: 1 });
+    const ga = gridArea();
+    const x = createLinearScale().domain(0, 5).range(-1, 1);
+    const y = createLinearScale().domain(0, 20).range(-1, 1);
+
+    const growing = [
+      [0, 10, 12, 9, 13],
+      [1, 12, 11, 10, 14],
+    ] as Array<[number, number, number, number, number]>;
+
+    renderer.prepare(candleSeries(growing as never), growing as never, x, y, ga);
+    writeBuffer.mockClear();
+
+    growing.push([2, 11, 15, 10, 16]);
+    renderer.prepare(candleSeries(growing as never), growing as never, x, y, ga);
+    expect(writeBuffer.mock.calls.length).toBeGreaterThan(0);
+    renderer.dispose();
+  });
+
+  it('re-uploads when last candle mutates under same data ref (forming candle)', () => {
+    // Streaming examples update the open candle via setOption with a stable array
+    // and an in-place last-element replace — must not hit axes-only identity skip.
+    const device = createMockDevice();
+    const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
+    const renderer = createCandlestickRenderer(device, { sampleCount: 1 });
+    const ga = gridArea();
+    const x = createLinearScale().domain(0, 2).range(-1, 1);
+    const y = createLinearScale().domain(0, 20).range(-1, 1);
+
+    const forming = [
+      [0, 10, 12, 9, 13],
+      [1, 12, 11, 10, 14],
+    ] as Array<[number, number, number, number, number]>;
+
+    renderer.prepare(candleSeries(forming as never), forming as never, x, y, ga);
+    writeBuffer.mockClear();
+
+    forming[1] = [1, 12, 16, 10, 17]; // close/high moved
+    renderer.prepare(candleSeries(forming as never), forming as never, x, y, ga);
+    expect(writeBuffer.mock.calls.length).toBeGreaterThan(0);
+    renderer.dispose();
+  });
+
   it('re-uploads after invalidateGeometry with same data ref', () => {
     const device = createMockDevice();
     const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
