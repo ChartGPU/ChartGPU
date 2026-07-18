@@ -10,6 +10,7 @@
 
 import type { ResolvedSeriesConfig } from '../../../config/OptionResolver';
 import type { CartesianSeriesData, OHLCDataPoint } from '../../../config/types';
+import { hasNullGaps } from '../../../data/cartesianData';
 import { isGpuDecimationEligible } from '../../../data/gpuDecimationEligibility';
 import { sampleSeriesDataPoints } from '../../../data/sampleSeries';
 import { ohlcSample } from '../../../data/ohlcSample';
@@ -18,7 +19,7 @@ type DisplayResolveMode = 'baseline' | 'zoomed' | 'setOptionsReuse';
 
 /**
  * Baseline / setOptions: choose series `data` for one cartesian line-like series.
- * GPU-eligible → raw; else sample at samplingThreshold.
+ * GPU-eligible → raw; null-gap data → raw (preserve segmentation); else sample.
  */
 export function resolveCartesianDisplayData(input: {
   readonly series: ResolvedSeriesConfig;
@@ -37,6 +38,12 @@ export function resolveCartesianDisplayData(input: {
   if (mode === 'setOptionsReuse') {
     // Keep OptionResolver-sampled data when present; caller merges rawData/bounds.
     return (series.data as CartesianSeriesData) ?? raw;
+  }
+  // Mirror OptionResolver: bypass sampling when null gap markers are present so
+  // LTTB/min/max do not filter nulls and join line segments (zoom path issue #150).
+  // sampling:'none' already returns data as-is inside sampleSeriesDataPoints.
+  if (series.sampling !== 'none' && hasNullGaps(raw)) {
+    return raw;
   }
   const threshold =
     sampleTarget != null && Number.isFinite(sampleTarget) ? Math.max(2, sampleTarget | 0) : series.samplingThreshold;

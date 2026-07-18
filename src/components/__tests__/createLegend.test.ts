@@ -62,6 +62,15 @@ describe('createLegend identity skip', () => {
     legend.dispose();
   });
 
+  it('sets z-index above axis text overlay so legend masks labels (issue #149)', () => {
+    const legend = createLegend(container);
+    legend.update(lineSeries(2), theme);
+    // createTextOverlay uses z-index 10; legend must paint above it.
+    expect(Number(getRoot(container).style.zIndex)).toBeGreaterThan(10);
+    expect(getRoot(container).style.zIndex).toBe('15');
+    legend.dispose();
+  });
+
   it('skips replaceChildren when series + theme identity are stable (axes-only)', () => {
     const legend = createLegend(container);
     const series = lineSeries(50);

@@ -250,6 +250,49 @@ describe('computeVisibleSlice', () => {
       ]);
     });
 
+    it('preserves null gap markers between in-range points (issue #150)', () => {
+      // Repro: null at index 5; zoom window that spans both sides of the gap.
+      const data: Array<DataPoint | null> = [];
+      for (let i = 0; i < 10; i++) data.push([i, i % 2 ? 1.1 : 1.2]);
+      data[5] = null;
+
+      const result = sliceVisibleRangeByX(data as any, 2, 8) as Array<DataPoint | null>;
+      expect(result).toEqual([[2, 1.2], [3, 1.1], [4, 1.2], null, [6, 1.2], [7, 1.1], [8, 1.2]]);
+    });
+
+    it('preserves multiple interior null gaps in one zoom window', () => {
+      const data: Array<DataPoint | null> = [[0, 0], [1, 1], null, [3, 3], null, [5, 5], [6, 6]];
+      expect(sliceVisibleRangeByX(data as any, 1, 5)).toEqual([[1, 1], null, [3, 3], null, [5, 5]]);
+    });
+
+    it('keeps interior nulls but drops mid-span out-of-range finite points (non-monotonic)', () => {
+      // first kept idx=0 ([0,0]), last kept idx=5 ([2,3]); [100,1] is finite but out of range.
+      const data: Array<DataPoint | null> = [[0, 0], null, [100, 1], null, [1, 2], [2, 3]];
+      expect(sliceVisibleRangeByX(data as any, 0, 2)).toEqual([[0, 0], null, null, [1, 2], [2, 3]]);
+    });
+
+    it('preserves null gaps with object-form DataPoints', () => {
+      const data: Array<DataPoint | null> = [{ x: 0, y: 0 }, { x: 1, y: 1 }, null, { x: 3, y: 3 }, { x: 4, y: 4 }];
+      // Linear path materializes finite points as tuples; nulls stay null.
+      expect(sliceVisibleRangeByX(data as any, 1, 4)).toEqual([[1, 1], null, [3, 3], [4, 4]]);
+    });
+
+    it('drops leading/trailing nulls outside the kept finite span', () => {
+      const data: Array<DataPoint | null> = [null, [1, 10], [2, 20], null, [4, 40], null];
+      // Zoom only left segment — no interior null between first and last kept.
+      expect(sliceVisibleRangeByX(data as any, 1, 2)).toEqual([
+        [1, 10],
+        [2, 20],
+      ]);
+      // Zoom spanning the interior gap keeps the null between segments.
+      expect(sliceVisibleRangeByX(data as any, 1, 4)).toEqual([[1, 10], [2, 20], null, [4, 40]]);
+    });
+
+    it('returns empty when only nulls fall in range', () => {
+      const data: Array<DataPoint | null> = [[0, 0], null, [10, 10]];
+      expect(sliceVisibleRangeByX(data as any, 3, 7)).toEqual([]);
+    });
+
     it('handles boundary values correctly (inclusive)', () => {
       const data: DataPoint[] = [
         [1, 10],

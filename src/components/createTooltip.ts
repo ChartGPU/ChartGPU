@@ -34,7 +34,8 @@ export function createTooltip(container: HTMLElement): Tooltip {
   root.style.boxSizing = 'border-box';
 
   // Theme-friendly default visuals with CSS variable override points.
-  root.style.zIndex = 'var(--chartgpu-tooltip-z, 10)';
+  // Default above legend (15) and axis text overlay (10) so hover always wins.
+  root.style.zIndex = 'var(--chartgpu-tooltip-z, 20)';
   root.style.padding = 'var(--chartgpu-tooltip-padding, 6px 8px)';
   root.style.borderRadius = 'var(--chartgpu-tooltip-radius, 8px)';
   root.style.borderStyle = 'solid';

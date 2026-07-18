@@ -56,6 +56,68 @@ describe('resolveCartesianDisplayData', () => {
     const data = resolveCartesianDisplayData({ series, raw, mode: 'setOptionsReuse' });
     expect(data).toBe(raw);
   });
+
+  it.each(['lttb', 'min', 'max', 'average'] as const)(
+    'keeps raw (skips %s sampling) when null gap markers are present — baseline (issue #150)',
+    (sampling) => {
+      // Above samplingThreshold so sampleSeries would otherwise strip nulls.
+      const rawWithGaps: Array<[number, number] | null> = Array.from({ length: 50 }, (_, i) =>
+        i === 25 ? null : ([i, i] as [number, number])
+      );
+      const series = {
+        type: 'line',
+        sampling,
+        samplingThreshold: 10,
+      } as ResolvedSeriesConfig;
+      const data = resolveCartesianDisplayData({
+        series,
+        raw: rawWithGaps as any,
+        mode: 'baseline',
+      });
+      expect(data).toBe(rawWithGaps);
+      expect((data as readonly unknown[]).includes(null)).toBe(true);
+    }
+  );
+
+  it.each(['lttb', 'min', 'max', 'average'] as const)(
+    'keeps raw (skips %s sampling) when null gaps present on zoomed path (issue #150)',
+    (sampling) => {
+      const rawWithGaps: Array<[number, number] | null> = Array.from({ length: 100 }, (_, i) =>
+        i === 50 ? null : ([i, i % 2 ? 1.1 : 1.2] as [number, number])
+      );
+      const series = {
+        type: 'line',
+        sampling,
+        samplingThreshold: 10,
+      } as ResolvedSeriesConfig;
+      const data = resolveCartesianDisplayData({
+        series,
+        raw: rawWithGaps as any,
+        mode: 'zoomed',
+        sampleTarget: 20,
+      });
+      expect(data).toBe(rawWithGaps);
+      expect((data as readonly unknown[]).includes(null)).toBe(true);
+    }
+  );
+
+  it('area series also bypasses sampling when null gaps are present (issue #150)', () => {
+    const rawWithGaps: Array<[number, number] | null> = Array.from({ length: 40 }, (_, i) =>
+      i === 20 ? null : ([i, i] as [number, number])
+    );
+    const series = {
+      type: 'area',
+      sampling: 'lttb',
+      samplingThreshold: 10,
+    } as ResolvedSeriesConfig;
+    const data = resolveCartesianDisplayData({
+      series,
+      raw: rawWithGaps as any,
+      mode: 'zoomed',
+      sampleTarget: 15,
+    });
+    expect(data).toBe(rawWithGaps);
+  });
 });
 
 describe('resolveCandlestickDisplayData', () => {

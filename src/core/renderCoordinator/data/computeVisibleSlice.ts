@@ -215,6 +215,7 @@ function isInterleavedXYData(data: CartesianSeriesData): data is InterleavedXYDa
 /**
  * Materialize a chronological [start, end) window via getX/getY.
  * Used for modular ring columns and StagingRingView (no Array.prototype.slice).
+ * Callers never hold null gap markers (rings/staging are columnar floats only).
  */
 function materializeCartesianSlice(data: CoordinatorCartesianData, start: number, end: number): DataPoint[] {
   const out: DataPoint[] = new Array(Math.max(0, end - start));
@@ -331,8 +332,47 @@ export function sliceVisibleRangeByX(data: CartesianSeriesData, xMin: number, xM
     return sliceCartesianData(data, lo, hi);
   }
 
-  // Safe fallback: linear filter (preserves order, ignores non-finite x)
-  // For non-monotonic data, we must return a filtered array
+  // Safe fallback: linear filter (preserves order).
+  // For non-monotonic data, we must return a filtered array.
+  // DataPoint[] may contain `null` gap markers (line segmentation). Those make
+  // X non-finite so the monotonic path never runs — preserve nulls that sit
+  // between the first and last in-range finite points so zoom does not join gaps.
+  // Product stance: only explicit `null` is a supported gap marker (matches
+  // hasNullGaps / connectNulls docs). Sparse `undefined` holes are skipped, not
+  // re-emitted as nulls.
+  if (Array.isArray(data)) {
+    const arr = data as ReadonlyArray<DataPoint | null>;
+    let first = -1;
+    let last = -1;
+    for (let i = 0; i < n; i++) {
+      const p = arr[i];
+      if (p === null || p === undefined) continue;
+      const x = getX(data, i);
+      if (!Number.isFinite(x)) continue;
+      if (x >= xMin && x <= xMax) {
+        if (first < 0) first = i;
+        last = i;
+      }
+    }
+    if (first < 0) return [];
+    const out: Array<DataPoint | null> = [];
+    for (let i = first; i <= last; i++) {
+      const p = arr[i];
+      if (p === null) {
+        out.push(null);
+        continue;
+      }
+      if (p === undefined) continue;
+      const x = getX(data, i);
+      if (!Number.isFinite(x)) continue;
+      if (x >= xMin && x <= xMax) {
+        out.push([x, getY(data, i)]);
+      }
+    }
+    return out;
+  }
+
+  // Non-array formats cannot hold null gap markers.
   const out: DataPoint[] = [];
   for (let i = 0; i < n; i++) {
     const x = getX(data, i);

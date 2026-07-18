@@ -60,6 +60,8 @@ export function createLegend(
   root.style.pointerEvents = 'auto';
   root.style.userSelect = 'none';
   root.style.boxSizing = 'border-box';
+  // Above axis label canvas (createTextOverlay z-index 10) so legend masks labels.
+  root.style.zIndex = '15';
 
   // Theme-driven styling (set/update in update()).
   root.style.padding = '8px';

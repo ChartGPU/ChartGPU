@@ -3,8 +3,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { packToFloat32ArrayAbsolute } from '../../../../data/sampleSeries';
+import { sliceVisibleRangeByX } from '../computeVisibleSlice';
 import { buildRuntimeBaseSeries, buildSetOptionsReuseSeries, resolveZoomedSeriesEntry } from '../seriesPipeline';
 import type { ResolvedSeriesConfig } from '../../../../config/OptionResolver';
+import type { CartesianSeriesData, DataPoint } from '../../../../config/types';
 
 const raw100 = {
   x: Float64Array.from(Array.from({ length: 100 }, (_, i) => i)),
@@ -154,5 +157,57 @@ describe('resolveZoomedSeriesEntry', () => {
     expect(r.series.data).toBeTruthy();
     expect(r.cacheEntry).not.toBeNull();
     expect(r.cacheEntry!.cachedRange).toEqual({ min: 0, max: 99 });
+  });
+
+  it('null-gap line data is not stripped by zoom sample path (issue #150)', () => {
+    const rawWithGaps: Array<[number, number] | null> = Array.from({ length: 100 }, (_, i) =>
+      i === 50 ? null : ([i, i % 2 ? 1.1 : 1.2] as [number, number])
+    );
+    const lineWithGaps = {
+      type: 'line',
+      sampling: 'lttb',
+      samplingThreshold: 10,
+      data: rawWithGaps,
+      rawData: rawWithGaps,
+    } as unknown as ResolvedSeriesConfig;
+
+    const visibleMin = 20;
+    const visibleMax = 80;
+    const r = resolveZoomedSeriesEntry({
+      series: lineWithGaps,
+      rawSlot: rawWithGaps,
+      bufferedMin: 10,
+      bufferedMax: 90,
+      visibleMin,
+      visibleMax,
+      spanFraction: 0.6,
+      sliceX: sliceVisibleRangeByX,
+      sliceOHLC: sliceOHLC as any,
+    });
+
+    const display = r.series.data as ReadonlyArray<DataPoint | null>;
+    expect(Array.isArray(display)).toBe(true);
+    expect(display.includes(null)).toBe(true);
+    // Windowed: every finite point is inside the visible range (not full raw).
+    for (const p of display) {
+      if (p === null) continue;
+      const x = Array.isArray(p) ? p[0] : (p as { x: number }).x;
+      expect(x).toBeGreaterThanOrEqual(visibleMin);
+      expect(x).toBeLessThanOrEqual(visibleMax);
+    }
+    expect(display.some((p) => p !== null && Array.isArray(p) && p[0] === 20)).toBe(true);
+    expect(display.some((p) => p !== null && Array.isArray(p) && p[0] === 80)).toBe(true);
+    // Gap at x=50 sits between neighbors in the display sequence.
+    const nullIdx = display.indexOf(null);
+    expect(nullIdx).toBeGreaterThan(0);
+    expect(nullIdx).toBeLessThan(display.length - 1);
+    expect(r.cacheEntry).not.toBeNull();
+    expect(r.cacheEntry!.cachedRange).toEqual({ min: 10, max: 90 });
+
+    // Layering: pack path turns preserved nulls into NaN gap slots for shader discard
+    // (full packXYInto null→NaN coverage lives in cartesianData.test.ts).
+    const packed = packToFloat32ArrayAbsolute(display as CartesianSeriesData);
+    expect(Number.isNaN(packed[nullIdx * 2])).toBe(true);
+    expect(Number.isNaN(packed[nullIdx * 2 + 1])).toBe(true);
   });
 });
