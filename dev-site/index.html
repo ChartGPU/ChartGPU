@@ -448,6 +448,10 @@
       color: var(--color-accent);
     }
 
+    .band-lede--cta {
+      max-width: 28ch;
+    }
+
     .band-body {
       margin-top: var(--space-sm);
       font-size: var(--text-md);
@@ -1119,7 +1123,7 @@
           <div class="install-bar">
             <span class="install-prompt">$</span>
             <code class="install-cmd">npm install @chartgpu/chartgpu</code>
-            <button class="install-copy" id="copyBtn" type="button" aria-label="Copy install command">Copy</button>
+            <button class="install-copy" type="button" aria-label="Copy install command">Copy</button>
           </div>
         </div>
       </div>
@@ -1183,16 +1187,15 @@
     </div>
   </section>
 
-  <!-- Candles + bars diptych -->
-  <section class="plate plate--split" aria-label="Candlestick and stacked bar charts">
-    <div class="plate-panel" id="plate-candles" data-demo="candles">
+  <!-- Mountain + bars diptych -->
+  <section class="plate plate--split" aria-label="Streaming area mountain and stacked bar charts">
+    <div class="plate-panel" id="plate-mountain" data-demo="mountain">
       <div class="plate-canvas" data-canvas></div>
-      <div class="plate-status" data-status>Building tape…</div>
+      <div class="plate-status" data-status>Filling series…</div>
       <div class="plate-caption">
-        <p class="plate-meta">Live OHLC</p>
-        <h2 class="plate-title">Streaming candles</h2>
-        <p class="plate-note">Right price rail, last-price badge, bar-close countdown.</p>
-        <a class="plate-link" href="/examples/candlestick-streaming/index.html" data-open-example="candlestick-streaming">Trading terminal</a>
+        <p class="plate-meta">64 area series</p>
+        <h2 class="plate-title">Streaming mountain fills.</h2>
+        <p class="plate-note">Dozens of translucent series appending every frame.</p>
       </div>
     </div>
     <div class="plate-panel" id="plate-bars" data-demo="bars">
@@ -1209,12 +1212,17 @@
   <!-- Finale: multi-chart wall — complete multi-series panels on shared GPU -->
   <section class="plate plate--wall" id="plate-wall" data-demo="wall" aria-label="Multi-chart wall finale">
     <div class="plate-canvas wall-grid" data-canvas></div>
-    <div class="plate-status" data-status>Raising the wall…</div>
-    <div class="plate-caption">
-      <p class="plate-meta">Shared GPU · 8 panels · multi-series</p>
-      <h2 class="plate-title">A wall of live charts. One device.</h2>
-      <p class="plate-note">Each panel is a full dataset — labels, annotations, dual axes — streaming on a shared adapter and pipeline cache.</p>
-      <a class="plate-link" href="/examples/streaming-dashboard/index.html" data-open-example="streaming-dashboard">Streaming dashboard</a>
+    <div class="plate-status" data-status>Preparing panels…</div>
+  </section>
+
+  <section class="band band--tight">
+    <p class="band-lede band-lede--cta"><span class="gold">Ready</span> to create your own?</p>
+    <div class="install-row">
+      <div class="install-bar">
+        <span class="install-prompt">$</span>
+        <code class="install-cmd">npm install @chartgpu/chartgpu</code>
+        <button class="install-copy" type="button" aria-label="Copy install command">Copy</button>
+      </div>
     </div>
   </section>
 
@@ -1229,7 +1237,7 @@
   </section>
 
   <footer class="foot-stmt">
-    <p class="foot-stmt__line">WebGPU charting for dense data.</p>
+    <p class="foot-stmt__line">WebGPU charting for dense data needs.</p>
     <div class="foot-stmt__meta">
       <span>ChartGPU v0.3.4 · MIT</span>
       <div class="foot-links">

@@ -499,70 +499,61 @@ function generateCandles(count: number, startPrice: number): OHLCDataPoint[] {
   return out;
 }
 
-async function mountCandles(container: HTMLElement): Promise<{ dispose: () => void }> {
-  const candleIntervalMs = 1_000;
-  let data = generateCandles(120, 100);
-  // Simulated clock for priceLabel countdown — stable function identity across setOption.
-  let simulatedNowMs = (() => {
-    const last = data[data.length - 1];
-    return Array.isArray(last) ? last[0] + candleIntervalMs : Date.now();
-  })();
-  const priceLabelNowMs = (): number => simulatedNowMs;
+/**
+ * Left diptych plate — streaming multi-series mountain (not candles; wall already has OHLC).
+ * Overlapping area fills + continuous append: dense, animated proof of GPU throughput.
+ */
+async function mountMountain(container: HTMLElement): Promise<{ dispose: () => void }> {
+  const seriesCount = 64;
+  const seedPoints = 180;
+  const maxPoints = 520;
+  const dt = 0.028;
+  let tCursor = 0;
 
-  const makeCandleSeries = (ohlc: OHLCDataPoint[]) =>
-    ({
-      type: 'candlestick' as const,
-      name: 'MEME/USD',
-      data: ohlc,
-      itemStyle: {
-        upColor: LIME,
-        downColor: ROSE,
-        upBorderColor: LIME,
-        downBorderColor: ROSE,
-      },
-      // Exchange-style last-price badge + bar-close countdown (main candle-primary API).
-      priceLabel: {
-        intervalMs: candleIntervalMs,
-        nowMs: priceLabelNowMs,
-      },
-    }) as const;
+  const series: LineSeries[] = [];
+  for (let s = 0; s < seriesCount; s++) {
+    const data: DataPoint[] = new Array(seedPoints);
+    for (let i = 0; i < seedPoints; i++) {
+      const t = i * dt;
+      data[i] = [t, waveY(t, s, seriesCount)];
+    }
+    const fill = 0.1 + (s % 5) * 0.018;
+    series.push({
+      type: 'line',
+      name: `m${s}`,
+      data,
+      color: seriesColor(s, seriesCount),
+      lineStyle: { width: s % 11 === 0 ? 1.5 : 1, opacity: 0.92 },
+      areaStyle: { opacity: fill },
+      sampling: 'none',
+    });
+  }
+  tCursor = seedPoints * dt;
 
-  // Candle-primary: library places first Y on the right and soft gutters left=20 / right=70
-  // when left/right are unset. Do not pin grid left/right to plateChrome's 4px.
   const options: ChartGPUOptions = {
-    theme: 'dark',
-    tooltip: { show: false },
-    animation: false,
-    legend: { show: false },
-    grid: { top: 28, bottom: 12 },
+    ...plateChrome(MIDNIGHT_THEME),
     autoScroll: true,
-    dataZoom: [{ type: 'inside', start: 40, end: 100 }],
-    xAxis: { type: 'time', tickFormatter: hideTicks },
-    yAxis: { type: 'value', header: 'USD' },
-    series: [makeCandleSeries(data)],
+    xAxis: { type: 'value', tickFormatter: hideTicks },
+    yAxis: { type: 'value', min: -4.2, max: 4.2, tickFormatter: hideTicks },
+    palette: [...BRAND_PALETTE],
+    series,
   };
 
   const chart = await ChartGPU.create(container, options);
   const ro = attachResize(container, chart);
+  const appendBufs = createAppendBufs(seriesCount);
 
-  // ~6 Hz candle ticks via rAF pump (was setInterval 280ms — stuttered under load).
   const stream = startStreamPump(() => {
     if (chart.disposed) return;
-    const last = data[data.length - 1];
-    if (!last || !Array.isArray(last)) return;
-    const [, , prevClose] = last;
-    const open = prevClose;
-    const close = Math.max(1, open + (Math.random() - 0.48) * 2.2);
-    const high = Math.max(open, close) + Math.random() * 0.7;
-    const low = Math.min(open, close) - Math.random() * 0.7;
-    const next: OHLCDataPoint = [last[0] + candleIntervalMs, open, close, low, high];
-    data = [...data.slice(-199), next];
-    simulatedNowMs = next[0] + candleIntervalMs * 0.35;
-    chart.setOption({
-      ...options,
-      series: [makeCandleSeries(data)],
-    });
-  }, { hz: 6 });
+    const t = tCursor;
+    for (let s = 0; s < seriesCount; s++) {
+      const buf = appendBufs[s]!;
+      buf.x[0] = t;
+      buf.y[0] = waveY(t, s, seriesCount);
+      chart.appendData(s, buf, { maxPoints });
+    }
+    tCursor += dt;
+  }, { hz: 48 });
 
   return {
     dispose: () => {
@@ -1431,12 +1422,12 @@ async function mountWall(container: HTMLElement): Promise<{ dispose: () => void 
 
 // ── Lazy plate lifecycle ────────────────────────────────────────────────────
 
-type DemoId = 'aurora' | 'density' | 'candles' | 'bars' | 'wall';
+type DemoId = 'aurora' | 'density' | 'mountain' | 'bars' | 'wall';
 
 const demoMount: Record<DemoId, (el: HTMLElement) => Promise<{ dispose: () => void }>> = {
   aurora: mountAurora,
   density: mountDensity,
-  candles: mountCandles,
+  mountain: mountMountain,
   bars: mountBars,
   wall: mountWall,
 };
@@ -1678,24 +1669,27 @@ function setupGallery(): void {
   });
 }
 
+const INSTALL_CMD = 'npm install @chartgpu/chartgpu';
+
 function setupCopy(): void {
-  const copyBtn = document.getElementById('copyBtn');
-  if (!copyBtn) return;
-  copyBtn.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText('npm install @chartgpu/chartgpu');
-      copyBtn.textContent = 'Copied';
-      copyBtn.classList.add('is-copied');
-      setTimeout(() => {
-        copyBtn.textContent = 'Copy';
-        copyBtn.classList.remove('is-copied');
-      }, 2000);
-    } catch {
-      copyBtn.textContent = 'Failed';
-      setTimeout(() => {
-        copyBtn.textContent = 'Copy';
-      }, 1500);
-    }
+  const buttons = document.querySelectorAll<HTMLButtonElement>('.install-copy');
+  buttons.forEach((copyBtn) => {
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(INSTALL_CMD);
+        copyBtn.textContent = 'Copied';
+        copyBtn.classList.add('is-copied');
+        setTimeout(() => {
+          copyBtn.textContent = 'Copy';
+          copyBtn.classList.remove('is-copied');
+        }, 2000);
+      } catch {
+        copyBtn.textContent = 'Failed';
+        setTimeout(() => {
+          copyBtn.textContent = 'Copy';
+        }, 1500);
+      }
+    });
   });
 }
 
