@@ -9,6 +9,8 @@ import type {
   OHLCDataPoint,
   ScatterPointTuple,
 } from '../src/index';
+import chartgpuLogoUrl from '../docs/assets/chartgpu.png';
+import webgpuComIconUrl from '../docs/assets/webgpu-com.png';
 
 // ── Brand palette (matches tokens.css / site identity) ──────────────────────
 const GOLD = '#D4A520';
@@ -31,167 +33,180 @@ type Example = Readonly<{
   path: string;
 }>;
 
+/**
+ * Example URL under Vite base (`/` in dev, `/ChartGPU/` on Pages).
+ * Dev serves demos from the source tree under `/examples/…`.
+ * Production flattens demos to the site root (same layout as the prior Pages build).
+ */
+const examplePath = (id: string): string => {
+  const base = import.meta.env.BASE_URL;
+  if (import.meta.env.DEV) {
+    return `${base}examples/${id}/index.html`;
+  }
+  return `${base}${id}/index.html`;
+};
+
 const examples: readonly Example[] = [
   {
     id: 'streaming-dashboard',
     title: 'Streaming Dashboard',
     desc: 'Five-chart APM dashboard with live latency percentiles, throughput, and real-time annotations',
     category: 'streaming',
-    path: '/examples/streaming-dashboard/index.html',
+    path: examplePath('streaming-dashboard'),
   },
   {
     id: 'candlestick-streaming',
     title: 'Candlestick Streaming',
     desc: 'Crypto trading terminal with live tick simulation and real-time candle aggregation',
     category: 'streaming',
-    path: '/examples/candlestick-streaming/index.html',
+    path: examplePath('candlestick-streaming'),
   },
   {
     id: 'scatter-density-1m',
     title: 'Scatter Density 1M',
     desc: 'One million points rendered as a GPU-binned density heatmap with colormap controls',
     category: 'performance',
-    path: '/examples/scatter-density-1m/index.html',
+    path: examplePath('scatter-density-1m'),
   },
   {
     id: 'basic-line',
     title: 'Basic Line',
     desc: 'Sine wave line chart with grid, axes, and tooltip interaction',
     category: 'series',
-    path: '/examples/basic-line/index.html',
+    path: examplePath('basic-line'),
   },
   {
     id: 'candlestick',
     title: 'Candlestick',
     desc: 'Financial OHLC chart with classic and hollow style toggle',
     category: 'series',
-    path: '/examples/candlestick/index.html',
+    path: examplePath('candlestick'),
   },
   {
     id: 'scatter',
     title: 'Scatter Plot',
     desc: 'Fixed size, per-point size, and dynamic size function variants',
     category: 'series',
-    path: '/examples/scatter/index.html',
+    path: examplePath('scatter'),
   },
   {
     id: 'grouped-bar',
     title: 'Grouped & Stacked Bar',
     desc: 'Clustered bars with stacking, custom widths, and negative values',
     category: 'series',
-    path: '/examples/grouped-bar/index.html',
+    path: examplePath('grouped-bar'),
   },
   {
     id: 'pie',
     title: 'Pie & Donut',
     desc: 'Pie chart and donut chart with per-slice colors',
     category: 'series',
-    path: '/examples/pie/index.html',
+    path: examplePath('pie'),
   },
   {
     id: 'live-streaming',
     title: 'Live Streaming',
     desc: 'Streaming appendData with autoScroll toggle and dataZoom slider',
     category: 'streaming',
-    path: '/examples/live-streaming/index.html',
+    path: examplePath('live-streaming'),
   },
   {
     id: 'million-points',
     title: 'Million Points',
     desc: '1M point benchmark with sampling toggle and FPS comparison',
     category: 'performance',
-    path: '/examples/million-points/index.html',
+    path: examplePath('million-points'),
   },
   {
     id: 'ultimate-benchmark',
     title: 'Ultimate Benchmark',
     desc: 'Multi-series stress test with FPS, frame-time metrics, and streaming append',
     category: 'performance',
-    path: '/examples/ultimate-benchmark/index.html',
+    path: examplePath('ultimate-benchmark'),
   },
   {
     id: 'sampling',
     title: 'Zoom-Aware Sampling',
     desc: 'Zoom in for detail, zoom out for performance with debounced re-sampling',
     category: 'performance',
-    path: '/examples/sampling/index.html',
+    path: examplePath('sampling'),
   },
   {
     id: 'interactive',
     title: 'Interactive',
     desc: 'Synced crosshair and axis tooltip across two stacked charts with click logging',
     category: 'interaction',
-    path: '/examples/interactive/index.html',
+    path: examplePath('interactive'),
   },
   {
     id: 'chart-sync',
     title: 'Chart Sync',
     desc: 'Two charts with synced crosshair position and axis tooltip values',
     category: 'interaction',
-    path: '/examples/chart-sync/index.html',
+    path: examplePath('chart-sync'),
   },
   {
     id: 'annotation-authoring',
     title: 'Annotations',
     desc: 'Reference lines, point markers, text annotations with authoring and JSON export',
     category: 'interaction',
-    path: '/examples/annotation-authoring/index.html',
+    path: examplePath('annotation-authoring'),
   },
   {
     id: 'exchange-gaps',
     title: 'Exchange Gaps',
     desc: 'Null gap entries for maintenance windows with connectNulls toggle',
     category: 'interaction',
-    path: '/examples/exchange-gaps/index.html',
+    path: examplePath('exchange-gaps'),
   },
   {
     id: 'data-update-animation',
     title: 'Data Update Animation',
     desc: 'Animated transitions for y-values, scales, and pie slice angles',
     category: 'animation',
-    path: '/examples/data-update-animation/index.html',
+    path: examplePath('data-update-animation'),
   },
   {
     id: 'multi-series-animation',
     title: 'Multi-Series Animation',
     desc: 'Line, bar, scatter, and area series animating together on data update',
     category: 'animation',
-    path: '/examples/multi-series-animation/index.html',
+    path: examplePath('multi-series-animation'),
   },
   {
     id: 'tick-formatter',
     title: 'Custom Tick Formatter',
     desc: 'Percentage, duration, locale time, and integer-only formatting',
     category: 'config',
-    path: '/examples/tick-formatter/index.html',
+    path: examplePath('tick-formatter'),
   },
   {
     id: 'external-render-mode',
     title: 'External Render Mode',
     desc: 'Application-controlled rendering with shared rAF loop and mode switching',
     category: 'config',
-    path: '/examples/external-render-mode/index.html',
+    path: examplePath('external-render-mode'),
   },
   {
     id: 'cartesian-data-formats',
     title: 'Data Formats',
     desc: 'XYArraysData, InterleavedXYData, and array-of-objects with 100k points',
     category: 'config',
-    path: '/examples/cartesian-data-formats/index.html',
+    path: examplePath('cartesian-data-formats'),
   },
   {
     id: 'grid-test',
     title: 'Grid Renderer',
     desc: 'Configurable grid line counts for horizontal and vertical axes',
     category: 'config',
-    path: '/examples/grid-test/index.html',
+    path: examplePath('grid-test'),
   },
   {
     id: 'hello-world',
     title: 'Hello World',
     desc: 'Raw WebGPU clear color cycling through the color spectrum',
     category: 'config',
-    path: '/examples/hello-world/index.html',
+    path: examplePath('hello-world'),
   },
 ];
 
@@ -1703,7 +1718,17 @@ function checkWebGPU(): boolean {
 
 // ── Boot ────────────────────────────────────────────────────────────────────
 
+function wireStaticAssets(): void {
+  const logo = document.getElementById('navLogo') as HTMLImageElement | null;
+  if (logo) logo.src = chartgpuLogoUrl;
+  const brand = document.getElementById('navBrand') as HTMLAnchorElement | null;
+  if (brand) brand.href = import.meta.env.BASE_URL;
+  const webgpuIcon = document.getElementById('webgpuComIcon') as HTMLImageElement | null;
+  if (webgpuIcon) webgpuIcon.src = webgpuComIconUrl;
+}
+
 function main(): void {
+  wireStaticAssets();
   setupGallery();
   setupCopy();
   const gpu = checkWebGPU();

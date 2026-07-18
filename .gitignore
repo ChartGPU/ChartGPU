@@ -11,6 +11,7 @@ node_modules/
 # Build output
 dist/
 examples/dist/
+pages-dist/
 *.tsbuildinfo
 *.tgz
 

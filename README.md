@@ -15,7 +15,7 @@
 [![npm version](https://img.shields.io/npm/v/chartgpu?style=for-the-badge&color=blue)](https://www.npmjs.com/package/chartgpu)
 [![NPM Downloads](https://img.shields.io/npm/dm/chartgpu?style=for-the-badge&color=%2368cc49)](https://www.npmjs.com/package/chartgpu)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://github.com/chartgpu/chartgpu/blob/main/LICENSE)
-[![Live Demo](https://img.shields.io/badge/demo-live-brightgreen?style=for-the-badge)](https://chartgpu.github.io/ChartGPU/examples/)
+[![Live Demo](https://img.shields.io/badge/demo-live-brightgreen?style=for-the-badge)](https://chartgpu.github.io/ChartGPU/)
 [![Examples](https://img.shields.io/badge/Examples-Code%20Samples-blue?style=for-the-badge)](https://github.com/chartgpu/chartgpu/tree/main/examples)
 [![Documentation](https://img.shields.io/badge/Documentation-Getting%20Started-blue?style=for-the-badge)](https://github.com/chartgpu/chartgpu/blob/main/docs/GETTING_STARTED.md)
 

@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ChartGPU — WebGPU charts that shouldn't be possible</title>
   <meta name="description" content="WebGPU-native charting. Live demos of million-point density, streaming tapes, and multi-series fields — only possible on the GPU.">
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-Z6FHBJ5JKJ"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-Z6FHBJ5JKJ');
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -1089,8 +1097,8 @@
 <body>
 
   <nav class="nav" aria-label="Primary">
-    <a href="/dev-site/index.html" class="nav-brand">
-      <img src="/docs/assets/chartgpu.png" alt="ChartGPU" height="26" width="auto">
+    <a href="./" class="nav-brand" id="navBrand">
+      <img id="navLogo" alt="ChartGPU" height="26" width="auto">
       <span class="nav-version">v0.3.4</span>
     </a>
     <div class="nav-actions">
@@ -1149,7 +1157,7 @@
             >
               <img
                 class="seen-on__icon"
-                src="/docs/assets/webgpu-com.png"
+                id="webgpuComIcon"
                 alt=""
                 width="24"
                 height="24"
