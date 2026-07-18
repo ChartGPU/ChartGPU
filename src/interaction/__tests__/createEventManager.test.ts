@@ -58,10 +58,6 @@ describe('createEventManager layout CSS (CSS zoom)', () => {
       rectHeight: 150,
     });
     const em = createEventManager(canvas, gridArea);
-    const payloads: Array<
-      ReturnType<NonNullable<ReturnType<typeof createEventManager>['on']>> extends never ? never : any
-    > = [];
-
     const seen: any[] = [];
     em.on('mousemove', (p) => {
       seen.push(p);
