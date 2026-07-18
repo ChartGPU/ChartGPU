@@ -60,7 +60,7 @@ import {
 } from '../data/seriesRewriteDetect';
 import { parseCssColorToRgba01 } from '../utils/colors';
 
-export { isCandlePrimaryChart } from './isCandlePrimaryChart';
+export { isCandlePrimaryChart };
 
 export type ResolvedGridConfig = Readonly<Required<GridConfig>>;
 export type ResolvedLineStyleConfig = Readonly<Required<Omit<LineStyleConfig, 'color'>> & { readonly color: string }>;

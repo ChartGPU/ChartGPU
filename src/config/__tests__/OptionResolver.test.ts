@@ -1177,4 +1177,45 @@ describe('OptionResolver - candle-primary Y-axis and grid defaults', () => {
     expect(resolved.yAxes[0]!.id).toBe('y');
     expect(resolved.yAxes[0]!.position).toBe('right');
   });
+
+  it('dual-Y with both axes on right yields left gutter 20 (no left Y)', () => {
+    const resolved = resolveOptions({
+      series: [
+        { ...candleSeries, yAxis: 'price' },
+        { type: 'bar', data: [[0, 10]], yAxis: 'vol' },
+      ],
+      axes: {
+        y: [
+          { id: 'price', type: 'value', position: 'right' },
+          { id: 'vol', type: 'value', position: 'right' },
+        ],
+      },
+    });
+    expect(resolved.yAxes.every((a) => a.position === 'right')).toBe(true);
+    expect(resolved.grid.left).toBe(20);
+    expect(resolved.grid.right).toBe(70);
+  });
+
+  it('preserves grid.left: 0 (nullish only — zero is not missing)', () => {
+    const resolved = resolveOptions({
+      series: [candleSeries],
+      grid: { left: 0 },
+    });
+    expect(resolved.grid.left).toBe(0);
+    expect(resolved.grid.right).toBe(70);
+  });
+
+  it('axes.y-only single axis defaults first Y to right with left 20 / right 70', () => {
+    const resolved = resolveOptions({
+      series: [candleSeries],
+      axes: {
+        y: [{ id: 'price', type: 'value' }],
+      },
+    });
+    expect(resolved.yAxes).toHaveLength(1);
+    expect(resolved.yAxes[0]!.id).toBe('price');
+    expect(resolved.yAxes[0]!.position).toBe('right');
+    expect(resolved.grid.left).toBe(20);
+    expect(resolved.grid.right).toBe(70);
+  });
 });
