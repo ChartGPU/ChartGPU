@@ -55,8 +55,13 @@ function createMockDevice() {
 }
 
 const identityScale = {
+  kind: 'linear' as const,
   scale: (v: number) => v,
   invert: (v: number) => v,
+  getDomain: () => ({ min: 0, max: 1 }),
+  getRange: () => ({ min: 0, max: 1 }),
+  domain: () => identityScale,
+  range: () => identityScale,
 } as unknown as LinearScale;
 
 const gridArea = {
@@ -227,8 +232,13 @@ describe('scatter geometry identity cache (issue 1.2)', () => {
     // Axes-only / pan: same data ref — uniforms may rewrite; instances must not.
     writeBuffer.mockClear();
     const zoomedScale = {
+      kind: 'linear' as const,
       scale: (v: number) => v * 2,
       invert: (v: number) => v / 2,
+      getDomain: () => ({ min: 0, max: 1 }),
+      getRange: () => ({ min: 0, max: 2 }),
+      domain: () => zoomedScale,
+      range: () => zoomedScale,
     } as unknown as LinearScale;
     renderer.prepare(baseSeries(5), data as unknown as never, zoomedScale, identityScale, gridArea);
     // No instance writeBuffer (byteLength payload via 5th arg); uniforms use writeUniformBuffer mock.

@@ -235,7 +235,27 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
     lastSetSeriesCache.set(seriesIndex, { data, xOffset });
   };
 
-  const defaultBaseline = currentOptions.yAxes[0]?.min ?? 0;
+  /**
+   * Area baseline for fill-to floor.
+   * Linear: series/axis min, else 0. Log Y: never force 0 (VS discards non-positive);
+   * omit so AreaRenderer uses the positive scale domain min.
+   */
+  const resolveAreaBaseline = (series: ResolvedSeriesConfig, yScale: LinearScale): number | undefined => {
+    const seriesBaseline = (series as { readonly baseline?: number }).baseline;
+    if (seriesBaseline !== undefined && Number.isFinite(seriesBaseline)) {
+      return seriesBaseline;
+    }
+    const axisId = (series as { readonly yAxis?: string }).yAxis || 'y';
+    const axis = currentOptions.yAxes.find((ax) => ax.id === axisId) ?? currentOptions.yAxes[0];
+    const axisMin = axis?.min;
+    if (axisMin !== undefined && Number.isFinite(axisMin)) {
+      return axisMin;
+    }
+    if (yScale.kind === 'log') {
+      return undefined;
+    }
+    return 0;
+  };
   const barSeriesConfigs: ResolvedBarSeriesConfig[] = [];
 
   const introP = introPhase === 'running' ? clamp01(introProgress01) : 1;
@@ -263,7 +283,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
         // that buffer. Private pack alone identity-caches on data ref and misses
         // in-place column growth from appendData (empty until a zoom creates a new
         // sliced array ref).
-        const baseline = s.baseline ?? defaultBaseline;
+        const baseline = resolveAreaBaseline(s, getYScale(s));
         // When connectNulls is true, strip null/NaN gap entries so the area draws through gaps.
         // Cached by data ref identity (P2-12) so static frames do not re-allocate.
         // sampling:'none' uploads full raw (same fullRawLine contract as line).
@@ -457,6 +477,8 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
           // wrap raw GPU order is not chronological — area.wgsl reads linearly
           // and would connect physical neighbors (issue 1 review fix).
           if (s.areaStyle) {
+            const yScaleForArea = getYScale(s);
+            const areaBaseline = resolveAreaBaseline(s, yScaleForArea);
             const areaLike: ResolvedAreaSeriesConfig = {
               type: 'area',
               name: s.name,
@@ -478,15 +500,15 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
                 areaLike,
                 areaLike.data,
                 xScale,
-                getYScale(s),
-                defaultBaseline,
+                yScaleForArea,
+                areaBaseline,
                 strokeBuffer,
                 strokePointCount,
                 xOffset
               );
             } else {
               // Modular ring wrap: private chronological pack from runtime raw.
-              renderers.areaRenderers[i].prepare(areaLike, areaLike.data, xScale, getYScale(s), defaultBaseline);
+              renderers.areaRenderers[i].prepare(areaLike, areaLike.data, xScale, yScaleForArea, areaBaseline);
             }
           }
 
@@ -551,6 +573,8 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
         // Line+areaStyle on CPU path: share DataStore only when linear (capacity 0).
         // After modular wrap, private-pack chronological uploadData (issue 1 review).
         if (s.areaStyle) {
+          const yScaleForArea = getYScale(s);
+          const areaBaseline = resolveAreaBaseline(s, yScaleForArea);
           const areaLike: ResolvedAreaSeriesConfig = {
             type: 'area',
             name: s.name,
@@ -572,14 +596,14 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
               areaLike,
               areaLike.data,
               xScale,
-              getYScale(s),
-              defaultBaseline,
+              yScaleForArea,
+              areaBaseline,
               buffer,
               dataStore.getSeriesPointCount(i),
               xOffset
             );
           } else {
-            renderers.areaRenderers[i].prepare(areaLike, areaLike.data, xScale, getYScale(s), defaultBaseline);
+            renderers.areaRenderers[i].prepare(areaLike, areaLike.data, xScale, yScaleForArea, areaBaseline);
           }
         }
 

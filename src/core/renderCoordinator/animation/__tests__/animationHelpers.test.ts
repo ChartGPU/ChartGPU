@@ -10,6 +10,7 @@ import {
   createEasingWithDelay,
   hasAnyDrawableMarks,
   lerpDomain,
+  lerpLogDomain,
   interpolateCartesianData,
   interpolatePieData,
   isDomainEqual,
@@ -286,6 +287,33 @@ describe('lerpDomain', () => {
 
     expect(result.min).toBe(-75);
     expect(result.max).toBe(25);
+  });
+});
+
+describe('lerpLogDomain', () => {
+  it('interpolates multi-decade domains in log space', () => {
+    const from = { min: 1, max: 100 };
+    const to = { min: 1, max: 10000 };
+    // Geometric mean of max: sqrt(100 * 10000) = 1000
+    const mid = lerpLogDomain(from, to, 0.5);
+    expect(mid.min).toBeCloseTo(1, 10);
+    expect(mid.max).toBeCloseTo(1000, 10);
+  });
+
+  it('returns endpoints at t=0 and t=1', () => {
+    const from = { min: 0.1, max: 10 };
+    const to = { min: 1, max: 1000 };
+    expect(lerpLogDomain(from, to, 0)).toEqual(from);
+    expect(lerpLogDomain(from, to, 1)).toEqual(to);
+  });
+
+  it('falls back to linear lerp when any endpoint is non-positive', () => {
+    const from = { min: -10, max: 100 };
+    const to = { min: 1, max: 100 };
+    const mid = lerpLogDomain(from, to, 0.5);
+    // Linear: min = -10 + (1 - -10)*0.5 = -4.5
+    expect(mid.min).toBeCloseTo(-4.5, 10);
+    expect(mid.max).toBe(100);
   });
 });
 

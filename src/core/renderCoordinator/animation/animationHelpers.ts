@@ -190,6 +190,40 @@ export function lerpDomain(from: DomainBounds, to: DomainBounds, t: number): Dom
 }
 
 /**
+ * Interpolates domain bounds in **log space** (for log axes).
+ *
+ * When any endpoint is non-positive or non-finite, falls back to linear
+ * {@link lerpDomain} so callers can still sanitize afterward.
+ *
+ * @param from - Starting domain (data space)
+ * @param to - Ending domain (data space)
+ * @param t - Interpolation progress [0, 1]
+ * @returns Interpolated domain in data space
+ */
+export function lerpLogDomain(from: DomainBounds, to: DomainBounds, t: number): DomainBounds {
+  const t01 = clamp01(t);
+  if (t01 === 0) return { min: from.min, max: from.max };
+  if (t01 === 1) return { min: to.min, max: to.max };
+  if (
+    !(from.min > 0) ||
+    !(from.max > 0) ||
+    !(to.min > 0) ||
+    !(to.max > 0) ||
+    !Number.isFinite(from.min) ||
+    !Number.isFinite(from.max) ||
+    !Number.isFinite(to.min) ||
+    !Number.isFinite(to.max)
+  ) {
+    return lerpDomain(from, to, t01);
+  }
+  // Natural log is fine — base is an affine transform in log space.
+  return {
+    min: Math.exp(Math.log(from.min) + (Math.log(to.min) - Math.log(from.min)) * t01),
+    max: Math.exp(Math.log(from.max) + (Math.log(to.max) - Math.log(from.max)) * t01),
+  };
+}
+
+/**
  * Linearly interpolates between two numbers.
  *
  * @param from - Starting value

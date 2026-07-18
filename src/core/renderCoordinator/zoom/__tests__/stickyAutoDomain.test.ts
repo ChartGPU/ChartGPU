@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyStickyAutoDomain,
+  applyStickyAutoLogDomain,
   resolveStickyOrDataDomain,
   shouldApplyStickyAutoDomain,
   shouldSkipStickyAutoXDomain,
@@ -115,6 +116,28 @@ describe('applyStickyAutoDomain', () => {
     const next = applyStickyAutoDomain({ min: 5, max: 5 }, null, 0.1);
     expect(next.min).toBe(5);
     expect(next.max).toBe(6);
+  });
+});
+
+describe('applyStickyAutoLogDomain', () => {
+  it('establishes exact positive domain (no pad) on cold start', () => {
+    const next = applyStickyAutoLogDomain({ min: 1, max: 1000 }, null, 10, 0);
+    expect(next.min).toBeCloseTo(1, 10);
+    expect(next.max).toBeCloseTo(1000, 10);
+  });
+
+  it('expands equal-span domains by base factor (not linear +1)', () => {
+    // Linear sticky with headroom 0 expands min===max to min+1; log uses min*base.
+    const next = applyStickyAutoLogDomain({ min: 5, max: 5 }, null, 10, 0);
+    expect(next.min).toBeCloseTo(5, 10);
+    expect(next.max).toBeCloseTo(50, 10);
+  });
+
+  it('with headroom 0 tracks data max tightly (log-X sticky policy)', () => {
+    let sticky = applyStickyAutoLogDomain({ min: 1, max: 100 }, null, 10, 0);
+    sticky = applyStickyAutoLogDomain({ min: 1, max: 200 }, sticky, 10, 0);
+    expect(sticky.min).toBeCloseTo(1, 10);
+    expect(sticky.max).toBeCloseTo(200, 10);
   });
 });
 

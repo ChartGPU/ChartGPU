@@ -13,6 +13,12 @@
 
 struct VSUniforms {
   transform: mat4x4<f32>,
+  // Independent bases so dual-log X/Y project correctly.
+  logBaseX: f32,
+  logBaseY: f32,
+  // bit0 = log X, bit1 = log Y
+  logFlags: u32,
+  _pad0: u32,
 };
 
 @group(0) @binding(0) var<uniform> vsUniforms: VSUniforms;
@@ -50,8 +56,32 @@ fn vsMain(in: VSIn, @builtin(vertex_index) vertexIndex: u32) -> VSOut {
   let corner = corners[vertexIndex];
   let domainPos = rectMin + corner * rectSize;
 
+  // Log projection per-corner (data-space rect → log space → clip affine).
+  var pos = domainPos;
+  let flags = vsUniforms.logFlags;
+  if (flags != 0u) {
+    if ((flags & 1u) != 0u) {
+      if (pos.x <= 0.0) {
+        var outBad: VSOut;
+        outBad.clipPosition = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        outBad.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        return outBad;
+      }
+      pos.x = log(pos.x) / log(vsUniforms.logBaseX);
+    }
+    if ((flags & 2u) != 0u) {
+      if (pos.y <= 0.0) {
+        var outBad: VSOut;
+        outBad.clipPosition = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        outBad.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        return outBad;
+      }
+      pos.y = log(pos.y) / log(vsUniforms.logBaseY);
+    }
+  }
+
   var out: VSOut;
-  out.clipPosition = vsUniforms.transform * vec4<f32>(domainPos, 0.0, 1.0);
+  out.clipPosition = vsUniforms.transform * vec4<f32>(pos, 0.0, 1.0);
   out.color = in.color;
   return out;
 }

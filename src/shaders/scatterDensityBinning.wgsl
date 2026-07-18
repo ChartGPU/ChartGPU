@@ -1,7 +1,12 @@
 struct ComputeUniforms {
   transform: mat4x4<f32>,
   viewportPx: vec2f,
-  _pad0: vec2f,
+  // Log projection before transform (bins still accumulate in screen space).
+  // Independent bases so dual-log X/Y project correctly.
+  logBaseX: f32,
+  logBaseY: f32,
+  logFlags: u32, // bit0 = log X, bit1 = log Y
+  _padLog: u32,
   plotOriginPx: vec2<u32>,
   plotSizePx: vec2<u32>,
   binSizePx: u32,
@@ -10,7 +15,6 @@ struct ComputeUniforms {
   visibleStart: u32,
   visibleEnd: u32,
   normalization: u32,
-  _pad1: vec2<u32>,
 };
 
 @group(0) @binding(0) var<uniform> u: ComputeUniforms;
@@ -37,7 +41,23 @@ fn binPoints(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
 
-  let p = points[idx];
+  var p = points[idx];
+  // Non-positive on log axes: skip (omit from bins).
+  let flags = u.logFlags;
+  if (flags != 0u) {
+    if ((flags & 1u) != 0u) {
+      if (p.x <= 0.0) {
+        return;
+      }
+      p.x = log(p.x) / log(u.logBaseX);
+    }
+    if ((flags & 2u) != 0u) {
+      if (p.y <= 0.0) {
+        return;
+      }
+      p.y = log(p.y) / log(u.logBaseY);
+    }
+  }
   let clip4 = u.transform * vec4f(p.x, p.y, 0.0, 1.0);
   let clip = clip4.xy / max(1e-9, clip4.w);
   let px = clipToDevicePx(clip);

@@ -11,8 +11,11 @@
 struct VSUniforms {
   transform: mat4x4<f32>,
   baseline: f32,
-  // Pad to 16-byte multiple (uniform buffer layout requirements).
-  _pad0: vec3<f32>,
+  // Independent bases so dual-log X/Y project correctly.
+  logBaseX: f32,
+  logBaseY: f32,
+  // bit0 = log X, bit1 = log Y (DataStore stays data-space; log before mat4).
+  logFlags: u32,
 };
 
 @group(0) @binding(0) var<uniform> vsUniforms: VSUniforms;
@@ -45,6 +48,34 @@ fn segmentUv(vid: u32) -> vec2<f32> {
   }
 }
 
+// Chrome Tint rejects NaN constants — use explicit positive checks instead.
+fn canLogProject(p: vec2<f32>) -> bool {
+  let flags = vsUniforms.logFlags;
+  if ((flags & 1u) != 0u && p.x <= 0.0) {
+    return false;
+  }
+  if ((flags & 2u) != 0u && p.y <= 0.0) {
+    return false;
+  }
+  return true;
+}
+
+fn projectData(p: vec2<f32>) -> vec2<f32> {
+  let flags = vsUniforms.logFlags;
+  if (flags == 0u) {
+    return p;
+  }
+  var x = p.x;
+  var y = p.y;
+  if ((flags & 1u) != 0u) {
+    x = log(x) / log(vsUniforms.logBaseX);
+  }
+  if ((flags & 2u) != 0u) {
+    y = log(y) / log(vsUniforms.logBaseY);
+  }
+  return vec2<f32>(x, y);
+}
+
 @vertex
 fn vsMain(
   @builtin(vertex_index) vertexIndex: u32,
@@ -65,8 +96,14 @@ fn vsMain(
 
   let uv = segmentUv(vertexIndex);
   let p = select(pA, pB, uv.x > 0.5);
+  // Baseline is data-space; log projection applies after select so fill-to-min works on log Y.
   let y = select(p.y, vsUniforms.baseline, uv.y > 0.5);
-  let pos = vec2<f32>(p.x, y);
+  let domainPos = vec2<f32>(p.x, y);
+  if (!canLogProject(domainPos)) {
+    out.clipPosition = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    return out;
+  }
+  let pos = projectData(domainPos);
   out.clipPosition = vsUniforms.transform * vec4<f32>(pos, 0.0, 1.0);
   return out;
 }

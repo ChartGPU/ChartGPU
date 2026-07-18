@@ -16,9 +16,11 @@
 struct VSUniforms {
   transform: mat4x4<f32>,
   wickWidth: f32,
-  _pad0: f32,
-  _pad1: f32,
-  _pad2: f32,
+  // Independent bases so dual-log X/Y project correctly.
+  logBaseX: f32,
+  logBaseY: f32,
+  // bit0 = log X, bit1 = log Y
+  logFlags: u32,
 };
 
 @group(0) @binding(0) var<uniform> vsUniforms: VSUniforms;
@@ -96,6 +98,29 @@ fn vsMain(in: VSIn, @builtin(vertex_index) vertexIndex: u32) -> VSOut {
     let wickMin = vec2<f32>(wickLeft, in.low);
     let wickMax = vec2<f32>(wickRight, bodyBottom);
     pos = wickMin + corner * (wickMax - wickMin);
+  }
+
+  // Log projection per-corner (OHLC stay data-space in instance buffer).
+  let flags = vsUniforms.logFlags;
+  if (flags != 0u) {
+    if ((flags & 1u) != 0u) {
+      if (pos.x <= 0.0) {
+        var outBad: VSOut;
+        outBad.clipPosition = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        outBad.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        return outBad;
+      }
+      pos.x = log(pos.x) / log(vsUniforms.logBaseX);
+    }
+    if ((flags & 2u) != 0u) {
+      if (pos.y <= 0.0) {
+        var outBad: VSOut;
+        outBad.clipPosition = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        outBad.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        return outBad;
+      }
+      pos.y = log(pos.y) / log(vsUniforms.logBaseY);
+    }
   }
 
   var out: VSOut;

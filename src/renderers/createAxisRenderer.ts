@@ -1,6 +1,6 @@
 import gridWgsl from '../shaders/grid.wgsl?raw';
 import type { AxisConfig } from '../config/types';
-import type { LinearScale } from '../utils/scales';
+import type { ContinuousScale } from '../utils/scales';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
 import type { GridArea } from './createGridRenderer';
 import { parseCssColorToRgba01 } from '../utils/colors';
@@ -9,7 +9,7 @@ import type { PipelineCache } from '../core/PipelineCache';
 export interface AxisRenderer {
   prepare(
     axisConfig: AxisConfig,
-    scale: LinearScale,
+    scale: ContinuousScale,
     orientation: 'x' | 'y',
     gridArea: GridArea,
     axisLineColor?: string,
@@ -128,7 +128,7 @@ const resolveTickDomainValues = (
 
 const generateAxisVertices = (
   axisConfig: AxisConfig,
-  scale: LinearScale,
+  scale: ContinuousScale,
   orientation: 'x' | 'y',
   gridArea: GridArea,
   tickCountOverride?: number,

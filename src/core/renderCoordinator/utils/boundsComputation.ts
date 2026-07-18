@@ -94,3 +94,88 @@ export const normalizeDomain = (
 
   return { min, max };
 };
+
+/** Last sanitized result warned per axis key — suppress streaming spam. */
+const lastLogDomainWarnByKey = new Map<string, string>();
+
+/**
+ * Sanitize a domain for logarithmic axes.
+ *
+ * - Both ends must be finite and strictly positive.
+ * - Explicit min/max ≤ 0 are clamped using `positiveDataMin` when available
+ *   (prefer `positiveDataMin * 0.5`, floored at a power of `base`), else fallback.
+ * - Empty / all-non-positive data → `[1, 10]` (or `[1, base]` when base > 1).
+ *
+ * @returns Sanitized domain plus whether a clamp/fallback warning was applied
+ */
+export function sanitizeLogDomain(
+  minCandidate: number,
+  maxCandidate: number,
+  options?: Readonly<{
+    base?: number;
+    /** Smallest positive finite data value on this axis (for clamping explicit ≤0). */
+    positiveDataMin?: number;
+    /** When true, emit a console warning on clamp/fallback (dev). */
+    warn?: boolean;
+    /**
+     * Stable key for de-duplicating warnings (e.g. `'x'`, `'y:0'`).
+     * Warns once per key, or again when the sanitized `[min, max]` changes.
+     */
+    warnKey?: string;
+  }>
+): { readonly min: number; readonly max: number; readonly warned: boolean } {
+  const base =
+    options?.base != null && Number.isFinite(options.base) && options.base > 0 && options.base !== 1
+      ? options.base
+      : 10;
+  const fallbackMax = base > 1 ? base : 10;
+  let warned = false;
+
+  let min = minCandidate;
+  let max = maxCandidate;
+
+  const clampPositive = (v: number, role: 'min' | 'max'): number => {
+    if (Number.isFinite(v) && v > 0) return v;
+    warned = true;
+    const pd = options?.positiveDataMin;
+    if (pd != null && Number.isFinite(pd) && pd > 0) {
+      const half = pd * 0.5;
+      // Floor at a power of base near half (or EPSILON-scale positive).
+      const logHalf = Math.log(Math.max(half, Number.MIN_VALUE)) / Math.log(base);
+      const floored = base ** Math.floor(logHalf);
+      return Math.max(floored, Number.MIN_VALUE);
+    }
+    return role === 'min' ? 1 : fallbackMax;
+  };
+
+  min = clampPositive(min, 'min');
+  max = clampPositive(max, 'max');
+
+  if (min === max) {
+    max = min * base;
+  } else if (min > max) {
+    const t = min;
+    min = max;
+    max = t;
+  }
+
+  if (!Number.isFinite(min) || !Number.isFinite(max) || !(min > 0) || !(max > 0)) {
+    warned = true;
+    min = 1;
+    max = fallbackMax;
+  }
+
+  if (warned && options?.warn !== false) {
+    const key = options?.warnKey ?? 'default';
+    const resultKey = `${min}|${max}|${base}`;
+    if (lastLogDomainWarnByKey.get(key) !== resultKey) {
+      lastLogDomainWarnByKey.set(key, resultKey);
+      console.warn(
+        `[ChartGPU] Log axis domain was non-positive or invalid; using [${min}, ${max}]. ` +
+          `Log axes require strictly positive min/max.`
+      );
+    }
+  }
+
+  return { min, max, warned };
+}

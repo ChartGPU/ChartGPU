@@ -1,6 +1,7 @@
 import barWgsl from '../shaders/bar.wgsl?raw';
 import type { ResolvedBarSeriesConfig } from '../config/OptionResolver';
-import type { LinearScale } from '../utils/scales';
+import type { ContinuousScale } from '../utils/scales';
+import { computeClipAffineFromContinuousScale, resolveLogProjection } from './packedXAffine';
 import type { GridArea } from './createGridRenderer';
 import { parseCssColorToRgba01 } from '../utils/colors';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
@@ -11,8 +12,8 @@ import type { PipelineCache } from '../core/PipelineCache';
 export interface BarRenderer {
   prepare(
     seriesConfigs: ReadonlyArray<ResolvedBarSeriesConfig>,
-    xScale: LinearScale,
-    yScale: LinearScale,
+    xScale: ContinuousScale,
+    yScale: ContinuousScale,
     gridArea: GridArea
   ): void;
   /**
@@ -63,24 +64,6 @@ const nextPow2 = (v: number): number => {
   if (!Number.isFinite(v) || v <= 0) return 1;
   const n = Math.ceil(v);
   return 2 ** Math.ceil(Math.log2(n));
-};
-
-/** Linear scale → clip affine: clip = a * domain + b (sample at v0, v1). */
-const computeClipAffineFromScale = (
-  scale: LinearScale,
-  v0: number,
-  v1: number
-): { readonly a: number; readonly b: number } => {
-  const p0 = scale.scale(v0);
-  const p1 = scale.scale(v1);
-
-  if (!Number.isFinite(v0) || !Number.isFinite(v1) || v0 === v1 || !Number.isFinite(p0) || !Number.isFinite(p1)) {
-    return { a: 0, b: Number.isFinite(p0) ? p0 : 0 };
-  }
-
-  const a = (p1 - p0) / (v1 - v0);
-  const b = p0 - a * v0;
-  return { a: Number.isFinite(a) ? a : 0, b: Number.isFinite(b) ? b : 0 };
 };
 
 const writeTransformMat4F32 = (out: Float32Array, ax: number, bx: number, ay: number, by: number): void => {
@@ -217,12 +200,14 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
     ],
   });
 
-  const vsUniformBuffer = createUniformBuffer(device, 64, {
+  // mat4 (64) + logBaseX/logBaseY/logFlags/pad (16) = 80
+  const vsUniformBuffer = createUniformBuffer(device, 80, {
     label: 'barRenderer/vsUniforms',
   });
   // Domain → clip affine written every prepare (not identity).
-  const vsUniformScratchBuffer = new ArrayBuffer(64);
+  const vsUniformScratchBuffer = new ArrayBuffer(80);
   const vsUniformScratchF32 = new Float32Array(vsUniformScratchBuffer);
+  const vsUniformScratchU32 = new Uint32Array(vsUniformScratchBuffer);
 
   const bindGroup = device.createBindGroup({
     layout: bindGroupLayout,
@@ -290,22 +275,48 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
     cpuInstanceStagingF32 = new Float32Array(cpuInstanceStagingBuffer);
   };
 
-  // Issue 2.5: skip VS uniform write when affine unchanged.
+  // Issue 2.5: skip VS uniform write when affine / log projection unchanged.
   let lastAx = Number.NaN;
   let lastBx = Number.NaN;
   let lastAy = Number.NaN;
   let lastBy = Number.NaN;
+  let lastLogFlags = 0;
+  let lastLogBaseX = Number.NaN;
+  let lastLogBaseY = Number.NaN;
 
-  const writeVsUniforms = (ax: number, bx: number, ay: number, by: number): void => {
-    if (lastAx === ax && lastBx === bx && lastAy === ay && lastBy === by) {
+  const writeVsUniforms = (
+    ax: number,
+    bx: number,
+    ay: number,
+    by: number,
+    logFlags: number,
+    logBaseX: number,
+    logBaseY: number
+  ): void => {
+    if (
+      lastAx === ax &&
+      lastBx === bx &&
+      lastAy === ay &&
+      lastBy === by &&
+      lastLogFlags === logFlags &&
+      lastLogBaseX === logBaseX &&
+      lastLogBaseY === logBaseY
+    ) {
       return;
     }
     writeTransformMat4F32(vsUniformScratchF32, ax, bx, ay, by);
+    vsUniformScratchF32[16] = logBaseX;
+    vsUniformScratchF32[17] = logBaseY;
+    vsUniformScratchU32[18] = logFlags >>> 0;
+    vsUniformScratchU32[19] = 0;
     writeUniformBuffer(device, vsUniformBuffer, vsUniformScratchBuffer);
     lastAx = ax;
     lastBx = bx;
     lastAy = ay;
     lastBy = by;
+    lastLogFlags = logFlags;
+    lastLogBaseX = logBaseX;
+    lastLogBaseY = logBaseY;
   };
 
   /**
@@ -415,7 +426,7 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
 
   const computeBaselineForBarsFromAxis = (
     seriesConfigs: ReadonlyArray<ResolvedBarSeriesConfig>,
-    yScale: LinearScale,
+    yScale: ContinuousScale,
     plotClipRect: Readonly<{ top: number; bottom: number }>
   ): number => {
     // Determine the visible y-domain from the yScale + plot clip rect (clip-space).
@@ -450,7 +461,7 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
       readonly barCategoryGap?: number;
     },
     clusterCount: number,
-    xScale: LinearScale,
+    xScale: ContinuousScale,
     plotSize: { readonly plotWidthCss: number },
     plotClipRect: Readonly<{ left: number; right: number }>,
     fallbackCategoryCount: number
@@ -484,10 +495,20 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
       // CSS-px width → domain via current x scale (not linear under pure zoom alone).
       const plotClipWidth = plotClipRect.right - plotClipRect.left;
       const clipPerCssX = plotSize.plotWidthCss > 0 ? plotClipWidth / plotSize.plotWidthCss : 0;
-      const { a: ax } = computeClipAffineFromScale(xScale, 0, 1);
-      const absAx = Math.abs(ax);
       const widthClip = Math.max(0, rawBarWidth) * clipPerCssX;
-      barWidthDomain = absAx > 0 && Number.isFinite(absAx) ? widthClip / absAx : 0;
+      if (xScale.kind === 'log') {
+        // Local domain width at geometric mid (log spacing ≠ linear domain width).
+        const { min, max } = xScale.getDomain();
+        const mid = Math.sqrt(Math.max(min, Number.MIN_VALUE) * Math.max(max, Number.MIN_VALUE));
+        const midClip = xScale.scale(mid);
+        const lo = xScale.invert(midClip - widthClip * 0.5);
+        const hi = xScale.invert(midClip + widthClip * 0.5);
+        barWidthDomain = Number.isFinite(lo) && Number.isFinite(hi) ? Math.abs(hi - lo) : 0;
+      } else {
+        const { a: ax } = computeClipAffineFromContinuousScale(xScale);
+        const absAx = Math.abs(ax);
+        barWidthDomain = absAx > 0 && Number.isFinite(absAx) ? widthClip / absAx : 0;
+      }
       barWidthDomain = Math.min(barWidthDomain, maxBarWidthDomain);
     } else if (typeof rawBarWidth === 'string') {
       const p = parsePercent(rawBarWidth);
@@ -552,11 +573,12 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
     const plotClipRect = computePlotClipRect(gridArea);
 
     // Domain → clip affine always (yMin/yMax-only setOption updates uniforms only).
-    // Sample at (0, 1) like line renderer — works for any linear scale including
-    // intro-animated bar y-scale wrappers (still affine toward baseline).
-    const { a: ax, b: bx } = computeClipAffineFromScale(xScale, 0, 1);
-    const { a: ay, b: by } = computeClipAffineFromScale(yScale, 0, 1);
-    writeVsUniforms(ax, bx, ay, by);
+    // Linear: sample (0,1); log: affine in log space. Intro-animated bar y wrappers
+    // remain linear ContinuousScale.
+    const { a: ax, b: bx } = computeClipAffineFromContinuousScale(xScale);
+    const { a: ay, b: by } = computeClipAffineFromContinuousScale(yScale);
+    const { logFlags, logBaseX, logBaseY } = resolveLogProjection(xScale, yScale);
+    writeVsUniforms(ax, bx, ay, by, logFlags, logBaseX, logBaseY);
     // Cluster offsets are applied in domain then transformed; flip order under reversed x
     // so clip-space series order matches the pre-domain-pack layout.
     const xDir = ax < 0 ? -1 : 1;

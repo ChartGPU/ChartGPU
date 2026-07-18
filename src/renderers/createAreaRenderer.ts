@@ -1,7 +1,7 @@
 import areaWgsl from '../shaders/area.wgsl?raw';
 import type { ResolvedAreaSeriesConfig } from '../config/OptionResolver';
 import type { CartesianSeriesData } from '../config/types';
-import type { LinearScale } from '../utils/scales';
+import type { ContinuousScale } from '../utils/scales';
 import { parseCssColorToRgba01 } from '../utils/colors';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
 import {
@@ -13,14 +13,19 @@ import {
   isRingXYColumns,
 } from '../data/cartesianData';
 import type { PipelineCache } from '../core/PipelineCache';
-import { computePackedXAffineFromScale } from './packedXAffine';
+import {
+  computeClipAffineFromContinuousScale,
+  computeClipAffineFromScale,
+  computePackedXAffineFromScale,
+  resolveLogProjection,
+} from './packedXAffine';
 
 export interface AreaRenderer {
   prepare(
     seriesConfig: ResolvedAreaSeriesConfig,
     data: CartesianSeriesData,
-    xScale: LinearScale,
-    yScale: LinearScale,
+    xScale: ContinuousScale,
+    yScale: ContinuousScale,
     baseline?: number,
     /**
      * Optional shared storage buffer (line / GPU decimation output). When set,
@@ -82,23 +87,6 @@ const nextPow2 = (v: number): number => {
   if (!Number.isFinite(v) || v <= 0) return 1;
   const n = Math.ceil(v);
   return 2 ** Math.ceil(Math.log2(n));
-};
-
-const computeClipAffineFromScale = (
-  scale: LinearScale,
-  v0: number,
-  v1: number
-): { readonly a: number; readonly b: number } => {
-  const p0 = scale.scale(v0);
-  const p1 = scale.scale(v1);
-
-  if (!Number.isFinite(v0) || !Number.isFinite(v1) || v0 === v1 || !Number.isFinite(p0) || !Number.isFinite(p1)) {
-    return { a: 0, b: Number.isFinite(p0) ? p0 : 0 };
-  }
-
-  const a = (p1 - p0) / (v1 - v0);
-  const b = p0 - a * v0;
-  return { a: Number.isFinite(a) ? a : 0, b: Number.isFinite(b) ? b : 0 };
 };
 
 const writeTransformMat4F32 = (out: Float32Array, ax: number, bx: number, ay: number, by: number): void => {
@@ -168,14 +156,15 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     ],
   });
 
-  const vsUniformBuffer = createUniformBuffer(device, 96, {
+  // VSUniforms: mat4 (64) + baseline/logBaseX/logBaseY/logFlags (16) = 80.
+  const vsUniformBuffer = createUniformBuffer(device, 80, {
     label: 'areaRenderer/vsUniforms',
   });
   const fsUniformBuffer = createUniformBuffer(device, 16, {
     label: 'areaRenderer/fsUniforms',
   });
 
-  const vsUniformScratchBuffer = new ArrayBuffer(96);
+  const vsUniformScratchBuffer = new ArrayBuffer(80);
   const vsUniformScratchF32 = new Float32Array(vsUniformScratchBuffer);
   const fsUniformScratchF32 = new Float32Array(4);
 
@@ -274,35 +263,55 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     boundDataBuffer = buffer;
   };
 
-  // Issue 2.5: skip uniform writes when affine/color/baseline unchanged.
+  // Issue 2.5: skip uniform writes when affine/color/baseline/log unchanged.
   let lastAx = Number.NaN;
   let lastBx = Number.NaN;
   let lastAy = Number.NaN;
   let lastBy = Number.NaN;
   let lastBaseline = Number.NaN;
+  let lastLogFlags = 0;
+  let lastLogBaseX = Number.NaN;
+  let lastLogBaseY = Number.NaN;
   let lastFsR = Number.NaN;
   let lastFsG = Number.NaN;
   let lastFsB = Number.NaN;
   let lastFsA = Number.NaN;
+  const vsUniformScratchU32 = new Uint32Array(vsUniformScratchBuffer);
 
-  const writeVsUniforms = (ax: number, bx: number, ay: number, by: number, baseline: number): void => {
-    const dirty = lastAx !== ax || lastBx !== bx || lastAy !== ay || lastBy !== by || lastBaseline !== baseline;
+  const writeVsUniforms = (
+    ax: number,
+    bx: number,
+    ay: number,
+    by: number,
+    baseline: number,
+    logFlags: number,
+    logBaseX: number,
+    logBaseY: number
+  ): void => {
+    const dirty =
+      lastAx !== ax ||
+      lastBx !== bx ||
+      lastAy !== ay ||
+      lastBy !== by ||
+      lastBaseline !== baseline ||
+      lastLogFlags !== logFlags ||
+      lastLogBaseX !== logBaseX ||
+      lastLogBaseY !== logBaseY;
     if (!dirty) return;
     writeTransformMat4F32(vsUniformScratchF32, ax, bx, ay, by);
     vsUniformScratchF32[16] = baseline;
-    vsUniformScratchF32[17] = 0;
-    vsUniformScratchF32[18] = 0;
-    vsUniformScratchF32[19] = 0;
-    vsUniformScratchF32[20] = 0;
-    vsUniformScratchF32[21] = 0;
-    vsUniformScratchF32[22] = 0;
-    vsUniformScratchF32[23] = 0;
+    vsUniformScratchF32[17] = logBaseX;
+    vsUniformScratchF32[18] = logBaseY;
+    vsUniformScratchU32[19] = logFlags >>> 0;
     writeUniformBuffer(device, vsUniformBuffer, vsUniformScratchBuffer);
     lastAx = ax;
     lastBx = bx;
     lastAy = ay;
     lastBy = by;
     lastBaseline = baseline;
+    lastLogFlags = logFlags;
+    lastLogBaseX = logBaseX;
+    lastLogBaseY = logBaseY;
   };
 
   const prepare: AreaRenderer['prepare'] = (
@@ -330,11 +339,22 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
       boundDataRef = null; // external ownership
       bindStorage(storageBuffer);
 
-      // Packed-origin X affine (stable for epoch-ms); Y samples (0,1).
+      // Packed-origin X affine (stable for epoch-ms); Y continuous (log-aware).
       const { a: ax, b: bxPacked } = computePackedXAffineFromScale(xScale, xOffset);
-      const { a: ay, b: by } = computeClipAffineFromScale(yScale, 0, 1);
-      const baselineValue = Number.isFinite(baseline ?? Number.NaN) ? (baseline as number) : 0;
-      writeVsUniforms(ax, bxPacked, ay, by, baselineValue);
+      const { a: ay, b: by } = computeClipAffineFromContinuousScale(yScale);
+      const { logFlags, logBaseX, logBaseY } = resolveLogProjection(xScale, yScale);
+      // Log Y: default baseline is domain min (positive), not 0.
+      // Non-positive caller baselines are treated as unset on log (fill-to-zero invalid).
+      const defaultBaseline = yScale.kind === 'log' ? yScale.getDomain().min : 0;
+      const baselineValue =
+        yScale.kind === 'log'
+          ? Number.isFinite(baseline ?? Number.NaN) && (baseline as number) > 0
+            ? (baseline as number)
+            : defaultBaseline
+          : Number.isFinite(baseline ?? Number.NaN)
+            ? (baseline as number)
+            : defaultBaseline;
+      writeVsUniforms(ax, bxPacked, ay, by, baselineValue, logFlags, logBaseX, logBaseY);
     } else {
       // Private pack path with identity cache + pow2 growth.
       // Also re-pack when length changes under a stable ref (streaming append grows
@@ -368,14 +388,27 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
         yMin: 0,
         yMax: 1,
       };
-      const { a: ax, b: bx } = computeClipAffineFromScale(xScale, xMin, xMax);
-      const { a: ay, b: by } = computeClipAffineFromScale(yScale, yMin, yMax);
-      const baselineValue = Number.isFinite(baseline ?? Number.NaN)
-        ? (baseline as number)
-        : Number.isFinite(yMin)
-          ? yMin
-          : 0;
-      writeVsUniforms(ax, bx, ay, by, baselineValue);
+      // Log axes: affine in transformed space. Linear: sample domain endpoints (parity).
+      const { a: ax, b: bx } =
+        xScale.kind === 'log'
+          ? computeClipAffineFromContinuousScale(xScale)
+          : computeClipAffineFromScale(xScale, xMin, xMax);
+      const { a: ay, b: by } =
+        yScale.kind === 'log'
+          ? computeClipAffineFromContinuousScale(yScale)
+          : computeClipAffineFromScale(yScale, yMin, yMax);
+      const { logFlags, logBaseX, logBaseY } = resolveLogProjection(xScale, yScale);
+      const fallbackBaseline = yScale.kind === 'log' ? yScale.getDomain().min : Number.isFinite(yMin) ? yMin : 0;
+      // Log Y: non-positive baseline is unset (same guard as storageBuffer path).
+      const baselineValue =
+        yScale.kind === 'log'
+          ? Number.isFinite(baseline ?? Number.NaN) && (baseline as number) > 0
+            ? (baseline as number)
+            : fallbackBaseline
+          : Number.isFinite(baseline ?? Number.NaN)
+            ? (baseline as number)
+            : fallbackBaseline;
+      writeVsUniforms(ax, bx, ay, by, baselineValue, logFlags, logBaseX, logBaseY);
     }
 
     const [r, g, b, a] = parseSeriesColorToRgba01(seriesConfig.areaStyle.color);

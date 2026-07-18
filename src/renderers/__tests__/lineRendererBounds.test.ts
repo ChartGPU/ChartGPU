@@ -225,7 +225,7 @@ describe('createLineRenderer bounds (P2-5)', () => {
 
     const vsWrites = writeUniform.mock.calls.filter((c) => {
       const dataArg = c[2];
-      return dataArg instanceof ArrayBuffer && dataArg.byteLength === 96;
+      return dataArg instanceof ArrayBuffer && dataArg.byteLength === 112;
     });
     expect(vsWrites.length).toBeGreaterThan(0);
     const f32 = new Float32Array(vsWrites[0]![2] as ArrayBuffer);
@@ -250,7 +250,7 @@ describe('createLineRenderer bounds (P2-5)', () => {
     const src = fs.readFileSync(path.resolve(__dirname, '../createLineRenderer.ts'), 'utf8');
     expect(src).not.toMatch(/computeRawBoundsFromCartesianData/);
     expect(src).toMatch(/computePackedXAffineFromScale\(xScale, xOffset\)/);
-    expect(src).toMatch(/computeClipAffineFromScale\(yScale, 0, 1\)/);
+    expect(src).toMatch(/computeClipAffineFromContinuousScale\(yScale\)/);
     expect(src).not.toMatch(/bx \+ ax \* xOffset/);
   });
 
@@ -274,7 +274,7 @@ describe('createLineRenderer bounds (P2-5)', () => {
 
     const vsWrites = writeUniform.mock.calls.filter((c) => {
       const dataArg = c[2];
-      return dataArg instanceof ArrayBuffer && dataArg.byteLength === 96;
+      return dataArg instanceof ArrayBuffer && dataArg.byteLength === 112;
     });
     expect(vsWrites.length).toBeGreaterThan(0);
     const f32 = new Float32Array(vsWrites[vsWrites.length - 1]![2] as ArrayBuffer);
@@ -392,7 +392,7 @@ describe('createLineRenderer bounds (P2-5)', () => {
     const vsWrites = () =>
       writeUniform.mock.calls.filter((c) => {
         const dataArg = c[2];
-        return dataArg instanceof ArrayBuffer && dataArg.byteLength === 96;
+        return dataArg instanceof ArrayBuffer && dataArg.byteLength === 112;
       }).length;
 
     a.prepare(series, bufA, xScale, yScale, 0, 1, 800, 600, 10);
@@ -433,7 +433,7 @@ describe('createLineRenderer bounds (P2-5)', () => {
     const vsCount = () =>
       writeUniform.mock.calls.filter((c) => {
         const dataArg = c[2];
-        return dataArg instanceof ArrayBuffer && dataArg.byteLength === 96;
+        return dataArg instanceof ArrayBuffer && dataArg.byteLength === 112;
       }).length;
 
     a.prepare(thin, bufA, xScale, yScale, 0, 1, 800, 600, 10);
@@ -621,7 +621,7 @@ describe('createLineRenderer bounds (P2-5)', () => {
 
     const vsWrites = writeUniform.mock.calls.filter((c) => {
       const dataArg = c[2];
-      return dataArg instanceof ArrayBuffer && dataArg.byteLength === 96;
+      return dataArg instanceof ArrayBuffer && dataArg.byteLength === 112;
     });
     const f32 = new Float32Array(vsWrites[vsWrites.length - 1]![2] as ArrayBuffer);
     expect(f32[19]).toBe(2);
@@ -641,7 +641,8 @@ describe('line.wgsl hairline gap contract (Issue 1 review)', () => {
     // Endpoints via pointAt (modular ring remap) or legacy points[iid].
     expect(hairBody).toMatch(/pointAt\(iid\)|points\[iid\]/);
     expect(hairBody).toMatch(/pointAt\(iid \+ 1u\)|points\[iid \+ 1u\]/);
-    expect(hairBody).toMatch(/pA\.x != pA\.x/);
-    expect(hairBody).toMatch(/pB\.x != pB\.x/);
+    // Endpoints may be named pA/pB or pA_raw/pB_raw (log-projection path).
+    expect(hairBody).toMatch(/pA(_raw)?\.x != pA(_raw)?\.x/);
+    expect(hairBody).toMatch(/pB(_raw)?\.x != pB(_raw)?\.x/);
   });
 });

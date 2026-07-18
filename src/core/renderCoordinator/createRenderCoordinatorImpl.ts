@@ -42,6 +42,7 @@ import {
   patchSeriesPresentationKeepingSampledData,
   didRawBoundsModeChange,
 } from './data/samplingDirty';
+import { syncCandlestickOwnedFromUserSeries } from './data/syncCandlestickRuntime';
 import { processAnnotations } from './annotations/processAnnotations';
 import {
   prepareSeries,
@@ -63,13 +64,18 @@ import { createTextureManager } from './gpu/textureManager';
 import { enqueueDeviceSubmit, flushDeviceSubmit } from '../gpu/submitBatcher';
 import {
   applyStickyAutoDomain,
+  applyStickyAutoLogDomain,
   DEFAULT_STICKY_DOMAIN_HEADROOM,
   DEFAULT_STICKY_X_DOMAIN_HEADROOM,
   resolveStickyOrDataDomain,
   shouldApplyStickyAutoDomain,
   shouldSkipStickyAutoXDomain,
 } from './zoom/stickyAutoDomain';
-import { isFullSpanZoomRange as isFullSpanZoomRangeHelper, scanCartesianVisibleYBounds } from './zoom/visibleYBounds';
+import {
+  isFullSpanZoomRange as isFullSpanZoomRangeHelper,
+  scanCartesianVisibleYBounds,
+  scanCartesianPositiveYBounds,
+} from './zoom/visibleYBounds';
 import { createCrosshairRenderer } from '../../renderers/createCrosshairRenderer';
 import { createHighlightRenderer } from '../../renderers/createHighlightRenderer';
 import { createReferenceLineRenderer } from '../../renderers/createReferenceLineRenderer';
@@ -84,8 +90,8 @@ import { findNearestPoint } from '../../interaction/findNearestPoint';
 import { findPointsAtX } from '../../interaction/findPointsAtX';
 import { computeCandlestickBodyWidthRange, findCandlestick } from '../../interaction/findCandlestick';
 import { findPieSlice } from '../../interaction/findPieSlice';
-import { createLinearScale } from '../../utils/scales';
-import type { LinearScale } from '../../utils/scales';
+import { createAxisScale } from '../../utils/scales';
+import type { ContinuousScale, LinearScale } from '../../utils/scales';
 import { parseCssColorToGPUColor } from '../../utils/colors';
 import { createTextOverlay } from '../../components/createTextOverlay';
 import type { TextOverlay } from '../../components/createTextOverlay';
@@ -114,7 +120,7 @@ import {
   clipXToCanvasCssPx,
   clipYToCanvasCssPx,
 } from './utils/axisUtils';
-import { extendBoundsWithOHLCDataPoints, normalizeDomain } from './utils/boundsComputation';
+import { extendBoundsWithOHLCDataPoints, normalizeDomain, sanitizeLogDomain } from './utils/boundsComputation';
 import {
   DEFAULT_TICK_COUNT as TIME_DEFAULT_TICK_COUNT,
   resolvePieCenterPlotCss,
@@ -122,6 +128,7 @@ import {
   generateLinearTicks,
   computeAdaptiveTimeXAxisTicks,
 } from './utils/timeAxisUtils';
+import { generateLogTicks, generateLogTicksForVisibleDomain } from './axis/computeAxisTicks';
 import {
   resolveAnimationConfig as resolveAnimationConfigHelper,
   isDomainEqual,
@@ -132,6 +139,7 @@ import {
   computeNextIntroPhase,
   applyBarIntroProgress,
   lerpDomain,
+  lerpLogDomain,
   type AnySeriesConfig,
 } from './animation/animationHelpers';
 import { computeCandlestickTooltipAnchorFromMatch } from './ui/tooltipLegendHelpers';
@@ -495,20 +503,164 @@ const computeGlobalYBoundsForAxis = (
   return { yMin, yMax };
 };
 
+/**
+ * Positive-only Y bounds for log axes. Ignores ≤0 values so auto domain stays
+ * strictly positive. Falls back to {1, 10} when no positive data exists.
+ *
+ * When `visibleBoundsOverride` is present but not both-positive (zeros/negatives
+ * in the visible window), re-scan **only** points inside `xWindow` (same window
+ * used for visible Y). Do not fall back to unwindowed full-series positives —
+ * that would contradict `autoBounds: 'visible'` under zoom.
+ */
+const computePositiveYBoundsForAxis = (
+  series: ResolvedChartGPUOptions['series'],
+  axisId: string,
+  runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null,
+  visibleBoundsOverride?: { yMin: number; yMax: number } | null,
+  xWindow?: { readonly min: number; readonly max: number } | null
+): { yMin: number; yMax: number } => {
+  // Prefer positive subset of a visible override when both ends are already positive.
+  if (
+    visibleBoundsOverride &&
+    visibleBoundsOverride.yMin > 0 &&
+    visibleBoundsOverride.yMax > 0 &&
+    Number.isFinite(visibleBoundsOverride.yMin) &&
+    Number.isFinite(visibleBoundsOverride.yMax)
+  ) {
+    return visibleBoundsOverride;
+  }
+
+  let yMin = Number.POSITIVE_INFINITY;
+  let yMax = Number.NEGATIVE_INFINITY;
+  const filterX = xWindow != null && Number.isFinite(xWindow.min) && Number.isFinite(xWindow.max);
+  const xMinW = filterX ? xWindow!.min : 0;
+  const xMaxW = filterX ? xWindow!.max : 0;
+  // Visible-mode override that still includes ≤0: restrict scan to xWindow only.
+  const inVisibleWindowMode = visibleBoundsOverride != null;
+
+  for (let s = 0; s < series.length; s++) {
+    const seriesConfig = series[s];
+    if (seriesConfig.type === 'pie') continue;
+    if (seriesConfig.yAxis !== axisId) continue;
+
+    if (seriesConfig.type === 'candlestick') {
+      const rawOHLC = (seriesConfig.rawData ?? seriesConfig.data) as ReadonlyArray<OHLCDataPoint>;
+      for (let i = 0; i < rawOHLC.length; i++) {
+        const p = rawOHLC[i]!;
+        const timestamp = isTupleOHLCDataPoint(p) ? p[0] : p.timestamp;
+        if (filterX && Number.isFinite(timestamp) && (timestamp < xMinW || timestamp > xMaxW)) {
+          continue;
+        }
+        const low = isTupleOHLCDataPoint(p) ? p[3] : p.low;
+        const high = isTupleOHLCDataPoint(p) ? p[4] : p.high;
+        if (!Number.isFinite(low) || !Number.isFinite(high)) continue;
+        const yLow = Math.min(low, high);
+        const yHigh = Math.max(low, high);
+        if (yLow > 0 && yLow < yMin) yMin = yLow;
+        if (yHigh > 0 && yHigh > yMax) yMax = yHigh;
+      }
+      continue;
+    }
+
+    const data = (seriesConfig.rawData ?? seriesConfig.data) as CartesianSeriesData;
+    const scanned = scanCartesianPositiveYBounds(data, filterX ? xWindow : null);
+    if (scanned) {
+      if (scanned.yMin < yMin) yMin = scanned.yMin;
+      if (scanned.yMax > yMax) yMax = scanned.yMax;
+    }
+  }
+
+  // Runtime bounds may still include non-positive; only accept when both positive.
+  // Skip unwindowed runtime extrema when a visible x-window is active — those are
+  // full-series and would reintroduce off-window positive peaks (log + zoom bug).
+  if (!(yMin > 0) || !(yMax > 0)) {
+    if (!(inVisibleWindowMode && filterX)) {
+      for (let s = 0; s < series.length; s++) {
+        const seriesConfig = series[s];
+        if (seriesConfig.type === 'pie') continue;
+        if (seriesConfig.yAxis !== axisId) continue;
+        const b = runtimeRawBoundsByIndex?.[s] ?? seriesConfig.rawBounds ?? null;
+        if (b && b.yMin > 0 && b.yMax > 0) {
+          if (b.yMin < yMin) yMin = b.yMin;
+          if (b.yMax > yMax) yMax = b.yMax;
+        }
+      }
+    }
+  }
+
+  if (!(yMin > 0) || !(yMax > 0) || !Number.isFinite(yMin) || !Number.isFinite(yMax)) {
+    return { yMin: 1, yMax: 10 };
+  }
+  if (yMin === yMax) yMax = yMin * 10;
+  return { yMin, yMax };
+};
+
+/** Smallest/largest strictly positive finite X across cartesian series (log clamp helper). */
+const computePositiveXBounds = (series: ResolvedChartGPUOptions['series']): { xMin: number; xMax: number } => {
+  let xMin = Number.POSITIVE_INFINITY;
+  let xMax = Number.NEGATIVE_INFINITY;
+  for (let s = 0; s < series.length; s++) {
+    const seriesConfig = series[s];
+    if (seriesConfig.type === 'pie' || seriesConfig.type === 'candlestick') continue;
+    const data = (seriesConfig.rawData ?? seriesConfig.data) as CartesianSeriesData;
+    const n = getPointCount(data);
+    for (let i = 0; i < n; i++) {
+      const x = getX(data, i);
+      if (!Number.isFinite(x) || !(x > 0)) continue;
+      if (x < xMin) xMin = x;
+      if (x > xMax) xMax = x;
+    }
+  }
+  if (!(xMin > 0) || !(xMax > 0) || !Number.isFinite(xMin) || !Number.isFinite(xMax)) {
+    return { xMin: Number.NaN, xMax: Number.NaN };
+  }
+  return { xMin, xMax };
+};
+
 const computeBaseXDomain = (
   options: ResolvedChartGPUOptions,
   runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null
 ): { readonly min: number; readonly max: number } => {
   // Short-circuit when both ends are explicit — avoids O(series) bounds aggregation
-  // on full rewrite frames with fixed axes.
+  // on full rewrite frames with fixed axes. Log still needs positive data extrema
+  // when either end is ≤0 so sanitize can clamp with positiveDataMin.
   const explicitMin = finiteOrUndefined(options.xAxis.min);
   const explicitMax = finiteOrUndefined(options.xAxis.max);
+  const isLog = options.xAxis.type === 'log';
+  const logBase = options.xAxis.logBase ?? 10;
+
   if (explicitMin !== undefined && explicitMax !== undefined) {
-    return normalizeDomain(explicitMin, explicitMax);
+    const raw = normalizeDomain(explicitMin, explicitMax);
+    if (!isLog) return raw;
+    // Always pass positive data extrema when available (docs: clamp via pd×0.5).
+    const pos = computePositiveXBounds(options.series);
+    return sanitizeLogDomain(raw.min, raw.max, {
+      base: logBase,
+      positiveDataMin: pos.xMin > 0 ? pos.xMin : undefined,
+      warn: true,
+      warnKey: 'x',
+    });
   }
   const bounds = computeGlobalXBounds(options.series, runtimeRawBoundsByIndex);
-  const baseMin = explicitMin ?? bounds.xMin;
-  const baseMax = explicitMax ?? bounds.xMax;
+  let baseMin = explicitMin ?? bounds.xMin;
+  let baseMax = explicitMax ?? bounds.xMax;
+  if (isLog) {
+    // Always compute positive extrema so non-positive explicit ends clamp to pd×0.5
+    // (not hard [1, base]) even when the other end is already positive.
+    const pos = computePositiveXBounds(options.series);
+    if (!(baseMin > 0) || !(baseMax > 0)) {
+      if (pos.xMin > 0 && pos.xMax > 0) {
+        baseMin = explicitMin ?? pos.xMin;
+        baseMax = explicitMax ?? pos.xMax;
+      }
+    }
+    return sanitizeLogDomain(baseMin, baseMax, {
+      base: logBase,
+      positiveDataMin: pos.xMin > 0 ? pos.xMin : undefined,
+      warn: true,
+      warnKey: 'x',
+    });
+  }
   return normalizeDomain(baseMin, baseMax);
 };
 
@@ -580,14 +732,33 @@ const computeBaseYDomainForAxis = (
   options: ResolvedChartGPUOptions,
   axisId: string,
   runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null,
-  visibleBoundsOverride?: { yMin: number; yMax: number } | null
+  visibleBoundsOverride?: { yMin: number; yMax: number } | null,
+  /** Same X window used when computing visibleBoundsOverride (zoom + autoBounds visible). */
+  xWindow?: { readonly min: number; readonly max: number } | null
 ): { readonly min: number; readonly max: number } => {
   const yAxisConfig = options.yAxes.find((ax) => ax.id === axisId) || options.yAxes[0]!;
   const explicitMin = finiteOrUndefined(yAxisConfig.min);
   const explicitMax = finiteOrUndefined(yAxisConfig.max);
+  const isLog = yAxisConfig.type === 'log';
+  const logBase = yAxisConfig.logBase ?? 10;
 
   if (explicitMin !== undefined && explicitMax !== undefined) {
-    return normalizeDomain(explicitMin, explicitMax);
+    const raw = normalizeDomain(explicitMin, explicitMax);
+    if (!isLog) return raw;
+    // Always pass positive data extrema when available (docs: clamp via pd×0.5 / floor-to-power).
+    const pos = computePositiveYBoundsForAxis(
+      options.series,
+      axisId,
+      runtimeRawBoundsByIndex,
+      visibleBoundsOverride,
+      xWindow
+    );
+    return sanitizeLogDomain(raw.min, raw.max, {
+      base: logBase,
+      positiveDataMin: pos.yMin > 0 ? pos.yMin : undefined,
+      warn: true,
+      warnKey: `y:${axisId}`,
+    });
   }
 
   const autoBoundsMode = yAxisConfig.autoBounds ?? 'visible';
@@ -599,8 +770,31 @@ const computeBaseYDomainForAxis = (
     bounds = computeGlobalYBoundsForAxis(options.series, axisId, runtimeRawBoundsByIndex);
   }
 
-  const yMin = explicitMin ?? bounds.yMin;
-  const yMax = explicitMax ?? bounds.yMax;
+  // Log axes: only positive finite values contribute to auto domain.
+  let yMin = explicitMin ?? bounds.yMin;
+  let yMax = explicitMax ?? bounds.yMax;
+  if (isLog) {
+    // Always compute positive extrema so non-positive explicit ends clamp to pd×0.5
+    // even when the other end is already positive (or both explicit above).
+    // When override includes ≤0 under zoom, re-scan positives inside xWindow only.
+    const pos = computePositiveYBoundsForAxis(
+      options.series,
+      axisId,
+      runtimeRawBoundsByIndex,
+      visibleBoundsOverride,
+      xWindow
+    );
+    if (!(yMin > 0) || !(yMax > 0)) {
+      yMin = explicitMin ?? pos.yMin;
+      yMax = explicitMax ?? pos.yMax;
+    }
+    return sanitizeLogDomain(yMin, yMax, {
+      base: logBase,
+      positiveDataMin: pos.yMin > 0 ? pos.yMin : undefined,
+      warn: true,
+      warnKey: `y:${axisId}`,
+    });
+  }
   return normalizeDomain(yMin, yMax);
 };
 
@@ -646,10 +840,10 @@ type IntroPhase = 'pending' | 'running' | 'done';
  */
 
 const createAnimatedBarYScale = (
-  baseYScale: LinearScale,
+  baseYScale: ContinuousScale,
   plotClipRect: Readonly<{ top: number; bottom: number }>,
   progress01: number
-): LinearScale => {
+): ContinuousScale => {
   const p = clamp01(progress01);
   if (p >= 1) return baseYScale;
 
@@ -658,7 +852,9 @@ const createAnimatedBarYScale = (
   const yMin = Math.min(yDomainA, yDomainB);
   const yMax = Math.max(yDomainA, yDomainB);
 
-  const wrapper: LinearScale = {
+  const wrapper: ContinuousScale = {
+    kind: baseYScale.kind,
+    base: baseYScale.base,
     domain(min: number, max: number) {
       baseYScale.domain(min, max);
       return wrapper;
@@ -666,6 +862,12 @@ const createAnimatedBarYScale = (
     range(min: number, max: number) {
       baseYScale.range(min, max);
       return wrapper;
+    },
+    getDomain() {
+      return baseYScale.getDomain();
+    },
+    getRange() {
+      return baseYScale.getRange();
     },
     scale(value: number) {
       // Domain-space intro growth from zero-line (or domain min) via animationHelpers.
@@ -930,14 +1132,28 @@ export function createRenderCoordinator(
     t01: number,
     zoomRange: ZoomRange | null
   ): UpdateTransitionSnapshot => {
-    const xBase = lerpDomain(transition.from.xBaseDomain, transition.to.xBaseDomain, t01);
+    let xBase =
+      currentOptions.xAxis.type === 'log'
+        ? lerpLogDomain(transition.from.xBaseDomain, transition.to.xBaseDomain, t01)
+        : lerpDomain(transition.from.xBaseDomain, transition.to.xBaseDomain, t01);
+    if (currentOptions.xAxis.type === 'log') {
+      xBase = sanitizeLogDomain(xBase.min, xBase.max, {
+        base: currentOptions.xAxis.logBase ?? 10,
+        warn: false,
+      });
+    }
     const xVisible = computeVisibleXDomain(xBase, zoomRange);
     const yBaseDomains = new Map<string, { readonly min: number; readonly max: number }>();
     for (const ax of transition.from.series[0] ? currentOptions.yAxes : []) {
       const axId = ax.id!;
       const fromY = transition.from.yBaseDomains.get(axId) || { min: 0, max: 1 };
       const toY = transition.to.yBaseDomains.get(axId) || { min: 0, max: 1 };
-      yBaseDomains.set(axId, lerpDomain(fromY, toY, t01));
+      if (ax.type === 'log') {
+        const lerped = lerpLogDomain(fromY, toY, t01);
+        yBaseDomains.set(axId, sanitizeLogDomain(lerped.min, lerped.max, { base: ax.logBase ?? 10, warn: false }));
+      } else {
+        yBaseDomains.set(axId, lerpDomain(fromY, toY, t01));
+      }
     }
     const series = interpolateSeriesForUpdate(transition.from.series, transition.to.series, t01, null);
     return {
@@ -983,6 +1199,8 @@ export function createRenderCoordinator(
    */
   let stickyAutoXDomain: { min: number; max: number } | null = null;
   const stickyAutoYDomainByAxis = new Map<string, { min: number; max: number }>();
+  /** X window last used for cachedVisibleYBoundsByAxis (null = full span / no filter). */
+  let cachedVisibleYBoundsXWindow: { min: number; max: number } | null = null;
 
   /**
    * Base X domain used for zoom→visible window, sampling, and slice.
@@ -1019,6 +1237,17 @@ export function createRenderCoordinator(
         return dataXDomain;
       }
       // X headroom must be 0 — see DEFAULT_STICKY_X_DOMAIN_HEADROOM.
+      // Log X: sticky in log space so equal-span expand uses min*base, not min+1.
+      if (currentOptions.xAxis.type === 'log') {
+        const next = applyStickyAutoLogDomain(
+          dataXDomain,
+          stickyAutoXDomain,
+          currentOptions.xAxis.logBase ?? 10,
+          DEFAULT_STICKY_X_DOMAIN_HEADROOM
+        );
+        stickyAutoXDomain = next;
+        return next;
+      }
       const next = applyStickyAutoDomain(dataXDomain, stickyAutoXDomain, DEFAULT_STICKY_X_DOMAIN_HEADROOM);
       stickyAutoXDomain = next;
       return next;
@@ -1056,6 +1285,7 @@ export function createRenderCoordinator(
       const vis = computeVisibleXDomain(baseX, zoomRange);
       xWindow = { min: vis.min, max: vis.max };
     }
+    cachedVisibleYBoundsXWindow = xWindow;
 
     for (const ax of currentOptions.yAxes) {
       if (!shouldComputeVisibleYBoundsForAxis(currentOptions, ax.id!)) continue;
@@ -1506,10 +1736,13 @@ export function createRenderCoordinator(
     const plotSize = getPlotSizeCssPx(canvas, gridArea);
     if (!plotSize) return null;
 
-    const xScale = createLinearScale().domain(domains.xDomain.min, domains.xDomain.max).range(0, plotSize.plotWidthCss);
-    const yScales = new Map<string, LinearScale>();
+    const xScale = createAxisScale(currentOptions.xAxis)
+      .domain(domains.xDomain.min, domains.xDomain.max)
+      .range(0, plotSize.plotWidthCss);
+    const yScales = new Map<string, ContinuousScale>();
     for (const [id, dom] of domains.yDomains) {
-      yScales.set(id, createLinearScale().domain(dom.min, dom.max).range(plotSize.plotHeightCss, 0));
+      const yAxisCfg = currentOptions.yAxes.find((a) => a.id === id) ?? currentOptions.yAxes[0]!;
+      yScales.set(id, createAxisScale(yAxisCfg).domain(dom.min, dom.max).range(plotSize.plotHeightCss, 0));
     }
 
     return {
@@ -2121,7 +2354,8 @@ export function createRenderCoordinator(
             currentOptions,
             ax.id!,
             runtimeRawBoundsByIndex,
-            cachedVisibleYBoundsByAxis.get(ax.id!) ?? null
+            cachedVisibleYBoundsByAxis.get(ax.id!) ?? null,
+            cachedVisibleYBoundsXWindow
           )
         );
       }
@@ -2160,6 +2394,7 @@ export function createRenderCoordinator(
 
     // Always refresh: annotations, themes, tooltip config, etc. may have changed.
     cachedVisibleYBoundsByAxis.clear();
+    cachedVisibleYBoundsXWindow = null;
     // Drop sticky auto-range so setOption (axes-only y min/max, full rewrite)
     // does not keep a prior streaming headroom domain.
     stickyAutoXDomain = null;
@@ -2246,6 +2481,27 @@ export function createRenderCoordinator(
       recomputeCachedVisibleYBoundsIfNeeded();
     }
 
+    // Candlestick streaming: consumer may mutate a stable OHLC array (forming
+    // bar) and call setOption. Presentation-only dirty checks treat same-ref
+    // data as unchanged, while the coordinator keeps a sliced owned copy for
+    // appendData — copy user edits into owned so prepare/geometry see them.
+    {
+      const candleSync = syncCandlestickOwnedFromUserSeries({
+        series: resolvedOptions.series,
+        runtimeRawDataByIndex,
+        runtimeRawBoundsByIndex,
+        extendBounds: extendBoundsWithOHLCDataPoints,
+      });
+      if (candleSync.didReplaceRef) {
+        recomputeRuntimeBaseSeries();
+        recomputeRenderSeries();
+      } else if (candleSync.didMutate) {
+        // Owned array mutated in place (same ref as renderSeries.data). Refresh
+        // y-bounds so auto domain tracks the forming bar high/low.
+        recomputeCachedVisibleYBoundsIfNeeded();
+      }
+    }
+
     // Tooltip enablement may change at runtime.
     if (overlayContainer) {
       const shouldHaveTooltip = currentOptions.tooltip?.show !== false;
@@ -2304,7 +2560,8 @@ export function createRenderCoordinator(
           currentOptions,
           ax.id!,
           runtimeRawBoundsByIndex,
-          cachedVisibleYBoundsByAxis.get(ax.id!) ?? null
+          cachedVisibleYBoundsByAxis.get(ax.id!) ?? null,
+          cachedVisibleYBoundsXWindow
         )
       );
     }
@@ -2518,7 +2775,16 @@ export function createRenderCoordinator(
 
     const updateP = updateTransition ? clamp01(updateProgress01) : 1;
     const dataXDomain = updateTransition
-      ? lerpDomain(updateTransition.from.xBaseDomain, updateTransition.to.xBaseDomain, updateP)
+      ? (() => {
+          const fromX = updateTransition.from.xBaseDomain;
+          const toX = updateTransition.to.xBaseDomain;
+          if (currentOptions.xAxis.type === 'log') {
+            const base = currentOptions.xAxis.logBase ?? 10;
+            const lerped = lerpLogDomain(fromX, toX, updateP);
+            return sanitizeLogDomain(lerped.min, lerped.max, { base, warn: false });
+          }
+          return lerpDomain(fromX, toX, updateP);
+        })()
       : computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
     // Sticky auto-range / autoScroll / mid-transition: shared with slice + resample
     // via resolveBaseXDomain so zoom-percent windows match GPU scales.
@@ -2531,12 +2797,12 @@ export function createRenderCoordinator(
     const plotClipRect = computePlotClipRect(gridArea);
     const plotScissor = computePlotScissorDevicePx(gridArea);
 
-    const xScale = createLinearScale()
+    const xScale = createAxisScale(currentOptions.xAxis)
       .domain(visibleXDomain.min, visibleXDomain.max)
       .range(plotClipRect.left, plotClipRect.right);
 
     // Compute per-axis y domains (with transition interpolation if active)
-    const currentYScales = new Map<string, LinearScale>();
+    const currentYScales = new Map<string, ContinuousScale>();
     const currentYDomains = new Map<string, { readonly min: number; readonly max: number }>();
     for (const ax of currentOptions.yAxes) {
       const axisId = ax.id!;
@@ -2544,14 +2810,21 @@ export function createRenderCoordinator(
       if (updateTransition && updateP < 1) {
         const fromY = updateTransition.from.yBaseDomains.get(axisId) ?? { min: 0, max: 1 };
         const toY = updateTransition.to.yBaseDomains.get(axisId) ?? { min: 0, max: 1 };
-        dom = lerpDomain(fromY, toY, updateP);
+        if (ax.type === 'log') {
+          const base = ax.logBase ?? 10;
+          const lerped = lerpLogDomain(fromY, toY, updateP);
+          dom = sanitizeLogDomain(lerped.min, lerped.max, { base, warn: false });
+        } else {
+          dom = lerpDomain(fromY, toY, updateP);
+        }
         stickyAutoYDomainByAxis.delete(axisId);
       } else {
         const dataDom = computeBaseYDomainForAxis(
           currentOptions,
           axisId,
           runtimeRawBoundsByIndex,
-          cachedVisibleYBoundsByAxis.get(axisId) ?? null
+          cachedVisibleYBoundsByAxis.get(axisId) ?? null,
+          cachedVisibleYBoundsXWindow
         );
         const yExplicitMin = finiteOrUndefined(ax.min);
         const yExplicitMax = finiteOrUndefined(ax.max);
@@ -2559,6 +2832,15 @@ export function createRenderCoordinator(
         if (!shouldApplyStickyAutoDomain(yExplicitMin, yExplicitMax)) {
           dom = dataDom;
           stickyAutoYDomainByAxis.delete(axisId);
+        } else if (ax.type === 'log') {
+          const next = applyStickyAutoLogDomain(
+            dataDom,
+            stickyAutoYDomainByAxis.get(axisId) ?? null,
+            ax.logBase ?? 10,
+            DEFAULT_STICKY_DOMAIN_HEADROOM
+          );
+          stickyAutoYDomainByAxis.set(axisId, next);
+          dom = next;
         } else {
           const next = applyStickyAutoDomain(
             dataDom,
@@ -2572,7 +2854,7 @@ export function createRenderCoordinator(
       currentYDomains.set(axisId, dom);
       currentYScales.set(
         axisId,
-        createLinearScale().domain(dom.min, dom.max).range(plotClipRect.bottom, plotClipRect.top)
+        createAxisScale(ax).domain(dom.min, dom.max).range(plotClipRect.bottom, plotClipRect.top)
       );
     }
     // Primary y scale (for bars, highlight, single-axis usage)
@@ -2652,10 +2934,21 @@ export function createRenderCoordinator(
       });
       xTickCount = computed.tickCount;
       xTickValues = computed.tickValues;
+    } else if (currentOptions.xAxis.type === 'log') {
+      // Always tick the *visible* scale domain (zoom/pan), not full explicit xAxis.min/max.
+      // Explicit min/max still define the base domain; only placement follows the window.
+      // densify when zoom leaves few decade majors; pure generateLogTicks is the major fallback.
+      const domainMin = visibleXDomain.min;
+      const domainMax = visibleXDomain.max;
+      const logBase = currentOptions.xAxis.logBase ?? 10;
+      const densified = generateLogTicksForVisibleDomain(domainMin, domainMax, logBase);
+      xTickValues = densified.length > 0 ? densified : generateLogTicks(domainMin, domainMax, logBase);
+      xTickCount = Math.max(1, xTickValues.length);
     } else {
-      // Keep existing behavior for non-time x axes.
-      const domainMin = finiteOrUndefined(currentOptions.xAxis.min) ?? xScale.invert(plotClipRect.left);
-      const domainMax = finiteOrUndefined(currentOptions.xAxis.max) ?? xScale.invert(plotClipRect.right);
+      // Value / category: tick the visible window so labels stay in-plot under zoom.
+      // Without zoom, visibleXDomain matches the base (incl. explicit min/max).
+      const domainMin = visibleXDomain.min;
+      const domainMax = visibleXDomain.max;
       xTickValues = generateLinearTicks(domainMin, domainMax, xTickCount);
     }
 
@@ -3360,16 +3653,24 @@ export function createRenderCoordinator(
       labelSig += `epoch:${axisLabelContentEpoch}|xr:${visibleXRangeMs}|xt:${currentOptions.xAxis.type ?? ''}|`;
       labelSig += `x:${currentOptions.xAxis.name ?? ''}|`;
       labelSig += `th:${tickHash >>> 0}|`;
-      labelSig += `xs:${xScale.scale(0)},${xScale.scale(1)}|`;
+      {
+        const xd = xScale.getDomain();
+        const xs0 = xScale.kind === 'log' ? xScale.scale(xd.min) : xScale.scale(0);
+        const xs1 = xScale.kind === 'log' ? xScale.scale(xd.max) : xScale.scale(1);
+        labelSig += `xs:${xs0},${xs1}|xk:${xScale.kind}|xb:${xScale.base ?? ''}|`;
+      }
       for (const yAxisConfig of currentOptions.yAxes) {
         const axisId = yAxisConfig.id!;
         const yScaleForAxis = currentYScales.get(axisId);
         if (!yScaleForAxis) continue;
         const yTickCount = (yAxisConfig as { tickCount?: number }).tickCount ?? 5;
+        const yd = yScaleForAxis.getDomain();
+        const ys0 = yScaleForAxis.kind === 'log' ? yScaleForAxis.scale(yd.min) : yScaleForAxis.scale(0);
+        const ys1 = yScaleForAxis.kind === 'log' ? yScaleForAxis.scale(yd.max) : yScaleForAxis.scale(1);
         labelSig += `y:${axisId}:${yAxisConfig.name ?? ''}:${yAxisConfig.position ?? 'left'}:`;
-        labelSig += `${yScaleForAxis.scale(0)},${yScaleForAxis.scale(1)}:${yTickCount}|`;
+        labelSig += `${ys0},${ys1}:${yTickCount}|`;
         // Y axis type can affect tick formatting when present.
-        labelSig += `yt:${(yAxisConfig as { type?: string }).type ?? ''};`;
+        labelSig += `yt:${yAxisConfig.type ?? ''};yb:${yAxisConfig.logBase ?? ''};`;
       }
       if (labelSig !== lastAxisLabelDomSignature) {
         lastAxisLabelDomSignature = labelSig;

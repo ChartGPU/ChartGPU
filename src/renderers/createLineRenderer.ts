@@ -1,12 +1,16 @@
 import lineWgsl from '../shaders/line.wgsl?raw';
 import type { ResolvedLineSeriesConfig } from '../config/OptionResolver';
-import type { LinearScale } from '../utils/scales';
+import type { ContinuousScale } from '../utils/scales';
 import { parseCssColorToRgba01 } from '../utils/colors';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
 import { getPointCount } from '../data/cartesianData';
 import type { PipelineCache } from '../core/PipelineCache';
 import { resolveLineDrawPolicy, type LineDrawPolicy } from './lineDrawPolicy';
-import { computePackedXAffineFromScale } from './packedXAffine';
+import {
+  computeClipAffineFromContinuousScale,
+  computePackedXAffineFromScale,
+  resolveLogProjection,
+} from './packedXAffine';
 
 export interface LineRenderer {
   /**
@@ -20,8 +24,8 @@ export interface LineRenderer {
   prepare(
     seriesConfig: ResolvedLineSeriesConfig,
     dataBuffer: GPUBuffer,
-    xScale: LinearScale,
-    yScale: LinearScale,
+    xScale: ContinuousScale,
+    yScale: ContinuousScale,
     xOffset?: number,
     devicePixelRatio?: number,
     canvasWidthDevicePx?: number,
@@ -102,24 +106,6 @@ const DEFAULT_LINE_WIDTH_CSS_PX = 2;
 const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
 const parseSeriesColorToRgba01 = (color: string): Rgba => parseCssColorToRgba01(color) ?? ([0, 0, 0, 1] as const);
 
-const computeClipAffineFromScale = (
-  scale: LinearScale,
-  v0: number,
-  v1: number
-): { readonly a: number; readonly b: number } => {
-  const p0 = scale.scale(v0);
-  const p1 = scale.scale(v1);
-
-  // If the domain sample is degenerate or non-finite, fall back to constant output.
-  if (!Number.isFinite(v0) || !Number.isFinite(v1) || v0 === v1 || !Number.isFinite(p0) || !Number.isFinite(p1)) {
-    return { a: 0, b: Number.isFinite(p0) ? p0 : 0 };
-  }
-
-  const a = (p1 - p0) / (v1 - v0);
-  const b = p0 - a * v0;
-  return { a: Number.isFinite(a) ? a : 0, b: Number.isFinite(b) ? b : 0 };
-};
-
 const writeTransformMat4F32 = (out: Float32Array, ax: number, bx: number, ay: number, by: number): void => {
   // Column-major mat4x4 for: clip = M * vec4(x, y, 0, 1)
   out[0] = ax;
@@ -187,8 +173,8 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
   const bindGroupLayout = getLineBindGroupLayout(device);
 
   // VS uniforms: mat4x4 (64) + canvasSize (8) + dpr (4) + lineWidthCssPx (4)
-  // + ringStart/ringCapacity/pad (16) = 96 bytes (16-byte aligned).
-  const vsUniformBuffer = createUniformBuffer(device, 96, {
+  // + ringStart/ringCapacity (8) + logBaseX/logBaseY (8) + logFlags/pad (8) = 112.
+  const vsUniformBuffer = createUniformBuffer(device, 112, {
     label: 'lineRenderer/vsUniforms',
   });
   const fsUniformBuffer = createUniformBuffer(device, 16, {
@@ -196,7 +182,7 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
   });
 
   // Reused CPU-side staging for uniform writes (avoid per-frame allocations).
-  const vsUniformScratchBuffer = new ArrayBuffer(96);
+  const vsUniformScratchBuffer = new ArrayBuffer(112);
   const vsUniformScratchF32 = new Float32Array(vsUniformScratchBuffer);
   const vsUniformScratchU32 = new Uint32Array(vsUniformScratchBuffer);
   const fsUniformScratchF32 = new Float32Array(4);
@@ -227,6 +213,9 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
   let lastLineWidth = Number.NaN;
   let lastRingStart = 0;
   let lastRingCapacity = 0;
+  let lastLogFlags = 0;
+  let lastLogBaseX = Number.NaN;
+  let lastLogBaseY = Number.NaN;
   /** Which VS buffer is currently referenced by currentBindGroup. */
   let boundVsBuffer: GPUBuffer = vsUniformBuffer;
 
@@ -322,13 +311,14 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
         ? Math.floor(pointCountOverride)
         : getPointCount(seriesConfig.data);
 
-    // X: packed-origin affine (stable for epoch-ms time axes). Y: sample (0,1)
-    // — y values stay O(1)–O(1e6), no packing offset.
+    // X: packed-origin affine (stable for epoch-ms time axes; log X uses log-space affine).
+    // Y: linear samples (0,1); log Y solves affine in log space (never sample raw 0,1 on log).
     const { a: ax, b: bxPacked } = computePackedXAffineFromScale(xScale, xOffset);
-    const { a: ay, b: by } = computeClipAffineFromScale(yScale, 0, 1);
+    const { a: ay, b: by } = computeClipAffineFromContinuousScale(yScale);
+    const { logFlags, logBaseX, logBaseY } = resolveLogProjection(xScale, yScale);
 
     // Write VS uniforms: mat4x4 (16 floats) + canvasSize (2 floats) + dpr (1 float)
-    // + lineWidth (1 float) + ringStart/ringCapacity (u32 pair + pad).
+    // + lineWidth (1 float) + ringStart/ringCapacity + logBaseX/Y + logFlags/pad.
     writeTransformMat4F32(vsUniformScratchF32, ax, bxPacked, ay, by);
     const dpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
     const canvasW = Number.isFinite(canvasWidthDevicePx) && canvasWidthDevicePx > 0 ? canvasWidthDevicePx : 1;
@@ -366,15 +356,17 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     vsUniformScratchF32[17] = canvasH;
     vsUniformScratchF32[18] = dpr;
     vsUniformScratchF32[19] = lineWidthCss;
-    // u32 ring fields at byte offset 80 (float index 20).
+    // u32 ring fields at byte offset 80 (float index 20); log bases + flags follow.
     vsUniformScratchU32[20] = ringStart >>> 0;
     vsUniformScratchU32[21] = ringCapacity >>> 0;
-    vsUniformScratchU32[22] = 0;
-    vsUniformScratchU32[23] = 0;
+    vsUniformScratchF32[22] = logBaseX;
+    vsUniformScratchF32[23] = logBaseY;
+    vsUniformScratchU32[24] = logFlags >>> 0;
+    vsUniformScratchU32[25] = 0;
 
     // Private VS only (multi-chart deferred-submit safe). Dirty-skip when affine /
-    // size / width / ring layout unchanged (issue 2.5) — covers axes-only ticks
-    // without a device-global shared buffer that multi-chart slots would clobber.
+    // size / width / ring layout / log projection unchanged (issue 2.5) — covers
+    // axes-only ticks without a device-global shared buffer that multi-chart slots would clobber.
     let vsBufferForBind: GPUBuffer = vsUniformBuffer;
     {
       const vsDirty =
@@ -387,7 +379,10 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
         lastDpr !== dpr ||
         lastLineWidth !== lineWidthCss ||
         lastRingStart !== ringStart ||
-        lastRingCapacity !== ringCapacity;
+        lastRingCapacity !== ringCapacity ||
+        lastLogFlags !== logFlags ||
+        lastLogBaseX !== logBaseX ||
+        lastLogBaseY !== logBaseY;
       if (vsDirty) {
         writeUniformBuffer(device, vsUniformBuffer, vsUniformScratchBuffer);
         lastAx = ax;
@@ -400,6 +395,9 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
         lastLineWidth = lineWidthCss;
         lastRingStart = ringStart;
         lastRingCapacity = ringCapacity;
+        lastLogFlags = logFlags;
+        lastLogBaseX = logBaseX;
+        lastLogBaseY = logBaseY;
       }
     }
 

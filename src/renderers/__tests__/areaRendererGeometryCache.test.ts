@@ -271,10 +271,10 @@ describe('createAreaRenderer geometry cache', () => {
     // External storage path uses packing-origin X affine (same as LineRenderer).
     renderer.prepare(areaConfig(data), data, xScale, yScale, 0, external, 2, origin);
 
-    // Area VS uniforms: mat4 + baseline padding = 96 bytes.
+    // Area VS uniforms: mat4 + baseline/log (80 bytes).
     const vsWrites = writeUniformBufferMock.mock.calls.filter((c) => {
       const dataArg = c[2];
-      return dataArg instanceof ArrayBuffer && dataArg.byteLength === 96;
+      return dataArg instanceof ArrayBuffer && dataArg.byteLength === 80;
     });
     expect(vsWrites.length).toBeGreaterThan(0);
     const f32 = new Float32Array(vsWrites[0]![2] as ArrayBuffer);

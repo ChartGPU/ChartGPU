@@ -104,10 +104,10 @@ describe('LineRenderer modular ring remap (issue 0.1)', () => {
       { start: 1, capacity: 4 } // writes ring layout uniforms; segment order is shader pointAt contract
     );
 
-    // First writeUniformBuffer call is VS (96-byte buffer with ring u32s).
+    // First writeUniformBuffer call is VS (112-byte buffer with ring u32s).
     const vsCall = vi.mocked(writeUniformBuffer).mock.calls.find((c) => {
       const payload = c[2];
-      return payload instanceof ArrayBuffer && payload.byteLength === 96;
+      return payload instanceof ArrayBuffer && payload.byteLength === 112;
     });
     expect(vsCall).toBeDefined();
     const u32 = new Uint32Array(vsCall![2] as ArrayBuffer);
@@ -136,7 +136,7 @@ describe('LineRenderer modular ring remap (issue 0.1)', () => {
 
     const vsCall = vi.mocked(writeUniformBuffer).mock.calls.find((c) => {
       const payload = c[2];
-      return payload instanceof ArrayBuffer && payload.byteLength === 96;
+      return payload instanceof ArrayBuffer && payload.byteLength === 112;
     });
     expect(vsCall).toBeDefined();
     const u32 = new Uint32Array(vsCall![2] as ArrayBuffer);

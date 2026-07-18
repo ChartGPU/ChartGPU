@@ -51,3 +51,35 @@ export function scanCartesianVisibleYBounds(
   if (yMin === yMax) yMax = yMin + 1;
   return { yMin, yMax };
 }
+
+/**
+ * Scan cartesian points for **strictly positive** y min/max (log-axis auto domain).
+ * Optionally restricted to an X window — same window used for visible Y under zoom
+ * so positives outside the view do not pull the log domain.
+ * Returns null when no positive finite y contributes (caller falls back).
+ */
+export function scanCartesianPositiveYBounds(
+  data: CartesianSeriesData,
+  xWindow?: { readonly min: number; readonly max: number } | null
+): { yMin: number; yMax: number } | null {
+  let yMin = Number.POSITIVE_INFINITY;
+  let yMax = Number.NEGATIVE_INFINITY;
+  const filterX = xWindow != null && Number.isFinite(xWindow.min) && Number.isFinite(xWindow.max);
+  const xMinW = filterX ? xWindow!.min : 0;
+  const xMaxW = filterX ? xWindow!.max : 0;
+  const n = getPointCount(data);
+  for (let i = 0; i < n; i++) {
+    if (filterX) {
+      const x = getX(data, i);
+      if (!Number.isFinite(x) || x < xMinW || x > xMaxW) continue;
+    }
+    const y = getY(data, i);
+    if (!Number.isFinite(y) || !(y > 0)) continue;
+    if (y < yMin) yMin = y;
+    if (y > yMax) yMax = y;
+  }
+  if (!Number.isFinite(yMin) || !Number.isFinite(yMax) || !(yMin > 0) || !(yMax > 0)) {
+    return null;
+  }
+  return { yMin, yMax };
+}

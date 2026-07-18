@@ -58,8 +58,13 @@ function createMockDevice() {
 }
 
 const identityScale = {
+  kind: 'linear' as const,
   scale: (v: number) => v,
   invert: (v: number) => v,
+  getDomain: () => ({ min: 0, max: 1 }),
+  getRange: () => ({ min: 0, max: 1 }),
+  domain: () => identityScale,
+  range: () => identityScale,
 } as unknown as LinearScale;
 
 const gridArea = {
@@ -172,8 +177,13 @@ describe('scatter equal-N y-only dual-buffer (issue 1.2 Option A)', () => {
     renderer.prepare(baseSeries(5), data as unknown as never, identityScale, identityScale, gridArea);
     writeBuffer.mockClear();
     const zoomedScale = {
+      kind: 'linear' as const,
       scale: (v: number) => v * 2,
       invert: (v: number) => v / 2,
+      getDomain: () => ({ min: 0, max: 1 }),
+      getRange: () => ({ min: 0, max: 2 }),
+      domain: () => zoomedScale,
+      range: () => zoomedScale,
     } as unknown as LinearScale;
     renderer.prepare(baseSeries(5), data as unknown as never, zoomedScale, identityScale, gridArea);
     expect(instanceWriteSizes(writeBuffer)).toHaveLength(0);
@@ -192,8 +202,13 @@ describe('scatter equal-N y-only dual-buffer (issue 1.2 Option A)', () => {
     renderer.prepare(baseSeries(5), dataB as unknown as never, identityScale, identityScale, gridArea);
     writeBuffer.mockClear();
     const zoomedScale = {
+      kind: 'linear' as const,
       scale: (v: number) => v * 2,
       invert: (v: number) => v / 2,
+      getDomain: () => ({ min: 0, max: 1 }),
+      getRange: () => ({ min: 0, max: 2 }),
+      domain: () => zoomedScale,
+      range: () => zoomedScale,
     } as unknown as LinearScale;
     renderer.prepare(baseSeries(5), dataB as unknown as never, zoomedScale, identityScale, gridArea);
     expect(instanceWriteSizes(writeBuffer)).toHaveLength(0);
@@ -309,7 +324,7 @@ describe('scatter equal-N y-only dual-buffer (issue 1.2 Option A)', () => {
     // writeUniformBuffer(device, buffer, data) — VS uniform is ArrayBuffer 80 bytes
     const vsWrites = writeUniform.mock.calls.filter((c) => {
       const data = c[2];
-      return data instanceof ArrayBuffer && data.byteLength === 80;
+      return data instanceof ArrayBuffer && data.byteLength === 96;
     });
     expect(vsWrites.length).toBeGreaterThan(0);
     const f32 = new Float32Array(vsWrites[vsWrites.length - 1]![2] as ArrayBuffer);
@@ -328,7 +343,7 @@ describe('scatter equal-N y-only dual-buffer (issue 1.2 Option A)', () => {
     renderer.prepare(baseSeries(5), data as unknown as never, identityScale, identityScale, gridArea);
     const vsWrites = writeUniform.mock.calls.filter((c) => {
       const data = c[2];
-      return data instanceof ArrayBuffer && data.byteLength === 80;
+      return data instanceof ArrayBuffer && data.byteLength === 96;
     });
     const f32 = new Float32Array(vsWrites[vsWrites.length - 1]![2] as ArrayBuffer);
     expect(f32[18]).toBe(5); // symbolSize 5 × dpr 1

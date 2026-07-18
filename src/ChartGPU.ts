@@ -27,7 +27,7 @@ import { computeCandlestickBodyWidthRange, findCandlestick } from './interaction
 import { findNearestPoint } from './interaction/findNearestPoint';
 import type { NearestPointMatch } from './interaction/findNearestPoint';
 import { findPieSlice } from './interaction/findPieSlice';
-import { createLinearScale } from './utils/scales';
+import { createAxisScale } from './utils/scales';
 import type { LinearScale } from './utils/scales';
 import { checkWebGPUSupport } from './utils/checkWebGPU';
 import type { PipelineCache } from './core/PipelineCache';
@@ -1672,8 +1672,9 @@ export async function createChartGPU(
 
     if (!canReuseScales) {
       // IMPORTANT: grid-local CSS px ranges (0..plotWidth/Height), for interaction hit-testing.
-      const xScale = createLinearScale().domain(xDomain.min, xDomain.max).range(0, plotWidthCss);
-      const yScale = createLinearScale().domain(yDomain.min, yDomain.max).range(plotHeightCss, 0);
+      const xScale = createAxisScale(resolvedOptions.xAxis).domain(xDomain.min, xDomain.max).range(0, plotWidthCss);
+      const yAxis0 = resolvedOptions.yAxes[0] ?? { type: 'value' as const };
+      const yScale = createAxisScale(yAxis0).domain(yDomain.min, yDomain.max).range(plotHeightCss, 0);
       interactionScalesCache = {
         rectWidthCss: layout.layoutWidth,
         rectHeightCss: layout.layoutHeight,
@@ -2775,8 +2776,9 @@ export async function createChartGPU(
         interactionScalesCache.yDomainMax === yDomain.max;
 
       if (!canReuseScales) {
-        const xScale = createLinearScale().domain(xDomain.min, xDomain.max).range(0, plotWidthCss);
-        const yScale = createLinearScale().domain(yDomain.min, yDomain.max).range(plotHeightCss, 0);
+        const xScale = createAxisScale(resolvedOptions.xAxis).domain(xDomain.min, xDomain.max).range(0, plotWidthCss);
+        const yAxis0 = resolvedOptions.yAxes[0] ?? { type: 'value' as const };
+        const yScale = createAxisScale(yAxis0).domain(yDomain.min, yDomain.max).range(plotHeightCss, 0);
         interactionScalesCache = {
           rectWidthCss: layout.layoutWidth,
           rectHeightCss: layout.layoutHeight,

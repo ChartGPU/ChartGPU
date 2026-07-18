@@ -4,7 +4,7 @@
 
 import type { ThemeConfig } from '../themes/types';
 
-export type AxisType = 'value' | 'time' | 'category';
+export type AxisType = 'value' | 'time' | 'category' | 'log';
 export type SeriesType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick';
 
 /**
@@ -128,9 +128,16 @@ export interface AxisConfig {
    * Custom formatter for axis tick labels.
    * When provided, replaces the built-in tick label formatting.
    * For time axes, `value` is a timestamp in milliseconds (epoch-ms).
+   * For log axes, `value` is the **data-space** tick value (e.g. `1000`, not `3` for \(10^3\)).
    * Return `null` to suppress a specific tick label.
    */
   readonly tickFormatter?: (value: number) => string | null;
+  /**
+   * Logarithm base when `type === 'log'`. Default: `10`.
+   * Must be finite and > 0, and ≠ 1. Invalid values fall back to 10 with a dev warning.
+   * Ignored for non-log axes.
+   */
+  readonly logBase?: number;
 }
 
 export interface DataZoomConfig {

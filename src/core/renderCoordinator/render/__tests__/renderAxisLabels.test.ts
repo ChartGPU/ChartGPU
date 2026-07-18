@@ -82,6 +82,7 @@ function createMinimalContext(overrides: Partial<AxisLabelRenderContext> = {}): 
     xScale: {
       scale: (v: number) => -1 + (v / 100) * 2, // maps 0-100 to -1..+1
       invert: (c: number) => ((c + 1) / 2) * 100,
+      getDomain: () => ({ min: 0, max: 100 }),
     } as any,
     yScales: new Map([
       [
@@ -89,6 +90,7 @@ function createMinimalContext(overrides: Partial<AxisLabelRenderContext> = {}): 
         {
           scale: (v: number) => -1 + (v / 100) * 2,
           invert: (c: number) => ((c + 1) / 2) * 100,
+          getDomain: () => ({ min: 0, max: 100 }),
         } as any,
       ],
     ]),

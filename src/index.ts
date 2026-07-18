@@ -104,8 +104,23 @@ export { darkTheme, lightTheme, getTheme } from './themes';
 export type { ThemeName } from './themes';
 
 // Scales - Pure utilities
-export { createLinearScale, createCategoryScale } from './utils/scales';
-export type { LinearScale, CategoryScale } from './utils/scales';
+export {
+  createLinearScale,
+  createLogScale,
+  createAxisScale,
+  createCategoryScale,
+  normalizeLogBase,
+  DEFAULT_LOG_BASE,
+} from './utils/scales';
+export type { LinearScale, ContinuousScale, CategoryScale } from './utils/scales';
+export {
+  generateLinearTicks,
+  generateLogTicks,
+  generateLogTicksForVisibleDomain,
+  formatLogTickValue,
+  createTickFormatter,
+  formatTickValue,
+} from './core/renderCoordinator/axis/computeAxisTicks';
 
 // Chart sync (interaction)
 export { connectCharts } from './interaction/createChartSync';

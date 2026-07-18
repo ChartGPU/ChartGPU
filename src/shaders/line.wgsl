@@ -17,7 +17,7 @@
 const AA_PADDING: f32 = 1.5;
 
 struct VSUniforms {
-  transform       : mat4x4<f32>,  // 64 bytes: data-coord → clip-space
+  transform       : mat4x4<f32>,  // 64 bytes: (log-)data-coord → clip-space
   canvasSize      : vec2<f32>,     //  8 bytes: device pixels (width, height)
   devicePixelRatio: f32,           //  4 bytes
   lineWidthCssPx  : f32,           //  4 bytes: line width in CSS pixels
@@ -25,10 +25,15 @@ struct VSUniforms {
   // logical point. When ringCapacity == 0, storage is linear chronological.
   ringStart       : u32,           //  4 bytes
   ringCapacity    : u32,           //  4 bytes
-  pad0            : u32,           //  4 bytes
-  pad1            : u32,           //  4 bytes
+  // Log projection (DataStore stays data-space): bit0 = log X, bit1 = log Y.
+  // When set, VS applies log_b(v) before the mat4. Non-positive → degenerate gap.
+  // Bases are independent so dual-log X/Y can use different bases.
+  logBaseX        : f32,           //  4 bytes
+  logBaseY        : f32,           //  4 bytes
+  logFlags        : u32,           //  4 bytes
+  _pad0           : u32,           //  4 bytes
 };
-// Total: 96 bytes (aligned to 16).
+// Total: 112 bytes (aligned to 16).
 
 @group(0) @binding(0) var<uniform> vsUniforms : VSUniforms;
 
@@ -57,6 +62,38 @@ fn pointAt(logicalIdx : u32) -> vec2<f32> {
   return points[phys];
 }
 
+// True when log-enabled axes have strictly positive values (required for log).
+// Chrome Tint rejects NaN constants (`0.0/0.0`, bitcast quiet-NaN), so gaps are
+// handled by canLogProject + degenerate verts — never by synthesizing NaN in WGSL.
+fn canLogProject(p : vec2<f32>) -> bool {
+  let flags = vsUniforms.logFlags;
+  if ((flags & 1u) != 0u && p.x <= 0.0) {
+    return false;
+  }
+  if ((flags & 2u) != 0u && p.y <= 0.0) {
+    return false;
+  }
+  return true;
+}
+
+// Optional log projection in data space before the clip affine (mat4).
+// Flags off → identity. Precondition: canLogProject(p) when flags != 0.
+fn projectData(p : vec2<f32>) -> vec2<f32> {
+  let flags = vsUniforms.logFlags;
+  if (flags == 0u) {
+    return p;
+  }
+  var x = p.x;
+  var y = p.y;
+  if ((flags & 1u) != 0u) {
+    x = log(x) / log(vsUniforms.logBaseX);
+  }
+  if ((flags & 2u) != 0u) {
+    y = log(y) / log(vsUniforms.logBaseY);
+  }
+  return vec2<f32>(x, y);
+}
+
 // Returns UV for the 6 vertices of a quad (2 triangles):
 //   uv.x: 0 → endpoint A, 1 → endpoint B
 //   uv.y: 0 → +side, 1 → −side
@@ -79,21 +116,26 @@ fn vsMain(
   let uv = quadUv(vid);
 
   // Read segment endpoints in data coordinates (logical order under ring mode).
-  let pA_data = pointAt(iid);
-  let pB_data = pointAt(iid + 1u);
+  let pA_raw = pointAt(iid);
+  let pB_raw = pointAt(iid + 1u);
 
   // ── Gap detection ──────────────────────────────────────────────
   // Null entries in the data array are packed as NaN by the CPU.
   // Collapse the quad to a degenerate point so the rasterizer discards it.
   // WGSL has no isnan(); use the IEEE 754 property that NaN != NaN.
-  if (pA_data.x != pA_data.x || pA_data.y != pA_data.y ||
-      pB_data.x != pB_data.x || pB_data.y != pB_data.y) {
+  if (pA_raw.x != pA_raw.x || pA_raw.y != pA_raw.y ||
+      pB_raw.x != pB_raw.x || pB_raw.y != pB_raw.y ||
+      !canLogProject(pA_raw) || !canLogProject(pB_raw)) {
     var out: VSOut;
     out.clipPosition = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     out.acrossDevice = 0.0;
     out.widthDevice = 0.0;
     return out;
   }
+
+  // Log axes: project data → log space, then affine (mat4) is in transformed space.
+  let pA_data = projectData(pA_raw);
+  let pB_data = projectData(pB_raw);
 
   // Transform to clip space.
   let clipA = vsUniforms.transform * vec4<f32>(pA_data, 0.0, 1.0);
@@ -202,15 +244,18 @@ fn vsMainHairline(
   // the whole segment so one-sided nulls cannot draw a spur to clip origin.
   // Modular ring remap matches vsMain / decimation so wrap does not draw physical
   // newest→oldest edges.
-  let pA = pointAt(iid);
-  let pB = pointAt(iid + 1u);
-  if (pA.x != pA.x || pA.y != pA.y || pB.x != pB.x || pB.y != pB.y) {
+  let pA_raw = pointAt(iid);
+  let pB_raw = pointAt(iid + 1u);
+  if (pA_raw.x != pA_raw.x || pA_raw.y != pA_raw.y || pB_raw.x != pB_raw.x || pB_raw.y != pB_raw.y ||
+      !canLogProject(pA_raw) || !canLogProject(pB_raw)) {
     var out: VSOut;
     out.clipPosition = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     out.acrossDevice = 0.0;
     out.widthDevice = 0.0;
     return out;
   }
+  let pA = projectData(pA_raw);
+  let pB = projectData(pB_raw);
 
   // vid is 0 or 1 for line-list topology.
   let p = select(pA, pB, vid != 0u);

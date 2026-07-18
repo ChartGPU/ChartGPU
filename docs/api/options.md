@@ -109,15 +109,30 @@ Notes (density mode):
 ## Axis Configuration
 
 - **`AxisConfig`**: configuration for `xAxis` / `yAxes`. See [`types.ts`](../../src/config/types.ts).
+- **`AxisType`**: `'value' | 'time' | 'category' | 'log'`.
+- **Logarithmic axes (`type: 'log'`)**:
+  - Available on **`xAxis`** and each **`yAxis` / `yAxes[]`** independently.
+  - **`logBase?: number`**: logarithm base (default **10**). Must be finite, > 0, and ≠ 1; invalid values fall back to 10 with a dev warning.
+  - **Projection**: data stays in linear storage (DataStore / GPU buffers). Log is applied in series vertex shaders before the clip affine — toggling log does not force a full re-upload.
+  - **Ticks / grid**: major ticks at integer powers of the base (e.g. \(10^{-2}, 10^{0}, 10^{3}\)) for the **visible** domain (updates on zoom/pan; not locked to full explicit `min`/`max`). When the window has few majors, intermediate ticks densify (e.g. 2×/5× within a decade). GPU grid lines for log axes are co-located with those ticks (not even data-space splits). Labels use a scientific/`1eN` hybrid by default; custom **`tickFormatter`** still receives **data-space** values (e.g. `1000`, not `3`).
+  - **Domain must be strictly positive**: auto-bounds ignore ≤0 samples; if no positive data exists the domain falls back to `[1, 10]` with a warning. Explicit `min`/`max` ≤ 0 are clamped using the smallest positive data value `pd`: prefer `pd × 0.5`, then **floor to a power of `logBase`** (`base ** floor(log_b(pd × 0.5))`), with a dev warning. Example (base 10): `pd = 9` → half `4.5` → floored power `1`.
+  - **Non-positive points**: treated as **gaps** on line/area (NaN packing path / VS discard) and **omitted** on scatter under log projection.
+  - **Area / bar baseline**: classic “fill to zero” is unsupported on log; baseline uses the positive axis min (or first major ≤ data min). Document that fill-to-zero is not available on log Y.
+  - **Sticky headroom** on log axes is applied in **log space** (decade headroom).
+  - **Zoom** `start`/`end` percents remain percent of **data-space** base domain (not log-percent).
+  - **No library UI log toggle** — config only (`setOption({ yAxis: { type: 'log' } })`). Examples may include demo chrome.
+  - Showcase: [`examples/log-axis-y/`](../../examples/log-axis-y/), [`log-axis-x/`](../../examples/log-axis-x/), [`log-axis-scatter/`](../../examples/log-axis-scatter/), [`log-axis-multi/`](../../examples/log-axis-multi/), [`log-axis-compare/`](../../examples/log-axis-compare/).
 - **Multiple Y-Axes**:
   - Instead of a single `yAxis` object, ChartGPU supports an array of `yAxes` objects for independent scales (e.g. Price vs Volume).
   - Each `yAxis` in the `yAxes` array must specify an `id: string` (default is `"primary"` for the first axis).
-  - Series map to a specific axis via `yAxisIndex` in their config.
+  - Series map to a specific axis via `yAxis` id in their config.
   - Axes can be positioned on the right using `position: "right"` (default is `"left"`).
+  - Dual Y may mix log + linear (e.g. log pressure + linear temperature). Horizontal grid follows the **primary** (first) Y axis ticks when that axis is log.
 - **Explicit domains (override auto-bounds)**:
   - **`AxisConfig.min?: number` / `AxisConfig.max?: number`**: when set, ChartGPU uses these explicit axis bounds and does **not** auto-derive bounds from data for that axis.
   - **Precedence**: explicit `min`/`max` always override any auto-bounds behavior.
   - **One-sided explicit**: if only `min` or only `max` is set, the other end is still data-derived; sticky auto-domain headroom (below) is **disabled** whenever either end is explicit so growBy padding never extends past a locked edge.
+  - **Log**: both ends must resolve to strictly positive values (see log policy above).
 - **Sticky auto-domain headroom (streaming / multi-chart)**:
   - When **both** ends of an axis are auto (no explicit `min`/`max`), ChartGPU uses a sticky domain: **first establish matches the data extrema exactly** (static column/mountain charts fill the plot).
   - **Y**: ~**10% growBy headroom** is added only when data **breaches** that domain (amortizes overlay rebuild under amplitude noise).
@@ -133,8 +148,9 @@ Notes (density mode):
 - **`AxisConfig.tickFormatter?: (value: number) => string | null`**: custom formatter for axis tick labels. When provided, replaces the built-in tick label formatting for that axis.
   - For `type: 'value'` axes, `value` is the numeric tick value.
   - For `type: 'time'` axes, `value` is a timestamp in milliseconds (epoch-ms, same unit as `new Date(ms)`).
+  - For `type: 'log'` axes, `value` is the **data-space** tick value (e.g. `1000` for \(10^3\)), not the log exponent.
   - Return a `string` to display as the label, or `null` to suppress that specific tick label.
-  - When omitted, ChartGPU uses its built-in formatting: `Intl.NumberFormat` for value axes, adaptive tier-based date formatting for time axes.
+  - When omitted, ChartGPU uses its built-in formatting: `Intl.NumberFormat` for value axes, adaptive tier-based date formatting for time axes, and scientific/`1eN` hybrid labels for log axes.
   - The formatter is also used for label width measurement in the adaptive time x-axis tick count algorithm, ensuring overlap avoidance uses the correct label widths.
 
 #### Tick Formatter Examples

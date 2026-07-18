@@ -10,7 +10,7 @@
  */
 
 import type { AxisConfig } from '../../../config/types';
-import type { LinearScale } from '../../../utils/scales';
+import type { ContinuousScale, LinearScale } from '../../../utils/scales';
 import type { GridArea } from '../../../renderers/createGridRenderer';
 
 /** Compact layout + grid line inputs that affect grid vertex/color uploads. */
@@ -27,6 +27,13 @@ interface GridPrepareSignature {
   readonly horizontalColor: string;
   readonly verticalColor: string;
   readonly show: boolean;
+  /** Tick-aligned clip Y positions (log grid); empty when even-count. */
+  readonly horizontalClipYs: readonly number[];
+  /** Tick-aligned clip X positions (log grid); empty when even-count. */
+  readonly verticalClipXs: readonly number[];
+  readonly xScaleKind: 'linear' | 'log';
+  readonly yScaleKind: 'linear' | 'log';
+  readonly logBase: number;
 }
 
 /** Compact axis inputs that affect axis vertex/color uploads. */
@@ -40,10 +47,14 @@ interface AxisPrepareSignature {
   readonly canvasWidth: number;
   readonly canvasHeight: number;
   readonly devicePixelRatio: number;
-  /** Affine sample: scale.scale(0) */
+  /** Affine sample: scale.scale(0) — linear; log uses domain endpoints via scaleKind. */
   readonly scaleAt0: number;
   /** Affine sample: scale.scale(1) */
   readonly scaleAt1: number;
+  readonly scaleKind: 'linear' | 'log';
+  readonly scaleBase: number;
+  readonly domainMin: number;
+  readonly domainMax: number;
   readonly tickCount: number;
   /**
    * Explicit tick domain values (e.g. nice time ticks). Empty when using linear-from-count only.
@@ -84,6 +95,14 @@ export function clearOverlayPrepareMemo(memo: OverlayPrepareMemo): void {
   memo.yAxes.clear();
 }
 
+const clipPosEqual = (a: readonly number[], b: readonly number[]): boolean => {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+};
+
 export function buildGridPrepareSignature(input: {
   readonly gridArea: GridArea;
   readonly show: boolean;
@@ -91,6 +110,11 @@ export function buildGridPrepareSignature(input: {
   readonly verticalCount: number;
   readonly horizontalColor: string;
   readonly verticalColor: string;
+  readonly horizontalClipYs?: readonly number[];
+  readonly verticalClipXs?: readonly number[];
+  readonly xScaleKind?: 'linear' | 'log';
+  readonly yScaleKind?: 'linear' | 'log';
+  readonly logBase?: number;
 }): GridPrepareSignature {
   const { gridArea } = input;
   return {
@@ -106,6 +130,11 @@ export function buildGridPrepareSignature(input: {
     horizontalColor: input.horizontalColor,
     verticalColor: input.verticalColor,
     show: input.show,
+    horizontalClipYs: input.horizontalClipYs != null ? input.horizontalClipYs.slice() : [],
+    verticalClipXs: input.verticalClipXs != null ? input.verticalClipXs.slice() : [],
+    xScaleKind: input.xScaleKind ?? 'linear',
+    yScaleKind: input.yScaleKind ?? 'linear',
+    logBase: input.logBase ?? 10,
   };
 }
 
@@ -123,7 +152,12 @@ export function gridPrepareSignaturesEqual(a: GridPrepareSignature | null, b: Gr
     a.verticalCount === b.verticalCount &&
     a.horizontalColor === b.horizontalColor &&
     a.verticalColor === b.verticalColor &&
-    a.show === b.show
+    a.show === b.show &&
+    clipPosEqual(a.horizontalClipYs, b.horizontalClipYs) &&
+    clipPosEqual(a.verticalClipXs, b.verticalClipXs) &&
+    a.xScaleKind === b.xScaleKind &&
+    a.yScaleKind === b.yScaleKind &&
+    a.logBase === b.logBase
   );
 }
 
@@ -137,7 +171,7 @@ const tickValuesEqual = (a: readonly number[], b: readonly number[]): boolean =>
 
 export function buildAxisPrepareSignature(input: {
   readonly axisConfig: AxisConfig;
-  readonly scale: LinearScale;
+  readonly scale: ContinuousScale | LinearScale;
   readonly orientation: 'x' | 'y';
   readonly axisId: string;
   readonly gridArea: GridArea;
@@ -149,6 +183,10 @@ export function buildAxisPrepareSignature(input: {
 }): AxisPrepareSignature {
   const { gridArea, scale, axisConfig } = input;
   const tickValues = input.tickValues != null && input.tickValues.length > 0 ? input.tickValues.slice() : [];
+  const domain = typeof scale.getDomain === 'function' ? scale.getDomain() : { min: Number.NaN, max: Number.NaN };
+  // Linear: sample 0/1 for affine identity. Log: 0 is invalid — sample domain endpoints.
+  const scaleAt0 = scale.kind === 'log' ? scale.scale(domain.min) : scale.scale(0);
+  const scaleAt1 = scale.kind === 'log' ? scale.scale(domain.max) : scale.scale(1);
   return {
     orientation: input.orientation,
     axisId: input.axisId,
@@ -159,8 +197,12 @@ export function buildAxisPrepareSignature(input: {
     canvasWidth: gridArea.canvasWidth,
     canvasHeight: gridArea.canvasHeight,
     devicePixelRatio: gridArea.devicePixelRatio,
-    scaleAt0: scale.scale(0),
-    scaleAt1: scale.scale(1),
+    scaleAt0,
+    scaleAt1,
+    scaleKind: scale.kind ?? 'linear',
+    scaleBase: scale.base ?? 10,
+    domainMin: domain.min,
+    domainMax: domain.max,
     tickCount: input.tickCount,
     tickValues,
     tickLength: axisConfig.tickLength,
@@ -189,6 +231,10 @@ export function axisPrepareSignaturesEqual(
     a.devicePixelRatio === b.devicePixelRatio &&
     a.scaleAt0 === b.scaleAt0 &&
     a.scaleAt1 === b.scaleAt1 &&
+    a.scaleKind === b.scaleKind &&
+    a.scaleBase === b.scaleBase &&
+    a.domainMin === b.domainMin &&
+    a.domainMax === b.domainMax &&
     a.tickCount === b.tickCount &&
     tickValuesEqual(a.tickValues, b.tickValues) &&
     a.tickLength === b.tickLength &&

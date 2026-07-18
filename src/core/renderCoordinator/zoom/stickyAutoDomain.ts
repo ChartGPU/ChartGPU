@@ -145,3 +145,40 @@ export function applyStickyAutoDomain(
 
   return normalize(nextMin, nextMax);
 }
+
+/**
+ * Sticky auto-domain with headroom applied in **log space** (for log axes).
+ *
+ * Same breach / cold-start / window-slide semantics as {@link applyStickyAutoDomain},
+ * but pad is a fraction of `log_b(max) - log_b(min)` so multi-decade ranges grow
+ * symmetrically in decades rather than linear units.
+ *
+ * Requires strictly positive finite domain endpoints; non-positive inputs fall through
+ * to a trivial `{ min, max }` copy (caller should sanitize first).
+ */
+export function applyStickyAutoLogDomain(
+  dataDomain: { readonly min: number; readonly max: number },
+  sticky: StickyDomain | null,
+  base: number = 10,
+  headroom: number = DEFAULT_STICKY_DOMAIN_HEADROOM
+): StickyDomain {
+  const { min: dMin, max: dMax } = dataDomain;
+  if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || !(dMin > 0) || !(dMax > 0)) {
+    return { min: dMin, max: dMax };
+  }
+  const b = Number.isFinite(base) && base > 0 && base !== 1 ? base : 10;
+  const lnB = Math.log(b);
+  const logDMin = Math.log(dMin) / lnB;
+  const logDMax = Math.log(dMax) / lnB;
+
+  const logSticky: StickyDomain | null =
+    sticky != null && sticky.min > 0 && sticky.max > 0 && Number.isFinite(sticky.min) && Number.isFinite(sticky.max)
+      ? { min: Math.log(sticky.min) / lnB, max: Math.log(sticky.max) / lnB }
+      : null;
+
+  const logResult = applyStickyAutoDomain({ min: logDMin, max: logDMax }, logSticky, headroom);
+  return {
+    min: b ** logResult.min,
+    max: b ** logResult.max,
+  };
+}

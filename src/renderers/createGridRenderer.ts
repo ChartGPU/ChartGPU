@@ -48,6 +48,16 @@ export interface GridPrepareOptions {
    * the prepared geometry each frame.
    */
   readonly append?: boolean;
+  /**
+   * Explicit horizontal line Y positions in **clip space** (same space as axis scales).
+   * When non-empty, overrides even-count horizontal placement (log / tick-aligned grid).
+   */
+  readonly horizontalClipYs?: readonly number[];
+  /**
+   * Explicit vertical line X positions in **clip space**.
+   * When non-empty, overrides even-count vertical placement.
+   */
+  readonly verticalClipXs?: readonly number[];
 }
 
 export interface GridRendererOptions {
@@ -87,7 +97,13 @@ const IDENTITY_MAT4_BUFFER: ArrayBuffer = (() => {
   return buffer;
 })();
 
-const generateGridVertices = (gridArea: GridArea, horizontal: number, vertical: number): Float32Array => {
+const generateGridVertices = (
+  gridArea: GridArea,
+  horizontal: number,
+  vertical: number,
+  horizontalClipYs?: readonly number[],
+  verticalClipXs?: readonly number[]
+): Float32Array => {
   const { left, right, top, bottom, canvasWidth, canvasHeight } = gridArea;
   // Be resilient: older call sites may omit/incorrectly pass DPR. Defaulting avoids hard crashes.
   const devicePixelRatio =
@@ -102,48 +118,52 @@ const generateGridVertices = (gridArea: GridArea, horizontal: number, vertical: 
   const plotWidth = plotRight - plotLeft;
   const plotHeight = plotBottom - plotTop;
 
+  const useHClips = horizontalClipYs != null && horizontalClipYs.length > 0;
+  const useVClips = verticalClipXs != null && verticalClipXs.length > 0;
+  const hCount = useHClips ? horizontalClipYs!.length : horizontal;
+  const vCount = useVClips ? verticalClipXs!.length : vertical;
+
   // Total vertices: (horizontal + vertical) * 2 vertices per line
-  const totalLines = horizontal + vertical;
+  const totalLines = hCount + vCount;
   const vertices = new Float32Array(totalLines * 2 * 2); // 2 vertices * 2 floats per vertex
 
   let idx = 0;
 
+  const xClipLeft = (plotLeft / canvasWidth) * 2.0 - 1.0;
+  const xClipRight = (plotRight / canvasWidth) * 2.0 - 1.0;
+  const yClipTop = 1.0 - (plotTop / canvasHeight) * 2.0;
+  const yClipBottom = 1.0 - (plotBottom / canvasHeight) * 2.0;
+
   // Generate horizontal lines (constant Y, varying X)
-  for (let i = 0; i < horizontal; i++) {
-    // Calculate t parameter for even spacing
-    const t = horizontal === 1 ? 0.5 : i / (horizontal - 1);
-    const yDevice = plotTop + t * plotHeight;
+  for (let i = 0; i < hCount; i++) {
+    let yClip: number;
+    if (useHClips) {
+      yClip = horizontalClipYs![i]!;
+    } else {
+      const t = hCount === 1 ? 0.5 : i / (hCount - 1);
+      const yDevice = plotTop + t * plotHeight;
+      yClip = 1.0 - (yDevice / canvasHeight) * 2.0; // Flip Y-axis
+    }
 
-    // Convert to clip space
-    const xClipLeft = (plotLeft / canvasWidth) * 2.0 - 1.0;
-    const xClipRight = (plotRight / canvasWidth) * 2.0 - 1.0;
-    const yClip = 1.0 - (yDevice / canvasHeight) * 2.0; // Flip Y-axis
-
-    // First vertex (left edge)
     vertices[idx++] = xClipLeft;
     vertices[idx++] = yClip;
-
-    // Second vertex (right edge)
     vertices[idx++] = xClipRight;
     vertices[idx++] = yClip;
   }
 
   // Generate vertical lines (constant X, varying Y)
-  for (let i = 0; i < vertical; i++) {
-    // Calculate t parameter for even spacing
-    const t = vertical === 1 ? 0.5 : i / (vertical - 1);
-    const xDevice = plotLeft + t * plotWidth;
+  for (let i = 0; i < vCount; i++) {
+    let xClip: number;
+    if (useVClips) {
+      xClip = verticalClipXs![i]!;
+    } else {
+      const t = vCount === 1 ? 0.5 : i / (vCount - 1);
+      const xDevice = plotLeft + t * plotWidth;
+      xClip = (xDevice / canvasWidth) * 2.0 - 1.0;
+    }
 
-    // Convert to clip space
-    const xClip = (xDevice / canvasWidth) * 2.0 - 1.0;
-    const yClipTop = 1.0 - (plotTop / canvasHeight) * 2.0; // Flip Y-axis
-    const yClipBottom = 1.0 - (plotBottom / canvasHeight) * 2.0; // Flip Y-axis
-
-    // First vertex (top edge)
     vertices[idx++] = xClip;
     vertices[idx++] = yClipTop;
-
-    // Second vertex (bottom edge)
     vertices[idx++] = xClip;
     vertices[idx++] = yClipBottom;
   }
@@ -318,7 +338,11 @@ export function createGridRenderer(device: GPUDevice, options?: GridRendererOpti
     const isOptionsObject =
       lineCountOrOptions != null &&
       typeof lineCountOrOptions === 'object' &&
-      ('lineCount' in lineCountOrOptions || 'color' in lineCountOrOptions || 'append' in lineCountOrOptions);
+      ('lineCount' in lineCountOrOptions ||
+        'color' in lineCountOrOptions ||
+        'append' in lineCountOrOptions ||
+        'horizontalClipYs' in lineCountOrOptions ||
+        'verticalClipXs' in lineCountOrOptions);
 
     const optionsArg: GridPrepareOptions | undefined = isOptionsObject
       ? (lineCountOrOptions as GridPrepareOptions)
@@ -328,8 +352,16 @@ export function createGridRenderer(device: GPUDevice, options?: GridRendererOpti
       ? optionsArg?.lineCount
       : (lineCountOrOptions as GridLineCount | undefined);
 
-    const horizontal = lineCount?.horizontal ?? DEFAULT_HORIZONTAL_LINES;
-    const vertical = lineCount?.vertical ?? DEFAULT_VERTICAL_LINES;
+    const horizontalClipYs = optionsArg?.horizontalClipYs;
+    const verticalClipXs = optionsArg?.verticalClipXs;
+    const horizontal =
+      horizontalClipYs != null && horizontalClipYs.length > 0
+        ? horizontalClipYs.length
+        : (lineCount?.horizontal ?? DEFAULT_HORIZONTAL_LINES);
+    const vertical =
+      verticalClipXs != null && verticalClipXs.length > 0
+        ? verticalClipXs.length
+        : (lineCount?.vertical ?? DEFAULT_VERTICAL_LINES);
     const colorString = optionsArg?.color ?? DEFAULT_GRID_COLOR;
     const append = optionsArg?.append === true;
 
@@ -361,8 +393,8 @@ export function createGridRenderer(device: GPUDevice, options?: GridRendererOpti
       return;
     }
 
-    // Generate vertices for this batch
-    const vertices = generateGridVertices(gridArea, horizontal, vertical);
+    // Generate vertices for this batch (even-count or tick-aligned clip positions)
+    const vertices = generateGridVertices(gridArea, horizontal, vertical, horizontalClipYs, verticalClipXs);
     const newBatchVertexCount = (horizontal + vertical) * 2;
 
     // Parse color for this batch (fallbacks to internal default)

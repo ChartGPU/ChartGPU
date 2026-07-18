@@ -1,19 +1,20 @@
 import candlestickWgsl from '../shaders/candlestick.wgsl?raw';
 import type { ResolvedCandlestickSeriesConfig } from '../config/OptionResolver';
 import type { OHLCDataPoint, OHLCDataPointTuple } from '../config/types';
-import type { LinearScale } from '../utils/scales';
+import type { ContinuousScale } from '../utils/scales';
 import type { GridArea } from './createGridRenderer';
 import { parseCssColorToRgba01 } from '../utils/colors';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
 import type { PipelineCache } from '../core/PipelineCache';
 import { resolveUploadPolicy } from '../data/seriesResidency';
+import { computeClipAffineFromContinuousScale, resolveLogProjection } from './packedXAffine';
 
 export interface CandlestickRenderer {
   prepare(
     series: ResolvedCandlestickSeriesConfig,
     data: ResolvedCandlestickSeriesConfig['data'],
-    xScale: LinearScale,
-    yScale: LinearScale,
+    xScale: ContinuousScale,
+    yScale: ContinuousScale,
     gridArea: GridArea,
     backgroundColor?: string
   ): void;
@@ -183,21 +184,6 @@ const computeCategoryStep = (data: ReadonlyArray<OHLCDataPoint>): number => {
   return Number.isFinite(minStep) && minStep > 0 ? minStep : 1;
 };
 
-const computeClipAffineFromScale = (
-  scale: LinearScale,
-  v0: number,
-  v1: number
-): { readonly a: number; readonly b: number } => {
-  const p0 = scale.scale(v0);
-  const p1 = scale.scale(v1);
-  if (!Number.isFinite(v0) || !Number.isFinite(v1) || v0 === v1 || !Number.isFinite(p0) || !Number.isFinite(p1)) {
-    return { a: 0, b: Number.isFinite(p0) ? p0 : 0 };
-  }
-  const a = (p1 - p0) / (v1 - v0);
-  const b = p0 - a * v0;
-  return { a: Number.isFinite(a) ? a : 0, b: Number.isFinite(b) ? b : 0 };
-};
-
 const writeTransformMat4F32 = (out: Float32Array, ax: number, bx: number, ay: number, by: number): void => {
   out[0] = ax;
   out[1] = 0;
@@ -222,6 +208,22 @@ const nearEqual = (a: number, b: number): boolean => Math.abs(a - b) <= 1e-9 * M
 type CandleGeometryCache = {
   readonly data: ResolvedCandlestickSeriesConfig['data'];
   /**
+   * Source array length. Streaming `appendData` mutates the coordinator-owned
+   * OHLC array in place (stable ref + growing length). Identity skip must miss
+   * when length changes or new candles never reach the instance buffer.
+   */
+  readonly dataLength: number;
+  /**
+   * Last candle OHLC fingerprint for equal-N in-place updates (forming candle
+   * via setOption on a stable data array). Axes-only prepares keep the same
+   * values so the skip still hits.
+   */
+  readonly lastTimestamp: number;
+  readonly lastOpen: number;
+  readonly lastClose: number;
+  readonly lastLow: number;
+  readonly lastHigh: number;
+  /**
    * Absolute domain origin subtracted from each instance `x` before Float32
    * upload. Large time-axis timestamps (ms epoch) lose spacing as f32; packing
    * relative to this origin keeps candle x separable. VS transform bakes it
@@ -239,6 +241,28 @@ type CandleGeometryCache = {
   readonly backgroundColor: string | undefined;
   readonly instanceCount: number;
   readonly hollowInstanceCount: number;
+};
+
+/** Last candle OHLC for geometry-cache content fingerprint (or NaNs when empty). */
+const lastCandleFingerprint = (
+  data: ResolvedCandlestickSeriesConfig['data']
+): {
+  readonly timestamp: number;
+  readonly open: number;
+  readonly close: number;
+  readonly low: number;
+  readonly high: number;
+} => {
+  if (data.length === 0) {
+    return {
+      timestamp: Number.NaN,
+      open: Number.NaN,
+      close: Number.NaN,
+      low: Number.NaN,
+      high: Number.NaN,
+    };
+  }
+  return getOHLC(data[data.length - 1]!);
 };
 
 /** First finite OHLC timestamp — packing origin for f32 domain x. */
@@ -404,50 +428,87 @@ export function createCandlestickRenderer(
       geometryCache && geometryCache.data === data ? geometryCache.categoryStep : computeCategoryStep(data);
 
     // Pack x as (timestamp - packingOrigin) for f32-safe time axes.
-    // Affine MUST be sampled near packingOrigin — computeClipAffineFromScale(0,1)
-    // loses digits when domain is ~1e12 epoch-ms; bx + ax*origin then fails to cancel.
+    // Affine MUST be sampled near packingOrigin — (0,1) loses digits on ~1e12 epoch-ms.
+    // Log X: packing is invalid under log projection — keep raw timestamps (origin 0).
     const packingOrigin =
-      geometryCache && geometryCache.data === data ? geometryCache.packingOrigin : firstFiniteTimestamp(data);
-    const xDelta = Number.isFinite(categoryStep) && categoryStep > 0 ? categoryStep : 1;
-    const pX0 = xScale.scale(packingOrigin);
-    const pX1 = xScale.scale(packingOrigin + xDelta);
-    const ax = Number.isFinite(pX0) && Number.isFinite(pX1) && xDelta !== 0 ? (pX1 - pX0) / xDelta : 0;
-    // clipX = ax * x_packed + pX0
-    const bxPacked = Number.isFinite(pX0) ? pX0 : 0;
+      xScale.kind === 'log'
+        ? 0
+        : geometryCache && geometryCache.data === data
+          ? geometryCache.packingOrigin
+          : firstFiniteTimestamp(data);
+    let ax: number;
+    let bxPacked: number;
+    if (xScale.kind === 'log') {
+      const aff = computeClipAffineFromContinuousScale(xScale);
+      ax = aff.a;
+      bxPacked = aff.b;
+    } else {
+      const xDelta = Number.isFinite(categoryStep) && categoryStep > 0 ? categoryStep : 1;
+      const pX0 = xScale.scale(packingOrigin);
+      const pX1 = xScale.scale(packingOrigin + xDelta);
+      ax = Number.isFinite(pX0) && Number.isFinite(pX1) && xDelta !== 0 ? (pX1 - pX0) / xDelta : 0;
+      // clipX = ax * x_packed + pX0
+      bxPacked = Number.isFinite(pX0) ? pX0 : 0;
+    }
 
-    // Y prices are typically O(1e2)–O(1e6); sampling (0,1) stays stable.
-    const { a: ay, b: by } = computeClipAffineFromScale(yScale, 0, 1);
-    const absAx = Math.abs(ax);
-    const domainPerCssX = absAx > 1e-20 ? clipPerCssX / absAx : 0;
+    // Y: linear samples (0,1); log solves affine in log space.
+    const { a: ay, b: by } = computeClipAffineFromContinuousScale(yScale);
+    const { logFlags, logBaseX, logBaseY } = resolveLogProjection(xScale, yScale);
+
+    // CSS → domain width. On log X, clip-space slope is d(clip)/d(log x), so
+    // invert-at-mid yields local linear domain width (mirrors bar renderer).
+    const cssWidthToDomainX = (cssPx: number): number => {
+      const widthClip = Math.max(0, cssPx) * clipPerCssX;
+      if (!(widthClip > 0)) return 0;
+      if (xScale.kind === 'log') {
+        const { min, max } = xScale.getDomain();
+        const mid = Math.sqrt(Math.max(min, Number.MIN_VALUE) * Math.max(max, Number.MIN_VALUE));
+        const midClip = xScale.scale(mid);
+        const lo = xScale.invert(midClip - widthClip * 0.5);
+        const hi = xScale.invert(midClip + widthClip * 0.5);
+        return Number.isFinite(lo) && Number.isFinite(hi) ? Math.abs(hi - lo) : 0;
+      }
+      const absAx = Math.abs(ax);
+      return absAx > 1e-20 ? widthClip / absAx : 0;
+    };
 
     // Body width in domain units (percent of category is zoom-invariant).
     let bodyWidthDomain = 0;
     const rawBarWidth = series.barWidth;
     if (typeof rawBarWidth === 'number') {
-      bodyWidthDomain = Math.max(0, rawBarWidth) * domainPerCssX;
+      bodyWidthDomain = cssWidthToDomainX(rawBarWidth);
     } else if (typeof rawBarWidth === 'string') {
       const p = parsePercent(rawBarWidth);
       bodyWidthDomain = p == null ? 0 : categoryStep * clamp01(p);
     }
-    const minWidthDomain = series.barMinWidth * domainPerCssX;
-    const maxWidthDomain = series.barMaxWidth * domainPerCssX;
+    const minWidthDomain = cssWidthToDomainX(series.barMinWidth);
+    const maxWidthDomain = cssWidthToDomainX(series.barMaxWidth);
     bodyWidthDomain = Math.min(Math.max(bodyWidthDomain, minWidthDomain), maxWidthDomain);
 
     const wickWidthCssPx = series.itemStyle.borderWidth ?? DEFAULT_WICK_WIDTH_CSS_PX;
-    const wickWidthDomain = Math.max(0, wickWidthCssPx) * domainPerCssX;
-    const hollowBorderDomain = hollowMode ? Math.max(0, series.itemStyle.borderWidth * domainPerCssX) : 0;
+    const wickWidthDomain = cssWidthToDomainX(wickWidthCssPx);
+    const hollowBorderDomain = hollowMode ? cssWidthToDomainX(series.itemStyle.borderWidth) : 0;
 
     const upColorKey = series.itemStyle.upColor;
     const downColorKey = series.itemStyle.downColor;
     const upBorderKey = series.itemStyle.upBorderColor;
     const downBorderKey = series.itemStyle.downBorderColor;
 
-    // Geometry identity skip: same data + domain layout → no instance rewrite.
-    // Policy verb shared via seriesResidency (issue 3.4).
+    // Geometry identity skip: same data ref + domain layout → no instance rewrite.
+    // Also require stable length and last-candle OHLC so streaming append
+    // (in-place push) and forming-candle setOption (mutate last bar) re-upload.
+    // Policy verb shared via seriesResidency (issue 3.4 / 1.3).
+    const lastFp = lastCandleFingerprint(data);
     const geometryHit =
       geometryCache != null &&
       instanceBuffer != null &&
       geometryCache.data === data &&
+      geometryCache.dataLength === data.length &&
+      nearEqual(geometryCache.lastTimestamp, lastFp.timestamp) &&
+      nearEqual(geometryCache.lastOpen, lastFp.open) &&
+      nearEqual(geometryCache.lastClose, lastFp.close) &&
+      nearEqual(geometryCache.lastLow, lastFp.low) &&
+      nearEqual(geometryCache.lastHigh, lastFp.high) &&
       nearEqual(geometryCache.packingOrigin, packingOrigin) &&
       nearEqual(geometryCache.categoryStep, categoryStep) &&
       nearEqual(geometryCache.bodyWidthDomain, bodyWidthDomain) &&
@@ -472,12 +533,13 @@ export function createCandlestickRenderer(
       needsGrowth: false,
     });
 
+    const vsUniformScratchU32 = new Uint32Array(vsUniformScratchBuffer);
     const writeVsUniforms = (): void => {
       writeTransformMat4F32(vsUniformScratchF32, ax, bxPacked, ay, by);
       vsUniformScratchF32[16] = wickWidthDomain;
-      vsUniformScratchF32[17] = 0;
-      vsUniformScratchF32[18] = 0;
-      vsUniformScratchF32[19] = 0;
+      vsUniformScratchF32[17] = logBaseX;
+      vsUniformScratchF32[18] = logBaseY;
+      vsUniformScratchU32[19] = logFlags >>> 0;
       writeUniformBuffer(device, vsUniformBuffer, vsUniformScratchBuffer);
     };
 
@@ -626,6 +688,12 @@ export function createCandlestickRenderer(
 
     geometryCache = {
       data,
+      dataLength: data.length,
+      lastTimestamp: lastFp.timestamp,
+      lastOpen: lastFp.open,
+      lastClose: lastFp.close,
+      lastLow: lastFp.low,
+      lastHigh: lastFp.high,
       packingOrigin,
       categoryStep,
       bodyWidthDomain,

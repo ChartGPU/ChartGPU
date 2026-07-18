@@ -1,7 +1,7 @@
 import scatterDensityBinningWgsl from '../shaders/scatterDensityBinning.wgsl?raw';
 import scatterDensityColormapWgsl from '../shaders/scatterDensityColormap.wgsl?raw';
 import type { RawBounds, ResolvedScatterSeriesConfig } from '../config/OptionResolver';
-import type { LinearScale } from '../utils/scales';
+import type { ContinuousScale } from '../utils/scales';
 import { parseCssColorToRgba01 } from '../utils/colors';
 import type { GridArea } from './createGridRenderer';
 import {
@@ -12,6 +12,11 @@ import {
   createComputePipeline,
 } from './rendererUtils';
 import type { PipelineCache } from '../core/PipelineCache';
+import {
+  computeClipAffineFromContinuousScale,
+  computeClipAffineFromScale,
+  resolveLogProjection,
+} from './packedXAffine';
 
 export interface ScatterDensityRenderer {
   prepare(
@@ -20,8 +25,8 @@ export interface ScatterDensityRenderer {
     pointCount: number,
     visibleStartIndex: number,
     visibleEndIndex: number,
-    xScale: LinearScale,
-    yScale: LinearScale,
+    xScale: ContinuousScale,
+    yScale: ContinuousScale,
     gridArea: GridArea,
     rawBounds?: RawBounds,
     /**
@@ -60,23 +65,6 @@ const nextPow2 = (v: number): number => {
   if (!Number.isFinite(v) || v <= 0) return 1;
   const n = Math.ceil(v);
   return 2 ** Math.ceil(Math.log2(n));
-};
-
-const computeClipAffineFromScale = (
-  scale: LinearScale,
-  v0: number,
-  v1: number
-): { readonly a: number; readonly b: number } => {
-  const p0 = scale.scale(v0);
-  const p1 = scale.scale(v1);
-
-  if (!Number.isFinite(v0) || !Number.isFinite(v1) || v0 === v1 || !Number.isFinite(p0) || !Number.isFinite(p1)) {
-    return { a: 0, b: Number.isFinite(p0) ? p0 : 0 };
-  }
-
-  const a = (p1 - p0) / (v1 - v0);
-  const b = p0 - a * v0;
-  return { a: Number.isFinite(a) ? a : 0, b: Number.isFinite(b) ? b : 0 };
 };
 
 const writeTransformMat4F32 = (out: Float32Array, ax: number, bx: number, ay: number, by: number): void => {
@@ -255,10 +243,10 @@ export function createScatterDensityRenderer(
     ],
   });
 
-  // Compute uniforms:
-  // transform(64) + viewportPx(8)+pad(8)=80
-  // plotOriginPx u32x2(8) + plotSizePx u32x2(8) = 16 => 96
-  // binSize/binCountX/binCountY/start/end/norm u32*6 (24) + pad u32x2 (8) => 128
+  // Compute uniforms (128 bytes):
+  // transform(64) + viewportPx(8) + logBaseX/Y(8) = 80
+  // logFlags/pad(8) + plotOriginPx(8) + plotSizePx(8) = 24 → 104
+  // binSize/binCountX/Y/start/end/norm u32*6 (24) → 128
   const computeUniformBuffer = createUniformBuffer(device, 128, {
     label: 'scatterDensity/computeUniforms',
   });
@@ -352,6 +340,9 @@ export function createScatterDensityRenderer(
   let lastNormalizationU32 = 2; // default 'log'
   // Scale affine samples (clip = a*domain + b). Y-only domain change leaves
   // buffer identity + visible indices stable but must re-bin (issue 0.1).
+  let lastLogFlags = 0;
+  let lastLogBaseX = Number.NaN;
+  let lastLogBaseY = Number.NaN;
   let lastAx = Number.NaN;
   let lastBx = Number.NaN;
   let lastAy = Number.NaN;
@@ -501,8 +492,15 @@ export function createScatterDensityRenderer(
     const yMin = rb?.yMin ?? 0;
     const yMax = rb?.yMax ?? 1;
 
-    const { a: ax, b: bx } = computeClipAffineFromScale(xScale, xMin, xMax);
-    const { a: ay, b: by } = computeClipAffineFromScale(yScale, yMin, yMax);
+    const { a: ax, b: bx } =
+      xScale.kind === 'log'
+        ? computeClipAffineFromContinuousScale(xScale)
+        : computeClipAffineFromScale(xScale, xMin, xMax);
+    const { a: ay, b: by } =
+      yScale.kind === 'log'
+        ? computeClipAffineFromContinuousScale(yScale)
+        : computeClipAffineFromScale(yScale, yMin, yMax);
+    const { logFlags, logBaseX, logBaseY } = resolveLogProjection(xScale, yScale);
 
     // Dirty detection.
     if (lastPointBuffer !== pointBuffer) {
@@ -545,12 +543,23 @@ export function createScatterDensityRenderer(
       lastNormalizationU32 = normU32;
       computeDirty = true;
     }
-    // Scale affine: y-only domain change keeps buffer + visible range stable.
-    if (lastAx !== ax || lastBx !== bx || lastAy !== ay || lastBy !== by) {
+    // Scale affine / log projection: y-only domain change keeps buffer + visible range stable.
+    if (
+      lastAx !== ax ||
+      lastBx !== bx ||
+      lastAy !== ay ||
+      lastBy !== by ||
+      lastLogFlags !== logFlags ||
+      lastLogBaseX !== logBaseX ||
+      lastLogBaseY !== logBaseY
+    ) {
       lastAx = ax;
       lastBx = bx;
       lastAy = ay;
       lastBy = by;
+      lastLogFlags = logFlags;
+      lastLogBaseX = logBaseX;
+      lastLogBaseY = logBaseY;
       computeDirty = true;
     }
     // Content version: equal-N rewrite at same buffer identity must re-bin.
@@ -564,19 +573,21 @@ export function createScatterDensityRenderer(
     writeTransformMat4F32(computeUniformF32, ax, bx, ay, by);
     computeUniformF32[16] = gridArea.canvasWidth > 0 ? gridArea.canvasWidth : 1;
     computeUniformF32[17] = gridArea.canvasHeight > 0 ? gridArea.canvasHeight : 1;
-    computeUniformF32[18] = 0;
-    computeUniformF32[19] = 0;
+    computeUniformF32[18] = logBaseX;
+    computeUniformF32[19] = logBaseY;
+    computeUniformU32[20] = logFlags >>> 0;
+    computeUniformU32[21] = 0;
 
-    computeUniformU32[20] = plotScissor.x >>> 0;
-    computeUniformU32[21] = plotScissor.y >>> 0;
-    computeUniformU32[22] = plotScissor.w >>> 0;
-    computeUniformU32[23] = plotScissor.h >>> 0;
-    computeUniformU32[24] = binSizePx >>> 0;
-    computeUniformU32[25] = binCountX >>> 0;
-    computeUniformU32[26] = binCountY >>> 0;
-    computeUniformU32[27] = (Math.max(0, visibleStartIndex) | 0) >>> 0;
-    computeUniformU32[28] = (Math.max(0, visibleEndIndex) | 0) >>> 0;
-    computeUniformU32[29] = normU32 >>> 0;
+    computeUniformU32[22] = plotScissor.x >>> 0;
+    computeUniformU32[23] = plotScissor.y >>> 0;
+    computeUniformU32[24] = plotScissor.w >>> 0;
+    computeUniformU32[25] = plotScissor.h >>> 0;
+    computeUniformU32[26] = binSizePx >>> 0;
+    computeUniformU32[27] = binCountX >>> 0;
+    computeUniformU32[28] = binCountY >>> 0;
+    computeUniformU32[29] = (Math.max(0, visibleStartIndex) | 0) >>> 0;
+    computeUniformU32[30] = (Math.max(0, visibleEndIndex) | 0) >>> 0;
+    computeUniformU32[31] = normU32 >>> 0;
 
     writeUniformBuffer(device, computeUniformBuffer, computeUniformScratch);
 

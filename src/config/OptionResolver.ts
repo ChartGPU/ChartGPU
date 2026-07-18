@@ -702,6 +702,36 @@ const normalizeAxisAutoBounds = (value: unknown): AxisConfig['autoBounds'] | und
   return v === 'global' || v === 'visible' ? (v as AxisConfig['autoBounds']) : undefined;
 };
 
+const VALID_AXIS_TYPES = new Set(['value', 'time', 'category', 'log']);
+
+const normalizeAxisType = (value: unknown, fallback: AxisConfig['type']): AxisConfig['type'] => {
+  if (typeof value === 'string' && VALID_AXIS_TYPES.has(value)) {
+    return value as AxisConfig['type'];
+  }
+  return fallback;
+};
+
+/**
+ * Resolve `logBase` for log axes. Default 10; invalid bases fall back to 10 with a
+ * one-shot dev warning. Omitted / non-log axes leave logBase undefined.
+ */
+const resolveAxisLogBase = (type: AxisConfig['type'], logBase: unknown): number | undefined => {
+  if (type !== 'log') return undefined;
+  if (logBase === undefined || logBase === null) return 10;
+  if (typeof logBase === 'number' && Number.isFinite(logBase) && logBase > 0 && logBase !== 1) {
+    return logBase;
+  }
+  console.warn(`[ChartGPU] Invalid axis logBase (${String(logBase)}); falling back to 10.`);
+  return 10;
+};
+
+const finalizeAxisConfig = (axis: AxisConfig): AxisConfig => {
+  const type = normalizeAxisType(axis.type, 'value');
+  const logBase = resolveAxisLogBase(type, axis.logBase);
+  if (type === axis.type && logBase === axis.logBase) return axis;
+  return logBase !== undefined ? { ...axis, type, logBase } : { ...axis, type };
+};
+
 const isTupleOHLCDataPoint = (p: OHLCDataPoint): p is OHLCDataPointTuple => Array.isArray(p);
 
 const computeRawBoundsFromOHLC = (data: ReadonlyArray<OHLCDataPoint>): RawBounds | undefined => {
@@ -1075,47 +1105,60 @@ export function resolveOptions(
 
   const gridLines = resolveGridLines(userOptions.gridLines, theme);
 
-  const xAxis: AxisConfig = userOptions.xAxis
-    ? {
-        ...defaultOptions.xAxis,
-        ...userOptions.xAxis,
-        // runtime safety for JS callers
-        type: (userOptions.xAxis as unknown as Partial<AxisConfig>).type ?? defaultOptions.xAxis.type,
-        autoBounds:
-          normalizeAxisAutoBounds((userOptions.xAxis as unknown as { readonly autoBounds?: unknown }).autoBounds) ??
-          (defaultOptions.xAxis as AxisConfig).autoBounds,
-      }
-    : { ...defaultOptions.xAxis };
+  const xAxis: AxisConfig = finalizeAxisConfig(
+    userOptions.xAxis
+      ? {
+          ...defaultOptions.xAxis,
+          ...userOptions.xAxis,
+          // runtime safety for JS callers
+          type: normalizeAxisType(
+            (userOptions.xAxis as unknown as Partial<AxisConfig>).type,
+            defaultOptions.xAxis.type
+          ),
+          autoBounds:
+            normalizeAxisAutoBounds((userOptions.xAxis as unknown as { readonly autoBounds?: unknown }).autoBounds) ??
+            (defaultOptions.xAxis as AxisConfig).autoBounds,
+        }
+      : { ...defaultOptions.xAxis }
+  );
 
   const yAxes: AxisConfig[] = [];
   if (userOptions.axes?.y && userOptions.axes.y.length > 0) {
     for (let index = 0; index < userOptions.axes.y.length; index++) {
       const yConfig = userOptions.axes.y[index]!;
-      yAxes.push({
-        ...defaultOptions.yAxis,
-        ...yConfig,
-        id: yConfig.id ?? (index === 0 ? 'y' : `y${index}`),
-        position: yConfig.position ?? 'left',
-        type: yConfig.type ?? defaultOptions.yAxis.type,
-        autoBounds:
-          normalizeAxisAutoBounds((yConfig as unknown as { readonly autoBounds?: unknown }).autoBounds) ??
-          defaultOptions.yAxis.autoBounds,
-      });
+      yAxes.push(
+        finalizeAxisConfig({
+          ...defaultOptions.yAxis,
+          ...yConfig,
+          id: yConfig.id ?? (index === 0 ? 'y' : `y${index}`),
+          position: yConfig.position ?? 'left',
+          type: normalizeAxisType(yConfig.type, defaultOptions.yAxis.type),
+          autoBounds:
+            normalizeAxisAutoBounds((yConfig as unknown as { readonly autoBounds?: unknown }).autoBounds) ??
+            defaultOptions.yAxis.autoBounds,
+        })
+      );
     }
   } else {
     yAxes.push(
-      userOptions.yAxis
-        ? {
-            ...defaultOptions.yAxis,
-            ...userOptions.yAxis,
-            id: userOptions.yAxis.id ?? 'y',
-            position: userOptions.yAxis.position ?? 'left',
-            type: (userOptions.yAxis as unknown as Partial<AxisConfig>).type ?? defaultOptions.yAxis.type,
-            autoBounds:
-              normalizeAxisAutoBounds((userOptions.yAxis as unknown as { readonly autoBounds?: unknown }).autoBounds) ??
-              defaultOptions.yAxis.autoBounds,
-          }
-        : { ...defaultOptions.yAxis, id: 'y', position: 'left' }
+      finalizeAxisConfig(
+        userOptions.yAxis
+          ? {
+              ...defaultOptions.yAxis,
+              ...userOptions.yAxis,
+              id: userOptions.yAxis.id ?? 'y',
+              position: userOptions.yAxis.position ?? 'left',
+              type: normalizeAxisType(
+                (userOptions.yAxis as unknown as Partial<AxisConfig>).type,
+                defaultOptions.yAxis.type
+              ),
+              autoBounds:
+                normalizeAxisAutoBounds(
+                  (userOptions.yAxis as unknown as { readonly autoBounds?: unknown }).autoBounds
+                ) ?? defaultOptions.yAxis.autoBounds,
+            }
+          : { ...defaultOptions.yAxis, id: 'y', position: 'left' }
+      )
     );
   }
 

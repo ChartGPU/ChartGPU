@@ -1,7 +1,8 @@
 import scatterWgsl from '../shaders/scatter.wgsl?raw';
 import type { ResolvedScatterSeriesConfig } from '../config/OptionResolver';
 import type { CartesianSeriesData } from '../config/types';
-import type { LinearScale } from '../utils/scales';
+import type { ContinuousScale } from '../utils/scales';
+import { computeClipAffineFromContinuousScale, resolveLogProjection } from './packedXAffine';
 import { parseCssColorToRgba01 } from '../utils/colors';
 import type { GridArea } from './createGridRenderer';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
@@ -15,8 +16,8 @@ export interface ScatterRenderer {
   prepare(
     seriesConfig: ResolvedScatterSeriesConfig,
     data: CartesianSeriesData,
-    xScale: LinearScale,
-    yScale: LinearScale,
+    xScale: ContinuousScale,
+    yScale: ContinuousScale,
     gridArea?: GridArea,
     /**
      * When true (`performance.lod: 'strict'`), disable dense radius compaction
@@ -75,24 +76,6 @@ const nextPow2 = (v: number): number => {
   if (!Number.isFinite(v) || v <= 0) return 1;
   const n = Math.ceil(v);
   return 2 ** Math.ceil(Math.log2(n));
-};
-
-const computeClipAffineFromScale = (
-  scale: LinearScale,
-  v0: number,
-  v1: number
-): { readonly a: number; readonly b: number } => {
-  const p0 = scale.scale(v0);
-  const p1 = scale.scale(v1);
-
-  // If the domain sample is degenerate or non-finite, fall back to constant output.
-  if (!Number.isFinite(v0) || !Number.isFinite(v1) || v0 === v1 || !Number.isFinite(p0) || !Number.isFinite(p1)) {
-    return { a: 0, b: Number.isFinite(p0) ? p0 : 0 };
-  }
-
-  const a = (p1 - p0) / (v1 - v0);
-  const b = p0 - a * v0;
-  return { a: Number.isFinite(a) ? a : 0, b: Number.isFinite(b) ? b : 0 };
 };
 
 const writeTransformMat4F32 = (out: Float32Array, ax: number, bx: number, ay: number, by: number): void => {
@@ -163,8 +146,8 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     ],
   });
 
-  // VSUniforms: mat4x4 (64) + viewportPx vec2 (8) + radiusPx f32 (4) + pad (4) = 80 bytes.
-  const vsUniformBuffer = createUniformBuffer(device, 80, {
+  // VSUniforms: mat4 (64) + viewport (8) + radius (4) + logBaseX (4) + logBaseY/logFlags/pad (12) = 96.
+  const vsUniformBuffer = createUniformBuffer(device, 96, {
     label: 'scatterRenderer/vsUniforms',
   });
   const fsUniformBuffer = createUniformBuffer(device, 16, {
@@ -172,8 +155,9 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
   });
 
   // Reused CPU-side staging for uniform writes (avoid per-frame allocations).
-  const vsUniformScratchBuffer = new ArrayBuffer(80);
+  const vsUniformScratchBuffer = new ArrayBuffer(96);
   const vsUniformScratchF32 = new Float32Array(vsUniformScratchBuffer);
+  const vsUniformScratchU32 = new Uint32Array(vsUniformScratchBuffer);
   const fsUniformScratchF32 = new Float32Array(4);
 
   const bindGroup = device.createBindGroup({
@@ -367,7 +351,10 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     by: number,
     viewportW: number,
     viewportH: number,
-    radiusDevicePx: number
+    radiusDevicePx: number,
+    logFlags: number,
+    logBaseX: number,
+    logBaseY: number
   ): void => {
     const w = Number.isFinite(viewportW) && viewportW > 0 ? viewportW : 1;
     const h = Number.isFinite(viewportH) && viewportH > 0 ? viewportH : 1;
@@ -376,7 +363,11 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     vsUniformScratchF32[16] = w;
     vsUniformScratchF32[17] = h;
     vsUniformScratchF32[18] = radiusDevicePx;
-    vsUniformScratchF32[19] = 0;
+    vsUniformScratchF32[19] = logBaseX;
+    vsUniformScratchF32[20] = logBaseY;
+    vsUniformScratchU32[21] = logFlags >>> 0;
+    vsUniformScratchU32[22] = 0;
+    vsUniformScratchU32[23] = 0;
     writeUniformBuffer(device, vsUniformBuffer, vsUniformScratchBuffer);
 
     lastViewportPx = [w, h];
@@ -385,11 +376,10 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
   const prepare: ScatterRenderer['prepare'] = (seriesConfig, data, xScale, yScale, gridArea, forceStandardDraw) => {
     assertNotDisposed();
 
-    // Linear scales: affine is independent of data bounds — sample at 0 and 1
-    // (same pattern as overlay memo / bar domain pack). Avoids O(n) bounds scan
-    // every full rewrite frame.
-    const { a: ax, b: bx } = computeClipAffineFromScale(xScale, 0, 1);
-    const { a: ay, b: by } = computeClipAffineFromScale(yScale, 0, 1);
+    // Continuous scales: linear samples (0,1); log solves affine in log space.
+    const { a: ax, b: bx } = computeClipAffineFromContinuousScale(xScale);
+    const { a: ay, b: by } = computeClipAffineFromContinuousScale(yScale);
+    const { logFlags, logBaseX, logBaseY } = resolveLogProjection(xScale, yScale);
 
     const dpr = gridArea?.devicePixelRatio ?? 1;
     const hasValidDpr = dpr > 0 && Number.isFinite(dpr);
@@ -456,7 +446,7 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
       });
       drawRadiusDevicePx = drawPol.effectiveRadiusDevicePx;
     }
-    writeVsUniforms(ax, bx, ay, by, viewportW, viewportH, drawRadiusDevicePx);
+    writeVsUniforms(ax, bx, ay, by, viewportW, viewportH, drawRadiusDevicePx, logFlags, logBaseX, logBaseY);
 
     const [r, g, b, a] = parseSeriesColorToRgba01(seriesConfig.color);
     fsUniformScratchF32[0] = r;

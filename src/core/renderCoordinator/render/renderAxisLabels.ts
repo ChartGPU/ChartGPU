@@ -10,12 +10,17 @@
 
 import type { ResolvedChartGPUOptions } from '../../../config/OptionResolver';
 import type { AxisConfig } from '../../../config/types';
-import type { LinearScale } from '../../../utils/scales';
+import type { ContinuousScale, LinearScale } from '../../../utils/scales';
 import type { TextOverlay, TextOverlayAnchor } from '../../../components/createTextOverlay';
 import { getCanvasCssWidth, getCanvasCssHeight } from '../utils/canvasUtils';
 import { formatTimeTickValue } from '../utils/timeAxisUtils';
-import { formatTickValue, createTickFormatter } from '../axis/computeAxisTicks';
-import { finiteOrUndefined } from '../utils/dataPointUtils';
+import {
+  formatTickValue,
+  createTickFormatter,
+  formatLogTickValue,
+  generateLogTicksForVisibleDomain,
+  generateLinearTicks,
+} from '../axis/computeAxisTicks';
 import { getAxisTitleFontSize } from '../../../utils/axisLabelStyling';
 import { getRightYAxisLabelX, getYAxisLabelX, getRightYAxisTitleX, getYAxisTitleX } from '../axis/axisLabelHelpers';
 
@@ -27,7 +32,7 @@ const DEFAULT_TICK_COUNT = 5;
 interface AxisLabelRenderContext {
   readonly gpuContext: { readonly canvas: HTMLCanvasElement | null };
   readonly currentOptions: ResolvedChartGPUOptions;
-  readonly xScale: LinearScale;
+  readonly xScale: ContinuousScale | LinearScale;
   readonly xTickValues: readonly number[];
   readonly plotClipRect: { left: number; right: number; top: number; bottom: number };
   readonly visibleXRangeMs: number;
@@ -38,13 +43,15 @@ interface YAxisLabelRenderContext {
   readonly axisLabelOverlay: TextOverlay | null;
   readonly overlayContainer: HTMLElement | null;
   readonly yAxisConfig: AxisConfig;
-  readonly yScale: LinearScale;
+  readonly yScale: ContinuousScale | LinearScale;
   readonly plotClipRect: { left: number; right: number; top: number; bottom: number };
   readonly canvasCssWidth: number;
   readonly canvasCssHeight: number;
   readonly offsetX: number;
   readonly offsetY: number;
   readonly theme: ResolvedChartGPUOptions['theme'];
+  /** Optional precomputed tick domain values (log majors). */
+  readonly yTickValues?: readonly number[];
 }
 
 function clipXToCanvasCssPx(xClip: number, canvasCssWidth: number): number {
@@ -102,12 +109,19 @@ export function renderAxisLabels(
   const xTickLengthCssPx = currentOptions.xAxis.tickLength ?? DEFAULT_TICK_LENGTH_CSS_PX;
   const xLabelY = plotBottomCss + xTickLengthCssPx + LABEL_PADDING_CSS_PX + currentOptions.theme.fontSize * 0.5;
   const isTimeXAxis = currentOptions.xAxis.type === 'time';
+  const isLogXAxis = currentOptions.xAxis.type === 'log';
+  const xLogBase = currentOptions.xAxis.logBase ?? 10;
   const xFormatter = (() => {
-    if (isTimeXAxis) return null;
-    const xDomainMin = finiteOrUndefined(currentOptions.xAxis.min) ?? xScale.invert(plotClipRect.left);
-    const xDomainMax = finiteOrUndefined(currentOptions.xAxis.max) ?? xScale.invert(plotClipRect.right);
+    if (isTimeXAxis || isLogXAxis) return null;
+    // Step from visible ticks / scale domain so decimal precision tracks zoom.
     const xTickCount = xTickValues.length;
-    const xTickStep = xTickCount === 1 ? 0 : (xDomainMax - xDomainMin) / (xTickCount - 1);
+    let xTickStep = 0;
+    if (xTickCount >= 2) {
+      xTickStep = Math.abs(xTickValues[1]! - xTickValues[0]!);
+    } else {
+      const xd = xScale.getDomain();
+      xTickStep = Math.abs(xd.max - xd.min);
+    }
     return createTickFormatter(xTickStep);
   })();
 
@@ -123,7 +137,9 @@ export function renderAxisLabels(
       ? xTickFormatter(v)
       : isTimeXAxis
         ? formatTimeTickValue(v, visibleXRangeMs)
-        : formatTickValue(xFormatter!, v);
+        : isLogXAxis
+          ? formatLogTickValue(v, xLogBase)
+          : formatTickValue(xFormatter!, v);
     if (label == null) continue;
 
     const span = axisLabelOverlay.addLabel(label, offsetX + xCss, offsetY + xLabelY, {
@@ -173,6 +189,7 @@ export function renderYAxisLabels(ctx: YAxisLabelRenderContext): void {
     offsetX,
     offsetY,
     theme,
+    yTickValues: yTickValuesOpt,
   } = ctx;
   if (!axisLabelOverlay || !overlayContainer) return;
   if (canvasCssWidth <= 0 || canvasCssHeight <= 0) return;
@@ -185,11 +202,26 @@ export function renderYAxisLabels(ctx: YAxisLabelRenderContext): void {
   const isRight = yAxisConfig.position === 'right';
   const yTickLengthCssPx = yAxisConfig.tickLength ?? DEFAULT_TICK_LENGTH_CSS_PX;
 
-  const yTickCount = (yAxisConfig as any).tickCount ?? DEFAULT_TICK_COUNT;
-  const yDomainMin = finiteOrUndefined(yAxisConfig.min) ?? yScale.invert(plotClipRect.bottom);
-  const yDomainMax = finiteOrUndefined(yAxisConfig.max) ?? yScale.invert(plotClipRect.top);
+  // Prefer the live scale domain so ticks track any visible window (same as X zoom path).
+  // Explicit axis min/max still feed the scale via base-domain computation upstream.
+  const scaleDomain = yScale.getDomain();
+  const yDomainMin = scaleDomain.min;
+  const yDomainMax = scaleDomain.max;
+  const isLogY = yAxisConfig.type === 'log';
+  const logBase = yAxisConfig.logBase ?? 10;
+  const yTickValues =
+    yTickValuesOpt != null && yTickValuesOpt.length > 0
+      ? yTickValuesOpt
+      : isLogY
+        ? generateLogTicksForVisibleDomain(yDomainMin, yDomainMax, logBase)
+        : generateLinearTicks(
+            yDomainMin,
+            yDomainMax,
+            (yAxisConfig as { tickCount?: number }).tickCount ?? DEFAULT_TICK_COUNT
+          );
+  const yTickCount = yTickValues.length;
   const yTickStep = yTickCount <= 1 ? 0 : (yDomainMax - yDomainMin) / (yTickCount - 1);
-  const yFormatter = createTickFormatter(yTickStep);
+  const yFormatter = isLogY ? null : createTickFormatter(yTickStep);
 
   const yLabelX = isRight
     ? getRightYAxisLabelX(plotRightCss, yTickLengthCssPx)
@@ -211,12 +243,15 @@ export function renderYAxisLabels(ctx: YAxisLabelRenderContext): void {
   let maxTickLabelWidth = 0;
 
   for (let i = 0; i < yTickCount; i++) {
-    const t = yTickCount <= 1 ? 0.5 : i / (yTickCount - 1);
-    const v = yDomainMin + t * (yDomainMax - yDomainMin);
+    const v = yTickValues[i]!;
     const yClip = yScale.scale(v);
     const yCss = clipYToCanvasCssPx(yClip, canvasCssHeight);
 
-    const label = yTickFormatter ? yTickFormatter(v) : formatTickValue(yFormatter, v);
+    const label = yTickFormatter
+      ? yTickFormatter(v)
+      : isLogY
+        ? formatLogTickValue(v, logBase)
+        : formatTickValue(yFormatter!, v);
     if (label == null) continue;
 
     if (measureCtx) {
