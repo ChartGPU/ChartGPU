@@ -319,11 +319,12 @@ const buildWaveSeries = (
 };
 
 async function mountAurora(container: HTMLElement): Promise<{ dispose: () => void }> {
-  const seriesCount = 500;
-  // Keep seed + ring modest — 500 × N still fills the viewport; stream carries motion.
+  const seriesCount = 1000;
+  // Dense enough for a continuous ribbon; ring stays modest so GPU stays light.
   const seedPoints = 160;
-  const maxPoints = 480;
-  const dt = 0.04;
+  const maxPoints = 420;
+  // Smaller steps at higher sample rate → same wave speed, smoother autoScroll.
+  const dt = 0.022;
   let tCursor = 0;
   const built = buildWaveSeries(seriesCount, seedPoints, tCursor);
   tCursor = built.nextT;
@@ -342,30 +343,46 @@ async function mountAurora(container: HTMLElement): Promise<{ dispose: () => voi
   const ro = attachResize(container, chart);
 
   let cancelled = false;
-  let timer: ReturnType<typeof setInterval> | null = null;
+  let raf = 0;
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   if (!reduced) {
-    // 500 series: 1 pt / series @ ~16 Hz — live without choking the main thread.
-    timer = setInterval(() => {
+    // Per-series 1-point columnar buffers (identity-stable for pending append).
+    // Coordinator stores refs until flush — never reuse one buffer across series.
+    const appendBufs = Array.from({ length: seriesCount }, () => ({
+      x: new Float64Array(1),
+      y: new Float64Array(1),
+    }));
+
+    // rAF + fixed timestep: avoids setInterval coalescing (stop-start under load).
+    // Cap catch-up at 1 sample/frame so a long frame never multi-jumps the domain.
+    const sampleHz = 48;
+    const sampleMs = 1000 / sampleHz;
+    let lastSampleAt = performance.now();
+
+    const pump = (now: number): void => {
       if (cancelled || chart.disposed) return;
-      const step = 1;
+      raf = requestAnimationFrame(pump);
+
+      if (now - lastSampleAt < sampleMs) return;
+      lastSampleAt = now;
+
+      const t = tCursor;
       for (let s = 0; s < seriesCount; s++) {
-        const pts: DataPoint[] = new Array(step);
-        for (let i = 0; i < step; i++) {
-          const t = tCursor + i * dt;
-          pts[i] = [t, waveY(t, s, seriesCount)];
-        }
-        chart.appendData(s, pts, { maxPoints });
+        const buf = appendBufs[s]!;
+        buf.x[0] = t;
+        buf.y[0] = waveY(t, s, seriesCount);
+        chart.appendData(s, buf, { maxPoints });
       }
-      tCursor += step * dt;
-    }, 64);
+      tCursor += dt;
+    };
+    raf = requestAnimationFrame(pump);
   }
 
   return {
     dispose: () => {
       cancelled = true;
-      if (timer) clearInterval(timer);
+      if (raf) cancelAnimationFrame(raf);
       ro.disconnect();
       chart.dispose();
     },
