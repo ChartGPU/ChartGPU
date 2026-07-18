@@ -42,6 +42,7 @@ import {
   patchSeriesPresentationKeepingSampledData,
   didRawBoundsModeChange,
 } from './data/samplingDirty';
+import { syncCandlestickOwnedFromUserSeries } from './data/syncCandlestickRuntime';
 import { processAnnotations } from './annotations/processAnnotations';
 import {
   prepareSeries,
@@ -2244,6 +2245,27 @@ export function createRenderCoordinator(
       // resample — and toYBaseDomains can disagree with fromSnapshot,
       // spuriously starting a domain-change animation on theme-only updates.
       recomputeCachedVisibleYBoundsIfNeeded();
+    }
+
+    // Candlestick streaming: consumer may mutate a stable OHLC array (forming
+    // bar) and call setOption. Presentation-only dirty checks treat same-ref
+    // data as unchanged, while the coordinator keeps a sliced owned copy for
+    // appendData — copy user edits into owned so prepare/geometry see them.
+    {
+      const candleSync = syncCandlestickOwnedFromUserSeries({
+        series: resolvedOptions.series,
+        runtimeRawDataByIndex,
+        runtimeRawBoundsByIndex,
+        extendBounds: extendBoundsWithOHLCDataPoints,
+      });
+      if (candleSync.didReplaceRef) {
+        recomputeRuntimeBaseSeries();
+        recomputeRenderSeries();
+      } else if (candleSync.didMutate) {
+        // Owned array mutated in place (same ref as renderSeries.data). Refresh
+        // y-bounds so auto domain tracks the forming bar high/low.
+        recomputeCachedVisibleYBoundsIfNeeded();
+      }
     }
 
     // Tooltip enablement may change at runtime.
