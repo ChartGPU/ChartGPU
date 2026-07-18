@@ -38,16 +38,55 @@ function createMockSpan(text: string) {
  * Tracks addLabel calls and returns a stub span.
  */
 function createMockTextOverlay() {
-  const labels: Array<{ text: string; x: number; y: number }> = [];
+  const labels: Array<{
+    text: string;
+    x: number;
+    y: number;
+    options?: { anchor?: string; rotation?: number; fontWeight?: string | number };
+  }> = [];
   return {
     labels,
     overlay: {
       clear: vi.fn(),
-      addLabel: vi.fn((text: string, x: number, y: number) => {
-        labels.push({ text, x, y });
-        return createMockSpan(text);
-      }),
+      addLabel: vi.fn(
+        (
+          text: string,
+          x: number,
+          y: number,
+          options?: { anchor?: string; rotation?: number; fontWeight?: string | number }
+        ) => {
+          labels.push({ text, x, y, options });
+          return createMockSpan(text);
+        }
+      ),
     },
+  };
+}
+
+function makeYCtx(
+  overlay: ReturnType<typeof createMockTextOverlay>['overlay'],
+  container: HTMLElement,
+  context: AxisLabelRenderContext,
+  yAxisConfig = context.currentOptions.yAxes[0]!
+): YAxisLabelRenderContext {
+  const yScale =
+    (context as { yScales?: Map<string, unknown> }).yScales?.values().next().value ??
+    ({
+      scale: (v: number) => -1 + (v / 100) * 2,
+      invert: (c: number) => ((c + 1) / 2) * 100,
+      getDomain: () => ({ min: 0, max: 100 }),
+    } as any);
+  return {
+    axisLabelOverlay: overlay as any,
+    overlayContainer: container,
+    yAxisConfig,
+    yScale: yScale as any,
+    plotClipRect: context.plotClipRect,
+    canvasCssWidth: (context.gpuContext.canvas as HTMLCanvasElement).clientWidth,
+    canvasCssHeight: (context.gpuContext.canvas as HTMLCanvasElement).clientHeight,
+    offsetX: 0,
+    offsetY: 0,
+    theme: context.currentOptions.theme,
   };
 }
 
@@ -184,20 +223,7 @@ describe('renderAxisLabels', () => {
         } as any,
       });
 
-      const yCtx: YAxisLabelRenderContext = {
-        axisLabelOverlay: overlay as any,
-        overlayContainer: container,
-        yAxisConfig: context.currentOptions.yAxes[0],
-        yScale: context.yScales.values().next().value!,
-        plotClipRect: context.plotClipRect,
-        canvasCssWidth: context.gpuContext.canvas.clientWidth,
-        canvasCssHeight: context.gpuContext.canvas.clientHeight,
-        offsetX: 0,
-        offsetY: 0,
-        theme: context.currentOptions.theme,
-      };
-
-      renderYAxisLabels(yCtx);
+      renderYAxisLabels(makeYCtx(overlay, container, context));
 
       const yLabels = labels.filter((l) => l.text.endsWith('%'));
       expect(yLabels.length).toBeGreaterThan(0);
@@ -220,24 +246,88 @@ describe('renderAxisLabels', () => {
         } as any,
       });
 
-      const yCtx: YAxisLabelRenderContext = {
-        axisLabelOverlay: overlay as any,
-        overlayContainer: container,
-        yAxisConfig: context.currentOptions.yAxes[0],
-        yScale: context.yScales.values().next().value!,
-        plotClipRect: context.plotClipRect,
-        canvasCssWidth: context.gpuContext.canvas.clientWidth,
-        canvasCssHeight: context.gpuContext.canvas.clientHeight,
-        offsetX: 0,
-        offsetY: 0,
-        theme: context.currentOptions.theme,
-      };
-
-      renderYAxisLabels(yCtx);
+      renderYAxisLabels(makeYCtx(overlay, container, context));
 
       // No y-axis labels should be rendered (all suppressed)
       const allLabels = labels.map((l) => l.text);
       expect(allLabels.length).toBe(0); // only Y-labels tested here
+    });
+  });
+
+  describe('y-axis header (top-rail unit label)', () => {
+    it('renders a non-rotated header near the top of a right Y-axis rail', () => {
+      const { overlay, labels } = createMockTextOverlay();
+      const container = {} as HTMLElement;
+      const context = createMinimalContext({
+        currentOptions: {
+          ...createMinimalContext().currentOptions,
+          yAxes: [{ id: 'primary', type: 'value' as const, position: 'right', header: 'USDT' }],
+        } as any,
+      });
+
+      renderYAxisLabels(makeYCtx(overlay, container, context));
+
+      const header = labels.find((l) => l.text === 'USDT');
+      expect(header).toBeDefined();
+      // Non-rotated: no rotation option (or 0)
+      expect(header!.options?.rotation).toBeUndefined();
+      expect(header!.options?.anchor).toBe('start');
+      expect(header!.options?.fontWeight).toBe('600');
+
+      // Header Y is above plot top (plot top clip 0.8 → css y = ((1-0.8)/2)*400 = 40)
+      const plotTopCss = ((1 - 0.8) / 2) * 400;
+      expect(header!.y).toBeLessThan(plotTopCss);
+
+      // X aligns with right-side tick label column (past plot right)
+      const plotRightCss = ((0.95 + 1) / 2) * 800;
+      expect(header!.x).toBeGreaterThan(plotRightCss);
+    });
+
+    it('renders a left-rail header with end anchor and coexists with rotated name', () => {
+      const { overlay, labels } = createMockTextOverlay();
+      const container = {} as HTMLElement;
+      const context = createMinimalContext({
+        currentOptions: {
+          ...createMinimalContext().currentOptions,
+          yAxes: [
+            {
+              id: 'primary',
+              type: 'value' as const,
+              position: 'left',
+              header: '  USD  ',
+              name: 'Price',
+            },
+          ],
+        } as any,
+      });
+
+      renderYAxisLabels(makeYCtx(overlay, container, context));
+
+      const header = labels.find((l) => l.text === 'USD'); // trimmed
+      expect(header).toBeDefined();
+      expect(header!.options?.rotation).toBeUndefined();
+      expect(header!.options?.anchor).toBe('end');
+
+      const title = labels.find((l) => l.text === 'Price');
+      expect(title).toBeDefined();
+      expect(title!.options?.rotation).toBe(-90);
+    });
+
+    it('skips header when empty or whitespace-only', () => {
+      const { overlay, labels } = createMockTextOverlay();
+      const container = {} as HTMLElement;
+      const context = createMinimalContext({
+        currentOptions: {
+          ...createMinimalContext().currentOptions,
+          yAxes: [{ id: 'primary', type: 'value' as const, header: '   ' }],
+        } as any,
+      });
+
+      renderYAxisLabels(makeYCtx(overlay, container, context));
+
+      // Only numeric tick labels (no header / title)
+      expect(labels.every((l) => l.options?.rotation === undefined)).toBe(true);
+      expect(labels.some((l) => l.options?.fontWeight === '600')).toBe(false);
     });
   });
 });

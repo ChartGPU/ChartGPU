@@ -87,7 +87,8 @@ async function main() {
       type: 'value',
       min: minPrice - pricePadding,
       max: maxPrice + pricePadding,
-      name: 'Price ($)',
+      // Non-rotated top-rail unit header (exchange-style). Rotated `name` remains available.
+      header: 'USD',
     },
     tooltip: { show: true, trigger: 'axis' },
     animation: { duration: 600, easing: 'cubicOut', delay: 0 },

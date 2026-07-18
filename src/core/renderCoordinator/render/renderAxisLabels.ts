@@ -29,7 +29,7 @@ const LABEL_PADDING_CSS_PX = 4;
 const DEFAULT_TICK_COUNT = 5;
 
 /** Context for rendering X-axis labels and titles. */
-interface AxisLabelRenderContext {
+export interface AxisLabelRenderContext {
   readonly gpuContext: { readonly canvas: HTMLCanvasElement | null };
   readonly currentOptions: ResolvedChartGPUOptions;
   readonly xScale: ContinuousScale | LinearScale;
@@ -38,8 +38,8 @@ interface AxisLabelRenderContext {
   readonly visibleXRangeMs: number;
 }
 
-/** Context for rendering a single Y-axis's tick labels and title. */
-interface YAxisLabelRenderContext {
+/** Context for rendering a single Y-axis's tick labels, title, and optional header. */
+export interface YAxisLabelRenderContext {
   readonly axisLabelOverlay: TextOverlay | null;
   readonly overlayContainer: HTMLElement | null;
   readonly yAxisConfig: AxisConfig;
@@ -269,7 +269,23 @@ export function renderYAxisLabels(ctx: YAxisLabelRenderContext): void {
     styleAxisLabelSpan(span, false, theme);
   }
 
-  // Y-axis title
+  // Y-axis unit header (non-rotated, top of axis rail) — independent of rotated `name`.
+  const yAxisHeader = yAxisConfig.header?.trim() ?? '';
+  if (yAxisHeader.length > 0) {
+    // Sit just above the plot top in the top gutter so the header reads as a unit label
+    // for the price ladder (e.g. "USDT") without overlapping the densest top tick.
+    const headerY = plotTopCss - LABEL_PADDING_CSS_PX - theme.fontSize * 0.5;
+    const span = axisLabelOverlay.addLabel(yAxisHeader, offsetX + yLabelX, offsetY + headerY, {
+      fontSize: theme.fontSize,
+      color: theme.textColor,
+      fontFamily: theme.fontFamily,
+      fontWeight: AXIS_TITLE_FONT_WEIGHT,
+      anchor: isRight ? 'start' : 'end',
+    });
+    styleAxisLabelSpan(span, true, theme);
+  }
+
+  // Y-axis title (rotated side label)
   const axisNameFontSize = getAxisTitleFontSize(theme.fontSize);
   const yAxisName = yAxisConfig.name?.trim() ?? '';
   if (yAxisName.length > 0) {

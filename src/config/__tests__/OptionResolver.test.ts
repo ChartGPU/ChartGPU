@@ -1221,4 +1221,25 @@ describe('OptionResolver - candle-primary Y-axis and grid defaults', () => {
     expect(resolved.grid.left).toBe(20);
     expect(resolved.grid.right).toBe(70);
   });
+
+  it('passes through AxisConfig.header on yAxis and axes.y', () => {
+    const viaYAxis = resolveOptions({
+      series: [candleSeries],
+      yAxis: { type: 'value', header: 'USDT' },
+    });
+    expect(viaYAxis.yAxes[0]!.header).toBe('USDT');
+    expect(viaYAxis.yAxes[0]!.position).toBe('right');
+
+    const viaAxesY = resolveOptions({
+      series: [candleSeries],
+      axes: {
+        y: [
+          { id: 'price', type: 'value', header: 'BTC' },
+          { id: 'vol', type: 'value', header: 'VOL' },
+        ],
+      },
+    });
+    expect(viaAxesY.yAxes[0]!.header).toBe('BTC');
+    expect(viaAxesY.yAxes[1]!.header).toBe('VOL');
+  });
 });

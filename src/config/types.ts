@@ -116,6 +116,12 @@ export interface AxisConfig {
   readonly tickLength?: number;
   readonly name?: string;
   /**
+   * Non-rotated unit header at the top of a Y-axis rail (e.g. `"USDT"`).
+   * Independent of `name` (which remains a rotated side title).
+   * Only applied to Y axes (`yAxis` / `axes.y`); ignored for `xAxis`.
+   */
+  readonly header?: string;
+  /**
    * Axis domain auto-bounds mode (primarily used for y-axis):
    * - `'global'`: derive from full dataset (pre-zoom behavior)
    * - `'visible'`: derive from visible/zoomed data range (default for y-axis)

@@ -3708,7 +3708,7 @@ export function createRenderCoordinator(
         const yd = yScaleForAxis.getDomain();
         const ys0 = yScaleForAxis.kind === 'log' ? yScaleForAxis.scale(yd.min) : yScaleForAxis.scale(0);
         const ys1 = yScaleForAxis.kind === 'log' ? yScaleForAxis.scale(yd.max) : yScaleForAxis.scale(1);
-        labelSig += `y:${axisId}:${yAxisConfig.name ?? ''}:${yAxisConfig.position ?? 'left'}:`;
+        labelSig += `y:${axisId}:${yAxisConfig.name ?? ''}:${yAxisConfig.header ?? ''}:${yAxisConfig.position ?? 'left'}:`;
         labelSig += `${ys0},${ys1}:${yTickCount}|`;
         // Y axis type can affect tick formatting when present.
         labelSig += `yt:${yAxisConfig.type ?? ''};yb:${yAxisConfig.logBase ?? ''};`;
