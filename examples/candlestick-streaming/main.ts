@@ -48,18 +48,6 @@ let autoScrollEnabled = true;
 // Cache the full chart options to avoid resetting fields on partial setOption calls
 let fullChartOptions: Parameters<ChartGPUInstance['setOption']>[0];
 
-/** Keep priceLabel.intervalMs aligned with the active timeframe on every series rewrite. */
-function withPriceLabelInterval<T extends { type: string }>(series0: T): T {
-  if (series0.type !== 'candlestick') return series0;
-  return {
-    ...series0,
-    priceLabel: {
-      intervalMs: candleIntervalMs,
-      nowMs: () => simulatedTimeMs,
-    },
-  };
-}
-
 // Stats
 let frameCount = 0;
 let lastFpsTime = performance.now();
@@ -71,6 +59,28 @@ let lastTickTime = performance.now();
 // Simulated time for candle aggregation (accelerated vs real time).
 let simulatedTimeMs = Date.now();
 let lastSimPerfNow = performance.now();
+
+/**
+ * Stable nowMs identity for priceLabel countdown.
+ * Library compares nowMs by function reference — a new arrow on every setOption
+ * would thrash-restart the 250ms timer (~10 Hz streaming rewrites).
+ */
+const priceLabelNowMs = (): number => simulatedTimeMs;
+
+/**
+ * Keep priceLabel.intervalMs aligned with the active timeframe on every series rewrite.
+ * Reuses {@link priceLabelNowMs} so countdown timer identity is stable across setOption.
+ */
+function withPriceLabelInterval<T extends { type: string }>(series0: T): T {
+  if (series0.type !== 'candlestick') return series0;
+  return {
+    ...series0,
+    priceLabel: {
+      intervalMs: candleIntervalMs,
+      nowMs: priceLabelNowMs,
+    },
+  };
+}
 
 const isTupleOHLCDataPoint = (
   p: OHLCDataPoint
@@ -145,10 +155,10 @@ async function init() {
         },
         sampling: 'ohlc',
         samplingThreshold: 2000,
-        // Exchange-style last-price badge + bar-close countdown (simulated clock).
+        // Exchange-style last-price badge + bar-close countdown (stable nowMs identity).
         priceLabel: {
           intervalMs: candleIntervalMs,
-          nowMs: () => simulatedTimeMs,
+          nowMs: priceLabelNowMs,
         },
       },
     ],
