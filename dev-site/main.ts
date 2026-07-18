@@ -217,11 +217,23 @@ const categoryLabels: Record<string, string> = {
 // ── Shared chrome for plates (minimal so the chart speaks) ──────────────────
 const hideTicks = (): string | null => null;
 
-const plateChrome = (): Pick<
+/** Near-black midnight — darker than built-in `dark` (`#1a1a2e`). */
+const MIDNIGHT_THEME: NonNullable<ChartGPUOptions['theme']> = {
+  backgroundColor: '#05060A',
+  textColor: '#E2E5EB',
+  axisLineColor: 'rgba(226,229,235,0.18)',
+  axisTickColor: 'rgba(226,229,235,0.28)',
+  gridLineColor: 'rgba(255,255,255,0.04)',
+  colorPalette: [...BRAND_PALETTE],
+  fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+  fontSize: 12,
+};
+
+const plateChrome = (theme: ChartGPUOptions['theme'] = 'dark'): Pick<
   ChartGPUOptions,
   'theme' | 'grid' | 'gridLines' | 'tooltip' | 'animation' | 'legend'
 > => ({
-  theme: 'dark',
+  theme,
   grid: { left: 4, right: 4, top: 8, bottom: 8 },
   gridLines: { show: false },
   tooltip: { show: false },
@@ -287,10 +299,10 @@ async function mountAurora(container: HTMLElement): Promise<{ dispose: () => voi
   const built = buildWaveSeries(seriesCount, seedPoints, tCursor);
   tCursor = built.nextT;
 
+  // No inside dataZoom on the hero — wheel must scroll the page, not zoom the chart.
   const options: ChartGPUOptions = {
-    ...plateChrome(),
+    ...plateChrome(MIDNIGHT_THEME),
     autoScroll: true,
-    dataZoom: [{ type: 'inside', start: 55, end: 100 }],
     xAxis: { type: 'value', tickFormatter: hideTicks },
     yAxis: { type: 'value', min: -2.8, max: 2.8, tickFormatter: hideTicks },
     palette: [...BRAND_PALETTE],

@@ -203,6 +203,12 @@
       min-width: 0;
     }
 
+    /* Hero plate: deeper midnight than other folds */
+    .plate--hero,
+    .plate--hero .plate-canvas {
+      background: #05060a;
+    }
+
     .plate-canvas > canvas,
     .plate-canvas > div {
       width: 100% !important;
@@ -300,8 +306,19 @@
       transition: opacity var(--dur-mid) var(--ease-out);
     }
 
-    .plate.is-ready .plate-status { opacity: 0; }
-    .plate.is-error .plate-status { color: var(--color-accent); opacity: 1; }
+    /* is-ready is set on the [data-demo] root — full plates OR split .plate-panel */
+    .plate.is-ready > .plate-status,
+    .plate-panel.is-ready > .plate-status {
+      opacity: 0;
+      visibility: hidden;
+    }
+
+    .plate.is-error > .plate-status,
+    .plate-panel.is-error > .plate-status {
+      color: var(--color-accent);
+      opacity: 1;
+      visibility: visible;
+    }
 
     /* ── Text bands ── */
     .band {
