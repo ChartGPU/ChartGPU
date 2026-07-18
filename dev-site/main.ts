@@ -437,6 +437,8 @@ const mulberry32 = (seed: number): (() => number) => {
 };
 
 async function createDensityPoints(count: number, seed: number): Promise<ScatterPointTuple[]> {
+  // Match examples/scatter-density-1m: two tight Gaussian blobs + light noise.
+  // Concentrated cores read as hot yellows on inferno; log norm lifts the purple halos.
   const rng = mulberry32(seed);
   const out: ScatterPointTuple[] = new Array(count);
   const chunk = 40_000;
@@ -444,17 +446,17 @@ async function createDensityPoints(count: number, seed: number): Promise<Scatter
     const end = Math.min(count, base + chunk);
     for (let i = base; i < end; i++) {
       const t = rng();
-      const blob = t < 0.55 ? 0 : t < 0.85 ? 1 : 2;
-      const cx = blob === 0 ? 0.32 : blob === 1 ? 0.68 : 0.5;
-      const cy = blob === 0 ? 0.58 : blob === 1 ? 0.38 : 0.72;
-      const sx = blob === 2 ? 0.14 : 0.07;
-      const sy = blob === 2 ? 0.1 : 0.09;
+      const blob = t < 0.6 ? 0 : 1;
+      const cx = blob === 0 ? 0.35 : 0.7;
+      const cy = blob === 0 ? 0.55 : 0.35;
+      const sx = blob === 0 ? 0.08 : 0.05;
+      const sy = blob === 0 ? 0.1 : 0.07;
       const u1 = Math.max(1e-12, rng());
       const u2 = rng();
       const r = Math.sqrt(-2.0 * Math.log(u1));
       const theta = 2.0 * Math.PI * u2;
-      const x = cx + r * Math.cos(theta) * sx + (rng() - 0.5) * 0.02;
-      const y = cy + r * Math.sin(theta) * sy + (rng() - 0.5) * 0.02;
+      const x = cx + r * Math.cos(theta) * sx + (rng() - 0.5) * 0.03;
+      const y = cy + r * Math.sin(theta) * sy + (rng() - 0.5) * 0.03;
       out[i] = [x, y];
     }
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
@@ -465,22 +467,24 @@ async function createDensityPoints(count: number, seed: number): Promise<Scatter
 
 async function mountDensity(container: HTMLElement): Promise<{ dispose: () => void }> {
   const n = 1_000_000;
-  const points = await createDensityPoints(n, 2026);
+  const points = await createDensityPoints(n, 1337);
+  // No inside dataZoom — wheel scrolls the page past this plate, not zoom the chart.
   const options: ChartGPUOptions = {
     ...plateChrome(),
     grid: { left: 4, right: 4, top: 4, bottom: 4 },
     xAxis: { type: 'value', tickFormatter: hideTicks },
     yAxis: { type: 'value', tickFormatter: hideTicks },
-    dataZoom: [{ type: 'inside' }],
     series: [
       {
         type: 'scatter',
         name: 'density',
         data: points,
         mode: 'density',
-        binSize: 6,
+        // Same punch as scatter-density-1m defaults: fine bins + log curve.
+        // Colormap stays inferno (site plate identity); only resolution/contrast change.
+        binSize: 2,
         densityColormap: 'inferno',
-        densityNormalization: 'linear',
+        densityNormalization: 'log',
         sampling: 'none',
       },
     ],
@@ -1721,6 +1725,8 @@ function checkWebGPU(): boolean {
 function wireStaticAssets(): void {
   const logo = document.getElementById('navLogo') as HTMLImageElement | null;
   if (logo) logo.src = chartgpuLogoUrl;
+  const footLogo = document.getElementById('footLogo') as HTMLImageElement | null;
+  if (footLogo) footLogo.src = chartgpuLogoUrl;
   const brand = document.getElementById('navBrand') as HTMLAnchorElement | null;
   if (brand) brand.href = import.meta.env.BASE_URL;
   const webgpuIcon = document.getElementById('webgpuComIcon') as HTMLImageElement | null;
