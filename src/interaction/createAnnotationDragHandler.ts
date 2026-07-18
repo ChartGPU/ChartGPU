@@ -12,6 +12,7 @@
 
 import type { AnnotationConfig, DataPoint } from '../config/types.js';
 import type { ChartGPUInstance } from '../ChartGPU.js';
+import { getCanvasLayoutSizeCss, pointerClientToLayoutCss } from '../core/renderCoordinator/utils/canvasUtils.js';
 
 export interface AnnotationDragCallbacks {
   onDragMove: (index: number, updates: Partial<AnnotationConfig>) => void;
@@ -148,7 +149,7 @@ export function createAnnotationDragHandler(
    */
   function canvasToData(canvasX: number, canvasY: number): { x: number; y: number } {
     const chartOptions = chart.options;
-    const rect = canvas.getBoundingClientRect();
+    const { width: canvasWidth, height: canvasHeight } = getCanvasLayoutSizeCss(canvas);
 
     const grid = chartOptions.grid ?? {
       left: 60,
@@ -156,8 +157,6 @@ export function createAnnotationDragHandler(
       top: 40,
       bottom: 40,
     };
-    const canvasWidth = rect.width;
-    const canvasHeight = rect.height;
 
     const plotLeft = grid.left ?? 60;
     const plotRight = canvasWidth - (grid.right ?? 20);
@@ -203,7 +202,7 @@ export function createAnnotationDragHandler(
    */
   function canvasToPlot(canvasX: number, canvasY: number): { x: number; y: number } {
     const chartOptions = chart.options;
-    const rect = canvas.getBoundingClientRect();
+    const { width: canvasWidth, height: canvasHeight } = getCanvasLayoutSizeCss(canvas);
 
     const grid = chartOptions.grid ?? {
       left: 60,
@@ -211,8 +210,6 @@ export function createAnnotationDragHandler(
       top: 40,
       bottom: 40,
     };
-    const canvasWidth = rect.width;
-    const canvasHeight = rect.height;
 
     const plotLeft = grid.left ?? 60;
     const plotRight = canvasWidth - (grid.right ?? 20);
@@ -241,9 +238,10 @@ export function createAnnotationDragHandler(
 
     e.preventDefault();
 
-    const rect = canvas.getBoundingClientRect();
-    const canvasX = e.clientX - rect.left;
-    const canvasY = e.clientY - rect.top;
+    const layout = pointerClientToLayoutCss(canvas, e.clientX, e.clientY);
+    if (!layout) return;
+    const canvasX = layout.x;
+    const canvasY = layout.y;
 
     const annotation = dragState.annotation;
     const updates: any = {}; // Use 'any' to bypass TypeScript union narrowing issues
@@ -284,9 +282,10 @@ export function createAnnotationDragHandler(
   function onPointerUp(e: PointerEvent): void {
     if (!dragState) return;
 
-    const rect = canvas.getBoundingClientRect();
-    const canvasX = e.clientX - rect.left;
-    const canvasY = e.clientY - rect.top;
+    const layout = pointerClientToLayoutCss(canvas, e.clientX, e.clientY);
+    if (!layout) return;
+    const canvasX = layout.x;
+    const canvasY = layout.y;
 
     const annotation = dragState.annotation;
     const updates: any = {}; // Use 'any' to bypass TypeScript union narrowing issues

@@ -1,5 +1,6 @@
 import type { EventManager, ChartGPUEventPayload } from './createEventManager';
 import type { ZoomState } from './createZoomState';
+import { pointerClientToLayoutCss } from '../core/renderCoordinator/utils/canvasUtils';
 
 export type InsideZoom = Readonly<{
   enable(): void;
@@ -187,13 +188,18 @@ export function createInsideZoom(eventManager: EventManager, zoomState: ZoomStat
 
   // --- Touch pointer handlers (on canvas) ---
 
-  /** Fallback grid check when lastPointer isn't available yet (e.g. touch-only device). */
+  /** Fallback canvas-bounds check when lastPointer isn't available yet (e.g. touch-only device). */
   const isPointInGrid = (e: PointerEvent, canvas: HTMLCanvasElement): boolean => {
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return false;
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    return x >= 0 && x <= rect.width && y >= 0 && y <= rect.height;
+    const layout = pointerClientToLayoutCss(canvas, e.clientX, e.clientY);
+    if (!layout) return false;
+    return layout.x >= 0 && layout.x <= layout.layoutWidth && layout.y >= 0 && layout.y <= layout.layoutHeight;
+  };
+
+  /** Store touch pointers in layout CSS so pan/pinch match plotWidthCss (layout). */
+  const clientToLayoutPoint = (e: PointerEvent, canvas: HTMLCanvasElement): { x: number; y: number } | null => {
+    const layout = pointerClientToLayoutCss(canvas, e.clientX, e.clientY);
+    if (!layout) return null;
+    return { x: layout.x, y: layout.y };
   };
 
   const onTouchPointerDown = (e: PointerEvent): void => {
@@ -213,7 +219,9 @@ export function createInsideZoom(eventManager: EventManager, zoomState: ZoomStat
     // Reject 3+ simultaneous pointers to prevent corrupting pinch state.
     if (activePointers.size >= 2) return;
 
-    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const pt = clientToLayoutPoint(e, eventManager.canvas);
+    if (!pt) return;
+    activePointers.set(e.pointerId, pt);
 
     // Capture pointer so up/cancel events route here even if the finger slides off canvas.
     eventManager.canvas.setPointerCapture(e.pointerId);
@@ -234,8 +242,10 @@ export function createInsideZoom(eventManager: EventManager, zoomState: ZoomStat
       const prev = activePointers.get(e.pointerId);
       if (!prev) return;
 
-      const dxCss = e.clientX - prev.x;
-      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const pt = clientToLayoutPoint(e, eventManager.canvas);
+      if (!pt) return;
+      const dxCss = pt.x - prev.x;
+      activePointers.set(e.pointerId, pt);
 
       if (!Number.isFinite(dxCss) || dxCss === 0) return;
 
@@ -252,8 +262,10 @@ export function createInsideZoom(eventManager: EventManager, zoomState: ZoomStat
       zoomState.pan(deltaPct);
     } else if (pointerCount === 2) {
       // --- Pinch-to-zoom ---
-      // Update the moved pointer position first.
-      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      // Update the moved pointer position first (layout CSS).
+      const pt = clientToLayoutPoint(e, eventManager.canvas);
+      if (!pt) return;
+      activePointers.set(e.pointerId, pt);
 
       const iter = activePointers.values();
       const p1 = iter.next().value!;
@@ -267,20 +279,16 @@ export function createInsideZoom(eventManager: EventManager, zoomState: ZoomStat
       if (previousPinchDist > 0 && Number.isFinite(previousPinchDist)) {
         const ratio = previousPinchDist / currentDist;
 
-        // Compute zoom center in percent space from the midpoint.
-        const canvas = eventManager.canvas;
-        const rect = canvas.getBoundingClientRect();
+        // Compute zoom center in percent space from the midpoint (layout canvas CSS).
         const plotWidthCss = lastPointer?.plotWidthCss ?? 0;
-        if (!(plotWidthCss > 0) || rect.width === 0) {
+        if (!(plotWidthCss > 0)) {
           previousPinchDist = currentDist;
           return;
         }
 
-        // Estimate grid-left offset from lastPointer (gridX is relative to plot area).
-        // plotLeftCss = lastPointer.x - lastPointer.gridX gives the plot area's left edge
-        // in canvas CSS coordinates. The midpoint in canvas CSS is (currentMidX - rect.left).
+        // plotLeftCss = lastPointer.x - lastPointer.gridX (layout). Midpoint is already layout.
         const plotLeftCss = lastPointer ? lastPointer.x - lastPointer.gridX : 0;
-        const midGridX = currentMidX - rect.left - plotLeftCss;
+        const midGridX = currentMidX - plotLeftCss;
         const r = clamp(midGridX / plotWidthCss, 0, 1);
 
         const { start, end } = zoomState.getRange();

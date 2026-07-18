@@ -743,14 +743,14 @@ export interface ChartGPUOptions {
    */
   readonly antialias?: boolean;
   /**
-   * Canvas backing-store pixel ratio. Defaults to `window.devicePixelRatio`.
-   * Set to `1` on multi-chart dashboards to cap GPU fill rate on high-DPI displays
-   * (multi-chart dashboards often present at 1× to cap fill rate).
+   * Canvas backing-store pixel ratio. **Create-time policy** (not updated by `setOption`):
+   * - **Omitted:** every `resize()` re-reads live `window.devicePixelRatio` (page zoom).
+   * - **Explicit finite > 0:** frozen for the chart lifetime (buffer + text-overlay DPR).
    *
-   * **Create-only:** applied at `ChartGPU.create` / coordinator construction
-   * (GPU canvas configure + text-overlay DPR). Changing this via `setOption` /
-   * `setOptions` does **not** reconfigure the canvas backing store or text
-   * overlay. To change DPR after creation, dispose and recreate the chart.
+   * Set to `1` on multi-chart dashboards to cap GPU fill rate on high-DPI displays.
+   * Buffer size uses **layout** CSS pixels (`canvas.clientWidth` / `clientHeight`) × DPR,
+   * not `getBoundingClientRect()` (visual size under CSS zoom / parent scale).
+   * Dispose and recreate the chart to change the create-time DPR policy.
    */
   readonly devicePixelRatio?: number;
   /**

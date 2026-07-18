@@ -43,6 +43,8 @@ function createMockEventManager(): EventManager & {
   const canvasListeners: Record<string, EventListener[]> = {};
 
   const canvas = {
+    clientWidth: 800,
+    clientHeight: 600,
     addEventListener: vi.fn((type: string, listener: EventListener, _opts?: unknown) => {
       (canvasListeners[type] ??= []).push(listener);
     }),
@@ -58,6 +60,11 @@ function createMockEventManager(): EventManager & {
       top: 0,
       width: 800,
       height: 600,
+      right: 800,
+      bottom: 600,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
     })),
     setPointerCapture: vi.fn(),
     releasePointerCapture: vi.fn(),
@@ -290,6 +297,41 @@ describe('createInsideZoom - single-finger touch pan', () => {
     // deltaPct = -(72 / 720) * 60 = -6
     expect(zs.panCalls).toHaveLength(1);
     expect(zs.panCalls[0]).toBeCloseTo(-6, 1);
+
+    zoom.dispose();
+  });
+
+  it('scales pan delta by layout CSS when clientWidth ≠ visual rect (CSS zoom)', () => {
+    const zoom = createInsideZoom(em, zs);
+    zoom.enable();
+
+    // Layout 1000×500, visual 300×150 (CSS zoom 0.3).
+    (em.canvas as any).clientWidth = 1000;
+    (em.canvas as any).clientHeight = 500;
+    (em.canvas.getBoundingClientRect as ReturnType<typeof vi.fn>).mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 300,
+      height: 150,
+      right: 300,
+      bottom: 150,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    // lastPointer plotWidth is layout (matches getPlotSizeCssPx after #155).
+    em.fireMouseMove(makePayload({ isInGrid: true, plotWidthCss: 1000 }));
+
+    // Visual +30 clientX → layout +100 (30 * 1000/300). span=60.
+    // Layout path: deltaPct = -(100 / 1000) * 60 = -6
+    // Visual-only bug: deltaPct = -(30 / 1000) * 60 = -1.8
+    em.simulatePointerDown(makeTouchPointerEvent({ pointerId: 1, clientX: 150, clientY: 75 }));
+    em.simulatePointerMove(makeTouchPointerEvent({ pointerId: 1, clientX: 180, clientY: 75 }));
+
+    expect(zs.panCalls).toHaveLength(1);
+    expect(zs.panCalls[0]).toBeCloseTo(-6, 1);
+    expect(zs.panCalls[0]).not.toBeCloseTo(-1.8, 1);
 
     zoom.dispose();
   });

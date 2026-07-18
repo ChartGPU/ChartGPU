@@ -117,7 +117,11 @@ Factory method that creates and initializes a GPUContext instance.
 
 ### Class API
 
-Properties: `adapter`, `device`, `initialized`, `canvas`, `canvasContext`, `preferredFormat`, `devicePixelRatio`, `alphaMode`, `powerPreference`. Methods: `initialize()`, `getCanvasTexture()`, `clearScreen()`, `destroy()`.
+Properties: `adapter`, `device`, `initialized`, `canvas`, `canvasContext`, `preferredFormat`, `devicePixelRatio`, `alphaMode`, `powerPreference`. Methods: `initialize()`, `getCanvasTexture()`, `clearScreen()`, `setDevicePixelRatio()`, `destroy()`.
+
+### `setDevicePixelRatio(devicePixelRatio: number): void`
+
+Updates the DPR value used by layout helpers (e.g. `computeGridArea` margins). **Does not** resize or reconfigure the canvas — callers (ChartGPU `resize()`) size `canvas.width`/`height` separately and then call this so grid/overlay math stays on the same DPR as the backing store. Invalid values (`≤ 0`, `NaN`, `Infinity`) sanitize to `1`.
 
 ## Browser Compatibility
 

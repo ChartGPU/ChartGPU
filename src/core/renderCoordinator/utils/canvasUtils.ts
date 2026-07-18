@@ -22,6 +22,64 @@ export function getCanvasCssWidth(canvas: HTMLCanvasElement | null): number {
 }
 
 /**
+ * Layout CSS canvas size (`clientWidth`/`clientHeight`). Falls back to visual
+ * `getBoundingClientRect` when layout is 0 (display:none / pre-layout).
+ * Use with grid margins; never size the WebGPU buffer from the visual rect alone.
+ */
+export function getCanvasLayoutSizeCss(canvas: HTMLCanvasElement): {
+  readonly width: number;
+  readonly height: number;
+} {
+  const layoutWidth = canvas.clientWidth;
+  const layoutHeight = canvas.clientHeight;
+  if (layoutWidth > 0 && layoutHeight > 0) {
+    return { width: layoutWidth, height: layoutHeight };
+  }
+  const rect = canvas.getBoundingClientRect();
+  return { width: Math.max(0, rect.width), height: Math.max(0, rect.height) };
+}
+
+/**
+ * Maps pointer `clientX`/`clientY` into **layout** CSS pixels relative to the canvas.
+ *
+ * `getBoundingClientRect()` is visual (shrinks under CSS zoom / parent scale); grid margins
+ * and plot layout use layout CSS (`clientWidth`/`clientHeight`). Multiply visual offsets by
+ * `clientWidth/rect.width` so hit-tests stay aligned under CSS zoom. Backing-store sizing
+ * must still use layout size only — never size the buffer from the visual rect.
+ *
+ * @returns Layout-local x/y and layout canvas size, or null if the visual rect is empty
+ */
+export function pointerClientToLayoutCss(
+  canvas: HTMLCanvasElement,
+  clientX: number,
+  clientY: number
+): { readonly x: number; readonly y: number; readonly layoutWidth: number; readonly layoutHeight: number } | null {
+  const rect = canvas.getBoundingClientRect();
+  if (!(rect.width > 0) || !(rect.height > 0)) return null;
+
+  const layoutWidth = canvas.clientWidth;
+  const layoutHeight = canvas.clientHeight;
+  // display:none / pre-layout: fall back to visual so callers still get finite coords.
+  if (!(layoutWidth > 0) || !(layoutHeight > 0)) {
+    return {
+      x: clientX - rect.left,
+      y: clientY - rect.top,
+      layoutWidth: rect.width,
+      layoutHeight: rect.height,
+    };
+  }
+
+  const scaleX = layoutWidth / rect.width;
+  const scaleY = layoutHeight / rect.height;
+  return {
+    x: (clientX - rect.left) * scaleX,
+    y: (clientY - rect.top) * scaleY,
+    layoutWidth,
+    layoutHeight,
+  };
+}
+
+/**
  * Gets canvas CSS height - clientHeight for HTMLCanvasElement.
  *
  * @param canvas - The canvas element to measure, or null

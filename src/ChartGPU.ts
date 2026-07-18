@@ -59,6 +59,7 @@ import {
   type StagingRingView,
 } from './data/cartesianData';
 import { normalizeMaxPoints, planMaxPointsWindow, resolveEffectiveMaxPointsForAppend } from './data/maxPointsWindow';
+import { pointerClientToLayoutCss } from './core/renderCoordinator/utils/canvasUtils';
 
 // --- Instance registry for auto-dispose on page unload (CGPU-OOM-139) ---
 const activeInstances = new Set<{ dispose(): void; disposed: boolean }>();
@@ -855,6 +856,17 @@ export async function createChartGPU(
   let currentOptions: ChartGPUOptions = options;
   let resolvedOptions: ResolvedChartGPUOptions = resolveOptionsForChart(currentOptions);
   /**
+   * Create-time DPR policy (issue #155 / create-only contract).
+   * - Finite > 0: freeze this explicit DPR for buffer sizing + GPUContext layout on every resize
+   *   (setOption cannot change it; dispose/recreate to change).
+   * - null: track live `window.devicePixelRatio` on each resize (page zoom).
+   * Captured once so buffer DPR never drifts from overlay DPR after setOption.
+   */
+  const createTimeExplicitDpr: number | null = (() => {
+    const dprOpt = options.devicePixelRatio;
+    return typeof dprOpt === 'number' && Number.isFinite(dprOpt) && dprOpt > 0 ? dprOpt : null;
+  })();
+  /**
    * Snapshot of user series element refs after the last resolve. Used with
    * `canReuseEntireUserSeriesArray` so `series[i] = {...}` under a stable outer
    * array does not silently reuse stale resolved series.
@@ -1508,7 +1520,16 @@ export async function createChartGPU(
       onRequestRender: requestRender,
       pipelineCache: context?.pipelineCache,
     };
-    coordinator = createRenderCoordinator(gpuContext, resolvedOptions, coordinatorCallbacks);
+    // Overlay DPR must follow create-time policy, not setOption-mutated resolvedOptions.
+    // explicit freeze vs live window — same contract as resolveResizeDpr / createTimeExplicitDpr.
+    coordinator = createRenderCoordinator(
+      gpuContext,
+      {
+        ...resolvedOptions,
+        devicePixelRatio: createTimeExplicitDpr ?? undefined,
+      },
+      coordinatorCallbacks
+    );
     coordinatorTargetFormat = gpuContext.preferredFormat;
     bindCoordinatorInteractionXChange();
     bindCoordinatorZoomRangeChange();
@@ -1518,22 +1539,34 @@ export async function createChartGPU(
     syncZoomResetButton();
   };
 
+  const resolveResizeDpr = (): number => {
+    // Create-time explicit DPR is sticky (setOption must not change buffer/overlay policy).
+    if (createTimeExplicitDpr != null) return createTimeExplicitDpr;
+    // Omitted at create: re-read live window.devicePixelRatio (page zoom).
+    return (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1;
+  };
+
   const resizeInternal = (shouldRequestRenderAfterChanges: boolean): void => {
     if (disposed) return;
 
-    const rect = canvas.getBoundingClientRect();
-    // Prefer explicit option, then GPUContext (may be overridden at create), then window.
-    const dprOpt = currentOptions.devicePixelRatio;
-    const dpr =
-      typeof dprOpt === 'number' && Number.isFinite(dprOpt) && dprOpt > 0
-        ? dprOpt
-        : gpuContext?.devicePixelRatio && gpuContext.devicePixelRatio > 0
-          ? gpuContext.devicePixelRatio
-          : window.devicePixelRatio || 1;
+    // Layout CSS pixels (clientWidth/Height), not getBoundingClientRect().
+    // Under CSS zoom / parent scale, getBoundingClientRect returns *visual* size while
+    // clientWidth/Height stay at layout size. Multiplying visual size by DPR under-sizes
+    // the WebGPU buffer (e.g. CSS zoom 0.3 → buffer at 0.3× correct size).
+    const cssWidth = canvas.clientWidth;
+    const cssHeight = canvas.clientHeight;
+
+    const dpr = resolveResizeDpr();
+
+    // Keep GPUContext / computeGridArea on the same DPR used for the backing store.
+    if (gpuContext) {
+      gpuContext.setDevicePixelRatio(dpr);
+    }
 
     const maxDimension = gpuContext?.device?.limits.maxTextureDimension2D ?? 8192;
-    const width = Math.min(maxDimension, Math.max(1, Math.round(rect.width * dpr)));
-    const height = Math.min(maxDimension, Math.max(1, Math.round(rect.height * dpr)));
+    // Zero layout (display:none / pre-layout) → clamp to 1 device pixel; do not invent 1 CSS px × dpr.
+    const width = Math.min(maxDimension, Math.max(1, Math.round(cssWidth * dpr)));
+    const height = Math.min(maxDimension, Math.max(1, Math.round(cssHeight * dpr)));
 
     const sizeChanged = canvas.width !== width || canvas.height !== height;
     if (sizeChanged) {
@@ -1585,16 +1618,17 @@ export async function createChartGPU(
   const getNearestPointFromPointerEvent = (
     e: PointerEvent
   ): { readonly match: HitTestMatch | null; readonly isInGrid: boolean } => {
-    const rect = canvas.getBoundingClientRect();
-    if (!(rect.width > 0) || !(rect.height > 0)) return { match: null, isInGrid: false };
+    // Map visual pointer → layout CSS (clientWidth) so grid margins stay consistent under CSS zoom.
+    const layout = pointerClientToLayoutCss(canvas, e.clientX, e.clientY);
+    if (!layout) return { match: null, isInGrid: false };
 
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const x = layout.x;
+    const y = layout.y;
 
     const plotLeftCss = resolvedOptions.grid.left;
     const plotTopCss = resolvedOptions.grid.top;
-    const plotWidthCss = rect.width - resolvedOptions.grid.left - resolvedOptions.grid.right;
-    const plotHeightCss = rect.height - resolvedOptions.grid.top - resolvedOptions.grid.bottom;
+    const plotWidthCss = layout.layoutWidth - resolvedOptions.grid.left - resolvedOptions.grid.right;
+    const plotHeightCss = layout.layoutHeight - resolvedOptions.grid.top - resolvedOptions.grid.bottom;
     if (!(plotWidthCss > 0) || !(plotHeightCss > 0)) return { match: null, isInGrid: false };
 
     const gridX = x - plotLeftCss;
@@ -1624,11 +1658,11 @@ export async function createChartGPU(
     })();
     const yDomain = normalizeDomain(yMin, yMax);
 
-    // Cache hit-testing scales for identical (rect, grid, axis domain) inputs.
+    // Cache hit-testing scales for identical (layout size, grid, axis domain) inputs.
     const canReuseScales =
       interactionScalesCache !== null &&
-      interactionScalesCache.rectWidthCss === rect.width &&
-      interactionScalesCache.rectHeightCss === rect.height &&
+      interactionScalesCache.rectWidthCss === layout.layoutWidth &&
+      interactionScalesCache.rectHeightCss === layout.layoutHeight &&
       interactionScalesCache.plotWidthCss === plotWidthCss &&
       interactionScalesCache.plotHeightCss === plotHeightCss &&
       interactionScalesCache.xDomainMin === xDomain.min &&
@@ -1641,8 +1675,8 @@ export async function createChartGPU(
       const xScale = createLinearScale().domain(xDomain.min, xDomain.max).range(0, plotWidthCss);
       const yScale = createLinearScale().domain(yDomain.min, yDomain.max).range(plotHeightCss, 0);
       interactionScalesCache = {
-        rectWidthCss: rect.width,
-        rectHeightCss: rect.height,
+        rectWidthCss: layout.layoutWidth,
+        rectHeightCss: layout.layoutHeight,
         plotWidthCss,
         plotHeightCss,
         xDomainMin: xDomain.min,
@@ -2657,12 +2691,13 @@ export async function createChartGPU(
         resyncHitTestStoreFromCoordinator();
       }
 
-      const rect = canvas.getBoundingClientRect();
-      const canvasX = e.clientX - rect.left;
-      const canvasY = e.clientY - rect.top;
+      // Visual pointer → layout CSS so plot margins (layout) match under CSS zoom.
+      const layout = pointerClientToLayoutCss(canvas, e.clientX, e.clientY);
+      const canvasX = layout?.x ?? 0;
+      const canvasY = layout?.y ?? 0;
 
       // Default result for cases where rect is invalid or disposed
-      if (disposed || !(rect.width > 0) || !(rect.height > 0)) {
+      if (disposed || !layout) {
         return {
           isInGrid: false,
           canvasX,
@@ -2675,8 +2710,8 @@ export async function createChartGPU(
 
       const plotLeftCss = resolvedOptions.grid.left;
       const plotTopCss = resolvedOptions.grid.top;
-      const plotWidthCss = rect.width - resolvedOptions.grid.left - resolvedOptions.grid.right;
-      const plotHeightCss = rect.height - resolvedOptions.grid.top - resolvedOptions.grid.bottom;
+      const plotWidthCss = layout.layoutWidth - resolvedOptions.grid.left - resolvedOptions.grid.right;
+      const plotHeightCss = layout.layoutHeight - resolvedOptions.grid.top - resolvedOptions.grid.bottom;
 
       const gridX = canvasX - plotLeftCss;
       const gridY = canvasY - plotTopCss;
@@ -2727,11 +2762,11 @@ export async function createChartGPU(
       })();
       const yDomain = normalizeDomain(yMin, yMax);
 
-      // Reuse or rebuild interaction scales cache
+      // Reuse or rebuild interaction scales cache (keyed on layout CSS size, not visual rect).
       const canReuseScales =
         interactionScalesCache !== null &&
-        interactionScalesCache.rectWidthCss === rect.width &&
-        interactionScalesCache.rectHeightCss === rect.height &&
+        interactionScalesCache.rectWidthCss === layout.layoutWidth &&
+        interactionScalesCache.rectHeightCss === layout.layoutHeight &&
         interactionScalesCache.plotWidthCss === plotWidthCss &&
         interactionScalesCache.plotHeightCss === plotHeightCss &&
         interactionScalesCache.xDomainMin === xDomain.min &&
@@ -2743,8 +2778,8 @@ export async function createChartGPU(
         const xScale = createLinearScale().domain(xDomain.min, xDomain.max).range(0, plotWidthCss);
         const yScale = createLinearScale().domain(yDomain.min, yDomain.max).range(plotHeightCss, 0);
         interactionScalesCache = {
-          rectWidthCss: rect.width,
-          rectHeightCss: rect.height,
+          rectWidthCss: layout.layoutWidth,
+          rectHeightCss: layout.layoutHeight,
           plotWidthCss,
           plotHeightCss,
           xDomainMin: xDomain.min,

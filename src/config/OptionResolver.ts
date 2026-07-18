@@ -1656,6 +1656,8 @@ export function resolveOptions(
     legend: userOptions.legend,
     // Default true (4× MSAA). Explicit false → sampleCount 1 for multi-chart fill/memory.
     antialias: userOptions.antialias !== false,
+    // Create-time canvas / text-overlay DPR. Undefined → live window.devicePixelRatio on resize.
+    devicePixelRatio: userOptions.devicePixelRatio,
     performance,
   };
 }

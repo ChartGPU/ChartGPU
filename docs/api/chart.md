@@ -15,7 +15,7 @@ const chart = await ChartGPU.create(container, {
 
 - **`container`**: mount target (ChartGPU owns a canvas inside it)
 - **`options`**: configuration (see [options.md](options.md))
-  - **Create-only options:** `antialias` and `devicePixelRatio` are applied when the chart / render coordinator is constructed (MSAA pipelines, texture manager, canvas backing store, text-overlay DPR). Changing them later with `setOption` has no effect on those resources — dispose and recreate the chart instead.
+  - **Create-only options:** `antialias` is applied at create (MSAA pipelines / texture manager). **`devicePixelRatio` is a create-time policy:** an explicit finite value freezes buffer + text-overlay DPR for the chart lifetime; when omitted, each `resize()` re-reads live `window.devicePixelRatio`. Buffer size uses layout `clientWidth`/`clientHeight` (not visual `getBoundingClientRect()` under CSS zoom). `setOption` cannot change either — dispose and recreate instead.
 - **`context?`**: optional shared WebGPU `{ adapter, device, pipelineCache? }`
 
 ## Sharing GPU resources (optional)
