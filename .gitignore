@@ -72,6 +72,9 @@ CLAUDE.md
 # Impeccable
 .impeccable.md
 
+# Hallmark (local design session state)
+.hallmark/
+
 # Linter reports
 report/
 # Local benchmark / session notes (not for publish)
