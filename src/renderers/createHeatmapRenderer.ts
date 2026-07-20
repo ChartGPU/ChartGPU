@@ -314,7 +314,6 @@ export function createHeatmapRenderer(device: GPUDevice, options?: HeatmapRender
     if (!shouldUploadZ && seriesIdentityChanged) {
       const stamp = heatmapZContentStamp(zRef, expectedCells);
       if (stamp !== lastZStamp) {
-        shouldUploadZ = true;
         uploadZ(zRef, columns, rows, stamp);
       } else {
         lastZStamp = stamp;
