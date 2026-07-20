@@ -192,6 +192,18 @@ describe('OptionResolver 3D modality', () => {
     expect(r.axes3d.x.tickCount).toBe(5);
   });
 
+  it('resolves axes3d labelMode passthrough (auto/dom/gpu)', () => {
+    expect(resolveOptions({ coordinateSystem: 'cartesian3d', axes3d: { labelMode: 'gpu' } }).axes3d.labelMode).toBe(
+      'gpu'
+    );
+    expect(resolveOptions({ coordinateSystem: 'cartesian3d', axes3d: { labelMode: 'dom' } }).axes3d.labelMode).toBe(
+      'dom'
+    );
+    expect(resolveOptions({ coordinateSystem: 'cartesian3d', axes3d: { labelMode: 'auto' } }).axes3d.labelMode).toBe(
+      'auto'
+    );
+  });
+
   it('resolves axes3d names, showGrid false, tickCount, contours', () => {
     const y = new Float32Array(4).fill(1);
     const r = resolveOptions({
