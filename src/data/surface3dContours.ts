@@ -45,7 +45,8 @@ export function resolveContourLevels(
   let lo = yMin;
   let hi = yMax;
   if (!Number.isFinite(lo) || !Number.isFinite(hi)) return [];
-  if (lo === hi) return count > 0 ? [lo] : [];
+  // count is already > 0 (early return above).
+  if (lo === hi) return [lo];
   if (lo > hi) {
     const t = lo;
     lo = hi;

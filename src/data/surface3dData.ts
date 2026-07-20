@@ -64,22 +64,18 @@ export function computeSurface3DAABB(data: Surface3DGridData): AABB | null {
   const grid = sanitizeSurface3DGrid(data);
   if (!grid) return null;
   const { columns, rows, xStart, xStep, zStart, zStep, y } = grid;
-  let minX = Infinity;
-  let minY = Infinity;
-  let minZ = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  let maxZ = -Infinity;
-  let any = false;
   // X/Z extents are analytic from grid meta; only heights need a walk.
   const x0 = xStart;
   const x1 = xStart + (columns - 1) * xStep;
   const z0 = zStart;
   const z1 = zStart + (rows - 1) * zStep;
-  minX = Math.min(x0, x1);
-  maxX = Math.max(x0, x1);
-  minZ = Math.min(z0, z1);
-  maxZ = Math.max(z0, z1);
+  const minX = Math.min(x0, x1);
+  const maxX = Math.max(x0, x1);
+  const minZ = Math.min(z0, z1);
+  const maxZ = Math.max(z0, z1);
+  let minY = Infinity;
+  let maxY = -Infinity;
+  let any = false;
   const n = columns * rows;
   const yArr = y;
   for (let i = 0; i < n; i++) {
