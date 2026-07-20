@@ -51,14 +51,83 @@ export interface Interaction3DOptions {
   readonly panSpeed?: number;
 }
 
-/** Optional world-axis names for 3D (axis box labels are stretch; box uses bounds). */
-export interface Axes3DOptions {
-  readonly x?: { readonly name?: string; readonly type?: 'value' };
-  readonly y?: { readonly name?: string; readonly type?: 'value' };
-  readonly z?: { readonly name?: string; readonly type?: 'value' };
-  /** Draw AABB wireframe. Default true. */
-  readonly showBox?: boolean;
+/** Per-axis options for `axes3d` (value domain only in this epic). */
+export interface Axis3DOptions {
+  readonly name?: string;
+  /** v1 only; log 3D axes out of scope. */
+  readonly type?: 'value';
+  /** Optional fixed domain; default from scene AABB. */
+  readonly min?: number;
+  readonly max?: number;
+  /** Major tick count hint (nice ticks may adjust). Default ~5. */
+  readonly tickCount?: number;
+  /** Default true. */
+  readonly visible?: boolean;
 }
+
+/**
+ * 3D world axes: AABB box, wall/floor grids, tick marks, and projected labels.
+ * Keep the key name `axes3d` (not `axis3D` / `worldAxes`).
+ */
+export interface Axes3DOptions {
+  readonly x?: Axis3DOptions;
+  readonly y?: Axis3DOptions;
+  readonly z?: Axis3DOptions;
+  /** Draw AABB edge box. Default true. */
+  readonly showBox?: boolean;
+  /** Wall/floor major grid lines. Default true. */
+  readonly showGrid?: boolean;
+  /**
+   * Label placement:
+   * - `'auto'` (default): DOM-projected numeric labels + titles
+   * - `'dom'`: force DOM overlay
+   * - `'gpu'`: reserved; falls back to DOM in this release (no SDF atlas)
+   */
+  readonly labelMode?: 'auto' | 'dom' | 'gpu';
+}
+
+/** Isolines on a uniform `surface3d` height field. */
+export interface Surface3DContourOptions {
+  /** Default false. */
+  readonly show?: boolean;
+  /** Count of levels between yMin/yMax, or explicit heights. */
+  readonly levels?: number | readonly number[];
+  readonly color?: string;
+  /**
+   * Visual weight for isoline stroke (world-space hairline line-list).
+   * Default 1.5 — **not CSS px thickness**; maps to alpha/brightness weight only.
+   */
+  readonly width?: number;
+  readonly opacity?: number;
+}
+
+/**
+ * Streaming / partial update for `surface3d` via `chart.updateSurface3D`.
+ *
+ * - `replaceY`: full field, length columns*rows, **row-major** `y[j * columns + i]`.
+ * - `appendColumns`: new columns on +X; payload **column-major strips** `y[c * rows + r]`.
+ * - `appendRows`: new rows on +Z; payload **row-major** block `y[r * columns + i]`.
+ */
+export type Surface3DUpdate =
+  | Readonly<{
+      mode: 'replaceY';
+      y: ArrayLike<number>;
+      yMin?: number;
+      yMax?: number;
+    }>
+  | Readonly<{
+      mode: 'appendColumns';
+      columns: number;
+      y: ArrayLike<number>;
+      /** Drop oldest columns and shift xStart (spectrogram scroll). Default true. */
+      scrollX?: boolean;
+    }>
+  | Readonly<{
+      mode: 'appendRows';
+      rows: number;
+      y: ArrayLike<number>;
+      scrollZ?: boolean;
+    }>;
 
 /**
  * Render mode for chart rendering.
@@ -748,6 +817,8 @@ export interface Surface3DSeriesConfig {
   readonly opacity?: number;
   /** Simple lighting strength 0..1; 0 = unlit colormap. Default 0.65. */
   readonly lighting?: number;
+  /** Height isolines (marching squares → depth-tested line list). */
+  readonly contours?: Surface3DContourOptions;
 }
 
 export type SeriesConfig =

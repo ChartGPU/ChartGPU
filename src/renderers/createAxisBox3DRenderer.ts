@@ -1,5 +1,6 @@
 /**
- * Minimal AABB axis box (12 edges) for 3D charts.
+ * 3D axes: AABB edge box + wall/floor grids + tick marks (line-list GPU).
+ * Numeric labels / titles are DOM-projected separately (see axes3dLabels).
  */
 
 import axisBoxWgsl from '../shaders/axisBox3d.wgsl?raw';
@@ -7,9 +8,30 @@ import type { AABB } from '../core/3d/aabb';
 import type { Mat4 } from '../core/3d/mat4';
 import type { PipelineCache } from '../core/PipelineCache';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
+import { generateNiceAxisTicks3D, resolveAxisDomain3D } from '../core/3d/axisTicks3d';
+import type { ResolvedAxes3D } from '../config/OptionResolver';
+
+export type Axes3DTickPlan = Readonly<{
+  readonly xTicks: readonly number[];
+  readonly yTicks: readonly number[];
+  readonly zTicks: readonly number[];
+  readonly xDomain: Readonly<{ min: number; max: number }>;
+  readonly yDomain: Readonly<{ min: number; max: number }>;
+  readonly zDomain: Readonly<{ min: number; max: number }>;
+}>;
 
 export interface AxisBox3DRenderer {
-  prepare(aabb: AABB, viewProj: Mat4, colorRgba: readonly [number, number, number, number]): void;
+  /**
+   * Prepare box / grid / ticks for the scene AABB and axes options.
+   * Returns the tick plan used (for DOM labels).
+   */
+  prepare(
+    aabb: AABB,
+    viewProj: Mat4,
+    colorRgba: readonly [number, number, number, number],
+    axes: ResolvedAxes3D,
+    gridColorRgba?: readonly [number, number, number, number]
+  ): Axes3DTickPlan;
   render(passEncoder: GPURenderPassEncoder): void;
   dispose(): void;
 }
@@ -28,65 +50,117 @@ const depthStencil: GPUDepthStencilState = {
   depthCompare: 'less-equal',
 };
 
-/** 8 corners of AABB as float3, then 12 edges × 2 indices. */
-function buildBoxLines(aabb: AABB): { vertices: Float32Array; indices: Uint16Array } {
+const TICK_FRAC = 0.03; // tick length as fraction of axis span
+
+/** Build line-list positions (xyz float triples) for box + optional grid + ticks. */
+export function buildAxes3DLines(aabb: AABB, axes: ResolvedAxes3D, plan: Axes3DTickPlan): Float32Array {
   const [x0, y0, z0] = aabb.min;
   const [x1, y1, z1] = aabb.max;
-  const corners = [
-    x0,
-    y0,
-    z0, // 0
-    x1,
-    y0,
-    z0, // 1
-    x1,
-    y1,
-    z0, // 2
-    x0,
-    y1,
-    z0, // 3
-    x0,
-    y0,
-    z1, // 4
-    x1,
-    y0,
-    z1, // 5
-    x1,
-    y1,
-    z1, // 6
-    x0,
-    y1,
-    z1, // 7
-  ];
-  const edges = [
-    0,
-    1,
-    1,
-    2,
-    2,
-    3,
-    3,
-    0, // bottom/top z0
-    4,
-    5,
-    5,
-    6,
-    6,
-    7,
-    7,
-    4, // z1
-    0,
-    4,
-    1,
-    5,
-    2,
-    6,
-    3,
-    7, // pillars
-  ];
+  const parts: number[] = [];
+
+  const pushLine = (ax: number, ay: number, az: number, bx: number, by: number, bz: number): void => {
+    parts.push(ax, ay, az, bx, by, bz);
+  };
+
+  if (axes.showBox) {
+    // 12 edges
+    pushLine(x0, y0, z0, x1, y0, z0);
+    pushLine(x1, y0, z0, x1, y1, z0);
+    pushLine(x1, y1, z0, x0, y1, z0);
+    pushLine(x0, y1, z0, x0, y0, z0);
+    pushLine(x0, y0, z1, x1, y0, z1);
+    pushLine(x1, y0, z1, x1, y1, z1);
+    pushLine(x1, y1, z1, x0, y1, z1);
+    pushLine(x0, y1, z1, x0, y0, z1);
+    pushLine(x0, y0, z0, x0, y0, z1);
+    pushLine(x1, y0, z0, x1, y0, z1);
+    pushLine(x1, y1, z0, x1, y1, z1);
+    pushLine(x0, y1, z0, x0, y1, z1);
+  }
+
+  if (axes.showGrid) {
+    // Floor (y = y0): X and Z lines
+    if (axes.x.visible) {
+      for (const xv of plan.xTicks) {
+        if (xv < Math.min(x0, x1) - 1e-9 || xv > Math.max(x0, x1) + 1e-9) continue;
+        pushLine(xv, y0, z0, xv, y0, z1);
+      }
+    }
+    if (axes.z.visible) {
+      for (const zv of plan.zTicks) {
+        if (zv < Math.min(z0, z1) - 1e-9 || zv > Math.max(z0, z1) + 1e-9) continue;
+        pushLine(x0, y0, zv, x1, y0, zv);
+      }
+    }
+    // Back wall (z = z0): X and Y
+    if (axes.x.visible) {
+      for (const xv of plan.xTicks) {
+        if (xv < Math.min(x0, x1) - 1e-9 || xv > Math.max(x0, x1) + 1e-9) continue;
+        pushLine(xv, y0, z0, xv, y1, z0);
+      }
+    }
+    if (axes.y.visible) {
+      for (const yv of plan.yTicks) {
+        if (yv < Math.min(y0, y1) - 1e-9 || yv > Math.max(y0, y1) + 1e-9) continue;
+        pushLine(x0, yv, z0, x1, yv, z0);
+      }
+    }
+    // Side wall (x = x0): Z and Y
+    if (axes.z.visible) {
+      for (const zv of plan.zTicks) {
+        if (zv < Math.min(z0, z1) - 1e-9 || zv > Math.max(z0, z1) + 1e-9) continue;
+        pushLine(x0, y0, zv, x0, y1, zv);
+      }
+    }
+    if (axes.y.visible) {
+      for (const yv of plan.yTicks) {
+        if (yv < Math.min(y0, y1) - 1e-9 || yv > Math.max(y0, y1) + 1e-9) continue;
+        pushLine(x0, yv, z0, x0, yv, z1);
+      }
+    }
+  }
+
+  // Tick marks slightly outside the box on the three far edges from origin of min corner
+  const sx = Math.abs(x1 - x0) || 1;
+  const sy = Math.abs(y1 - y0) || 1;
+  const sz = Math.abs(z1 - z0) || 1;
+  const tx = sx * TICK_FRAC;
+  const ty = sy * TICK_FRAC;
+  const tz = sz * TICK_FRAC;
+
+  if (axes.x.visible) {
+    for (const xv of plan.xTicks) {
+      pushLine(xv, y0, z0, xv, y0 - ty, z0);
+      pushLine(xv, y0, z0, xv, y0, z0 - tz);
+    }
+  }
+  if (axes.y.visible) {
+    for (const yv of plan.yTicks) {
+      pushLine(x0, yv, z0, x0 - tx, yv, z0);
+      pushLine(x0, yv, z0, x0, yv, z0 - tz);
+    }
+  }
+  if (axes.z.visible) {
+    for (const zv of plan.zTicks) {
+      pushLine(x0, y0, zv, x0 - tx, y0, zv);
+      pushLine(x0, y0, zv, x0, y0 - ty, zv);
+    }
+  }
+
+  return new Float32Array(parts);
+}
+
+export function planAxes3DTicks(aabb: AABB, axes: ResolvedAxes3D): Axes3DTickPlan {
+  const xDomain = resolveAxisDomain3D(axes.x.min, axes.x.max, aabb.min[0], aabb.max[0]);
+  const yDomain = resolveAxisDomain3D(axes.y.min, axes.y.max, aabb.min[1], aabb.max[1]);
+  const zDomain = resolveAxisDomain3D(axes.z.min, axes.z.max, aabb.min[2], aabb.max[2]);
   return {
-    vertices: new Float32Array(corners),
-    indices: new Uint16Array(edges),
+    xTicks: axes.x.visible ? generateNiceAxisTicks3D(xDomain.min, xDomain.max, axes.x.tickCount) : [],
+    yTicks: axes.y.visible ? generateNiceAxisTicks3D(yDomain.min, yDomain.max, axes.y.tickCount) : [],
+    zTicks: axes.z.visible ? generateNiceAxisTicks3D(zDomain.min, zDomain.max, axes.z.tickCount) : [],
+    xDomain,
+    yDomain,
+    zDomain,
   };
 }
 
@@ -100,7 +174,8 @@ export function createAxisBox3DRenderer(device: GPUDevice, options?: AxisBox3DRe
   const vsUniformF32 = new Float32Array(VS_UNIFORM_SIZE / 4);
 
   let vertexBuffer: GPUBuffer | null = null;
-  let indexBuffer: GPUBuffer | null = null;
+  let vertexCapacity = 0;
+  let vertexCount = 0; // number of float3 vertices (line-list)
   let hasPrepared = false;
 
   const bindGroupLayout = device.createBindGroupLayout({
@@ -140,35 +215,63 @@ export function createAxisBox3DRenderer(device: GPUDevice, options?: AxisBox3DRe
 
   let bindGroup: GPUBindGroup | null = null;
 
+  const ensureCapacity = (floatCount: number): void => {
+    const bytes = Math.max(4, Math.ceil((floatCount * 4) / 4) * 4);
+    if (vertexBuffer && vertexCapacity >= bytes) return;
+    vertexBuffer?.destroy();
+    // Geometric growth
+    let cap = Math.max(bytes, 1024);
+    while (cap < bytes) cap = Math.ceil(cap * 1.5);
+    vertexBuffer = device.createBuffer({
+      label: 'axisBox3d/vbo',
+      size: cap,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+    vertexCapacity = cap;
+  };
+
   return {
-    prepare(aabb, viewProj, colorRgba) {
-      if (disposed) return;
-      const { vertices, indices } = buildBoxLines(aabb);
-      if (!vertexBuffer) {
-        vertexBuffer = device.createBuffer({
-          label: 'axisBox3d/vbo',
-          size: 8 * 12,
-          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-        });
+    prepare(aabb, viewProj, colorRgba, axes, gridColorRgba) {
+      if (disposed) {
+        return planAxes3DTicks(aabb, axes);
       }
-      if (!indexBuffer) {
-        indexBuffer = device.createBuffer({
-          label: 'axisBox3d/ibo',
-          size: 24 * 2,
-          usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-        });
+      const plan = planAxes3DTicks(aabb, axes);
+      const drawAxes = axes.showBox || axes.showGrid || axes.x.visible || axes.y.visible || axes.z.visible;
+      if (!drawAxes) {
+        hasPrepared = false;
+        vertexCount = 0;
+        return plan;
       }
-      device.queue.writeBuffer(vertexBuffer, 0, vertices.buffer, vertices.byteOffset, vertices.byteLength);
-      device.queue.writeBuffer(indexBuffer, 0, indices.buffer, indices.byteOffset, indices.byteLength);
+
+      const vertices = buildAxes3DLines(aabb, axes, plan);
+      vertexCount = Math.floor(vertices.length / 3);
+      if (vertexCount === 0) {
+        hasPrepared = false;
+        return plan;
+      }
+      ensureCapacity(vertices.length);
+      device.queue.writeBuffer(vertexBuffer!, 0, vertices.buffer, vertices.byteOffset, vertices.byteLength);
+
+      // Single line-list draw: box, grids, and ticks share one color.
+      // When both box and grid are on, blend edge + grid colors (two-pass later if needed).
+      const c = gridColorRgba ?? colorRgba;
+      const mix =
+        axes.showGrid && axes.showBox
+          ? ([
+              (colorRgba[0] + c[0]) * 0.5,
+              (colorRgba[1] + c[1]) * 0.5,
+              (colorRgba[2] + c[2]) * 0.5,
+              Math.min(1, (colorRgba[3] + c[3]) * 0.5 + 0.15),
+            ] as const)
+          : colorRgba;
 
       vsUniformF32.set(viewProj, 0);
-      vsUniformF32[16] = colorRgba[0];
-      vsUniformF32[17] = colorRgba[1];
-      vsUniformF32[18] = colorRgba[2];
-      vsUniformF32[19] = colorRgba[3];
+      vsUniformF32[16] = mix[0];
+      vsUniformF32[17] = mix[1];
+      vsUniformF32[18] = mix[2];
+      vsUniformF32[19] = mix[3];
       writeUniformBuffer(device, vsUniformBuffer, vsUniformF32);
 
-      // Bind group is stable (only buffer identity); create once.
       if (!bindGroup) {
         bindGroup = device.createBindGroup({
           layout: bindGroupLayout,
@@ -176,23 +279,21 @@ export function createAxisBox3DRenderer(device: GPUDevice, options?: AxisBox3DRe
         });
       }
       hasPrepared = true;
+      return plan;
     },
     render(pass) {
-      if (disposed || !hasPrepared || !bindGroup || !vertexBuffer || !indexBuffer) return;
+      if (disposed || !hasPrepared || !bindGroup || !vertexBuffer || vertexCount < 2) return;
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, bindGroup);
       pass.setVertexBuffer(0, vertexBuffer);
-      pass.setIndexBuffer(indexBuffer, 'uint16');
-      pass.drawIndexed(24);
+      pass.draw(vertexCount);
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       vertexBuffer?.destroy();
-      indexBuffer?.destroy();
       vsUniformBuffer.destroy();
       vertexBuffer = null;
-      indexBuffer = null;
       bindGroup = null;
     },
   };

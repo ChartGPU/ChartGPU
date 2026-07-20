@@ -1,7 +1,9 @@
 /**
  * 3D render coordinator — separate from the 2D RenderCoordinator.
- * Frame graph: clear color+depth → surface meshes → point clouds → optional axis box.
+ * Frame graph: clear color+depth → surface meshes → contours → point clouds → axes (box/grid/ticks).
  * sampleCount 1 (depth path; MSAA deferred).
+ *
+ * P6: labeled axes, surface+cloud pick, cloud maxPoints FIFO, surface stream, contours, pointer events.
  */
 
 import type {
@@ -9,12 +11,13 @@ import type {
   ResolvedPointCloud3DSeriesConfig,
   ResolvedSurface3DSeriesConfig,
 } from '../../config/OptionResolver';
-import type { PointCloud3DData, RenderMode } from '../../config/types';
+import type { PointCloud3DData, RenderMode, Surface3DGridData, Surface3DUpdate } from '../../config/types';
 import { GPUContext } from '../GPUContext';
 import type { PipelineCache } from '../PipelineCache';
 import { createPointCloud3DRenderer } from '../../renderers/createPointCloud3DRenderer';
 import { createSurface3DRenderer } from '../../renderers/createSurface3DRenderer';
-import { createAxisBox3DRenderer } from '../../renderers/createAxisBox3DRenderer';
+import { createAxisBox3DRenderer, type Axes3DTickPlan } from '../../renderers/createAxisBox3DRenderer';
+import { createContour3DRenderer } from '../../renderers/createContour3DRenderer';
 import {
   applyCameraOptions,
   buildViewProj,
@@ -30,22 +33,36 @@ import {
 import { emptyAABB, expandAABB, sanitizeAABB, type AABB } from '../3d/aabb';
 import { createMat4 } from '../3d/mat4';
 import { pickNearestPointCloud } from '../3d/pickPointCloud';
+import {
+  createEmptyPointCloudScreenGrid,
+  pickNearestPointCloudWithGrid,
+  pointCloudScreenGridStamp,
+  rebuildPointCloudScreenGrid,
+  type PointCloudScreenGrid,
+} from '../3d/pickPointCloudGrid';
+import { pickSurface3D } from '../3d/pickSurface3d';
+import { createAxes3DLabels } from '../3d/axes3dLabels';
 import { resolveCloudValueChannelIdentity, shouldInvalidateCloudPack, type CloudPackSeed } from '../3d/cloudPackPolicy';
 import { packPointCloud3D, appendPackedPointCloud3D, type PackedPointCloud3D } from '../../data/pointCloud3dData';
 import { packSurface3D } from '../../data/surface3dData';
+import { applySurface3DUpdate, computeSurface3DDomain, shouldClearSurfaceStream } from '../../data/surface3dStream';
 import { parseCssColorToGPUColor, parseCssColorToRgba01 } from '../../utils/colors';
 import { createLegend } from '../../components/createLegend';
 import type { Legend } from '../../components/createLegend';
 import { createTooltip } from '../../components/createTooltip';
 import type { Tooltip } from '../../components/createTooltip';
 import { enqueueDeviceSubmit } from '../gpu/submitBatcher';
+import { normalizeMaxPoints } from '../../data/maxPointsWindow';
 
 export type RenderCoordinator3DCallbacks = Readonly<{
   readonly onRequestRender?: () => void;
   readonly pipelineCache?: PipelineCache;
+  /** Fire click / mouseover / mouseout with pick payload (createChartGPU3D wires listeners). */
+  readonly onPickEvent?: (name: 'click' | 'mouseover' | 'mouseout', payload: Chart3DPickResult | null) => void;
 }>;
 
 export type PointCloudPickResult = Readonly<{
+  readonly kind: 'pointCloud3d';
   readonly seriesIndex: number;
   readonly dataIndex: number;
   readonly x: number;
@@ -54,7 +71,24 @@ export type PointCloudPickResult = Readonly<{
   readonly value: number;
   readonly seriesName: string | null;
   readonly color: string;
+  readonly screenDistancePx: number;
 }>;
+
+export type SurfacePickResult = Readonly<{
+  readonly kind: 'surface3d';
+  readonly seriesIndex: number;
+  readonly i: number;
+  readonly j: number;
+  readonly dataIndex: number;
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly height: number;
+  readonly seriesName: string | null;
+  readonly color: string;
+}>;
+
+export type Chart3DPickResult = PointCloudPickResult | SurfacePickResult;
 
 export type AppendPointCloudResult = Readonly<{
   readonly appended: number;
@@ -69,19 +103,27 @@ export interface RenderCoordinator3D {
   resetCamera(): void;
   setCamera(partial: import('../../config/types').Chart3DCameraOptions): void;
   getCamera(): ResolvedCamera;
-  /** Nearest point cloud sample in screen space (CSS px). */
-  pick(cssX: number, cssY: number, thresholdPx?: number): PointCloudPickResult | null;
+  /** Nearest pick (surface or point cloud) in screen space (CSS px). */
+  pick(cssX: number, cssY: number, thresholdPx?: number): Chart3DPickResult | null;
   /**
    * Append points to a resolved-index pointCloud3d series.
    * Durable across setOption when that series' `data` identity is unchanged.
+   * `maxPoints` applies FIFO window via pack rewrite.
    */
-  appendPointCloudData(seriesIndex: number, newPoints: PointCloud3DData): AppendPointCloudResult | null;
+  appendPointCloudData(
+    seriesIndex: number,
+    newPoints: PointCloud3DData,
+    opts?: { readonly maxPoints?: number }
+  ): AppendPointCloudResult | null;
+  /** Streaming / partial surface update (replaceY, appendColumns, appendRows). */
+  updateSurface3D(seriesIndex: number, update: Surface3DUpdate): boolean;
   /** Test/debug: packed point count for series (includes appends). */
   getPointCloudCount(seriesIndex: number): number;
   getCanvas(): HTMLCanvasElement | null;
 }
 
 const SAMPLE_COUNT = 1;
+const PICK_THROTTLE_MS = 33; // ~30 Hz tooltip / mouseover
 
 export function createRenderCoordinator3D(
   gpuContext: GPUContext,
@@ -134,25 +176,35 @@ export function createRenderCoordinator3D(
     return depthView;
   };
 
-  // Per-series renderers (pool grows with series list)
   const pointCloudRenderers: Array<ReturnType<typeof createPointCloud3DRenderer> | null> = [];
   const surfaceRenderers: Array<ReturnType<typeof createSurface3DRenderer> | null> = [];
-  // Runtime packed cloud data for append — durable while data + value-channel seed is stable
+  const contourRenderers: Array<ReturnType<typeof createContour3DRenderer> | null> = [];
   const cloudPackedByIndex: Array<PackedPointCloud3D | null> = [];
-  /** Seed identities (data + value channel) used to build cloudPackedByIndex[i]. */
   const cloudSeedByIndex: Array<CloudPackSeed | null> = [];
-  /** Cached surface AABB keyed by data + y channel (geometry; not colormap domain). */
   const surfaceAabbCacheByIndex: Array<{
     data: unknown;
     y: unknown;
     aabb: AABB | null;
   } | null> = [];
+  /** Mutable surface data owned by stream API (overrides series.data when set). */
+  const surfaceStreamDataByIndex: Array<Surface3DGridData | null> = [];
+  /**
+   * Last user-provided surface `data` identity from setOption.
+   * Stream is cleared only when this identity changes (new user data object),
+   * not when style-only setOption reuses the same data ref.
+   */
+  const surfaceUserDataByIndex: Array<Surface3DGridData | null> = [];
+  /** Colormap domain overrides from updateSurface3D (replaceY yMin/yMax or auto recompute). */
+  const surfaceDomainByIndex: Array<{ yMin: number; yMax: number } | null> = [];
+  const cloudPickGrids: Array<PointCloudScreenGrid | null> = [];
 
   const axisBox = createAxisBox3DRenderer(device, {
     targetFormat,
     sampleCount: SAMPLE_COUNT,
     pipelineCache,
   });
+  const axesLabels = createAxes3DLabels();
+  let lastTickPlan: Axes3DTickPlan | null = null;
 
   let legend: Legend | null = null;
   let tooltip: Tooltip | null = null;
@@ -194,19 +246,32 @@ export function createRenderCoordinator3D(
     const packed = packPointCloud3D(s.data, { valueOverride: s.colorBy?.values });
     cloudPackedByIndex[i] = packed;
     cloudSeedByIndex[i] = nextSeed;
+    cloudPickGrids[i] = null;
     return packed;
   };
 
+  const resolveSurfaceSeries = (i: number, s: ResolvedSurface3DSeriesConfig): ResolvedSurface3DSeriesConfig => {
+    const streamed = surfaceStreamDataByIndex[i];
+    const domain = surfaceDomainByIndex[i];
+    if (!streamed && !domain) return s;
+    return {
+      ...s,
+      data: streamed ?? s.data,
+      yMin: domain?.yMin ?? s.yMin,
+      yMax: domain?.yMax ?? s.yMax,
+    };
+  };
+
   const getSurfaceAABB = (i: number, s: ResolvedSurface3DSeriesConfig): AABB | null => {
-    const yRef = s.data?.y;
+    const eff = resolveSurfaceSeries(i, s);
+    const yRef = eff.data?.y;
     const cached = surfaceAabbCacheByIndex[i];
-    if (cached && cached.data === s.data && cached.y === yRef) {
+    if (cached && cached.data === eff.data && cached.y === yRef) {
       return cached.aabb;
     }
-    // Geometry AABB is independent of colormap domain (yMin/yMax uniforms).
-    const packed = packSurface3D(s.data);
+    const packed = packSurface3D(eff.data);
     const aabb = packed?.aabb ?? null;
-    surfaceAabbCacheByIndex[i] = { data: s.data, y: yRef, aabb };
+    surfaceAabbCacheByIndex[i] = { data: eff.data, y: yRef, aabb };
     return aabb;
   };
 
@@ -241,9 +306,14 @@ export function createRenderCoordinator3D(
     const n = currentOptions.series.length;
     while (pointCloudRenderers.length < n) pointCloudRenderers.push(null);
     while (surfaceRenderers.length < n) surfaceRenderers.push(null);
+    while (contourRenderers.length < n) contourRenderers.push(null);
     while (cloudPackedByIndex.length < n) cloudPackedByIndex.push(null);
     while (cloudSeedByIndex.length < n) cloudSeedByIndex.push(null);
     while (surfaceAabbCacheByIndex.length < n) surfaceAabbCacheByIndex.push(null);
+    while (surfaceStreamDataByIndex.length < n) surfaceStreamDataByIndex.push(null);
+    while (surfaceUserDataByIndex.length < n) surfaceUserDataByIndex.push(null);
+    while (surfaceDomainByIndex.length < n) surfaceDomainByIndex.push(null);
+    while (cloudPickGrids.length < n) cloudPickGrids.push(null);
     for (let i = 0; i < n; i++) {
       const s = currentOptions.series[i]!;
       if (s.type === 'pointCloud3d') {
@@ -256,10 +326,22 @@ export function createRenderCoordinator3D(
         }
         surfaceRenderers[i]?.dispose();
         surfaceRenderers[i] = null;
+        contourRenderers[i]?.dispose();
+        contourRenderers[i] = null;
         surfaceAabbCacheByIndex[i] = null;
+        surfaceStreamDataByIndex[i] = null;
+        surfaceUserDataByIndex[i] = null;
+        surfaceDomainByIndex[i] = null;
       } else if (s.type === 'surface3d') {
         if (!surfaceRenderers[i]) {
           surfaceRenderers[i] = createSurface3DRenderer(device, {
+            targetFormat,
+            sampleCount: SAMPLE_COUNT,
+            pipelineCache,
+          });
+        }
+        if (!contourRenderers[i]) {
+          contourRenderers[i] = createContour3DRenderer(device, {
             targetFormat,
             sampleCount: SAMPLE_COUNT,
             pipelineCache,
@@ -269,17 +351,23 @@ export function createRenderCoordinator3D(
         pointCloudRenderers[i] = null;
         cloudPackedByIndex[i] = null;
         cloudSeedByIndex[i] = null;
+        cloudPickGrids[i] = null;
       }
     }
-    // Dispose extras
     for (let i = n; i < pointCloudRenderers.length; i++) {
       pointCloudRenderers[i]?.dispose();
       pointCloudRenderers[i] = null;
       surfaceRenderers[i]?.dispose();
       surfaceRenderers[i] = null;
+      contourRenderers[i]?.dispose();
+      contourRenderers[i] = null;
       cloudPackedByIndex[i] = null;
       cloudSeedByIndex[i] = null;
       surfaceAabbCacheByIndex[i] = null;
+      surfaceStreamDataByIndex[i] = null;
+      surfaceUserDataByIndex[i] = null;
+      surfaceDomainByIndex[i] = null;
+      cloudPickGrids[i] = null;
     }
   };
 
@@ -289,12 +377,159 @@ export function createRenderCoordinator3D(
   let lastY = 0;
   let dragging = false;
   let isPan = false;
+  let lastHover: Chart3DPickResult | null = null;
+  let lastPickThrottle = 0;
+  let pendingPickRaf: number | null = null;
+  let pendingPickEvent: PointerEvent | null = null;
+  let pointerDownX = 0;
+  let pointerDownY = 0;
+  let didDrag = false;
+
+  /** Cancel trailing hover rAF so leave/drag cannot re-fire tooltip/mouseover off-canvas. */
+  const cancelPendingHoverPick = (): void => {
+    if (pendingPickRaf != null) {
+      cancelAnimationFrame(pendingPickRaf);
+      pendingPickRaf = null;
+    }
+    pendingPickEvent = null;
+  };
+
+  const ensureCloudPickGrid = (
+    si: number,
+    packed: PackedPointCloud3D,
+    viewProj: Float32Array,
+    cssW: number,
+    cssH: number
+  ): PointCloudScreenGrid => {
+    let grid = cloudPickGrids[si];
+    if (!grid) {
+      grid = createEmptyPointCloudScreenGrid();
+      cloudPickGrids[si] = grid;
+    }
+    const stamp = pointCloudScreenGridStamp(packed.count, cssW, cssH, viewProj, packed.packed);
+    if (grid.stamp !== stamp) {
+      rebuildPointCloudScreenGrid(grid, packed.packed, packed.count, viewProj, cssW, cssH);
+    }
+    return grid;
+  };
+
+  const pickInternal = (cssX: number, cssY: number, thresholdPx = 10): Chart3DPickResult | null => {
+    const w = canvas?.clientWidth ?? 0;
+    const h = canvas?.clientHeight ?? 0;
+    if (w <= 0 || h <= 0) return null;
+    const aspect = w / h;
+    const viewProj = buildViewProj(cameraState, aspect, createMat4());
+
+    let bestCloud: PointCloudPickResult | null = null;
+    let bestCloudDist = Number.POSITIVE_INFINITY;
+    let bestSurface: SurfacePickResult | null = null;
+    let bestSurfaceT = Number.POSITIVE_INFINITY;
+
+    for (let si = 0; si < currentOptions.series.length; si++) {
+      const s = currentOptions.series[si]!;
+      if (!s.visible) continue;
+      if (s.type === 'pointCloud3d') {
+        const p = ensureCloudPacked(si, s);
+        const grid = ensureCloudPickGrid(si, p, viewProj, w, h);
+        const hit =
+          pickNearestPointCloudWithGrid(grid, p.packed, p.count, viewProj, cssX, cssY, w, h, thresholdPx) ??
+          pickNearestPointCloud(p.packed, p.count, viewProj, cssX, cssY, w, h, thresholdPx);
+        if (hit && hit.dist2 < bestCloudDist) {
+          bestCloudDist = hit.dist2;
+          bestCloud = {
+            kind: 'pointCloud3d',
+            seriesIndex: si,
+            dataIndex: hit.dataIndex,
+            x: hit.x,
+            y: hit.y,
+            z: hit.z,
+            value: hit.value,
+            seriesName: s.name ?? null,
+            color: s.pointStyle.color,
+            screenDistancePx: Math.sqrt(hit.dist2),
+          };
+        }
+      } else if (s.type === 'surface3d') {
+        const eff = resolveSurfaceSeries(si, s);
+        const hit = pickSurface3D(
+          {
+            xStart: eff.data.xStart,
+            xStep: eff.data.xStep,
+            zStart: eff.data.zStart,
+            zStep: eff.data.zStep,
+            columns: eff.data.columns,
+            rows: eff.data.rows,
+            y: eff.data.y,
+          },
+          viewProj,
+          cssX,
+          cssY,
+          w,
+          h
+        );
+        if (hit && hit.t < bestSurfaceT) {
+          bestSurfaceT = hit.t;
+          bestSurface = {
+            kind: 'surface3d',
+            seriesIndex: si,
+            i: hit.i,
+            j: hit.j,
+            dataIndex: hit.j * eff.data.columns + hit.i,
+            x: hit.x,
+            y: hit.y,
+            z: hit.z,
+            height: hit.height,
+            seriesName: s.name ?? null,
+            color: s.color,
+          };
+        }
+      }
+    }
+
+    // Mixed surface+cloud under cursor:
+    // - Prefer cloud when within 75% of the pick threshold (points sit on the mesh).
+    // - Else prefer cloud if screen distance < 6 CSS px (tight hover on billboards).
+    // - Otherwise report surface (larger hit area). Depth comparison is not used
+    //   because billboard centers and heightfield hits are not directly comparable.
+    if (bestCloud && bestSurface) {
+      if (bestCloud.screenDistancePx <= thresholdPx * 0.75) return bestCloud;
+      return bestCloud.screenDistancePx < 6 ? bestCloud : bestSurface;
+    }
+    return bestCloud ?? bestSurface;
+  };
+
+  const formatPickTooltip = (hit: Chart3DPickResult): string => {
+    if (hit.kind === 'pointCloud3d') {
+      const name = hit.seriesName ?? `Series ${hit.seriesIndex + 1}`;
+      return (
+        `<div style="font-weight:600;margin-bottom:4px;color:${hit.color}">${escapeHtml(name)}</div>` +
+        `<div>x: ${fmt(hit.x)}</div>` +
+        `<div>y: ${fmt(hit.y)}</div>` +
+        `<div>z: ${fmt(hit.z)}</div>` +
+        (Number.isFinite(hit.value) ? `<div>value: ${fmt(hit.value)}</div>` : '')
+      );
+    }
+    const name = hit.seriesName ?? `Series ${hit.seriesIndex + 1}`;
+    return (
+      `<div style="font-weight:600;margin-bottom:4px;color:${hit.color}">${escapeHtml(name)}</div>` +
+      `<div>cell: (${hit.i}, ${hit.j})</div>` +
+      `<div>x: ${fmt(hit.x)}</div>` +
+      `<div>y: ${fmt(hit.y)}</div>` +
+      `<div>z: ${fmt(hit.z)}</div>` +
+      `<div>height: ${fmt(hit.height)}</div>`
+    );
+  };
 
   const onPointerDown = (e: PointerEvent): void => {
     if (disposed || !canvas) return;
+    // Drag start: drop any trailing hover pick so orbit/pan does not re-fire tooltip.
+    cancelPendingHoverPick();
     pointerId = e.pointerId;
     lastX = e.clientX;
     lastY = e.clientY;
+    pointerDownX = e.clientX;
+    pointerDownY = e.clientY;
+    didDrag = false;
     dragging = true;
     isPan = e.button === 2 || e.shiftKey || e.button === 1;
     try {
@@ -305,6 +540,43 @@ export function createRenderCoordinator3D(
     e.preventDefault();
   };
 
+  const applyHoverPick = (e: PointerEvent): void => {
+    if (disposed || !canvas || dragging) return;
+    lastPickThrottle = performance.now();
+    const rect = canvas.getBoundingClientRect();
+    const cssX = e.clientX - rect.left;
+    const cssY = e.clientY - rect.top;
+    const hit = pickInternal(cssX, cssY, 12);
+
+    if (tooltip && currentOptions.tooltip?.show !== false) {
+      if (hit) {
+        tooltip.show(cssX, cssY, formatPickTooltip(hit));
+      } else {
+        tooltip.hide();
+      }
+    }
+
+    const prevKey = lastHover
+      ? lastHover.kind === 'pointCloud3d'
+        ? `c:${lastHover.seriesIndex}:${lastHover.dataIndex}`
+        : `s:${lastHover.seriesIndex}:${lastHover.i}:${lastHover.j}`
+      : null;
+    const nextKey = hit
+      ? hit.kind === 'pointCloud3d'
+        ? `c:${hit.seriesIndex}:${hit.dataIndex}`
+        : `s:${hit.seriesIndex}:${hit.i}:${hit.j}`
+      : null;
+    if (prevKey !== nextKey) {
+      if (lastHover && !hit) {
+        callbacks?.onPickEvent?.('mouseout', lastHover);
+      } else if (hit && prevKey !== nextKey) {
+        if (lastHover) callbacks?.onPickEvent?.('mouseout', lastHover);
+        callbacks?.onPickEvent?.('mouseover', hit);
+      }
+      lastHover = hit;
+    }
+  };
+
   const onPointerMove = (e: PointerEvent): void => {
     if (disposed) return;
     if (dragging && pointerId === e.pointerId) {
@@ -312,6 +584,7 @@ export function createRenderCoordinator3D(
       const dy = e.clientY - lastY;
       lastX = e.clientX;
       lastY = e.clientY;
+      if (Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY) > 4) didDrag = true;
       const ix = currentOptions.interaction3d;
       const h = canvas?.clientHeight ?? 1;
       if (isPan && ix.pan) {
@@ -323,32 +596,36 @@ export function createRenderCoordinator3D(
       callbacks?.onRequestRender?.();
       return;
     }
-    // Hover pick
-    if (tooltip && currentOptions.tooltip?.show !== false && canvas) {
-      const rect = canvas.getBoundingClientRect();
-      const cssX = e.clientX - rect.left;
-      const cssY = e.clientY - rect.top;
-      const hit = pickInternal(cssX, cssY, 12);
-      if (hit) {
-        const name = hit.seriesName ?? `Series ${hit.seriesIndex + 1}`;
-        const html =
-          `<div style="font-weight:600;margin-bottom:4px;color:${hit.color}">${escapeHtml(name)}</div>` +
-          `<div>x: ${fmt(hit.x)}</div>` +
-          `<div>y: ${fmt(hit.y)}</div>` +
-          `<div>z: ${fmt(hit.z)}</div>` +
-          (Number.isFinite(hit.value) ? `<div>value: ${fmt(hit.value)}</div>` : '');
-        // Coordinates are container-local CSS px
-        tooltip.show(cssX, cssY, html);
-      } else {
-        tooltip.hide();
+    // Throttled hover pick (~30 Hz) with trailing rAF so a stop after skip still updates.
+    const now = performance.now();
+    if (now - lastPickThrottle < PICK_THROTTLE_MS) {
+      pendingPickEvent = e;
+      if (pendingPickRaf == null) {
+        pendingPickRaf = requestAnimationFrame(() => {
+          pendingPickRaf = null;
+          const pe = pendingPickEvent;
+          pendingPickEvent = null;
+          if (pe) applyHoverPick(pe);
+        });
       }
+      return;
     }
+    pendingPickEvent = null;
+    applyHoverPick(e);
   };
 
   const onPointerUp = (e: PointerEvent): void => {
     if (pointerId === e.pointerId) {
       dragging = false;
       pointerId = null;
+      // Click if not a drag
+      if (!didDrag && canvas) {
+        const rect = canvas.getBoundingClientRect();
+        const cssX = e.clientX - rect.left;
+        const cssY = e.clientY - rect.top;
+        const hit = pickInternal(cssX, cssY, 12);
+        callbacks?.onPickEvent?.('click', hit);
+      }
     }
   };
 
@@ -371,47 +648,25 @@ export function createRenderCoordinator3D(
     e.preventDefault();
   };
 
+  const onPointerLeave = (): void => {
+    cancelPendingHoverPick();
+    if (lastHover) {
+      callbacks?.onPickEvent?.('mouseout', lastHover);
+      lastHover = null;
+    }
+    tooltip?.hide();
+  };
+
   if (canvas) {
     canvas.addEventListener('pointerdown', onPointerDown);
     canvas.addEventListener('pointermove', onPointerMove);
     canvas.addEventListener('pointerup', onPointerUp);
     canvas.addEventListener('pointercancel', onPointerUp);
+    canvas.addEventListener('pointerleave', onPointerLeave);
     canvas.addEventListener('wheel', onWheel, { passive: false });
     canvas.addEventListener('dblclick', onDblClick);
     canvas.addEventListener('contextmenu', onContextMenu);
   }
-
-  const pickInternal = (cssX: number, cssY: number, thresholdPx = 10): PointCloudPickResult | null => {
-    const w = canvas?.clientWidth ?? 0;
-    const h = canvas?.clientHeight ?? 0;
-    if (w <= 0 || h <= 0) return null;
-    const aspect = w / h;
-    const viewProj = buildViewProj(cameraState, aspect, createMat4());
-
-    let best: PointCloudPickResult | null = null;
-    let bestDist = Number.POSITIVE_INFINITY;
-
-    for (let si = 0; si < currentOptions.series.length; si++) {
-      const s = currentOptions.series[si]!;
-      if (!s.visible || s.type !== 'pointCloud3d') continue;
-      const p = ensureCloudPacked(si, s);
-      const hit = pickNearestPointCloud(p.packed, p.count, viewProj, cssX, cssY, w, h, thresholdPx);
-      if (hit && hit.dist2 < bestDist) {
-        bestDist = hit.dist2;
-        best = {
-          seriesIndex: si,
-          dataIndex: hit.dataIndex,
-          x: hit.x,
-          y: hit.y,
-          z: hit.z,
-          value: hit.value,
-          seriesName: s.name ?? null,
-          color: s.pointStyle.color,
-        };
-      }
-    }
-    return best;
-  };
 
   const resetCameraInternal = (): void => {
     const aabb = computeSceneAABB();
@@ -431,8 +686,6 @@ export function createRenderCoordinator3D(
       up: resolved.camera.up,
       orthoSize: resolved.camera.orthoSize,
     });
-    // Invalidate cloud packed when data or value-channel identity changes (preserve appends otherwise).
-    // Surface AABB cache invalidates when data/y geometry identity changes (not colormap domain).
     for (let i = 0; i < resolved.series.length; i++) {
       const s = resolved.series[i]!;
       if (s.type === 'pointCloud3d') {
@@ -440,25 +693,43 @@ export function createRenderCoordinator3D(
         if (shouldInvalidateCloudPack(cloudSeedByIndex[i], nextSeed)) {
           cloudPackedByIndex[i] = null;
           cloudSeedByIndex[i] = null;
+          cloudPickGrids[i] = null;
         }
       } else {
         cloudPackedByIndex[i] = null;
         cloudSeedByIndex[i] = null;
+        cloudPickGrids[i] = null;
       }
       if (s.type === 'surface3d') {
-        const yRef = s.data?.y;
+        // Stream vs setOption: see shouldClearSurfaceStream (single policy source).
+        const prevUser = surfaceUserDataByIndex[i];
+        if (shouldClearSurfaceStream(prevUser, s.data)) {
+          surfaceStreamDataByIndex[i] = null;
+          surfaceDomainByIndex[i] = null;
+          contourRenderers[i]?.invalidate();
+        }
+        surfaceUserDataByIndex[i] = s.data;
+        const effData = surfaceStreamDataByIndex[i] ?? s.data;
+        const yRef = effData?.y;
         const c = surfaceAabbCacheByIndex[i];
-        if (!c || c.data !== s.data || c.y !== yRef) {
+        if (!c || c.data !== effData || c.y !== yRef) {
           surfaceAabbCacheByIndex[i] = null;
         }
       } else {
         surfaceAabbCacheByIndex[i] = null;
+        surfaceStreamDataByIndex[i] = null;
+        surfaceUserDataByIndex[i] = null;
+        surfaceDomainByIndex[i] = null;
       }
     }
     for (let i = resolved.series.length; i < cloudPackedByIndex.length; i++) {
       cloudPackedByIndex[i] = null;
       cloudSeedByIndex[i] = null;
       surfaceAabbCacheByIndex[i] = null;
+      surfaceStreamDataByIndex[i] = null;
+      surfaceUserDataByIndex[i] = null;
+      surfaceDomainByIndex[i] = null;
+      cloudPickGrids[i] = null;
     }
     syncRenderers();
     ensureUi();
@@ -493,13 +764,14 @@ export function createRenderCoordinator3D(
       a: 1,
     });
 
-    // Prepare series (surfaces first for draw order)
     syncRenderers();
     for (let i = 0; i < currentOptions.series.length; i++) {
       const s = currentOptions.series[i]!;
       if (!s.visible) continue;
       if (s.type === 'surface3d') {
-        surfaceRenderers[i]?.prepare(s as ResolvedSurface3DSeriesConfig, { viewProj });
+        const eff = resolveSurfaceSeries(i, s);
+        surfaceRenderers[i]?.prepare(eff, { viewProj });
+        contourRenderers[i]?.prepare(eff, viewProj);
       } else if (s.type === 'pointCloud3d') {
         const pc = s as ResolvedPointCloud3DSeriesConfig;
         const packed = ensureCloudPacked(i, pc);
@@ -511,12 +783,30 @@ export function createRenderCoordinator3D(
       }
     }
 
-    if (currentOptions.axes3d.showBox) {
-      const aabb = sanitizeAABB(computeSceneAABB());
-      const edge = parseCssColorToRgba01(currentOptions.theme.axisLineColor ?? 'rgba(255,255,255,0.35)') ?? [
-        0.6, 0.6, 0.65, 0.5,
-      ];
-      axisBox.prepare(aabb, viewProj, edge);
+    const axes = currentOptions.axes3d;
+    const sceneAabb = sanitizeAABB(computeSceneAABB());
+    // Always prepare (ticks may draw even when showBox+showGrid are false if axes visible).
+    const edge = parseCssColorToRgba01(currentOptions.theme.axisLineColor ?? 'rgba(255,255,255,0.35)') ?? [
+      0.6, 0.6, 0.65, 0.5,
+    ];
+    const grid = parseCssColorToRgba01(currentOptions.theme.gridLineColor ?? 'rgba(255,255,255,0.12)') ?? [
+      0.4, 0.4, 0.45, 0.25,
+    ];
+    lastTickPlan = axisBox.prepare(sceneAabb, viewProj, edge, axes, grid);
+
+    // Labels: labelMode 'gpu' falls back to DOM until an SDF atlas ships (auto/dom/gpu all update).
+    if (canvas?.parentElement && lastTickPlan) {
+      const textColor = currentOptions.theme.textColor ?? 'rgba(224,224,224,0.9)';
+      axesLabels.update(
+        canvas.parentElement,
+        sceneAabb,
+        lastTickPlan,
+        axes,
+        viewProj,
+        cssW,
+        cssH,
+        typeof textColor === 'string' ? textColor : '#e0e0e0'
+      );
     }
 
     const encoder = device.createCommandEncoder({ label: 'coordinator3d/frame' });
@@ -538,7 +828,7 @@ export function createRenderCoordinator3D(
       },
     });
 
-    // Surfaces then clouds
+    // Surfaces → contours → clouds → axes
     for (let i = 0; i < currentOptions.series.length; i++) {
       const s = currentOptions.series[i]!;
       if (!s.visible || s.type !== 'surface3d') continue;
@@ -546,17 +836,20 @@ export function createRenderCoordinator3D(
     }
     for (let i = 0; i < currentOptions.series.length; i++) {
       const s = currentOptions.series[i]!;
+      if (!s.visible || s.type !== 'surface3d') continue;
+      contourRenderers[i]?.render(pass);
+    }
+    for (let i = 0; i < currentOptions.series.length; i++) {
+      const s = currentOptions.series[i]!;
       if (!s.visible || s.type !== 'pointCloud3d') continue;
       pointCloudRenderers[i]?.render(pass);
     }
-    if (currentOptions.axes3d.showBox) {
-      axisBox.render(pass);
-    }
+    // Draw whenever prepare produced geometry (box, grid, and/or ticks-only).
+    axisBox.render(pass);
     pass.end();
     enqueueDeviceSubmit(device, encoder.finish());
   };
 
-  // Initial setup
   syncRenderers();
   ensureUi();
   if (cameraState.needsFit) {
@@ -569,18 +862,22 @@ export function createRenderCoordinator3D(
     dispose() {
       if (disposed) return;
       disposed = true;
+      cancelPendingHoverPick();
       if (canvas) {
         canvas.removeEventListener('pointerdown', onPointerDown);
         canvas.removeEventListener('pointermove', onPointerMove);
         canvas.removeEventListener('pointerup', onPointerUp);
         canvas.removeEventListener('pointercancel', onPointerUp);
+        canvas.removeEventListener('pointerleave', onPointerLeave);
         canvas.removeEventListener('wheel', onWheel);
         canvas.removeEventListener('dblclick', onDblClick);
         canvas.removeEventListener('contextmenu', onContextMenu);
       }
       for (const r of pointCloudRenderers) r?.dispose();
       for (const r of surfaceRenderers) r?.dispose();
+      for (const r of contourRenderers) r?.dispose();
       axisBox.dispose();
+      axesLabels.dispose();
       depthTexture?.destroy();
       legend?.dispose();
       tooltip?.dispose();
@@ -597,7 +894,7 @@ export function createRenderCoordinator3D(
     },
     getCamera: () => toResolvedCamera(cameraState),
     pick: (cssX, cssY, thresholdPx) => pickInternal(cssX, cssY, thresholdPx),
-    appendPointCloudData(seriesIndex, newPoints) {
+    appendPointCloudData(seriesIndex, newPoints, opts) {
       if (disposed) return null;
       const s = currentOptions.series[seriesIndex];
       if (!s || s.type !== 'pointCloud3d') {
@@ -607,23 +904,61 @@ export function createRenderCoordinator3D(
         return null;
       }
       const base = ensureCloudPacked(seriesIndex, s);
-      const before = base.count;
+      const maxPoints = normalizeMaxPoints(opts?.maxPoints);
       const next = appendPackedPointCloud3D(base.packed, base.count, newPoints, {
         valueOverride: s.colorBy?.values,
+        maxPoints,
       });
       cloudPackedByIndex[seriesIndex] = next;
-      // Keep seed identities so setOption with same data + value channel preserves appends
       cloudSeedByIndex[seriesIndex] = cloudSeedFromSeries(s);
+      cloudPickGrids[seriesIndex] = null;
       callbacks?.onRequestRender?.();
       const aabb = next.aabb;
+      // dataAppend.count = accepted new samples (all of batch under window, or tail on strict replace)
+      const newPacked = packPointCloud3D(newPoints, { valueOverride: s.colorBy?.values });
+      const appended = maxPoints != null && newPacked.count >= maxPoints ? maxPoints : newPacked.count;
       return {
-        appended: next.count - before,
+        appended,
         totalCount: next.count,
         xExtent: {
           min: aabb ? aabb.min[0] : 0,
           max: aabb ? aabb.max[0] : 0,
         },
       };
+    },
+    updateSurface3D(seriesIndex, update) {
+      if (disposed) return false;
+      const s = currentOptions.series[seriesIndex];
+      if (!s || s.type !== 'surface3d') {
+        console.warn(
+          `ChartGPU 3D: updateSurface3D seriesIndex ${seriesIndex} is not surface3d (got ${s?.type ?? 'missing'}).`
+        );
+        return false;
+      }
+      const base = surfaceStreamDataByIndex[seriesIndex] ?? s.data;
+      // Seed user-data identity so subsequent style setOption can keep the stream
+      // when the same data ref is reused.
+      if (surfaceUserDataByIndex[seriesIndex] == null) {
+        surfaceUserDataByIndex[seriesIndex] = s.data;
+      }
+      const result = applySurface3DUpdate(base, update);
+      surfaceStreamDataByIndex[seriesIndex] = result.data;
+      surfaceAabbCacheByIndex[seriesIndex] = null;
+      // Domain: explicit replaceY yMin/yMax, else auto from field when stream mutates heights.
+      if (result.yMin != null && result.yMax != null && !result.recomputeDomain) {
+        surfaceDomainByIndex[seriesIndex] = { yMin: result.yMin, yMax: result.yMax };
+      } else if (result.recomputeDomain) {
+        const auto = computeSurface3DDomain(result.data.y, result.data.columns * result.data.rows);
+        const yMin = result.yMin ?? auto.yMin;
+        const yMax = result.yMax ?? auto.yMax;
+        surfaceDomainByIndex[seriesIndex] = {
+          yMin,
+          yMax: yMax > yMin ? yMax : yMin + 1,
+        };
+      }
+      contourRenderers[seriesIndex]?.invalidate();
+      callbacks?.onRequestRender?.();
+      return true;
     },
     getPointCloudCount(seriesIndex) {
       const p = cloudPackedByIndex[seriesIndex];
@@ -646,5 +981,4 @@ const fmt = (n: number): string => {
 const escapeHtml = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-// silence unused RenderMode import if tree-shaken
 void (0 as unknown as RenderMode);

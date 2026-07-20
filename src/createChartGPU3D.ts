@@ -13,9 +13,10 @@ import type {
   OHLCDataPoint,
   PointCloud3DData,
   RenderMode,
+  Surface3DUpdate,
 } from './config/types';
 import { createRenderCoordinator3D } from './core/renderCoordinator3d/createRenderCoordinator3D';
-import type { RenderCoordinator3D } from './core/renderCoordinator3d/createRenderCoordinator3D';
+import type { Chart3DPickResult, RenderCoordinator3D } from './core/renderCoordinator3d/createRenderCoordinator3D';
 import type { ResolvedCamera } from './core/3d/camera';
 import type {
   ChartGPUCreateContext,
@@ -227,16 +228,13 @@ export async function createChartGPU3D(
           'ChartGPU 3D: appendData is only supported for pointCloud3d at a resolved series index ' +
             `(got ${series?.type ?? 'missing'} at ${seriesIndex}). ` +
             'Modality-skipped series compact the resolved array — use the index after filtering. ' +
-            'surface3d: replace data.y via setOption.'
+            'surface3d: use updateSurface3D or replace data.y via setOption.'
         );
         return;
       }
-      if (opts?.maxPoints != null) {
-        console.warn(
-          'ChartGPU 3D: appendData({ maxPoints }) is not supported for pointCloud3d in v1 (unbounded append); option ignored.'
-        );
-      }
-      const result = coordinator.appendPointCloudData(seriesIndex, newPoints as PointCloud3DData);
+      const result = coordinator.appendPointCloudData(seriesIndex, newPoints as PointCloud3DData, {
+        maxPoints: opts?.maxPoints,
+      });
       if (result && result.appended > 0) {
         emit('dataAppend', {
           seriesIndex,
@@ -296,15 +294,7 @@ export async function createChartGPU3D(
         canvasY: cssY,
         gridX: cssX,
         gridY: cssY,
-        match: pick
-          ? {
-              kind: 'pointCloud3d',
-              seriesIndex: pick.seriesIndex,
-              dataIndex: pick.dataIndex,
-              value: [pick.x, pick.y, pick.z],
-              valueChannel: pick.value,
-            }
-          : null,
+        match: pickToHitMatch(pick),
       };
     },
     getRenderMode: () => renderMode,
@@ -330,6 +320,16 @@ export async function createChartGPU3D(
     },
     getCamera(): ResolvedCamera | null {
       return coordinator?.getCamera() ?? null;
+    },
+    updateSurface3D(seriesIndex: number, update: Surface3DUpdate) {
+      if (disposed || !coordinator) return;
+      coordinator.updateSurface3D(seriesIndex, update);
+      // Keep resolvedOptions.series data in sync for hit-test / setOption identity when possible
+      const s = resolvedOptions.series[seriesIndex];
+      if (s?.type === 'surface3d') {
+        // Stream lives in coordinator; next setOption may clear if user replaces data.
+      }
+      requestRender();
     },
   } as ChartGPUInstance;
 
@@ -369,6 +369,9 @@ export async function createChartGPU3D(
     coordinator = createRenderCoordinator3D(gpuContext, resolvedOptions, {
       onRequestRender: requestRender,
       pipelineCache: context?.pipelineCache,
+      onPickEvent: (name, payload) => {
+        emit(name, payload);
+      },
     });
 
     if (renderMode === 'auto') requestRender();
@@ -379,6 +382,28 @@ export async function createChartGPU3D(
     instance.dispose();
     throw error;
   }
+}
+
+function pickToHitMatch(pick: Chart3DPickResult | null): ChartGPUHitTestResult['match'] {
+  if (!pick) return null;
+  if (pick.kind === 'pointCloud3d') {
+    return {
+      kind: 'pointCloud3d',
+      seriesIndex: pick.seriesIndex,
+      dataIndex: pick.dataIndex,
+      value: [pick.x, pick.y, pick.z],
+      valueChannel: pick.value,
+    };
+  }
+  return {
+    kind: 'surface3d',
+    seriesIndex: pick.seriesIndex,
+    dataIndex: pick.dataIndex,
+    value: [pick.x, pick.y, pick.z],
+    i: pick.i,
+    j: pick.j,
+    height: pick.height,
+  };
 }
 
 // silence unused type imports used only in append signature docs

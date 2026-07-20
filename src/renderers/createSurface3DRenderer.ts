@@ -62,6 +62,8 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
   /** Track data.y identity so y replace under a new array ref invalidates geometry. */
   let lastYRef: unknown = null;
   let lastWire = false;
+  let lastColumns = -1;
+  let lastRows = -1;
   let uploadCount = 0;
   let hasGeom = false;
 
@@ -166,30 +168,55 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
   let packedMeta: PackedSurface3D | null = null;
 
   const uploadGeometry = (packed: PackedSurface3D, wireframe: boolean): void => {
-    vertexBuffer?.destroy();
-    indexBuffer?.destroy();
-    wireIndexBuffer?.destroy();
+    const dimsStable =
+      packed.columns === lastColumns && packed.rows === lastRows && vertexBuffer != null && indexBuffer != null;
 
+    // Vertices always re-upload when heights change.
     const vBytes = packed.vertices.byteLength;
     const vSize = Math.ceil(vBytes / 4) * 4;
-    vertexBuffer = device.createBuffer({
-      label: 'surface3d/vertices',
-      size: Math.max(vSize, 4),
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    });
+    if (!dimsStable || !vertexBuffer || vertexBuffer.size < vSize) {
+      vertexBuffer?.destroy();
+      vertexBuffer = device.createBuffer({
+        label: 'surface3d/vertices',
+        size: Math.max(vSize, 4),
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      });
+    }
     device.queue.writeBuffer(vertexBuffer, 0, packed.vertices.buffer, packed.vertices.byteOffset, vBytes);
 
-    const iBytes = packed.indices.byteLength;
-    const iSize = Math.ceil(iBytes / 4) * 4;
-    indexBuffer = device.createBuffer({
-      label: 'surface3d/indices',
-      size: Math.max(iSize, 4),
-      usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(indexBuffer, 0, packed.indices.buffer, packed.indices.byteOffset, iBytes);
-    indexCount = packed.indexCount;
+    // Index topology is stable when columns×rows unchanged — retain index buffers (D6).
+    if (!dimsStable) {
+      indexBuffer?.destroy();
+      wireIndexBuffer?.destroy();
+      const iBytes = packed.indices.byteLength;
+      const iSize = Math.ceil(iBytes / 4) * 4;
+      indexBuffer = device.createBuffer({
+        label: 'surface3d/indices',
+        size: Math.max(iSize, 4),
+        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+      });
+      device.queue.writeBuffer(indexBuffer, 0, packed.indices.buffer, packed.indices.byteOffset, iBytes);
+      indexCount = packed.indexCount;
 
-    if (wireframe) {
+      if (wireframe) {
+        const wIdx = packSurface3DWireframeIndices(packed.columns, packed.rows);
+        const wBytes = wIdx.byteLength;
+        const wSize = Math.ceil(wBytes / 4) * 4;
+        wireIndexBuffer = device.createBuffer({
+          label: 'surface3d/wireIndices',
+          size: Math.max(wSize, 4),
+          usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(wireIndexBuffer, 0, wIdx.buffer, wIdx.byteOffset, wBytes);
+        wireIndexCount = wIdx.length;
+      } else {
+        wireIndexBuffer = null;
+        wireIndexCount = 0;
+      }
+      lastColumns = packed.columns;
+      lastRows = packed.rows;
+    } else if (wireframe && !wireIndexBuffer) {
+      // Wire mode toggled on with stable dims
       const wIdx = packSurface3DWireframeIndices(packed.columns, packed.rows);
       const wBytes = wIdx.byteLength;
       const wSize = Math.ceil(wBytes / 4) * 4;
@@ -200,7 +227,8 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
       });
       device.queue.writeBuffer(wireIndexBuffer, 0, wIdx.buffer, wIdx.byteOffset, wBytes);
       wireIndexCount = wIdx.length;
-    } else {
+    } else if (!wireframe) {
+      wireIndexBuffer?.destroy();
       wireIndexBuffer = null;
       wireIndexCount = 0;
     }

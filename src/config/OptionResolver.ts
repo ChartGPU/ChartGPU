@@ -57,6 +57,7 @@ import {
   surface3dDefaults,
   camera3dDefaults,
   interaction3dDefaults,
+  axes3dDefaults,
 } from './defaults';
 import { isNamedColormap } from '../utils/colormap';
 import {
@@ -385,6 +386,7 @@ export type ResolvedSurface3DSeriesConfig = Readonly<{
   readonly lighting: number;
   readonly color: string;
   readonly drawable: boolean;
+  readonly contours: ResolvedSurface3DContours;
 }>;
 
 export type ResolvedSeriesConfig2D =
@@ -431,11 +433,34 @@ export type ResolvedInteraction3D = Readonly<{
   readonly panSpeed: number;
 }>;
 
+export type ResolvedAxis3D = Readonly<{
+  readonly name: string;
+  readonly type: 'value';
+  readonly min?: number;
+  readonly max?: number;
+  readonly tickCount: number;
+  readonly visible: boolean;
+}>;
+
 export type ResolvedAxes3D = Readonly<{
+  readonly x: ResolvedAxis3D;
+  readonly y: ResolvedAxis3D;
+  readonly z: ResolvedAxis3D;
+  /** @deprecated use x.name — kept for back-compat reads in tests/docs */
   readonly xName: string;
   readonly yName: string;
   readonly zName: string;
   readonly showBox: boolean;
+  readonly showGrid: boolean;
+  readonly labelMode: 'auto' | 'dom' | 'gpu';
+}>;
+
+export type ResolvedSurface3DContours = Readonly<{
+  readonly show: boolean;
+  readonly levels: number | readonly number[];
+  readonly color: string;
+  readonly width: number;
+  readonly opacity: number;
 }>;
 
 export interface ResolvedChartGPUOptions extends Omit<
@@ -541,12 +566,42 @@ function resolveInteraction3D(input: Interaction3DOptions | undefined): Resolved
   };
 }
 
-function resolveAxes3D(input: Axes3DOptions | undefined): ResolvedAxes3D {
+function resolveOneAxis3D(input: Axes3DOptions['x'] | undefined, fallbackName: string): ResolvedAxis3D {
+  const name = typeof input?.name === 'string' && input.name.trim() ? input.name : fallbackName;
+  const tickCount =
+    typeof input?.tickCount === 'number' && Number.isFinite(input.tickCount) && input.tickCount >= 2
+      ? Math.min(20, Math.floor(input.tickCount))
+      : axes3dDefaults.tickCount;
+  const min = typeof input?.min === 'number' && Number.isFinite(input.min) ? input.min : undefined;
+  const max = typeof input?.max === 'number' && Number.isFinite(input.max) ? input.max : undefined;
   return {
-    xName: typeof input?.x?.name === 'string' && input.x.name.trim() ? input.x.name : 'X',
-    yName: typeof input?.y?.name === 'string' && input.y.name.trim() ? input.y.name : 'Y',
-    zName: typeof input?.z?.name === 'string' && input.z.name.trim() ? input.z.name : 'Z',
+    name,
+    type: 'value',
+    min,
+    max,
+    tickCount,
+    visible: input?.visible !== false,
+  };
+}
+
+function resolveAxes3D(input: Axes3DOptions | undefined): ResolvedAxes3D {
+  const x = resolveOneAxis3D(input?.x, 'X');
+  const y = resolveOneAxis3D(input?.y, 'Y');
+  const z = resolveOneAxis3D(input?.z, 'Z');
+  const labelMode =
+    input?.labelMode === 'dom' || input?.labelMode === 'gpu' || input?.labelMode === 'auto'
+      ? input.labelMode
+      : axes3dDefaults.labelMode;
+  return {
+    x,
+    y,
+    z,
+    xName: x.name,
+    yName: y.name,
+    zName: z.name,
     showBox: input?.showBox !== false,
+    showGrid: input?.showGrid !== false,
+    labelMode,
   };
 }
 
@@ -646,6 +701,24 @@ function resolveSurface3DSeries(
   }
   if (!(yMax > yMin)) yMax = yMin + 1;
 
+  const c = s.contours;
+  const contShow = c?.show === true;
+  let contLevels: number | readonly number[] = surface3dDefaults.contoursLevels;
+  if (c?.levels != null) {
+    if (Array.isArray(c.levels)) {
+      contLevels = c.levels.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+    } else if (typeof c.levels === 'number' && Number.isFinite(c.levels) && c.levels > 0) {
+      contLevels = Math.min(64, Math.floor(c.levels));
+    }
+  }
+  const contColor = typeof c?.color === 'string' && c.color.trim() ? c.color : surface3dDefaults.contoursColor;
+  const contWidth =
+    typeof c?.width === 'number' && Number.isFinite(c.width) && c.width > 0 ? c.width : surface3dDefaults.contoursWidth;
+  const contOpacity =
+    typeof c?.opacity === 'number' && Number.isFinite(c.opacity)
+      ? Math.min(1, Math.max(0, c.opacity))
+      : surface3dDefaults.contoursOpacity;
+
   return {
     type: 'surface3d',
     name: s.name,
@@ -659,6 +732,13 @@ function resolveSurface3DSeries(
     lighting,
     color: ctx.color,
     drawable: Boolean(drawable),
+    contours: {
+      show: contShow,
+      levels: contLevels,
+      color: contColor,
+      width: contWidth,
+      opacity: contOpacity,
+    },
   };
 }
 

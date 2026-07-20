@@ -186,6 +186,42 @@ describe('OptionResolver 3D modality', () => {
     expect(r.camera.fovY).toBeGreaterThan(0);
     expect(r.interaction3d.orbit).toBe(true);
     expect(r.axes3d.showBox).toBe(true);
+    expect(r.axes3d.showGrid).toBe(true);
+    expect(r.axes3d.labelMode).toBe('auto');
+    expect(r.axes3d.x.name).toBe('X');
+    expect(r.axes3d.x.tickCount).toBe(5);
+  });
+
+  it('resolves axes3d names, showGrid false, tickCount, contours', () => {
+    const y = new Float32Array(4).fill(1);
+    const r = resolveOptions({
+      coordinateSystem: 'cartesian3d',
+      axes3d: {
+        showGrid: false,
+        x: { name: 'X (m)', tickCount: 8 },
+        y: { name: 'Height' },
+        z: { name: 'Depth', min: -1, max: 1 },
+      },
+      series: [
+        {
+          type: 'surface3d',
+          data: { xStart: 0, xStep: 1, zStart: 0, zStep: 1, columns: 2, rows: 2, y },
+          contours: { show: true, levels: 6, color: '#fff', opacity: 0.5 },
+        },
+      ],
+    });
+    expect(r.axes3d.showGrid).toBe(false);
+    expect(r.axes3d.xName).toBe('X (m)');
+    expect(r.axes3d.x.tickCount).toBe(8);
+    expect(r.axes3d.z.min).toBe(-1);
+    expect(r.axes3d.z.max).toBe(1);
+    const s = r.series[0]!;
+    expect(s.type).toBe('surface3d');
+    if (s.type !== 'surface3d') throw new Error('expected surface3d');
+    expect(s.contours.show).toBe(true);
+    expect(s.contours.levels).toBe(6);
+    expect(s.contours.color).toBe('#fff');
+    expect(s.contours.opacity).toBe(0.5);
   });
 
   it('isResolvedSeries2D table', () => {

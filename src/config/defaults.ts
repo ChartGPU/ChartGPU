@@ -94,6 +94,18 @@ export const surface3dDefaults = {
   opacity: 1,
   wireframe: false,
   lighting: 0.65,
+  contoursShow: false,
+  contoursLevels: 12,
+  contoursColor: '#e2e8f0',
+  contoursWidth: 1.5,
+  contoursOpacity: 0.85,
+} as const;
+
+export const axes3dDefaults = {
+  showBox: true,
+  showGrid: true,
+  labelMode: 'auto' as const,
+  tickCount: 5,
 } as const;
 
 export const camera3dDefaults = {
