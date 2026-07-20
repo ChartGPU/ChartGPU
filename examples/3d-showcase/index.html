@@ -26,6 +26,15 @@
     }
     header h1 { margin: 0; font-size: 1.45rem; color: #fff; }
     header p { margin: 8px 0 0; color: #aaa; line-height: 1.45; }
+    .whats-new {
+      margin: 10px 0 0;
+      padding: 0 0 0 1.1rem;
+      color: #b8c0cc;
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+    .whats-new li { margin: 2px 0; }
+    .whats-new strong { color: #e8ecf4; font-weight: 600; }
     .back { display: inline-block; margin-top: 10px; color: #aaa; text-decoration: none; }
     .back:hover { color: #fff; }
     .note {
@@ -52,6 +61,12 @@
       gap: 8px;
       font-size: 0.9rem;
       color: #ccc;
+    }
+    .controls .hint {
+      width: 100%;
+      font-size: 0.8rem;
+      color: #777;
+      margin: 0;
     }
     select, button { accent-color: #5470c6; }
     button {
@@ -87,10 +102,15 @@
     <header>
       <h1>3D Showcase</h1>
       <p>
-        Labeled axes + grid walls, terrain surface with isolines, live LiDAR cloud FIFO,
-        scrolling spectrogram strip, and hover pick for surface cells and cloud points.
-        Drag to orbit · Shift-drag to pan · Wheel to zoom · Double-click to reset.
+        Default view is a <strong>stable inspect scene</strong> so you can orbit, hover, and read axes.
+        Optional streams stay slow and opt-in — they no longer race off-screen.
       </p>
+      <ul class="whats-new">
+        <li><strong>Labeled axes + grids</strong> — readable X / Height / Y chrome</li>
+        <li><strong>Hover pick</strong> — surface cell vs LiDAR point (tooltip)</li>
+        <li><strong>Contours</strong> — isolines on the height field (toggle)</li>
+        <li><strong>Optional:</strong> bounded cloud FIFO · smooth spectrogram strip (camera can follow scroll)</li>
+      </ul>
       <a class="back" href="../index.html">← Examples</a>
       <a class="back" href="../point-cloud-3d/index.html" style="margin-left:12px">Point cloud</a>
       <a class="back" href="../surface-3d/index.html" style="margin-left:12px">Surface</a>
@@ -99,19 +119,21 @@
     <div class="note">
       <strong>Production profiling:</strong> measure FPS with
       <code>bun run build</code> + <code>bun run preview:examples</code> (or examples production build),
-      not the Vite dev server (dev incurs ~3× GPU overhead). Defaults use mid-size data for first paint;
-      raise cloud size for effect on your hardware.
+      not the Vite dev server (dev incurs ~3× GPU overhead). Prefer a calm first paint; raise cloud size
+      only when stress-testing.
     </div>
 
     <div class="controls">
+      <p class="hint">Streams are <strong>off by default</strong>. Enable one at a time to demo FIFO or strip scroll (strip runs at display refresh for smooth motion).</p>
       <label>Cloud <select id="cloudSize">
-        <option value="50000">50k</option>
-        <option value="150000" selected>150k</option>
+        <option value="50000" selected>50k</option>
+        <option value="150000">150k</option>
         <option value="500000">500k</option>
         <option value="1000000">1M</option>
       </select></label>
-      <label><input type="checkbox" id="streamCloud" checked /> Stream cloud FIFO</label>
-      <label><input type="checkbox" id="streamSurface" checked /> Scroll surface strip</label>
+      <label><input type="checkbox" id="streamCloud" /> Stream cloud FIFO</label>
+      <label><input type="checkbox" id="streamSurface" /> Scroll surface strip</label>
+      <label><input type="checkbox" id="followScroll" checked /> Follow surface scroll</label>
       <label><input type="checkbox" id="showContours" checked /> Contours</label>
       <label>Camera <select id="camType">
         <option value="perspective">Perspective</option>
@@ -127,9 +149,9 @@
     </div>
 
     <footer>
-      Showcase acceptance: axis titles/ticks visible · orbit keeps orientation via grids ·
-      hover surface cell vs cloud point · live stream ≥15s without unbounded growth ·
-      toggle contours · reset camera. See also thin demos <code>point-cloud-3d</code> / <code>surface-3d</code>.
+      Try: orbit · hover a ridge (surface) vs a sample (LiDAR) · toggle contours · then optionally enable
+      strip scroll (display-rate, smooth). Drag to orbit · Shift-drag to pan · Wheel to zoom · Double-click / Reset camera.
+      Thin demos: <code>point-cloud-3d</code> / <code>surface-3d</code>.
     </footer>
   </div>
   <script type="module" src="./main.ts"></script>

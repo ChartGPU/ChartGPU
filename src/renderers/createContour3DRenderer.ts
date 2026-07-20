@@ -52,6 +52,10 @@ export function createContour3DRenderer(device: GPUDevice, options?: Contour3DRe
   let lastYMin = NaN;
   let lastYMax = NaN;
   let lastShow = false;
+  /** Throttle full marching-squares rebuild during rapid surface stream. */
+  let lastGeomMs = 0;
+  const GEOM_MIN_INTERVAL_MS = 120;
+  let forceNextGeom = false;
 
   const bindGroupLayout = device.createBindGroupLayout({
     label: 'contour3d/bgl',
@@ -107,13 +111,19 @@ export function createContour3DRenderer(device: GPUDevice, options?: Contour3DRe
       const dataRef = seriesConfig.data;
       const yRef = dataRef?.y;
       const lk = levelsKey(cont.levels);
-      const needGeom =
+      const identityChanged =
         !lastShow ||
         dataRef !== lastDataRef ||
         yRef !== lastYRef ||
         lk !== lastLevelsKey ||
         seriesConfig.yMin !== lastYMin ||
         seriesConfig.yMax !== lastYMax;
+
+      const now = performance.now();
+      // Levels / show toggles always rebuild; height stream rebuilds at most ~8 Hz.
+      const levelsOrShowChanged = !lastShow || lk !== lastLevelsKey || forceNextGeom;
+      const needGeom =
+        identityChanged && (levelsOrShowChanged || forceNextGeom || now - lastGeomMs >= GEOM_MIN_INTERVAL_MS);
 
       if (needGeom) {
         const resolved = resolveContourLevels(cont.levels, seriesConfig.yMin, seriesConfig.yMax);
@@ -150,6 +160,8 @@ export function createContour3DRenderer(device: GPUDevice, options?: Contour3DRe
         lastYMin = seriesConfig.yMin;
         lastYMax = seriesConfig.yMax;
         lastShow = true;
+        lastGeomMs = now;
+        forceNextGeom = false;
       }
 
       if (vertexCount < 2 || !vertexBuffer) {
@@ -191,6 +203,8 @@ export function createContour3DRenderer(device: GPUDevice, options?: Contour3DRe
       lastLevelsKey = '';
       lastShow = false;
       hasPrepared = false;
+      forceNextGeom = true; // bypass stream throttle (e.g. replaceY / setOption)
+      lastGeomMs = 0;
     },
     dispose() {
       if (disposed) return;

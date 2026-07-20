@@ -128,11 +128,21 @@ describe('surface3dStream', () => {
     expect(r2.recomputeDomain).toBe(true);
   });
 
-  it('appendColumns scroll recomputes domain flag', () => {
+  it('appendColumns single-column scroll uses cheap domain expand path', () => {
     const g = baseGrid();
     const col = new Float32Array([100, 101, 102]);
+    // Single-column spectrogram scroll: coordinator expands domain from the new strip
+    // (recomputeDomain false). Multi-column still requests full recompute.
     const r = applySurface3DAppendColumns(g, { mode: 'appendColumns', columns: 1, y: col, scrollX: true });
-    expect(r.recomputeDomain).toBe(true);
+    expect(r.recomputeDomain).toBe(false);
     expect(r.scrolled).toBe(true);
+
+    const multi = applySurface3DAppendColumns(g, {
+      mode: 'appendColumns',
+      columns: 2,
+      y: new Float32Array(6).fill(3),
+      scrollX: true,
+    });
+    expect(multi.recomputeDomain).toBe(true);
   });
 });

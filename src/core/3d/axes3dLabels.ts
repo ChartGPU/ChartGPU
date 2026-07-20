@@ -49,6 +49,8 @@ export function createAxes3DLabels(): Axes3DLabels {
   let hostEl: HTMLElement | null = null;
   let didSetRelative = false;
   let previousInlinePosition: string | null = null;
+  /** Reused spans so orbit / strip stream do not thrash DOM every frame. */
+  let spanPool: HTMLSpanElement[] = [];
 
   const ensureRoot = (host: HTMLElement): HTMLDivElement => {
     if (root && root.parentElement === host) return root;
@@ -68,6 +70,7 @@ export function createAxes3DLabels(): Axes3DLabels {
     root.style.pointerEvents = 'none';
     root.style.overflow = 'hidden';
     root.style.zIndex = '8';
+    spanPool = [];
     const pos = getComputedStyle(host).position;
     if (pos === 'static') {
       previousInlinePosition = host.style.position;
@@ -86,7 +89,6 @@ export function createAxes3DLabels(): Axes3DLabels {
       if (disposed) return;
       // labelMode 'gpu' is currently DOM fallback (no SDF atlas).
       const el = ensureRoot(host);
-      el.replaceChildren();
 
       const [x0, y0, z0] = aabb.min;
       const [x1, y1, z1] = aabb.max;
@@ -132,6 +134,7 @@ export function createAxes3DLabels(): Axes3DLabels {
       }
 
       const placed: { x: number; y: number }[] = [];
+      let used = 0;
       for (const it of items) {
         const p = projectWorldToCss(viewProj, it.x, it.y, it.z, viewportCssW, viewportCssH);
         if (!p.visible) continue;
@@ -145,20 +148,32 @@ export function createAxes3DLabels(): Axes3DLabels {
         }
         if (overlap && !it.title) continue;
         placed.push({ x: p.x, y: p.y });
-        const span = document.createElement('span');
-        span.textContent = it.text;
+
+        let span = spanPool[used];
+        if (!span) {
+          span = document.createElement('span');
+          el.appendChild(span);
+          spanPool[used] = span;
+        }
         labelStyle(span, textColor, it.title);
+        if (span.textContent !== it.text) span.textContent = it.text;
         span.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -50%)`;
-        el.appendChild(span);
+        span.style.display = '';
+        used++;
+      }
+      for (let i = used; i < spanPool.length; i++) {
+        const spare = spanPool[i];
+        if (spare) spare.style.display = 'none';
       }
     },
     clear() {
-      if (root) root.replaceChildren();
+      for (const span of spanPool) span.style.display = 'none';
     },
     dispose() {
       disposed = true;
       if (root?.parentElement) root.parentElement.removeChild(root);
       root = null;
+      spanPool = [];
       if (hostEl && didSetRelative) {
         hostEl.style.position = previousInlinePosition ?? '';
       }

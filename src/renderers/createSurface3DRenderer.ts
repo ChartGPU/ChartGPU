@@ -66,6 +66,8 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
   let lastRows = -1;
   let uploadCount = 0;
   let hasGeom = false;
+  /** Reused CPU pack target — avoids allocating columns×rows×8 floats every strip tick. */
+  let packVertexScratch: Float32Array | null = null;
 
   let lutTexture: GPUTexture | null = null;
   let lutView: GPUTextureView | null = null;
@@ -163,6 +165,7 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
   );
 
   let bindGroup: GPUBindGroup | null = null;
+  let lastBindLutKey = '';
   let hasPrepared = false;
   let drawWire = false;
   let packedMeta: PackedSurface3D | null = null;
@@ -185,7 +188,8 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
     device.queue.writeBuffer(vertexBuffer, 0, packed.vertices.buffer, packed.vertices.byteOffset, vBytes);
 
     // Index topology is stable when columns×rows unchanged — retain index buffers (D6).
-    if (!dimsStable) {
+    // skipIndices packs report indexCount 0; keep previous indexCount when dimsStable.
+    if (!dimsStable && packed.indexCount > 0) {
       indexBuffer?.destroy();
       wireIndexBuffer?.destroy();
       const iBytes = packed.indices.byteLength;
@@ -234,14 +238,16 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
     }
 
     uploadCount++;
-    hasGeom = packed.vertexCount > 0 && packed.indexCount > 0;
+    // skipIndices packs leave indexCount 0 while GPU retains prior index buffer.
+    hasGeom = packed.vertexCount > 0 && (packed.indexCount > 0 || indexCount > 0);
     packedMeta = packed;
   };
 
   const prepare = (seriesConfig: ResolvedSurface3DSeriesConfig, options: Surface3DPrepareOptions): void => {
     if (disposed) return;
     if (!seriesConfig.drawable) {
-      hasGeom = false;
+      // Do not clear hasGeom / GPU buffers — style-only frames may flip drawable
+      // transiently; sticky hasGeom=false permanently hides the mesh after recovery.
       hasPrepared = false;
       return;
     }
@@ -254,18 +260,33 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
     // In-place mutation of y values under a stable array reference is not detected
     // (same contract as heatmap z) — replace `data` or `data.y` reference via setOption.
     if (dataRef !== lastDataRef || yRef !== lastYRef || wire !== lastWire) {
-      const packed = packSurface3D(dataRef, { yMin: seriesConfig.yMin, yMax: seriesConfig.yMax });
+      // Streaming strip keeps columns×rows fixed — skip index rebuild (retained on GPU).
+      const dimsKnown = lastColumns === dataRef.columns && lastRows === dataRef.rows && indexBuffer != null;
+      const floats = Math.max(0, (dataRef?.columns ?? 0) * (dataRef?.rows ?? 0) * 8);
+      if (!packVertexScratch || packVertexScratch.length < floats) {
+        packVertexScratch = new Float32Array(Math.max(floats, 64));
+      }
+      const packed = packSurface3D(dataRef, {
+        yMin: seriesConfig.yMin,
+        yMax: seriesConfig.yMax,
+        skipIndices: dimsKnown,
+        // Coordinator owns scene AABB; skip duplicate bounds walk in pack.
+        skipAabb: true,
+        targetVertices: packVertexScratch,
+      });
       if (!packed) {
         hasGeom = false;
         hasPrepared = false;
-        lastDataRef = dataRef;
-        lastYRef = yRef;
+        // Do not latch lastDataRef on failed pack — allow retry when data becomes valid.
         return;
       }
       uploadGeometry(packed, wire);
       lastDataRef = dataRef;
       lastYRef = yRef;
       lastWire = wire;
+    } else if (!hasGeom && vertexBuffer != null && indexBuffer != null && indexCount > 0) {
+      // Recover from a prior failed/skip frame without re-packing the same refs.
+      hasGeom = true;
     }
 
     const meta = packedMeta;
@@ -274,7 +295,8 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
       return;
     }
 
-    const lut = ensureLut(colormapKey(seriesConfig.colormap), seriesConfig.colormap);
+    const lutKey = colormapKey(seriesConfig.colormap);
+    const lut = ensureLut(lutKey, seriesConfig.colormap);
     vsUniformF32.set(options.viewProj, 0);
     // Light from upper-left-front
     vsUniformF32[16] = 0.4;
@@ -291,14 +313,18 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
     vsUniformF32[27] = 1;
     writeUniformBuffer(device, vsUniformBuffer, vsUniformF32);
 
-    bindGroup = device.createBindGroup({
-      label: 'surface3d/bindGroup',
-      layout: bindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: vsUniformBuffer } },
-        { binding: 1, resource: lut },
-      ],
-    });
+    // Rebuild bind group only when LUT texture view identity changes.
+    if (!bindGroup || lastBindLutKey !== lutKey) {
+      bindGroup = device.createBindGroup({
+        label: 'surface3d/bindGroup',
+        layout: bindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: vsUniformBuffer } },
+          { binding: 1, resource: lut },
+        ],
+      });
+      lastBindLutKey = lutKey;
+    }
     drawWire = wire;
     hasPrepared = true;
   };

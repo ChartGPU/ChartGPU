@@ -132,27 +132,45 @@ export function applySurface3DAppendColumns(
 
   if (scrollX) {
     const keep = Math.max(0, oldCols - addCols);
-    const nextY = new Float32Array(oldCols * rows);
-    for (let i = 0; i < keep; i++) {
-      const srcCol = i + (oldCols - keep);
-      for (let r = 0; r < rows; r++) {
-        nextY[r * oldCols + i] = copyHeight(grid.y, r * oldCols + srcCol);
-      }
-    }
-    const newStart = keep;
-    for (let c = 0; c < addCols; c++) {
-      const destCol = newStart + c;
-      if (destCol >= oldCols) break;
-      for (let r = 0; r < rows; r++) {
-        nextY[r * oldCols + destCol] = heightOrNaN(src[c * rows + r]);
-      }
-    }
     const drop = oldCols - keep;
-    if (addCols >= oldCols) {
+    const nextY = new Float32Array(oldCols * rows);
+    const srcY = grid.y;
+
+    // Fast path: shift one column (common spectrogram scroll).
+    // Always allocate a fresh y buffer — must not mutate caller-owned height arrays.
+    if (addCols === 1 && keep === oldCols - 1 && oldCols >= 2) {
+      for (let r = 0; r < rows; r++) {
+        const row = r * oldCols;
+        // Row-major: copy columns [1..oldCols) → [0..oldCols-1)
+        if (srcY instanceof Float32Array) {
+          nextY.set(srcY.subarray(row + 1, row + oldCols), row);
+        } else {
+          for (let i = 0; i < keep; i++) {
+            nextY[row + i] = copyHeight(srcY, row + i + 1);
+          }
+        }
+        nextY[row + keep] = heightOrNaN(src[r]);
+      }
+    } else if (addCols >= oldCols) {
       for (let i = 0; i < oldCols; i++) {
         const cSrc = addCols - oldCols + i;
         for (let r = 0; r < rows; r++) {
           nextY[r * oldCols + i] = heightOrNaN(src[cSrc * rows + r]);
+        }
+      }
+    } else {
+      for (let i = 0; i < keep; i++) {
+        const srcCol = i + (oldCols - keep);
+        for (let r = 0; r < rows; r++) {
+          nextY[r * oldCols + i] = copyHeight(srcY, r * oldCols + srcCol);
+        }
+      }
+      const newStart = keep;
+      for (let c = 0; c < addCols; c++) {
+        const destCol = newStart + c;
+        if (destCol >= oldCols) break;
+        for (let r = 0; r < rows; r++) {
+          nextY[r * oldCols + destCol] = heightOrNaN(src[c * rows + r]);
         }
       }
     }
@@ -168,7 +186,8 @@ export function applySurface3DAppendColumns(
       },
       dimsChanged: false,
       scrolled: drop > 0 || addCols > 0,
-      recomputeDomain: true,
+      // Domain expands from new column in coordinator for cheap strip path
+      recomputeDomain: addCols !== 1,
     };
   }
 

@@ -38,7 +38,9 @@ describe('surface stream domain after updates', () => {
       y: col,
       scrollX: true,
     });
-    expect(r.recomputeDomain).toBe(true);
+    // Single-column scroll leaves recomputeDomain false so the coordinator can
+    // expand colormap domain from the new strip only (no full field scan).
+    expect(r.recomputeDomain).toBe(false);
     const domain = computeSurface3DDomain(r.data.y, columns * rows);
     expect(domain.yMax).toBe(20);
     expect(domain.yMin).toBe(0);

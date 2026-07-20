@@ -44,7 +44,7 @@ import { pickSurface3D } from '../3d/pickSurface3d';
 import { createAxes3DLabels } from '../3d/axes3dLabels';
 import { resolveCloudValueChannelIdentity, shouldInvalidateCloudPack, type CloudPackSeed } from '../3d/cloudPackPolicy';
 import { packPointCloud3D, appendPackedPointCloud3D, type PackedPointCloud3D } from '../../data/pointCloud3dData';
-import { packSurface3D } from '../../data/surface3dData';
+import { computeSurface3DAABB, shiftSurface3DAABBColumnScroll } from '../../data/surface3dData';
 import { applySurface3DUpdate, computeSurface3DDomain, shouldClearSurfaceStream } from '../../data/surface3dStream';
 import { parseCssColorToGPUColor, parseCssColorToRgba01 } from '../../utils/colors';
 import { createLegend } from '../../components/createLegend';
@@ -269,8 +269,8 @@ export function createRenderCoordinator3D(
     if (cached && cached.data === eff.data && cached.y === yRef) {
       return cached.aabb;
     }
-    const packed = packSurface3D(eff.data);
-    const aabb = packed?.aabb ?? null;
+    // Cheap height walk only — do not full mesh-pack for axes AABB on every strip tick.
+    const aabb = computeSurface3DAABB(eff.data);
     surfaceAabbCacheByIndex[i] = { data: eff.data, y: yRef, aabb };
     return aabb;
   };
@@ -943,10 +943,37 @@ export function createRenderCoordinator3D(
       }
       const result = applySurface3DUpdate(base, update);
       surfaceStreamDataByIndex[seriesIndex] = result.data;
-      surfaceAabbCacheByIndex[seriesIndex] = null;
-      // Domain: explicit replaceY yMin/yMax, else auto from field when stream mutates heights.
+
+      // Domain: explicit replaceY; single-column scroll expands from new strip only;
+      // full recompute when multi-column or replaceY without explicit domain.
       if (result.yMin != null && result.yMax != null && !result.recomputeDomain) {
         surfaceDomainByIndex[seriesIndex] = { yMin: result.yMin, yMax: result.yMax };
+      } else if (
+        update.mode === 'appendColumns' &&
+        update.scrollX !== false &&
+        update.columns === 1 &&
+        !result.recomputeDomain
+      ) {
+        const prev = surfaceDomainByIndex[seriesIndex];
+        const col = update.y;
+        let lo = prev?.yMin ?? Infinity;
+        let hi = prev?.yMax ?? -Infinity;
+        const n = Math.min(col.length, result.data.rows);
+        for (let r = 0; r < n; r++) {
+          const v = Number(col[r]);
+          if (!Number.isFinite(v)) continue;
+          if (v < lo) lo = v;
+          if (v > hi) hi = v;
+        }
+        if (!Number.isFinite(lo)) {
+          const auto = computeSurface3DDomain(result.data.y, result.data.columns * result.data.rows);
+          lo = auto.yMin;
+          hi = auto.yMax;
+        }
+        surfaceDomainByIndex[seriesIndex] = {
+          yMin: lo,
+          yMax: hi > lo ? hi : lo + 1,
+        };
       } else if (result.recomputeDomain) {
         const auto = computeSurface3DDomain(result.data.y, result.data.columns * result.data.rows);
         const yMin = result.yMin ?? auto.yMin;
@@ -956,7 +983,31 @@ export function createRenderCoordinator3D(
           yMax: yMax > yMin ? yMax : yMin + 1,
         };
       }
-      contourRenderers[seriesIndex]?.invalidate();
+
+      // AABB: single-column scroll shifts prior bounds by +dx and expands Y from the new strip.
+      // Avoid a full height walk every tick at 30–60 Hz.
+      if (update.mode === 'appendColumns' && update.scrollX !== false && update.columns === 1 && result.scrolled) {
+        const prevCache = surfaceAabbCacheByIndex[seriesIndex];
+        const dx = result.data.xStep * Math.max(0, Math.floor(update.columns));
+        if (prevCache?.aabb && dx !== 0) {
+          const shifted = shiftSurface3DAABBColumnScroll(prevCache.aabb, dx, update.y, result.data.rows);
+          surfaceAabbCacheByIndex[seriesIndex] = {
+            data: result.data,
+            y: result.data.y,
+            aabb: shifted,
+          };
+        } else {
+          surfaceAabbCacheByIndex[seriesIndex] = null;
+        }
+      } else {
+        surfaceAabbCacheByIndex[seriesIndex] = null;
+      }
+
+      // Contours rebuild with an internal time throttle during strip stream;
+      // force immediate rebuild on full field replace.
+      if (update.mode === 'replaceY') {
+        contourRenderers[seriesIndex]?.invalidate();
+      }
       callbacks?.onRequestRender?.();
       return true;
     },
