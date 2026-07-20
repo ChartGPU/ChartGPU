@@ -4,6 +4,7 @@ import type {
   ResolvedPieSeriesConfig,
   ResolvedSeriesConfig,
 } from '../../config/OptionResolver';
+import { isResolvedSeries2D } from '../../config/OptionResolver';
 import type { AnnotationConfig, BandSeriesData, DataPoint, OHLCDataPoint } from '../../config/types';
 import {
   sliceBandByX,
@@ -411,6 +412,7 @@ const computeGlobalXBounds = (
   for (let s = 0; s < series.length; s++) {
     const seriesConfig = series[s];
     if (seriesConfig.type === 'pie') continue;
+    if (!isResolvedSeries2D(seriesConfig)) continue;
 
     const runtimeBoundsCandidate = runtimeRawBoundsByIndex?.[s] ?? null;
     if (runtimeBoundsCandidate) {
@@ -484,6 +486,7 @@ const computeGlobalYBoundsForAxis = (
   for (let s = 0; s < series.length; s++) {
     const seriesConfig = series[s];
     if (seriesConfig.type === 'pie') continue;
+    if (!isResolvedSeries2D(seriesConfig)) continue;
     if (seriesConfig.yAxis !== axisId) continue;
 
     const runtimeBoundsCandidate = runtimeRawBoundsByIndex?.[s] ?? null;
@@ -586,6 +589,7 @@ const computePositiveYBoundsForAxis = (
   for (let s = 0; s < series.length; s++) {
     const seriesConfig = series[s];
     if (seriesConfig.type === 'pie') continue;
+    if (!isResolvedSeries2D(seriesConfig)) continue;
     if (seriesConfig.yAxis !== axisId) continue;
 
     if (seriesConfig.type === 'heatmap') {
@@ -642,6 +646,7 @@ const computePositiveYBoundsForAxis = (
       for (let s = 0; s < series.length; s++) {
         const seriesConfig = series[s];
         if (seriesConfig.type === 'pie') continue;
+        if (!isResolvedSeries2D(seriesConfig)) continue;
         if (seriesConfig.yAxis !== axisId) continue;
         const b = runtimeRawBoundsByIndex?.[s] ?? seriesConfig.rawBounds ?? null;
         if (b && b.yMin > 0 && b.yMax > 0) {
@@ -666,6 +671,7 @@ const computePositiveXBounds = (series: ResolvedChartGPUOptions['series']): { xM
   for (let s = 0; s < series.length; s++) {
     const seriesConfig = series[s];
     if (seriesConfig.type === 'pie' || seriesConfig.type === 'candlestick') continue;
+    if (!isResolvedSeries2D(seriesConfig)) continue;
     if (seriesConfig.type === 'heatmap') {
       const b = seriesConfig.rawBounds;
       if (b && b.xMin > 0 && b.xMax > 0) {
@@ -683,6 +689,15 @@ const computePositiveXBounds = (series: ResolvedChartGPUOptions['series']): { xM
         if (x < xMin) xMin = x;
         if (x > xMax) xMax = x;
       }
+      continue;
+    }
+    // After pie/candle/heatmap/band + isResolvedSeries2D: only line/area/bar/scatter remain.
+    if (
+      seriesConfig.type !== 'line' &&
+      seriesConfig.type !== 'area' &&
+      seriesConfig.type !== 'bar' &&
+      seriesConfig.type !== 'scatter'
+    ) {
       continue;
     }
     const data = (seriesConfig.rawData ?? seriesConfig.data) as CartesianSeriesData;
@@ -772,6 +787,7 @@ const computeVisibleYBoundsForAxis = (
   for (let s = 0; s < series.length; s++) {
     const seriesConfig = series[s];
     if (seriesConfig.type === 'pie') continue;
+    if (!isResolvedSeries2D(seriesConfig)) continue;
     if (seriesConfig.yAxis !== axisId) continue;
 
     if (seriesConfig.type === 'heatmap') {
@@ -2192,6 +2208,10 @@ export function createRenderCoordinator(
         maxPoints = Math.max(maxPoints, raw.length);
         continue;
       }
+      if (!isResolvedSeries2D(s)) continue;
+      if (s.type !== 'line' && s.type !== 'area' && s.type !== 'bar' && s.type !== 'scatter') {
+        continue;
+      }
 
       // Cartesian series: runtime store is MutableXYColumns or RingXYColumns
       const rawCartesian = runtimeRawDataByIndex[i];
@@ -2325,6 +2345,17 @@ export function createRenderCoordinator(
         continue;
       }
 
+      if (!isResolvedSeries2D(s)) {
+        runtimeRawDataByIndex[i] = null;
+        runtimeRawBoundsByIndex[i] = null;
+        continue;
+      }
+      if (s.type !== 'line' && s.type !== 'area' && s.type !== 'bar' && s.type !== 'scatter') {
+        runtimeRawDataByIndex[i] = null;
+        runtimeRawBoundsByIndex[i] = null;
+        continue;
+      }
+
       const raw = (s.rawData ?? s.data) as CartesianSeriesData;
       // Full rewrite path: keep the raw data reference to avoid O(n) MutableXYColumns
       // allocations every setOption on full-rewrite frames. appendData promotes to
@@ -2412,7 +2443,13 @@ export function createRenderCoordinator(
 
       // Pie / heatmap don't need x-window slicing (heatmap is a full grid texture).
       // Band: slice via Xyy helper (not cartesian sliceX).
-      if (baseline.type === 'pie' || baseline.type === 'heatmap') {
+      // 3D series never appear on 2D path but keep the switch exhaustive-safe.
+      if (
+        baseline.type === 'pie' ||
+        baseline.type === 'heatmap' ||
+        baseline.type === 'pointCloud3d' ||
+        baseline.type === 'surface3d'
+      ) {
         next[i] = baseline;
         continue;
       }

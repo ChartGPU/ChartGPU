@@ -10,7 +10,24 @@ ChartGPU follows a **functional-first architecture**:
 - **Render modes**: `'auto'` (internal rAF loop) or `'external'` (application-driven via `renderFrame()`)
 - **Render coordinator**: Modular architecture with 11 specialized modules under `src/core/renderCoordinator/` (see [INTERNALS.md](api/INTERNALS.md))
 - **Pipeline cache**: Optional shared `PipelineCache` for deduplicating shader modules, render pipelines, and compute pipelines across charts on the same device
-- **GPU frame graph**: Compute (scatter density + line decimation) → main scene **4× MSAA** resolve → optional dense-hairline **sampleCount:1** → overlay **4× MSAA** (blit + annotations + axes/crosshair/highlight); one `queue.submit` per frame via `submitBatcher`
+- **GPU frame graph (2D)**: Compute (scatter density + line decimation) → main scene **4× MSAA** resolve → optional dense-hairline **sampleCount:1** → overlay **4× MSAA** (blit + annotations + axes/crosshair/highlight); one `queue.submit` per frame via `submitBatcher`
+- **3D modality** (`coordinateSystem: 'cartesian3d'`): separate create path (`createChartGPU3D`) and coordinator (`src/core/renderCoordinator3d/`) — **does not** share the 2D MSAA overlay graph or enable depth on 2D charts
+
+### 3D frame graph (cartesian3d)
+
+Isolated from the 2D coordinator. Depth on; **sampleCount 1** (no MSAA in v1).
+
+```
+clear color + depth24plus
+  → surface3d meshes (opaque/lit colormap)
+  → pointCloud3d billboards
+  → optional AABB axis box (line-list)
+  → queue.submit (via submitBatcher)
+```
+
+Camera (orbit/pan/dolly) rebuilds view-projection uniforms only; series geometry re-uploads when data identity changes. Point-cloud appends stay resident while the series `data` seed identity is stable. Shared: `GPUContext`, `PipelineCache`, colormap LUT helpers. Not shared: 2D scale/zoom stack, dataZoom, 2D axis tick modules.
+
+See [`docs/api/3d.md`](api/3d.md).
 
 ## Architecture Diagram
 

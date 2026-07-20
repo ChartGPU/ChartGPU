@@ -81,6 +81,16 @@ export type {
   BandDataPointObject,
   BandXYYArraysData,
   InterleavedXYYData,
+  CoordinateSystem,
+  Chart3DCameraOptions,
+  Interaction3DOptions,
+  Axes3DOptions,
+  PointCloud3DSeriesConfig,
+  PointCloud3DData,
+  PointCloud3DArraysData,
+  InterleavedXYZData,
+  Surface3DSeriesConfig,
+  Surface3DGridData,
   RenderMode,
   ScatterSeriesConfig,
   ScatterSymbol,
@@ -93,8 +103,22 @@ export type {
 } from './config/types';
 
 // Options defaults + resolution
-export { candlestickDefaults, defaultOptions, heatmapDefaults } from './config/defaults';
-export { isCandlePrimaryChart, OptionResolver, resolveOptions, resolvePriceLabel } from './config/OptionResolver';
+export {
+  candlestickDefaults,
+  defaultOptions,
+  heatmapDefaults,
+  pointCloud3dDefaults,
+  surface3dDefaults,
+  camera3dDefaults,
+  interaction3dDefaults,
+} from './config/defaults';
+export {
+  isCandlePrimaryChart,
+  OptionResolver,
+  resolveOptions,
+  resolvePriceLabel,
+  isResolvedSeries2D,
+} from './config/OptionResolver';
 export type {
   ResolvedCandlestickPriceLabel,
   ResolvedCandlestickSeriesConfig,
@@ -110,8 +134,16 @@ export type {
   ResolvedPieSeriesConfig,
   ResolvedHeatmapSeriesConfig,
   ResolvedBandSeriesConfig,
+  ResolvedPointCloud3DSeriesConfig,
+  ResolvedSurface3DSeriesConfig,
   ResolvedSeriesConfig,
+  ResolvedSeriesConfig2D,
+  ResolvedCamera3D,
+  ResolvedInteraction3D,
+  ResolvedAxes3D,
 } from './config/OptionResolver';
+
+export type { ResolvedCamera } from './core/3d/camera';
 
 // Heatmap / colormap utilities (shared with scatter density)
 export { buildColormapLut, sampleHeatmapColormap, getNamedColormapStops, colormapKey } from './utils/colormap';

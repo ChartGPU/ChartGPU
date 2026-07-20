@@ -720,6 +720,11 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
         );
         break;
       }
+      case 'pointCloud3d':
+      case 'surface3d': {
+        // 3D series are rendered only by createRenderCoordinator3D — never on 2D path.
+        break;
+      }
       default: {
         // Exhaustive check for unhandled series types
         const _exhaustive: never = s;

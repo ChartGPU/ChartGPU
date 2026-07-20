@@ -57,6 +57,7 @@
     "acceptance:candle-price-axis": "tsx examples/acceptance/candle-price-axis.ts",
     "acceptance:auto-scroll-zoom-sync": "tsx examples/acceptance/auto-scroll-zoom-sync.ts",
     "acceptance:line-gaps": "tsx examples/acceptance/line-gaps.ts",
+    "acceptance:point-cloud-3d": "tsx examples/acceptance/point-cloud-3d-resolve-pack.ts",
     "benchmark:render": "tsx benchmarks/render-performance-benchmark.ts",
     "benchmark:baseline:compare": "tsx benchmarks/baseline/compare.ts",
     "benchmark:baseline:preview": "bun run build:examples && bun run preview:examples",
