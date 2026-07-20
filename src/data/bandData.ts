@@ -303,8 +303,8 @@ export function isBandShapedPayload(data: unknown): boolean {
       const p = data[i];
       if (p == null) continue;
       if (Array.isArray(p)) return p.length >= 3;
-      // !!p after typeof object (early `data == null` already handled outer null).
-      if (typeof p === 'object' && !!p) return 'y1' in p;
+      // p is non-nullish after `if (p == null) continue` above.
+      if (typeof p === 'object') return 'y1' in p;
       return false;
     }
     return true;
