@@ -83,6 +83,37 @@ export const heatmapDefaults = {
   cellGapPx: 0,
 } as const;
 
+export const pointCloud3dDefaults = {
+  pointSize: 3,
+  opacity: 0.9,
+  color: '#38bdf8',
+} as const;
+
+export const surface3dDefaults = {
+  colormap: 'viridis' as const,
+  opacity: 1,
+  wireframe: false,
+  lighting: 0.65,
+} as const;
+
+export const camera3dDefaults = {
+  type: 'perspective' as const,
+  fovY: Math.PI / 4,
+  near: 0.01,
+  far: 10000,
+  orthoSize: 1,
+  up: [0, 1, 0] as const,
+};
+
+export const interaction3dDefaults = {
+  orbit: true,
+  pan: true,
+  zoom: true,
+  orbitSpeed: 0.005,
+  zoomSpeed: 1,
+  panSpeed: 1,
+} as const;
+
 /**
  * Default grid lines configuration.
  * Matches createGridRenderer defaults: horizontal=5, vertical=6.

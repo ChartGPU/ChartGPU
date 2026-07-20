@@ -5,7 +5,60 @@
 import type { ThemeConfig } from '../themes/types';
 
 export type AxisType = 'value' | 'time' | 'category' | 'log';
-export type SeriesType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick' | 'heatmap' | 'band';
+export type SeriesType =
+  | 'line'
+  | 'area'
+  | 'bar'
+  | 'scatter'
+  | 'pie'
+  | 'candlestick'
+  | 'heatmap'
+  | 'band'
+  | 'pointCloud3d'
+  | 'surface3d';
+
+/**
+ * Chart coordinate modality.
+ * - `'cartesian2d'` (default): classic 2D chart path (zoom/pan, axes, MSAA overlays).
+ * - `'cartesian3d'`: separate 3D path with camera, depth, and 3D series only.
+ */
+export type CoordinateSystem = 'cartesian2d' | 'cartesian3d';
+
+/** Camera for `coordinateSystem: 'cartesian3d'`. */
+export interface Chart3DCameraOptions {
+  readonly type?: 'perspective' | 'orthographic';
+  /** Radians; perspective only. Default π/4. */
+  readonly fovY?: number;
+  readonly near?: number;
+  readonly far?: number;
+  /** World-space eye. If omitted with target, fit-to-data on first bounds. */
+  readonly eye?: readonly [number, number, number];
+  readonly target?: readonly [number, number, number];
+  /** Default [0,1,0] (Y-up). */
+  readonly up?: readonly [number, number, number];
+  /** Orthographic half-extent (world Y) when type === 'orthographic'. */
+  readonly orthoSize?: number;
+}
+
+/** Pointer/wheel interaction for 3D charts (not 2D dataZoom). */
+export interface Interaction3DOptions {
+  readonly orbit?: boolean;
+  readonly pan?: boolean;
+  readonly zoom?: boolean;
+  /** Radians per CSS pixel for orbit. Default ~0.005. */
+  readonly orbitSpeed?: number;
+  readonly zoomSpeed?: number;
+  readonly panSpeed?: number;
+}
+
+/** Optional world-axis names for 3D (axis box labels are stretch; box uses bounds). */
+export interface Axes3DOptions {
+  readonly x?: { readonly name?: string; readonly type?: 'value' };
+  readonly y?: { readonly name?: string; readonly type?: 'value' };
+  readonly z?: { readonly name?: string; readonly type?: 'value' };
+  /** Draw AABB wireframe. Default true. */
+  readonly showBox?: boolean;
+}
 
 /**
  * Render mode for chart rendering.
@@ -617,6 +670,86 @@ export interface BandSeriesConfig {
   readonly samplingThreshold?: number;
 }
 
+/**
+ * 3D point cloud — one sample per point in world XYZ.
+ * Only valid when `coordinateSystem: 'cartesian3d'`.
+ * Not scatter density / 2D scatter.
+ */
+export type PointCloud3DArraysData = Readonly<{
+  readonly x: ArrayLike<number>;
+  readonly y: ArrayLike<number>;
+  readonly z: ArrayLike<number>;
+  /** Optional scalar for colormap; length should match N. */
+  readonly value?: ArrayLike<number>;
+  /** Optional per-point size (reserved; v1 uses series pointStyle.size). */
+  readonly size?: ArrayLike<number>;
+}>;
+
+/** Interleaved: [x0,y0,z0, x1,y1,z1, ...] stride 3. Prefer Float32Array. */
+export type InterleavedXYZData = ArrayBufferView;
+
+export type PointCloud3DData =
+  | ReadonlyArray<readonly [number, number, number] | { x: number; y: number; z: number } | null>
+  | PointCloud3DArraysData
+  | InterleavedXYZData;
+
+export interface PointCloud3DSeriesConfig {
+  readonly type: 'pointCloud3d';
+  readonly name?: string;
+  readonly visible?: boolean;
+  /** Fallback solid color when pointStyle.color omitted (also used by legend). */
+  readonly color?: string;
+  readonly data: PointCloud3DData;
+  readonly pointStyle?: {
+    /** Billboard diameter in CSS pixels. Default 3. */
+    readonly size?: number;
+    readonly color?: string;
+    readonly opacity?: number;
+  };
+  /** When set, color from value channel + colormap (overrides solid color). */
+  readonly colorBy?: {
+    readonly values?: ArrayLike<number>;
+    readonly colormap?: HeatmapColormap;
+    readonly min?: number;
+    readonly max?: number;
+  };
+}
+
+/**
+ * Uniform grid surface. Height along +Y; grid in XZ plane.
+ *   x_i = xStart + i * xStep
+ *   z_j = zStart + j * zStep
+ *   y = height[j * columns + i]
+ * Only valid when `coordinateSystem: 'cartesian3d'`.
+ */
+export type Surface3DGridData = Readonly<{
+  readonly xStart: number;
+  readonly xStep: number;
+  readonly zStart: number;
+  readonly zStep: number;
+  readonly columns: number;
+  readonly rows: number;
+  /** Row-major heights, length === columns * rows. */
+  readonly y: ArrayLike<number>;
+}>;
+
+export interface Surface3DSeriesConfig {
+  readonly type: 'surface3d';
+  readonly name?: string;
+  readonly visible?: boolean;
+  /** Legend / palette color (surface uses colormap for mesh). */
+  readonly color?: string;
+  readonly data: Surface3DGridData;
+  readonly colormap?: HeatmapColormap;
+  /** Colormap domain; auto from data heights if omitted. */
+  readonly yMin?: number;
+  readonly yMax?: number;
+  readonly wireframe?: boolean;
+  readonly opacity?: number;
+  /** Simple lighting strength 0..1; 0 = unlit colormap. Default 0.65. */
+  readonly lighting?: number;
+}
+
 export type SeriesConfig =
   | LineSeriesConfig
   | AreaSeriesConfig
@@ -625,7 +758,9 @@ export type SeriesConfig =
   | PieSeriesConfig
   | CandlestickSeriesConfig
   | HeatmapSeriesConfig
-  | BandSeriesConfig;
+  | BandSeriesConfig
+  | PointCloud3DSeriesConfig
+  | Surface3DSeriesConfig;
 
 /**
  * Parameters passed to tooltip formatter function.
@@ -984,6 +1119,18 @@ export interface GridLinesConfig {
 }
 
 export interface ChartGPUOptions {
+  /**
+   * Chart modality. Default `'cartesian2d'`.
+   * Use `'cartesian3d'` for point clouds / surfaces (separate render path, depth, camera).
+   * Mixing 2D and 3D series in one chart is rejected by OptionResolver.
+   */
+  readonly coordinateSystem?: CoordinateSystem;
+  /** 3D camera (only when coordinateSystem is cartesian3d). */
+  readonly camera?: Chart3DCameraOptions;
+  /** 3D orbit/pan/zoom (cartesian3d only). */
+  readonly interaction3d?: Interaction3DOptions;
+  /** Optional 3D axis box / names (cartesian3d only). */
+  readonly axes3d?: Axes3DOptions;
   readonly axes?: {
     readonly y?: ReadonlyArray<AxisConfig>;
   };

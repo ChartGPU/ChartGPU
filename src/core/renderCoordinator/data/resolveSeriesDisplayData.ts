@@ -29,7 +29,13 @@ export function resolveCartesianDisplayData(input: {
   readonly sampleTarget?: number;
 }): CartesianSeriesData {
   const { series, raw, mode, sampleTarget } = input;
-  if (series.type === 'pie' || series.type === 'candlestick' || series.type === 'heatmap') {
+  if (
+    series.type === 'pie' ||
+    series.type === 'candlestick' ||
+    series.type === 'heatmap' ||
+    series.type === 'pointCloud3d' ||
+    series.type === 'surface3d'
+  ) {
     return raw;
   }
   if (isGpuDecimationEligible(series, raw)) {

@@ -83,6 +83,20 @@ const examples: readonly Example[] = [
     path: examplePath('band-range'),
   },
   {
+    id: 'point-cloud-3d',
+    title: '3D Point Cloud',
+    desc: 'cartesian3d + pointCloud3d — world XYZ billboards with depth and orbit camera (not scatter density)',
+    category: 'series',
+    path: examplePath('point-cloud-3d'),
+  },
+  {
+    id: 'surface-3d',
+    title: '3D Surface',
+    desc: 'surface3d uniform XZ height field with colormap, lighting, and optional point cloud overlay',
+    category: 'series',
+    path: examplePath('surface-3d'),
+  },
+  {
     id: 'basic-line',
     title: 'Basic Line',
     desc: 'Sine wave line chart with grid, axes, and tooltip interaction',

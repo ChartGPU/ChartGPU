@@ -16,7 +16,8 @@ Chart configuration. Full types: [`types.ts`](../../src/config/types.ts).
 
 ## Series Configuration
 
-- **`SeriesType`**: `'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick' | 'heatmap' | 'band'`. See [`types.ts`](../../src/config/types.ts).
+- **`SeriesType`**: `'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick' | 'heatmap' | 'band' | 'pointCloud3d' | 'surface3d'`. See [`types.ts`](../../src/config/types.ts).
+- **`coordinateSystem`**: `'cartesian2d'` (default) | `'cartesian3d'`. 3D charts use a separate depth + camera path; only `pointCloud3d` / `surface3d` are valid there. Full 3D API: [`docs/api/3d.md`](./3d.md).
 - **Sampling (cartesian)**: `sampling?: 'none' | 'lttb' | 'average' | 'max' | 'min'`, `samplingThreshold?: number` (default 5000). Zoom-aware resampling when data zoom enabled.
 - **`visible?: boolean`**: hide series from rendering and interaction. Legend toggle updates both.
 - **Data identity / in-place mutation**: ChartGPU treats series `data` by **reference identity** for hot paths (`setOption` resolve, content hashing, GPU upload skip, area geometry cache). Mutating point values under a stable array / columns object **without** replacing the reference may not be detected. Prefer a new array (or `appendData(...)`) when content changes. Axes-only / presentation-only updates that re-pass the same `data` reference are intentionally O(1) on the data path.

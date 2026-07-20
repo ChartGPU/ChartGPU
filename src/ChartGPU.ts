@@ -140,10 +140,18 @@ export type ZoomChangeSourceKind = 'user' | 'auto-scroll' | 'api';
  * Hit-test match for a chart element.
  */
 export type ChartGPUHitTestMatch = Readonly<{
-  readonly kind: 'cartesian' | 'candlestick' | 'pie';
+  readonly kind: 'cartesian' | 'candlestick' | 'pie' | 'pointCloud3d';
   readonly seriesIndex: number;
   readonly dataIndex: number;
-  readonly value: readonly [number, number];
+  /**
+   * - cartesian: [x, y]
+   * - candlestick: still reported as [timestamp, open] at the ChartGPU wrapper (see hitTest)
+   * - pie: [slice index proxy via value] (see pie hit path)
+   * - pointCloud3d: [x, y, z]
+   */
+  readonly value: readonly [number, number] | readonly [number, number, number];
+  /** Point-cloud colormap/scalar channel when present (3D only). */
+  readonly valueChannel?: number;
 }>;
 
 /**
@@ -162,6 +170,20 @@ export interface ChartGPUInstance {
   readonly options: Readonly<ChartGPUOptions>;
   readonly disposed: boolean;
   setOption(options: ChartGPUOptions): void;
+  /**
+   * 3D only (`coordinateSystem: 'cartesian3d'`): re-fit camera to data AABB.
+   * No-op on 2D charts.
+   */
+  resetCamera?(): void;
+  /**
+   * 3D only: partial camera update (eye/target/type/fov/…).
+   * No-op on 2D charts.
+   */
+  setCamera?(partial: import('./config/types').Chart3DCameraOptions): void;
+  /**
+   * 3D only: current resolved camera pose. Returns `null` on 2D charts.
+   */
+  getCamera?(): import('./core/3d/camera').ResolvedCamera | null;
   /**
    * @internal Test/debug: how many times the hit-test columnar store was fully rebuilt.
    */
@@ -810,6 +832,15 @@ export async function createChartGPU(
   options: ChartGPUOptions,
   context?: ChartGPUCreateContext
 ): Promise<ChartGPUInstance> {
+  // 3D modality: fully separate create path (depth + camera coordinator).
+  if (options.coordinateSystem === 'cartesian3d') {
+    const { createChartGPU3D } = await import('./createChartGPU3D');
+    return createChartGPU3D(container, options, context, (inst) => {
+      activeInstances.add(inst);
+      ensureUnloadListeners();
+    });
+  }
+
   // Check WebGPU support before creating canvas or any resources.
   // When the caller injects an adapter+device, avoid requesting another adapter during the
   // support check (shared device mode).

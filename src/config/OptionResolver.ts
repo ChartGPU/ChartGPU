@@ -34,6 +34,14 @@ import type {
   HeatmapNullHandling,
   BandSeriesConfig,
   BandSeriesData,
+  CoordinateSystem,
+  Chart3DCameraOptions,
+  Interaction3DOptions,
+  Axes3DOptions,
+  PointCloud3DSeriesConfig,
+  PointCloud3DData,
+  Surface3DSeriesConfig,
+  Surface3DGridData,
 } from './types';
 import {
   candlePrimaryGridDefaults,
@@ -45,6 +53,10 @@ import {
   defaultPalette,
   scatterDefaults,
   heatmapDefaults,
+  pointCloud3dDefaults,
+  surface3dDefaults,
+  camera3dDefaults,
+  interaction3dDefaults,
 } from './defaults';
 import { isNamedColormap } from '../utils/colormap';
 import {
@@ -79,6 +91,7 @@ import {
   sampleLooksIndexSortedX,
 } from '../data/seriesRewriteDetect';
 import { parseCssColorToRgba01 } from '../utils/colors';
+import { pointCloud3dHasDrawableSample } from '../data/pointCloud3dData';
 
 export type ResolvedGridConfig = Readonly<Required<GridConfig>>;
 export type ResolvedLineStyleConfig = Readonly<Required<Omit<LineStyleConfig, 'color'>> & { readonly color: string }>;
@@ -338,7 +351,43 @@ export type ResolvedCandlestickSeriesConfig = Readonly<
   }
 >;
 
-export type ResolvedSeriesConfig =
+export type ResolvedPointCloud3DSeriesConfig = Readonly<{
+  readonly type: 'pointCloud3d';
+  readonly name?: string;
+  readonly visible: boolean;
+  readonly data: PointCloud3DData;
+  readonly color: string;
+  readonly pointStyle: Readonly<{
+    readonly size: number;
+    readonly color: string;
+    readonly opacity: number;
+  }>;
+  readonly colorBy?: Readonly<{
+    readonly values?: ArrayLike<number>;
+    readonly colormap: HeatmapColormap;
+    readonly min?: number;
+    readonly max?: number;
+  }>;
+  /** False when empty / undrawable. */
+  readonly drawable: boolean;
+}>;
+
+export type ResolvedSurface3DSeriesConfig = Readonly<{
+  readonly type: 'surface3d';
+  readonly name?: string;
+  readonly visible: boolean;
+  readonly data: Surface3DGridData;
+  readonly colormap: HeatmapColormap;
+  readonly yMin: number;
+  readonly yMax: number;
+  readonly wireframe: boolean;
+  readonly opacity: number;
+  readonly lighting: number;
+  readonly color: string;
+  readonly drawable: boolean;
+}>;
+
+export type ResolvedSeriesConfig2D =
   | ResolvedLineSeriesConfig
   | ResolvedAreaSeriesConfig
   | ResolvedBarSeriesConfig
@@ -348,14 +397,68 @@ export type ResolvedSeriesConfig =
   | ResolvedHeatmapSeriesConfig
   | ResolvedBandSeriesConfig;
 
+export type ResolvedSeriesConfig =
+  | ResolvedSeriesConfig2D
+  | ResolvedPointCloud3DSeriesConfig
+  | ResolvedSurface3DSeriesConfig;
+
+/** True for classic 2D series (excludes pointCloud3d / surface3d). */
+export function isResolvedSeries2D(s: ResolvedSeriesConfig): s is ResolvedSeriesConfig2D {
+  return s.type !== 'pointCloud3d' && s.type !== 'surface3d';
+}
+
 export type ResolvedPerformanceConfig = Readonly<{
   readonly lod: PerformanceLod;
 }>;
 
+export type ResolvedCamera3D = Readonly<{
+  readonly type: 'perspective' | 'orthographic';
+  readonly fovY: number;
+  readonly near: number;
+  readonly far: number;
+  readonly eye?: readonly [number, number, number];
+  readonly target?: readonly [number, number, number];
+  readonly up: readonly [number, number, number];
+  readonly orthoSize: number;
+}>;
+
+export type ResolvedInteraction3D = Readonly<{
+  readonly orbit: boolean;
+  readonly pan: boolean;
+  readonly zoom: boolean;
+  readonly orbitSpeed: number;
+  readonly zoomSpeed: number;
+  readonly panSpeed: number;
+}>;
+
+export type ResolvedAxes3D = Readonly<{
+  readonly xName: string;
+  readonly yName: string;
+  readonly zName: string;
+  readonly showBox: boolean;
+}>;
+
 export interface ResolvedChartGPUOptions extends Omit<
   ChartGPUOptions,
-  'grid' | 'gridLines' | 'xAxis' | 'yAxis' | 'axes' | 'theme' | 'palette' | 'series' | 'legend' | 'performance'
+  | 'grid'
+  | 'gridLines'
+  | 'xAxis'
+  | 'yAxis'
+  | 'axes'
+  | 'theme'
+  | 'palette'
+  | 'series'
+  | 'legend'
+  | 'performance'
+  | 'camera'
+  | 'interaction3d'
+  | 'axes3d'
+  | 'coordinateSystem'
 > {
+  readonly coordinateSystem: CoordinateSystem;
+  readonly camera: ResolvedCamera3D;
+  readonly interaction3d: ResolvedInteraction3D;
+  readonly axes3d: ResolvedAxes3D;
   readonly grid: ResolvedGridConfig;
   readonly gridLines: ResolvedGridLinesConfig;
   readonly xAxis: AxisConfig;
@@ -367,6 +470,196 @@ export interface ResolvedChartGPUOptions extends Omit<
   readonly annotations?: ReadonlyArray<AnnotationConfig>;
   readonly legend?: import('./types').LegendConfig;
   readonly performance: ResolvedPerformanceConfig;
+}
+
+const SERIES_2D_TYPES = new Set<SeriesType>([
+  'line',
+  'area',
+  'bar',
+  'scatter',
+  'pie',
+  'candlestick',
+  'heatmap',
+  'band',
+]);
+const SERIES_3D_TYPES = new Set<SeriesType>(['pointCloud3d', 'surface3d']);
+
+function resolveCamera3D(input: Chart3DCameraOptions | undefined): ResolvedCamera3D {
+  const type = input?.type === 'orthographic' ? 'orthographic' : camera3dDefaults.type;
+  const fovY =
+    typeof input?.fovY === 'number' && Number.isFinite(input.fovY) && input.fovY > 0
+      ? input.fovY
+      : camera3dDefaults.fovY;
+  const near =
+    typeof input?.near === 'number' && Number.isFinite(input.near) && input.near > 0
+      ? input.near
+      : camera3dDefaults.near;
+  const far =
+    typeof input?.far === 'number' && Number.isFinite(input.far) && input.far > near ? input.far : camera3dDefaults.far;
+  const orthoSize =
+    typeof input?.orthoSize === 'number' && Number.isFinite(input.orthoSize) && input.orthoSize > 0
+      ? input.orthoSize
+      : camera3dDefaults.orthoSize;
+  const up =
+    Array.isArray(input?.up) &&
+    input!.up!.length === 3 &&
+    input!.up!.every((n) => typeof n === 'number' && Number.isFinite(n))
+      ? ([input!.up![0], input!.up![1], input!.up![2]] as const)
+      : camera3dDefaults.up;
+  const eye =
+    Array.isArray(input?.eye) &&
+    input!.eye!.length === 3 &&
+    input!.eye!.every((n) => typeof n === 'number' && Number.isFinite(n))
+      ? ([input!.eye![0], input!.eye![1], input!.eye![2]] as const)
+      : undefined;
+  const target =
+    Array.isArray(input?.target) &&
+    input!.target!.length === 3 &&
+    input!.target!.every((n) => typeof n === 'number' && Number.isFinite(n))
+      ? ([input!.target![0], input!.target![1], input!.target![2]] as const)
+      : undefined;
+  return { type, fovY, near, far, eye, target, up, orthoSize };
+}
+
+function resolveInteraction3D(input: Interaction3DOptions | undefined): ResolvedInteraction3D {
+  return {
+    orbit: input?.orbit !== false,
+    pan: input?.pan !== false,
+    zoom: input?.zoom !== false,
+    orbitSpeed:
+      typeof input?.orbitSpeed === 'number' && Number.isFinite(input.orbitSpeed)
+        ? input.orbitSpeed
+        : interaction3dDefaults.orbitSpeed,
+    zoomSpeed:
+      typeof input?.zoomSpeed === 'number' && Number.isFinite(input.zoomSpeed)
+        ? input.zoomSpeed
+        : interaction3dDefaults.zoomSpeed,
+    panSpeed:
+      typeof input?.panSpeed === 'number' && Number.isFinite(input.panSpeed)
+        ? input.panSpeed
+        : interaction3dDefaults.panSpeed,
+  };
+}
+
+function resolveAxes3D(input: Axes3DOptions | undefined): ResolvedAxes3D {
+  return {
+    xName: typeof input?.x?.name === 'string' && input.x.name.trim() ? input.x.name : 'X',
+    yName: typeof input?.y?.name === 'string' && input.y.name.trim() ? input.y.name : 'Y',
+    zName: typeof input?.z?.name === 'string' && input.z.name.trim() ? input.z.name : 'Z',
+    showBox: input?.showBox !== false,
+  };
+}
+
+function resolvePointCloud3DSeries(
+  s: PointCloud3DSeriesConfig,
+  ctx: { readonly visible: boolean; readonly color: string; readonly seriesIndex: number }
+): ResolvedPointCloud3DSeriesConfig {
+  const size =
+    typeof s.pointStyle?.size === 'number' && Number.isFinite(s.pointStyle.size) && s.pointStyle.size > 0
+      ? s.pointStyle.size
+      : pointCloud3dDefaults.pointSize;
+  const opacity =
+    typeof s.pointStyle?.opacity === 'number' && Number.isFinite(s.pointStyle.opacity)
+      ? Math.min(1, Math.max(0, s.pointStyle.opacity))
+      : pointCloud3dDefaults.opacity;
+  const styleColor =
+    typeof s.pointStyle?.color === 'string' && s.pointStyle.color.trim() ? s.pointStyle.color : ctx.color;
+
+  let colorBy: ResolvedPointCloud3DSeriesConfig['colorBy'];
+  if (s.colorBy != null) {
+    const cm = s.colorBy.colormap;
+    const colormap: HeatmapColormap =
+      typeof cm === 'string' && isNamedColormap(cm) ? cm : Array.isArray(cm) && cm.length > 0 ? cm : 'viridis';
+    colorBy = {
+      values: s.colorBy.values,
+      colormap,
+      min: typeof s.colorBy.min === 'number' && Number.isFinite(s.colorBy.min) ? s.colorBy.min : undefined,
+      max: typeof s.colorBy.max === 'number' && Number.isFinite(s.colorBy.max) ? s.colorBy.max : undefined,
+    };
+  }
+
+  // drawable: at least one finite XYZ sample (matches pack skip policy)
+  const drawable = pointCloud3dHasDrawableSample(s.data);
+
+  return {
+    type: 'pointCloud3d',
+    name: s.name,
+    visible: ctx.visible,
+    data: s.data,
+    color: styleColor,
+    pointStyle: { size, color: styleColor, opacity },
+    colorBy,
+    drawable,
+  };
+}
+
+function resolveSurface3DSeries(
+  s: Surface3DSeriesConfig,
+  ctx: { readonly visible: boolean; readonly color: string; readonly seriesIndex: number }
+): ResolvedSurface3DSeriesConfig {
+  const cm = s.colormap;
+  const colormap: HeatmapColormap =
+    typeof cm === 'string' && isNamedColormap(cm)
+      ? cm
+      : Array.isArray(cm) && cm.length > 0
+        ? cm
+        : surface3dDefaults.colormap;
+  const opacity =
+    typeof s.opacity === 'number' && Number.isFinite(s.opacity)
+      ? Math.min(1, Math.max(0, s.opacity))
+      : surface3dDefaults.opacity;
+  const lighting =
+    typeof s.lighting === 'number' && Number.isFinite(s.lighting)
+      ? Math.min(1, Math.max(0, s.lighting))
+      : surface3dDefaults.lighting;
+  const wireframe = s.wireframe === true;
+  const columns = Math.floor(Number(s.data?.columns));
+  const rows = Math.floor(Number(s.data?.rows));
+  const drawable =
+    s.data != null &&
+    columns >= 2 &&
+    rows >= 2 &&
+    Number.isFinite(s.data.xStep) &&
+    s.data.xStep !== 0 &&
+    Number.isFinite(s.data.zStep) &&
+    s.data.zStep !== 0 &&
+    s.data.y != null &&
+    s.data.y.length > 0;
+
+  // yMin/yMax: use explicit or placeholder (renderer pack fills from data)
+  let yMin = typeof s.yMin === 'number' && Number.isFinite(s.yMin) ? s.yMin : 0;
+  let yMax = typeof s.yMax === 'number' && Number.isFinite(s.yMax) ? s.yMax : 1;
+  if (drawable && (s.yMin == null || s.yMax == null) && s.data.y) {
+    let lo = Infinity;
+    let hi = -Infinity;
+    const len = Math.min(s.data.y.length, columns * rows);
+    for (let i = 0; i < len; i++) {
+      const v = Number(s.data.y[i]);
+      if (!Number.isFinite(v)) continue;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    if (Number.isFinite(lo)) {
+      if (s.yMin == null) yMin = lo;
+      if (s.yMax == null) yMax = hi > lo ? hi : lo + 1;
+    }
+  }
+  if (!(yMax > yMin)) yMax = yMin + 1;
+
+  return {
+    type: 'surface3d',
+    name: s.name,
+    visible: ctx.visible,
+    data: s.data,
+    colormap,
+    yMin,
+    yMax,
+    wireframe,
+    opacity,
+    lighting,
+    color: ctx.color,
+    drawable: Boolean(drawable),
+  };
 }
 
 const sanitizeDataZoom = (input: unknown): ReadonlyArray<DataZoomConfig> | undefined => {
@@ -960,6 +1253,10 @@ export function canReuseEntireUserSeriesArray(input: {
   if (userSeriesArr == null) return false;
   if (previousUserOptions.theme !== userOptions.theme) return false;
   if (previousUserOptions.palette !== userOptions.palette) return false;
+  // Modality change invalidates wholesale series reuse (2D vs 3D paths).
+  const prevCs = previousUserOptions.coordinateSystem ?? 'cartesian2d';
+  const nextCs = userOptions.coordinateSystem ?? 'cartesian2d';
+  if (prevCs !== nextCs) return false;
   if (previousResolvedSeries.length !== userSeriesArr.length) return false;
 
   const prevUserSeries = previousUserOptions.series;
@@ -1218,6 +1515,12 @@ export function resolveOptions(
   const previousSeries = reuse?.previousResolved?.series;
   const previousTheme = reuse?.previousResolved?.theme;
   const prevUserForTheme = reuse?.previousUserOptions;
+
+  const coordinateSystem: CoordinateSystem =
+    userOptions.coordinateSystem === 'cartesian3d' ? 'cartesian3d' : 'cartesian2d';
+  const camera = resolveCamera3D(userOptions.camera);
+  const interaction3d = resolveInteraction3D(userOptions.interaction3d);
+  const axes3d = resolveAxes3D(userOptions.axes3d);
 
   // runtime safety for JS callers
   const autoScrollRaw = (userOptions as unknown as { readonly autoScroll?: unknown }).autoScroll;
@@ -1530,530 +1833,562 @@ export function resolveOptions(
 
   const series: ReadonlyArray<ResolvedSeriesConfig> = canReuseEntireSeriesArray
     ? previousSeries!
-    : (userOptions.series ?? []).map((s, i) => {
-        const explicitColor = normalizeOptionalColor((s as { color?: string }).color);
-        const inheritedColor = theme.colorPalette[i % theme.colorPalette.length];
-        const color = explicitColor ?? inheritedColor;
-        const prevResolved = previousSeries?.[i];
-
-        // Ensure visible defaults to true (converts undefined to true, preserves explicit false)
-        const visible = s.visible !== false;
-
-        const sampling: SeriesSampling = normalizeSampling((s as unknown as { sampling?: unknown }).sampling) ?? 'lttb';
-        const samplingThreshold: number =
-          normalizeSamplingThreshold((s as unknown as { samplingThreshold?: unknown }).samplingThreshold) ?? 5000;
-
-        const yAxis = s.yAxis ?? defaultYAxisId;
-
-        switch (s.type) {
-          case 'area': {
-            // Resolve effective fill color with precedence: areaStyle.color → series.color → palette
-            const areaStyleColor = normalizeOptionalColor(s.areaStyle?.color);
-            const effectiveColor = areaStyleColor ?? explicitColor ?? inheritedColor;
-
-            const areaStyle: ResolvedAreaStyleConfig = {
-              opacity: s.areaStyle?.opacity ?? defaultAreaStyle.opacity,
-              color: effectiveColor,
-            };
-
-            const connectNulls = s.connectNulls ?? false;
-            const contentHash = resolveSeriesContentHash(prevResolved, 'area', s.data, () =>
-              cheapCartesianContentStamp(s.data)
+    : ((userOptions.series ?? [])
+        .map((s, i) => {
+          const seriesType = s.type as SeriesType;
+          // 2D/3D exclusivity: skip invalid series with a warning (do not throw).
+          if (coordinateSystem === 'cartesian3d' && SERIES_2D_TYPES.has(seriesType)) {
+            console.warn(
+              `ChartGPU: series[${i}] type '${seriesType}' is not valid in coordinateSystem 'cartesian3d'; skipping.`
             );
-            const reuseSample = canReuseResolvedSeriesSample(
-              prevResolved,
-              'area',
-              s.data,
-              sampling,
-              samplingThreshold,
-              connectNulls,
-              contentHash
-            );
-            const prevArea = reuseSample
-              ? (prevResolved as ResolvedAreaSeriesConfig & {
-                  contentHash?: number;
-                  rawBoundsMode?: RawBoundsMode;
-                })
-              : null;
-            const { bounds: rawBounds, mode: rawBoundsMode } = resolveCartesianBounds(prevArea, s.data, reuseSample);
-            // Bypass sampling when data contains null gap markers to preserve gap structure.
-            // sampling:'none' already returns data as-is — skip O(n) hasNullGaps.
-            const sampledAreaData = prevArea
-              ? prevArea.data
-              : sampling === 'none' || hasNullGaps(s.data)
-                ? s.data
-                : sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
-            return {
-              ...s,
-              visible,
-              rawData: s.data,
-              data: sampledAreaData,
-              color: effectiveColor,
-              areaStyle,
-              sampling,
-              samplingThreshold,
-              rawBounds,
-              rawBoundsMode,
-              connectNulls,
-              yAxis,
-              contentHash,
-            };
+            return null;
           }
-          case 'line': {
-            // Resolve effective stroke color with precedence: lineStyle.color → series.color → palette
-            const lineStyleColor = normalizeOptionalColor(s.lineStyle?.color);
-            const effectiveStrokeColor = lineStyleColor ?? explicitColor ?? inheritedColor;
-
-            const lineStyle: ResolvedLineStyleConfig = {
-              width: s.lineStyle?.width ?? defaultLineStyle.width,
-              opacity: s.lineStyle?.opacity ?? defaultLineStyle.opacity,
-              color: effectiveStrokeColor,
-            };
-
-            // Avoid leaking the unresolved (user) areaStyle shape via object spread.
-            const { areaStyle: _userAreaStyle, ...rest } = s;
-            const connectNulls = s.connectNulls ?? false;
-            const contentHash = resolveSeriesContentHash(prevResolved, 'line', s.data, () =>
-              cheapCartesianContentStamp(s.data)
+          if (coordinateSystem === 'cartesian2d' && SERIES_3D_TYPES.has(seriesType)) {
+            console.warn(
+              `ChartGPU: series[${i}] type '${seriesType}' requires coordinateSystem 'cartesian3d'; skipping.`
             );
-            const reuseSample = canReuseResolvedSeriesSample(
-              prevResolved,
-              'line',
-              s.data,
-              sampling,
-              samplingThreshold,
-              connectNulls,
-              contentHash
-            );
-            const prevLine = reuseSample
-              ? (prevResolved as ResolvedLineSeriesConfig & {
-                  contentHash?: number;
-                  rawBoundsMode?: RawBoundsMode;
-                })
-              : null;
-            const { bounds: rawBounds, mode: rawBoundsMode } = resolveCartesianBounds(prevLine, s.data, reuseSample);
-            // Bypass sampling when data contains null gap markers to preserve gap structure.
-            // sampling:'none' already returns data as-is — skip O(n) hasNullGaps.
-            const sampledData = prevLine
-              ? prevLine.data
-              : sampling === 'none' || hasNullGaps(s.data)
-                ? s.data
-                : sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
-
-            return {
-              ...rest,
-              visible,
-              rawData: s.data,
-              data: sampledData,
-              color: effectiveStrokeColor,
-              lineStyle,
-              ...(s.areaStyle
-                ? {
-                    areaStyle: {
-                      opacity: s.areaStyle.opacity ?? defaultAreaStyle.opacity,
-                      // Fill color precedence: areaStyle.color → resolved stroke color
-                      color: normalizeOptionalColor(s.areaStyle.color) ?? effectiveStrokeColor,
-                    },
-                  }
-                : {}),
-              sampling,
-              samplingThreshold,
-              rawBounds,
-              rawBoundsMode,
-              connectNulls,
-              yAxis,
-              contentHash,
-            };
+            return null;
           }
-          case 'bar': {
-            const contentHash = resolveSeriesContentHash(prevResolved, 'bar', s.data, () =>
-              cheapCartesianContentStamp(s.data)
-            );
-            const reuseSample = canReuseResolvedSeriesSample(
-              prevResolved,
-              'bar',
-              s.data,
-              sampling,
-              samplingThreshold,
-              undefined,
-              contentHash
-            );
-            const prevBar = reuseSample
-              ? (prevResolved as ResolvedBarSeriesConfig & {
-                  contentHash?: number;
-                  rawBoundsMode?: RawBoundsMode;
-                })
-              : null;
-            const { bounds: rawBounds, mode: rawBoundsMode } = resolveCartesianBounds(prevBar, s.data, reuseSample);
-            return {
-              ...s,
-              visible,
-              rawData: s.data,
-              data: prevBar ? prevBar.data : sampleSeriesDataPoints(s.data, sampling, samplingThreshold),
-              color,
-              sampling,
-              samplingThreshold,
-              rawBounds,
-              rawBoundsMode,
-              yAxis,
-              contentHash,
-            };
-          }
-          case 'scatter': {
-            const contentHash = resolveSeriesContentHash(prevResolved, 'scatter', s.data, () =>
-              cheapCartesianContentStamp(s.data)
-            );
-            const reuseSample = canReuseResolvedSeriesSample(
-              prevResolved,
-              'scatter',
-              s.data,
-              sampling,
-              samplingThreshold,
-              undefined,
-              contentHash
-            );
-            const prevScatterResolved =
-              prevResolved?.type === 'scatter' ? (prevResolved as ResolvedScatterSeriesConfig) : null;
-            const prevScatter = reuseSample
-              ? (prevResolved as ResolvedScatterSeriesConfig & {
-                  contentHash?: number;
-                  rawBoundsMode?: RawBoundsMode;
-                })
-              : null;
-            const rawPointCount = getPointCount(s.data);
-            // Sticky index-sorted proof: prior frame fully proved x=i at this N.
-            const stickyIndexSorted =
-              prevScatterResolved?.indexSortedProven === true &&
-              prevScatterResolved.indexSortedPointCount === rawPointCount;
 
-            // Equal-N y-only + index-sorted under **LTTB** (group 4): re-bind y at
-            // prior sample x indices in O(k) instead of full O(N) LTTB. Requires
-            // matching sampling + threshold (same gate as canReuseResolvedSeriesSample).
-            // min/max/average always re-sample (bucket extrema depend on y).
-            // Brownian xy (group 2) fails classifyEqualNYOnlyRewrite → full path.
-            // Classify before bounds so sticky/full proof is shared (one O(n) max cold).
-            // performance.lod === 'strict': full LTTB on every y change (issue 2.3 C).
-            let sampledData: CartesianSeriesData;
-            /** True when this frame still has a valid index-sorted proof (sticky or cold). */
-            let indexSortedThisFrame = false;
-            let indexSortedFp: number | undefined =
-              stickyIndexSorted && prevScatterResolved?.indexSortedFingerprint !== undefined
-                ? prevScatterResolved.indexSortedFingerprint
-                : undefined;
-            if (prevScatter) {
-              sampledData = prevScatter.data;
-              // Identity-reuse: keep prior sticky proof when present.
-              indexSortedThisFrame = stickyIndexSorted;
-            } else if (
-              sampling === 'lttb' &&
-              prevScatterResolved &&
-              prevScatterResolved.sampling === 'lttb' &&
-              prevScatterResolved.samplingThreshold === samplingThreshold
-            ) {
-              const yOnlyKind = classifyEqualNYOnlyRewrite(prevScatterResolved.rawData as CartesianSeriesData, s.data, {
-                prevIndexSortedProven: stickyIndexSorted,
-                prevIndexSortedFingerprint: prevScatterResolved.indexSortedFingerprint,
-              });
-              if (yOnlyKind === 'indexSorted') {
-                indexSortedThisFrame = true;
-                indexSortedFp = indexSortedXFingerprint(s.data);
-                if (forceFullLttbOnEqualN) {
-                  // Strict LOD: plain LTTB always full recompute on y change.
-                  sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
-                } else {
-                  const remapped = remapIndexSortedSampleY(prevScatterResolved.data as CartesianSeriesData, s.data);
-                  sampledData = remapped ?? sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
-                }
-              } else {
-                // Clears sticky for this frame (Brownian / equalX) — do not trustIndexSorted.
-                sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
-              }
-            } else if (stickyIndexSorted && sampleLooksIndexSortedX(s.data)) {
-              // Non-LTTB equal-N stream (e.g. sampling:'none'): keep sticky for bounds O(1).
-              // Still require fingerprint continuity (issue 1.6).
-              const nextFp = indexSortedXFingerprint(s.data);
-              const prevFp =
-                prevScatterResolved?.indexSortedFingerprint ??
-                (prevScatterResolved?.rawData != null
-                  ? indexSortedXFingerprint(prevScatterResolved.rawData as CartesianSeriesData)
-                  : nextFp);
-              if (nextFp === prevFp) {
-                indexSortedThisFrame = true;
-                indexSortedFp = nextFp;
-              }
-              sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
-            } else {
-              sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
-              // Cold first frame (no sticky / no LTTB remap prev): one full O(n) proof so
-              // subsequent equal-N frames can sticky-skip. Cheap sample reject first.
-              if (sampleLooksIndexSortedX(s.data) && isIndexSortedX(s.data)) {
-                indexSortedThisFrame = true;
-                indexSortedFp = indexSortedXFingerprint(s.data);
-              }
+          const explicitColor = normalizeOptionalColor((s as { color?: string }).color);
+          const inheritedColor = theme.colorPalette[i % theme.colorPalette.length];
+          const color = explicitColor ?? inheritedColor;
+          const prevResolved = previousSeries?.[i];
+
+          // Ensure visible defaults to true (converts undefined to true, preserves explicit false)
+          const visible = s.visible !== false;
+
+          const sampling: SeriesSampling =
+            normalizeSampling((s as unknown as { sampling?: unknown }).sampling) ?? 'lttb';
+          const samplingThreshold: number =
+            normalizeSamplingThreshold((s as unknown as { samplingThreshold?: unknown }).samplingThreshold) ?? 5000;
+
+          const yAxis = (s as { yAxis?: string }).yAxis ?? defaultYAxisId;
+
+          switch (s.type) {
+            case 'pointCloud3d': {
+              return resolvePointCloud3DSeries(s, { visible, color, seriesIndex: i });
             }
-
-            const {
-              bounds: rawBounds,
-              mode: rawBoundsMode,
-              indexSortedHit,
-            } = resolveCartesianBounds(prevScatter, s.data, reuseSample, {
-              // Only trust when this frame re-validated sticky or cold-proved — never
-              // after classify rejected (Brownian).
-              trustIndexSorted: indexSortedThisFrame,
-            });
-
-            const indexSortedProven = Boolean(indexSortedThisFrame || indexSortedHit);
-            if (indexSortedProven && indexSortedFp === undefined) {
-              indexSortedFp = indexSortedXFingerprint(s.data);
+            case 'surface3d': {
+              return resolveSurface3DSeries(s, { visible, color, seriesIndex: i });
             }
-            const mode =
-              normalizeScatterMode((s as unknown as { readonly mode?: unknown }).mode) ?? scatterDefaults.mode;
-            const binSize =
-              normalizeDensityBinSize((s as unknown as { readonly binSize?: unknown }).binSize) ??
-              scatterDefaults.binSize;
-            const densityColormap =
-              normalizeDensityColormap((s as unknown as { readonly densityColormap?: unknown }).densityColormap) ??
-              scatterDefaults.densityColormap;
-            const densityNormalization =
-              normalizeDensityNormalization(
-                (s as unknown as { readonly densityNormalization?: unknown }).densityNormalization
-              ) ?? scatterDefaults.densityNormalization;
+            case 'area': {
+              // Resolve effective fill color with precedence: areaStyle.color → series.color → palette
+              const areaStyleColor = normalizeOptionalColor(s.areaStyle?.color);
+              const effectiveColor = areaStyleColor ?? explicitColor ?? inheritedColor;
 
-            return {
-              ...s,
-              visible,
-              rawData: s.data,
-              data: sampledData,
-              color,
-              mode,
-              binSize,
-              densityColormap,
-              densityNormalization,
-              sampling,
-              samplingThreshold,
-              rawBounds,
-              rawBoundsMode,
-              yAxis,
-              contentHash,
-              ...(indexSortedProven
-                ? {
-                    indexSortedProven: true as const,
-                    indexSortedPointCount: rawPointCount,
-                    ...(indexSortedFp !== undefined ? { indexSortedFingerprint: indexSortedFp } : {}),
-                  }
-                : {}),
-            };
-          }
-          case 'pie': {
-            // Pie series intentionally do NOT support sampling at runtime.
-            // For JS callers, strip any extra sampling keys so they don't leak through the resolver.
-            const {
-              sampling: _sampling,
-              samplingThreshold: _samplingThreshold,
-              ...rest
-            } = s as PieSeriesConfig & {
-              readonly sampling?: unknown;
-              readonly samplingThreshold?: unknown;
-            };
-
-            const resolvedData: ReadonlyArray<ResolvedPieDataItem> = (s.data ?? []).map((item, itemIndex) => {
-              const itemColor = normalizeOptionalColor(item?.color);
-              const fallback = theme.colorPalette[(i + itemIndex) % theme.colorPalette.length];
-              // Ensure visible defaults to true (converts undefined to true, preserves explicit false)
-              const itemVisible = item?.visible !== false;
-              return {
-                ...item,
-                color: itemColor ?? fallback,
-                visible: itemVisible,
+              const areaStyle: ResolvedAreaStyleConfig = {
+                opacity: s.areaStyle?.opacity ?? defaultAreaStyle.opacity,
+                color: effectiveColor,
               };
-            });
 
-            return { ...rest, visible, color, data: resolvedData };
-          }
-          case 'heatmap': {
-            return resolveHeatmapSeries(s, {
-              visible,
-              yAxis,
-              seriesIndex: i,
-              color,
-            });
-          }
-          case 'band': {
-            // Fill color: areaStyle.color → series.color → palette
-            const areaStyleColor = normalizeOptionalColor(s.areaStyle?.color);
-            const effectiveFillColor = areaStyleColor ?? explicitColor ?? inheritedColor;
-
-            const areaStyle: ResolvedAreaStyleConfig = {
-              opacity: s.areaStyle?.opacity ?? defaultAreaStyle.opacity,
-              color: effectiveFillColor,
-            };
-
-            // lineStyle omitted → no y stroke (fill-only; locked plan rule).
-            // When present, default width 1 / opacity like line edges.
-            let lineStyle: ResolvedLineStyleConfig | undefined;
-            if (s.lineStyle != null) {
-              const lineStyleColor = normalizeOptionalColor(s.lineStyle.color);
+              const connectNulls = s.connectNulls ?? false;
+              const contentHash = resolveSeriesContentHash(prevResolved, 'area', s.data, () =>
+                cheapCartesianContentStamp(s.data)
+              );
+              const reuseSample = canReuseResolvedSeriesSample(
+                prevResolved,
+                'area',
+                s.data,
+                sampling,
+                samplingThreshold,
+                connectNulls,
+                contentHash
+              );
+              const prevArea = reuseSample
+                ? (prevResolved as ResolvedAreaSeriesConfig & {
+                    contentHash?: number;
+                    rawBoundsMode?: RawBoundsMode;
+                  })
+                : null;
+              const { bounds: rawBounds, mode: rawBoundsMode } = resolveCartesianBounds(prevArea, s.data, reuseSample);
+              // Bypass sampling when data contains null gap markers to preserve gap structure.
+              // sampling:'none' already returns data as-is — skip O(n) hasNullGaps.
+              const sampledAreaData = prevArea
+                ? prevArea.data
+                : sampling === 'none' || hasNullGaps(s.data)
+                  ? s.data
+                  : sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
+              return {
+                ...s,
+                visible,
+                rawData: s.data,
+                data: sampledAreaData,
+                color: effectiveColor,
+                areaStyle,
+                sampling,
+                samplingThreshold,
+                rawBounds,
+                rawBoundsMode,
+                connectNulls,
+                yAxis,
+                contentHash,
+              };
+            }
+            case 'line': {
+              // Resolve effective stroke color with precedence: lineStyle.color → series.color → palette
+              const lineStyleColor = normalizeOptionalColor(s.lineStyle?.color);
               const effectiveStrokeColor = lineStyleColor ?? explicitColor ?? inheritedColor;
-              lineStyle = {
-                width: s.lineStyle.width ?? 1,
-                opacity: s.lineStyle.opacity ?? defaultLineStyle.opacity,
+
+              const lineStyle: ResolvedLineStyleConfig = {
+                width: s.lineStyle?.width ?? defaultLineStyle.width,
+                opacity: s.lineStyle?.opacity ?? defaultLineStyle.opacity,
                 color: effectiveStrokeColor,
               };
-            }
 
-            // lineStyleY1 omitted → no y1 stroke (v1 locked decision).
-            let lineStyleY1: ResolvedLineStyleConfig | undefined;
-            if (s.lineStyleY1 != null) {
-              const y1Color = normalizeOptionalColor(s.lineStyleY1.color) ?? explicitColor ?? inheritedColor;
-              lineStyleY1 = {
-                width: s.lineStyleY1.width ?? 1,
-                opacity: s.lineStyleY1.opacity ?? defaultLineStyle.opacity,
-                color: y1Color,
+              // Avoid leaking the unresolved (user) areaStyle shape via object spread.
+              const { areaStyle: _userAreaStyle, ...rest } = s;
+              const connectNulls = s.connectNulls ?? false;
+              const contentHash = resolveSeriesContentHash(prevResolved, 'line', s.data, () =>
+                cheapCartesianContentStamp(s.data)
+              );
+              const reuseSample = canReuseResolvedSeriesSample(
+                prevResolved,
+                'line',
+                s.data,
+                sampling,
+                samplingThreshold,
+                connectNulls,
+                contentHash
+              );
+              const prevLine = reuseSample
+                ? (prevResolved as ResolvedLineSeriesConfig & {
+                    contentHash?: number;
+                    rawBoundsMode?: RawBoundsMode;
+                  })
+                : null;
+              const { bounds: rawBounds, mode: rawBoundsMode } = resolveCartesianBounds(prevLine, s.data, reuseSample);
+              // Bypass sampling when data contains null gap markers to preserve gap structure.
+              // sampling:'none' already returns data as-is — skip O(n) hasNullGaps.
+              const sampledData = prevLine
+                ? prevLine.data
+                : sampling === 'none' || hasNullGaps(s.data)
+                  ? s.data
+                  : sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
+
+              return {
+                ...rest,
+                visible,
+                rawData: s.data,
+                data: sampledData,
+                color: effectiveStrokeColor,
+                lineStyle,
+                ...(s.areaStyle
+                  ? {
+                      areaStyle: {
+                        opacity: s.areaStyle.opacity ?? defaultAreaStyle.opacity,
+                        // Fill color precedence: areaStyle.color → resolved stroke color
+                        color: normalizeOptionalColor(s.areaStyle.color) ?? effectiveStrokeColor,
+                      },
+                    }
+                  : {}),
+                sampling,
+                samplingThreshold,
+                rawBounds,
+                rawBoundsMode,
+                connectNulls,
+                yAxis,
+                contentHash,
               };
             }
-
-            // Reject ohlc for band (never map to candle sampling).
-            let bandSampling: Exclude<SeriesSampling, 'ohlc'> =
-              sampling === 'ohlc' ? 'lttb' : (sampling as Exclude<SeriesSampling, 'ohlc'>);
-            if (sampling === 'ohlc') {
-              console.warn(`ChartGPU band series[${i}]: sampling 'ohlc' is not supported; using 'lttb'.`);
+            case 'bar': {
+              const contentHash = resolveSeriesContentHash(prevResolved, 'bar', s.data, () =>
+                cheapCartesianContentStamp(s.data)
+              );
+              const reuseSample = canReuseResolvedSeriesSample(
+                prevResolved,
+                'bar',
+                s.data,
+                sampling,
+                samplingThreshold,
+                undefined,
+                contentHash
+              );
+              const prevBar = reuseSample
+                ? (prevResolved as ResolvedBarSeriesConfig & {
+                    contentHash?: number;
+                    rawBoundsMode?: RawBoundsMode;
+                  })
+                : null;
+              const { bounds: rawBounds, mode: rawBoundsMode } = resolveCartesianBounds(prevBar, s.data, reuseSample);
+              return {
+                ...s,
+                visible,
+                rawData: s.data,
+                data: prevBar ? prevBar.data : sampleSeriesDataPoints(s.data, sampling, samplingThreshold),
+                color,
+                sampling,
+                samplingThreshold,
+                rawBounds,
+                rawBoundsMode,
+                yAxis,
+                contentHash,
+              };
             }
+            case 'scatter': {
+              const contentHash = resolveSeriesContentHash(prevResolved, 'scatter', s.data, () =>
+                cheapCartesianContentStamp(s.data)
+              );
+              const reuseSample = canReuseResolvedSeriesSample(
+                prevResolved,
+                'scatter',
+                s.data,
+                sampling,
+                samplingThreshold,
+                undefined,
+                contentHash
+              );
+              const prevScatterResolved =
+                prevResolved?.type === 'scatter' ? (prevResolved as ResolvedScatterSeriesConfig) : null;
+              const prevScatter = reuseSample
+                ? (prevResolved as ResolvedScatterSeriesConfig & {
+                    contentHash?: number;
+                    rawBoundsMode?: RawBoundsMode;
+                  })
+                : null;
+              const rawPointCount = getPointCount(s.data);
+              // Sticky index-sorted proof: prior frame fully proved x=i at this N.
+              const stickyIndexSorted =
+                prevScatterResolved?.indexSortedProven === true &&
+                prevScatterResolved.indexSortedPointCount === rawPointCount;
 
-            const connectNulls = s.connectNulls ?? false;
-            const contentHash = resolveSeriesContentHash(prevResolved, 'band', s.data, () =>
-              cheapBandContentStamp(s.data)
-            );
-            const reuseSample = canReuseResolvedSeriesSample(
-              prevResolved,
-              'band',
-              s.data,
-              bandSampling,
-              samplingThreshold,
-              connectNulls,
-              contentHash
-            );
-            const prevBand = reuseSample
-              ? (prevResolved as ResolvedBandSeriesConfig & {
-                  contentHash?: number;
-                  rawBoundsMode?: RawBoundsMode;
-                })
-              : null;
+              // Equal-N y-only + index-sorted under **LTTB** (group 4): re-bind y at
+              // prior sample x indices in O(k) instead of full O(N) LTTB. Requires
+              // matching sampling + threshold (same gate as canReuseResolvedSeriesSample).
+              // min/max/average always re-sample (bucket extrema depend on y).
+              // Brownian xy (group 2) fails classifyEqualNYOnlyRewrite → full path.
+              // Classify before bounds so sticky/full proof is shared (one O(n) max cold).
+              // performance.lod === 'strict': full LTTB on every y change (issue 2.3 C).
+              let sampledData: CartesianSeriesData;
+              /** True when this frame still has a valid index-sorted proof (sticky or cold). */
+              let indexSortedThisFrame = false;
+              let indexSortedFp: number | undefined =
+                stickyIndexSorted && prevScatterResolved?.indexSortedFingerprint !== undefined
+                  ? prevScatterResolved.indexSortedFingerprint
+                  : undefined;
+              if (prevScatter) {
+                sampledData = prevScatter.data;
+                // Identity-reuse: keep prior sticky proof when present.
+                indexSortedThisFrame = stickyIndexSorted;
+              } else if (
+                sampling === 'lttb' &&
+                prevScatterResolved &&
+                prevScatterResolved.sampling === 'lttb' &&
+                prevScatterResolved.samplingThreshold === samplingThreshold
+              ) {
+                const yOnlyKind = classifyEqualNYOnlyRewrite(
+                  prevScatterResolved.rawData as CartesianSeriesData,
+                  s.data,
+                  {
+                    prevIndexSortedProven: stickyIndexSorted,
+                    prevIndexSortedFingerprint: prevScatterResolved.indexSortedFingerprint,
+                  }
+                );
+                if (yOnlyKind === 'indexSorted') {
+                  indexSortedThisFrame = true;
+                  indexSortedFp = indexSortedXFingerprint(s.data);
+                  if (forceFullLttbOnEqualN) {
+                    // Strict LOD: plain LTTB always full recompute on y change.
+                    sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
+                  } else {
+                    const remapped = remapIndexSortedSampleY(prevScatterResolved.data as CartesianSeriesData, s.data);
+                    sampledData = remapped ?? sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
+                  }
+                } else {
+                  // Clears sticky for this frame (Brownian / equalX) — do not trustIndexSorted.
+                  sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
+                }
+              } else if (stickyIndexSorted && sampleLooksIndexSortedX(s.data)) {
+                // Non-LTTB equal-N stream (e.g. sampling:'none'): keep sticky for bounds O(1).
+                // Still require fingerprint continuity (issue 1.6).
+                const nextFp = indexSortedXFingerprint(s.data);
+                const prevFp =
+                  prevScatterResolved?.indexSortedFingerprint ??
+                  (prevScatterResolved?.rawData != null
+                    ? indexSortedXFingerprint(prevScatterResolved.rawData as CartesianSeriesData)
+                    : nextFp);
+                if (nextFp === prevFp) {
+                  indexSortedThisFrame = true;
+                  indexSortedFp = nextFp;
+                }
+                sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
+              } else {
+                sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
+                // Cold first frame (no sticky / no LTTB remap prev): one full O(n) proof so
+                // subsequent equal-N frames can sticky-skip. Cheap sample reject first.
+                if (sampleLooksIndexSortedX(s.data) && isIndexSortedX(s.data)) {
+                  indexSortedThisFrame = true;
+                  indexSortedFp = indexSortedXFingerprint(s.data);
+                }
+              }
 
-            let rawBounds: RawBounds | undefined;
-            let rawBoundsMode: RawBoundsMode;
-            if (prevBand?.rawBounds && prevBand.rawBoundsMode === 'data') {
-              rawBounds = prevBand.rawBounds;
-              rawBoundsMode = 'data';
-            } else {
-              rawBounds = bandBounds(s.data) ?? undefined;
-              rawBoundsMode = rawBounds ? 'data' : 'synthetic';
+              const {
+                bounds: rawBounds,
+                mode: rawBoundsMode,
+                indexSortedHit,
+              } = resolveCartesianBounds(prevScatter, s.data, reuseSample, {
+                // Only trust when this frame re-validated sticky or cold-proved — never
+                // after classify rejected (Brownian).
+                trustIndexSorted: indexSortedThisFrame,
+              });
+
+              const indexSortedProven = Boolean(indexSortedThisFrame || indexSortedHit);
+              if (indexSortedProven && indexSortedFp === undefined) {
+                indexSortedFp = indexSortedXFingerprint(s.data);
+              }
+              const mode =
+                normalizeScatterMode((s as unknown as { readonly mode?: unknown }).mode) ?? scatterDefaults.mode;
+              const binSize =
+                normalizeDensityBinSize((s as unknown as { readonly binSize?: unknown }).binSize) ??
+                scatterDefaults.binSize;
+              const densityColormap =
+                normalizeDensityColormap((s as unknown as { readonly densityColormap?: unknown }).densityColormap) ??
+                scatterDefaults.densityColormap;
+              const densityNormalization =
+                normalizeDensityNormalization(
+                  (s as unknown as { readonly densityNormalization?: unknown }).densityNormalization
+                ) ?? scatterDefaults.densityNormalization;
+
+              return {
+                ...s,
+                visible,
+                rawData: s.data,
+                data: sampledData,
+                color,
+                mode,
+                binSize,
+                densityColormap,
+                densityNormalization,
+                sampling,
+                samplingThreshold,
+                rawBounds,
+                rawBoundsMode,
+                yAxis,
+                contentHash,
+                ...(indexSortedProven
+                  ? {
+                      indexSortedProven: true as const,
+                      indexSortedPointCount: rawPointCount,
+                      ...(indexSortedFp !== undefined ? { indexSortedFingerprint: indexSortedFp } : {}),
+                    }
+                  : {}),
+              };
             }
+            case 'pie': {
+              // Pie series intentionally do NOT support sampling at runtime.
+              // For JS callers, strip any extra sampling keys so they don't leak through the resolver.
+              const {
+                sampling: _sampling,
+                samplingThreshold: _samplingThreshold,
+                ...rest
+              } = s as PieSeriesConfig & {
+                readonly sampling?: unknown;
+                readonly samplingThreshold?: unknown;
+              };
 
-            // Touch length for mismatch warnings (getBandLength).
-            getBandLength(s.data);
+              const resolvedData: ReadonlyArray<ResolvedPieDataItem> = (s.data ?? []).map((item, itemIndex) => {
+                const itemColor = normalizeOptionalColor(item?.color);
+                const fallback = theme.colorPalette[(i + itemIndex) % theme.colorPalette.length];
+                // Ensure visible defaults to true (converts undefined to true, preserves explicit false)
+                const itemVisible = item?.visible !== false;
+                return {
+                  ...item,
+                  color: itemColor ?? fallback,
+                  visible: itemVisible,
+                };
+              });
 
-            const sampledBandData = prevBand
-              ? prevBand.data
-              : bandSampling === 'none' || hasBandNullGaps(s.data)
-                ? s.data
-                : sampleBandSeries(s.data, bandSampling, samplingThreshold);
+              return { ...rest, visible, color, data: resolvedData };
+            }
+            case 'heatmap': {
+              return resolveHeatmapSeries(s, {
+                visible,
+                yAxis,
+                seriesIndex: i,
+                color,
+              });
+            }
+            case 'band': {
+              // Fill color: areaStyle.color → series.color → palette
+              const areaStyleColor = normalizeOptionalColor(s.areaStyle?.color);
+              const effectiveFillColor = areaStyleColor ?? explicitColor ?? inheritedColor;
 
-            return {
-              type: 'band' as const,
-              name: s.name,
-              visible,
-              rawData: s.data,
-              data: sampledBandData,
-              color: effectiveFillColor,
-              areaStyle,
-              ...(lineStyle ? { lineStyle } : {}),
-              ...(lineStyleY1 ? { lineStyleY1 } : {}),
-              sampling: bandSampling,
-              samplingThreshold,
-              rawBounds,
-              rawBoundsMode,
-              connectNulls,
-              yAxis,
-              contentHash,
-            };
+              const areaStyle: ResolvedAreaStyleConfig = {
+                opacity: s.areaStyle?.opacity ?? defaultAreaStyle.opacity,
+                color: effectiveFillColor,
+              };
+
+              // lineStyle omitted → no y stroke (fill-only; locked plan rule).
+              // When present, default width 1 / opacity like line edges.
+              let lineStyle: ResolvedLineStyleConfig | undefined;
+              if (s.lineStyle != null) {
+                const lineStyleColor = normalizeOptionalColor(s.lineStyle.color);
+                const effectiveStrokeColor = lineStyleColor ?? explicitColor ?? inheritedColor;
+                lineStyle = {
+                  width: s.lineStyle.width ?? 1,
+                  opacity: s.lineStyle.opacity ?? defaultLineStyle.opacity,
+                  color: effectiveStrokeColor,
+                };
+              }
+
+              // lineStyleY1 omitted → no y1 stroke (v1 locked decision).
+              let lineStyleY1: ResolvedLineStyleConfig | undefined;
+              if (s.lineStyleY1 != null) {
+                const y1Color = normalizeOptionalColor(s.lineStyleY1.color) ?? explicitColor ?? inheritedColor;
+                lineStyleY1 = {
+                  width: s.lineStyleY1.width ?? 1,
+                  opacity: s.lineStyleY1.opacity ?? defaultLineStyle.opacity,
+                  color: y1Color,
+                };
+              }
+
+              // Reject ohlc for band (never map to candle sampling).
+              let bandSampling: Exclude<SeriesSampling, 'ohlc'> =
+                sampling === 'ohlc' ? 'lttb' : (sampling as Exclude<SeriesSampling, 'ohlc'>);
+              if (sampling === 'ohlc') {
+                console.warn(`ChartGPU band series[${i}]: sampling 'ohlc' is not supported; using 'lttb'.`);
+              }
+
+              const connectNulls = s.connectNulls ?? false;
+              const contentHash = resolveSeriesContentHash(prevResolved, 'band', s.data, () =>
+                cheapBandContentStamp(s.data)
+              );
+              const reuseSample = canReuseResolvedSeriesSample(
+                prevResolved,
+                'band',
+                s.data,
+                bandSampling,
+                samplingThreshold,
+                connectNulls,
+                contentHash
+              );
+              const prevBand = reuseSample
+                ? (prevResolved as ResolvedBandSeriesConfig & {
+                    contentHash?: number;
+                    rawBoundsMode?: RawBoundsMode;
+                  })
+                : null;
+
+              let rawBounds: RawBounds | undefined;
+              let rawBoundsMode: RawBoundsMode;
+              if (prevBand?.rawBounds && prevBand.rawBoundsMode === 'data') {
+                rawBounds = prevBand.rawBounds;
+                rawBoundsMode = 'data';
+              } else {
+                rawBounds = bandBounds(s.data) ?? undefined;
+                rawBoundsMode = rawBounds ? 'data' : 'synthetic';
+              }
+
+              // Touch length for mismatch warnings (getBandLength).
+              getBandLength(s.data);
+
+              const sampledBandData = prevBand
+                ? prevBand.data
+                : bandSampling === 'none' || hasBandNullGaps(s.data)
+                  ? s.data
+                  : sampleBandSeries(s.data, bandSampling, samplingThreshold);
+
+              return {
+                type: 'band' as const,
+                name: s.name,
+                visible,
+                rawData: s.data,
+                data: sampledBandData,
+                color: effectiveFillColor,
+                areaStyle,
+                ...(lineStyle ? { lineStyle } : {}),
+                ...(lineStyleY1 ? { lineStyleY1 } : {}),
+                sampling: bandSampling,
+                samplingThreshold,
+                rawBounds,
+                rawBoundsMode,
+                connectNulls,
+                yAxis,
+                contentHash,
+              };
+            }
+            case 'candlestick': {
+              warnCandlestickNotImplemented();
+
+              const resolvedSampling: 'none' | 'ohlc' =
+                normalizeCandlestickSampling((s as unknown as { sampling?: unknown }).sampling) ??
+                candlestickDefaults.sampling;
+
+              const resolvedSamplingThreshold: number =
+                normalizeSamplingThreshold((s as unknown as { samplingThreshold?: unknown }).samplingThreshold) ??
+                candlestickDefaults.samplingThreshold;
+
+              const resolvedItemStyle: ResolvedCandlestickItemStyleConfig = {
+                upColor: normalizeOptionalColor(s.itemStyle?.upColor) ?? candlestickDefaults.itemStyle.upColor,
+                downColor: normalizeOptionalColor(s.itemStyle?.downColor) ?? candlestickDefaults.itemStyle.downColor,
+                upBorderColor:
+                  normalizeOptionalColor(s.itemStyle?.upBorderColor) ?? candlestickDefaults.itemStyle.upBorderColor,
+                downBorderColor:
+                  normalizeOptionalColor(s.itemStyle?.downBorderColor) ?? candlestickDefaults.itemStyle.downBorderColor,
+                borderWidth:
+                  typeof s.itemStyle?.borderWidth === 'number' && Number.isFinite(s.itemStyle.borderWidth)
+                    ? s.itemStyle.borderWidth
+                    : candlestickDefaults.itemStyle.borderWidth,
+              };
+
+              const contentHash = resolveSeriesContentHash(prevResolved, 'candlestick', s.data, () =>
+                cheapOHLCContentStamp(s.data)
+              );
+              const reuseCandle = canReuseResolvedSeriesSample(
+                prevResolved,
+                'candlestick',
+                s.data,
+                resolvedSampling,
+                resolvedSamplingThreshold,
+                undefined,
+                contentHash
+              );
+              const prevCandle = reuseCandle
+                ? (prevResolved as ResolvedCandlestickSeriesConfig & {
+                    contentHash?: number;
+                  })
+                : null;
+              const rawBounds = prevCandle?.rawBounds ?? computeRawBoundsFromOHLC(s.data);
+
+              const sampledData = prevCandle
+                ? prevCandle.data
+                : resolvedSampling === 'ohlc' && s.data.length > resolvedSamplingThreshold
+                  ? ohlcSample(s.data, resolvedSamplingThreshold)
+                  : s.data;
+
+              const resolvedPriceLabel = resolvePriceLabel(s.priceLabel, { candlePrimary });
+
+              return {
+                ...s,
+                visible,
+                rawData: s.data,
+                data: sampledData,
+                color,
+                style: s.style ?? candlestickDefaults.style,
+                itemStyle: resolvedItemStyle,
+                barWidth: s.barWidth ?? candlestickDefaults.barWidth,
+                barMinWidth: s.barMinWidth ?? candlestickDefaults.barMinWidth,
+                barMaxWidth: s.barMaxWidth ?? candlestickDefaults.barMaxWidth,
+                sampling: resolvedSampling,
+                samplingThreshold: resolvedSamplingThreshold,
+                priceLabel: resolvedPriceLabel,
+                rawBounds,
+                yAxis,
+                contentHash,
+              };
+            }
+            default: {
+              return assertUnreachable(s);
+            }
           }
-          case 'candlestick': {
-            warnCandlestickNotImplemented();
-
-            const resolvedSampling: 'none' | 'ohlc' =
-              normalizeCandlestickSampling((s as unknown as { sampling?: unknown }).sampling) ??
-              candlestickDefaults.sampling;
-
-            const resolvedSamplingThreshold: number =
-              normalizeSamplingThreshold((s as unknown as { samplingThreshold?: unknown }).samplingThreshold) ??
-              candlestickDefaults.samplingThreshold;
-
-            const resolvedItemStyle: ResolvedCandlestickItemStyleConfig = {
-              upColor: normalizeOptionalColor(s.itemStyle?.upColor) ?? candlestickDefaults.itemStyle.upColor,
-              downColor: normalizeOptionalColor(s.itemStyle?.downColor) ?? candlestickDefaults.itemStyle.downColor,
-              upBorderColor:
-                normalizeOptionalColor(s.itemStyle?.upBorderColor) ?? candlestickDefaults.itemStyle.upBorderColor,
-              downBorderColor:
-                normalizeOptionalColor(s.itemStyle?.downBorderColor) ?? candlestickDefaults.itemStyle.downBorderColor,
-              borderWidth:
-                typeof s.itemStyle?.borderWidth === 'number' && Number.isFinite(s.itemStyle.borderWidth)
-                  ? s.itemStyle.borderWidth
-                  : candlestickDefaults.itemStyle.borderWidth,
-            };
-
-            const contentHash = resolveSeriesContentHash(prevResolved, 'candlestick', s.data, () =>
-              cheapOHLCContentStamp(s.data)
-            );
-            const reuseCandle = canReuseResolvedSeriesSample(
-              prevResolved,
-              'candlestick',
-              s.data,
-              resolvedSampling,
-              resolvedSamplingThreshold,
-              undefined,
-              contentHash
-            );
-            const prevCandle = reuseCandle
-              ? (prevResolved as ResolvedCandlestickSeriesConfig & {
-                  contentHash?: number;
-                })
-              : null;
-            const rawBounds = prevCandle?.rawBounds ?? computeRawBoundsFromOHLC(s.data);
-
-            const sampledData = prevCandle
-              ? prevCandle.data
-              : resolvedSampling === 'ohlc' && s.data.length > resolvedSamplingThreshold
-                ? ohlcSample(s.data, resolvedSamplingThreshold)
-                : s.data;
-
-            const resolvedPriceLabel = resolvePriceLabel(s.priceLabel, { candlePrimary });
-
-            return {
-              ...s,
-              visible,
-              rawData: s.data,
-              data: sampledData,
-              color,
-              style: s.style ?? candlestickDefaults.style,
-              itemStyle: resolvedItemStyle,
-              barWidth: s.barWidth ?? candlestickDefaults.barWidth,
-              barMinWidth: s.barMinWidth ?? candlestickDefaults.barMinWidth,
-              barMaxWidth: s.barMaxWidth ?? candlestickDefaults.barMaxWidth,
-              sampling: resolvedSampling,
-              samplingThreshold: resolvedSamplingThreshold,
-              priceLabel: resolvedPriceLabel,
-              rawBounds,
-              yAxis,
-              contentHash,
-            };
-          }
-          default: {
-            return assertUnreachable(s);
-          }
-        }
-      });
+        })
+        .filter((s) => s != null) as ResolvedSeriesConfig[]);
 
   return {
+    coordinateSystem,
+    camera,
+    interaction3d,
+    axes3d,
     grid,
     gridLines,
     xAxis,
