@@ -70,6 +70,10 @@ export type {
   PieItemStyleConfig,
   PieRadius,
   PieSeriesConfig,
+  HeatmapSeriesConfig,
+  HeatmapData,
+  HeatmapColormap,
+  HeatmapNullHandling,
   RenderMode,
   ScatterSeriesConfig,
   ScatterSymbol,
@@ -82,7 +86,7 @@ export type {
 } from './config/types';
 
 // Options defaults + resolution
-export { candlestickDefaults, defaultOptions } from './config/defaults';
+export { candlestickDefaults, defaultOptions, heatmapDefaults } from './config/defaults';
 export { isCandlePrimaryChart, OptionResolver, resolveOptions, resolvePriceLabel } from './config/OptionResolver';
 export type {
   ResolvedCandlestickPriceLabel,
@@ -97,8 +101,21 @@ export type {
   ResolvedLineStyleConfig,
   ResolvedPieDataItem,
   ResolvedPieSeriesConfig,
+  ResolvedHeatmapSeriesConfig,
   ResolvedSeriesConfig,
 } from './config/OptionResolver';
+
+// Heatmap / colormap utilities (shared with scatter density)
+export { buildColormapLut, sampleHeatmapColormap, getNamedColormapStops, colormapKey } from './utils/colormap';
+export {
+  heatmapGridBounds,
+  heatmapGridPlacement,
+  heatmapCellIndex,
+  heatmapHitTest,
+  computeHeatmapZExtent,
+  normalizeZ,
+  heatmapZContentStamp,
+} from './utils/heatmapLayout';
 
 // Themes
 export type { ThemeConfig } from './themes/types';

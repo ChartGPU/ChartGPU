@@ -50,6 +50,7 @@ function emptyRenderers(lines: LineRenderer[]): SeriesRenderers {
     scatterRenderers: [],
     scatterDensityRenderers: [],
     pieRenderers: [],
+    heatmapRenderers: [],
     candlestickRenderers: [],
     decimationComputes: [],
   };

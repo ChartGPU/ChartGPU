@@ -2,7 +2,6 @@ import scatterDensityBinningWgsl from '../shaders/scatterDensityBinning.wgsl?raw
 import scatterDensityColormapWgsl from '../shaders/scatterDensityColormap.wgsl?raw';
 import type { RawBounds, ResolvedScatterSeriesConfig } from '../config/OptionResolver';
 import type { ContinuousScale } from '../utils/scales';
-import { parseCssColorToRgba01 } from '../utils/colors';
 import type { GridArea } from './createGridRenderer';
 import {
   createRenderPipeline,
@@ -17,6 +16,7 @@ import {
   computeClipAffineFromScale,
   resolveLogProjection,
 } from './packedXAffine';
+import { buildColormapLut, colormapKey } from '../utils/colormap';
 
 export interface ScatterDensityRenderer {
   prepare(
@@ -58,7 +58,6 @@ export interface ScatterDensityRendererOptions {
 
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
 
-const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
 const clampInt = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v | 0));
 
 const nextPow2 = (v: number): number => {
@@ -110,63 +109,6 @@ const computePlotScissorDevicePx = (
   const scissorH = Math.max(0, scissorB - scissorY);
 
   return { x: scissorX, y: scissorY, w: scissorW, h: scissorH };
-};
-
-type Rgba01 = readonly [r: number, g: number, b: number, a: number];
-
-const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
-const lerpRgba = (a: Rgba01, b: Rgba01, t: number): Rgba01 =>
-  [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t), lerp(a[3], b[3], t)] as const;
-
-const parseColorStop = (css: string): Rgba01 => parseCssColorToRgba01(css) ?? ([0, 0, 0, 1] as const);
-
-const getNamedStops = (name: 'viridis' | 'plasma' | 'inferno'): readonly string[] => {
-  // Compact stop lists (interpolated to 256 entries). These are standard-ish anchors.
-  if (name === 'plasma') {
-    return ['#0d0887', '#6a00a8', '#b12a90', '#e16462', '#fca636', '#f0f921'] as const;
-  }
-  if (name === 'inferno') {
-    return ['#000004', '#420a68', '#932667', '#dd513a', '#fca50a', '#fcffa4'] as const;
-  }
-  // viridis
-  return ['#440154', '#3b528b', '#21918c', '#5ec962', '#fde725'] as const;
-};
-
-const buildLutRGBA8 = (colormap: ResolvedScatterSeriesConfig['densityColormap']): Uint8Array<ArrayBuffer> => {
-  const stopsCss =
-    typeof colormap === 'string'
-      ? getNamedStops(colormap)
-      : Array.isArray(colormap) && colormap.length > 0
-        ? colormap
-        : (getNamedStops('viridis') as readonly string[]);
-
-  const stops = stopsCss.map(parseColorStop);
-  const n = Math.max(2, stops.length);
-
-  // Ensure the underlying buffer is a plain ArrayBuffer (not SharedArrayBuffer) for WebGPU typings.
-  const out: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(256 * 4));
-  for (let i = 0; i < 256; i++) {
-    const t = i / 255;
-    const x = t * (n - 1);
-    const seg = Math.min(n - 2, Math.max(0, Math.floor(x)));
-    const localT = x - seg;
-    const c = lerpRgba(stops[seg]!, stops[seg + 1]!, localT);
-
-    out[i * 4 + 0] = clampInt(Math.round(clamp01(c[0]) * 255), 0, 255);
-    out[i * 4 + 1] = clampInt(Math.round(clamp01(c[1]) * 255), 0, 255);
-    out[i * 4 + 2] = clampInt(Math.round(clamp01(c[2]) * 255), 0, 255);
-    out[i * 4 + 3] = clampInt(Math.round(clamp01(c[3]) * 255), 0, 255);
-  }
-  return out;
-};
-
-const colormapKey = (colormap: ResolvedScatterSeriesConfig['densityColormap']): string => {
-  if (typeof colormap === 'string') return colormap;
-  try {
-    return JSON.stringify(colormap);
-  } catch {
-    return 'custom';
-  }
 };
 
 const normalizationToU32 = (n: ResolvedScatterSeriesConfig['densityNormalization']): number => {
@@ -374,7 +316,7 @@ export function createScatterDensityRenderer(
     }
     if (key === lastColormapKey) return;
 
-    const data = buildLutRGBA8(seriesConfig.densityColormap);
+    const data = buildColormapLut(seriesConfig.densityColormap);
     device.queue.writeTexture(
       { texture: lutTexture! },
       data,

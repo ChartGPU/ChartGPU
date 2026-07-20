@@ -28,6 +28,10 @@ import type {
   SeriesType,
   CartesianSeriesData,
   PerformanceLod,
+  HeatmapSeriesConfig,
+  HeatmapData,
+  HeatmapColormap,
+  HeatmapNullHandling,
 } from './types';
 import {
   candlePrimaryGridDefaults,
@@ -38,7 +42,15 @@ import {
   defaultOptions,
   defaultPalette,
   scatterDefaults,
+  heatmapDefaults,
 } from './defaults';
+import { isNamedColormap } from '../utils/colormap';
+import {
+  computeHeatmapZExtent,
+  heatmapGridBounds,
+  sanitizeHeatmapGeometry,
+  type HeatmapCellAnchor,
+} from '../utils/heatmapLayout';
 import { isCandlePrimaryChart } from './isCandlePrimaryChart';
 import { resolvePriceLabel, type ResolvedCandlestickPriceLabel } from './resolvePriceLabel';
 import { getTheme } from '../themes';
@@ -224,6 +236,38 @@ export type ResolvedPieSeriesConfig = Readonly<
   }
 >;
 
+export type ResolvedHeatmapSeriesConfig = Readonly<
+  Omit<
+    HeatmapSeriesConfig,
+    'data' | 'colormap' | 'zMin' | 'zMax' | 'zScale' | 'opacity' | 'cellAnchor' | 'nullHandling' | 'cellGapPx' | 'color'
+  > & {
+    readonly type: 'heatmap';
+    readonly data: HeatmapData;
+    readonly colormap: HeatmapColormap;
+    readonly zMin: number;
+    readonly zMax: number;
+    readonly zScale: 'linear' | 'log';
+    readonly opacity: number;
+    readonly cellAnchor: HeatmapCellAnchor;
+    readonly nullHandling: HeatmapNullHandling;
+    readonly cellGapPx: number;
+    /** Palette fallback for legend/tooltip; not used for cell coloring. */
+    readonly color: string;
+    readonly yAxis: string;
+    /**
+     * Grid extent in data space for axis auto-bounds.
+     * Always set for valid geometry; omitted only when series is empty/invalid.
+     */
+    readonly rawBounds?: RawBounds;
+    /**
+     * When false, renderer should skip draw (invalid geometry or empty drawCells).
+     */
+    readonly drawable: boolean;
+    /** Expected cells = columns * rows after coercion. */
+    readonly cellCount: number;
+  }
+>;
+
 export type ResolvedCandlestickItemStyleConfig = Readonly<Required<CandlestickItemStyleConfig>>;
 
 export type ResolvedCandlestickSeriesConfig = Readonly<
@@ -270,7 +314,8 @@ export type ResolvedSeriesConfig =
   | ResolvedBarSeriesConfig
   | ResolvedScatterSeriesConfig
   | ResolvedPieSeriesConfig
-  | ResolvedCandlestickSeriesConfig;
+  | ResolvedCandlestickSeriesConfig
+  | ResolvedHeatmapSeriesConfig;
 
 export type ResolvedPerformanceConfig = Readonly<{
   readonly lod: PerformanceLod;
@@ -923,7 +968,7 @@ export function canReuseResolvedSeriesSample(
   connectNulls: boolean | undefined,
   contentHash: number
 ): boolean {
-  if (!prev || prev.type !== nextType || prev.type === 'pie') return false;
+  if (!prev || prev.type !== nextType || prev.type === 'pie' || prev.type === 'heatmap') return false;
   const prevAny = prev as {
     readonly rawData?: unknown;
     readonly data?: unknown;
@@ -971,13 +1016,168 @@ export function resolveSeriesContentHash(
   rawData: unknown,
   hashData: () => number
 ): number {
-  if (prev && prev.type === nextType && prev.type !== 'pie') {
+  if (prev && prev.type === nextType && prev.type !== 'pie' && prev.type !== 'heatmap') {
     const prevAny = prev as WithResolvedDataIdentity;
     if ((prevAny.rawData ?? prevAny.data) === rawData && typeof prevAny.contentHash === 'number') {
       return prevAny.contentHash;
     }
   }
   return hashData();
+}
+
+const warnedHeatmapInvalid = new Set<string>();
+function warnHeatmapOnce(key: string, message: string): void {
+  if (warnedHeatmapInvalid.has(key)) return;
+  warnedHeatmapInvalid.add(key);
+  console.warn(message);
+}
+
+function normalizeHeatmapColormap(v: unknown): HeatmapColormap {
+  if (isNamedColormap(v)) return v;
+  if (Array.isArray(v) && v.length > 0 && v.every((c) => typeof c === 'string')) {
+    return v as readonly string[];
+  }
+  return heatmapDefaults.colormap;
+}
+
+function normalizeHeatmapNullHandling(v: unknown): HeatmapNullHandling {
+  if (v === 'transparent' || v === 'lowest' || v === 'highest') return v;
+  return heatmapDefaults.nullHandling;
+}
+
+function normalizeHeatmapCellAnchor(v: unknown): HeatmapCellAnchor {
+  if (v === 'corner' || v === 'center') return v;
+  return heatmapDefaults.cellAnchor;
+}
+
+function resolveHeatmapSeries(
+  s: HeatmapSeriesConfig,
+  ctx: {
+    readonly visible: boolean;
+    readonly yAxis: string;
+    readonly seriesIndex: number;
+    readonly color: string;
+  }
+): ResolvedHeatmapSeriesConfig {
+  const {
+    sampling: _sampling,
+    samplingThreshold: _samplingThreshold,
+    color: _color,
+    ...rest
+  } = s as HeatmapSeriesConfig & {
+    readonly sampling?: unknown;
+    readonly samplingThreshold?: unknown;
+    readonly color?: unknown;
+  };
+
+  const geom = sanitizeHeatmapGeometry(s.data);
+  const cellAnchor = normalizeHeatmapCellAnchor(s.cellAnchor);
+  const colormap = normalizeHeatmapColormap(s.colormap);
+  const zScale = s.zScale === 'log' ? 'log' : heatmapDefaults.zScale;
+  const nullHandling = normalizeHeatmapNullHandling(s.nullHandling);
+  const opacityRaw = typeof s.opacity === 'number' && Number.isFinite(s.opacity) ? s.opacity : heatmapDefaults.opacity;
+  const opacity = Math.min(1, Math.max(0, opacityRaw));
+  const cellGapPx =
+    typeof s.cellGapPx === 'number' && Number.isFinite(s.cellGapPx) && s.cellGapPx > 0 ? s.cellGapPx : 0;
+
+  if (!geom) {
+    warnHeatmapOnce(
+      `geom:${ctx.seriesIndex}`,
+      `ChartGPU: heatmap series[${ctx.seriesIndex}] has invalid dimensions or zero/non-finite steps; series will not draw.`
+    );
+    return {
+      ...rest,
+      type: 'heatmap',
+      visible: ctx.visible,
+      yAxis: ctx.yAxis,
+      color: ctx.color,
+      data: s.data,
+      colormap,
+      zMin: 0,
+      zMax: 1,
+      zScale,
+      opacity,
+      cellAnchor,
+      nullHandling,
+      cellGapPx,
+      drawable: false,
+      cellCount: 0,
+    };
+  }
+
+  const expected = geom.columns * geom.rows;
+  if (geom.zLength !== expected) {
+    warnHeatmapOnce(
+      `zlen:${ctx.seriesIndex}:${geom.zLength}:${expected}`,
+      `ChartGPU: heatmap series[${ctx.seriesIndex}] z.length (${geom.zLength}) !== columns*rows (${expected}); drawing min(len, cols*rows) cells.`
+    );
+  }
+
+  // Resolve zMin/zMax: explicit pair, one + data extremum, or full auto.
+  const auto = computeHeatmapZExtent(s.data.z, expected, zScale);
+  let zMin = typeof s.zMin === 'number' && Number.isFinite(s.zMin) ? s.zMin : auto.zMin;
+  let zMax = typeof s.zMax === 'number' && Number.isFinite(s.zMax) ? s.zMax : auto.zMax;
+  if (
+    typeof s.zMin === 'number' &&
+    Number.isFinite(s.zMin) &&
+    !(typeof s.zMax === 'number' && Number.isFinite(s.zMax))
+  ) {
+    zMax = Math.max(s.zMin, auto.zMax);
+  }
+  if (
+    typeof s.zMax === 'number' &&
+    Number.isFinite(s.zMax) &&
+    !(typeof s.zMin === 'number' && Number.isFinite(s.zMin))
+  ) {
+    zMin = Math.min(s.zMax, auto.zMin);
+  }
+  if (zMin === zMax) {
+    const eps = zMin === 0 ? 1e-6 : Math.abs(zMin) * 1e-6;
+    zMin -= eps;
+    zMax += eps;
+  }
+
+  const bounds = heatmapGridBounds(
+    {
+      xStart: geom.xStart,
+      xStep: geom.xStep,
+      yStart: geom.yStart,
+      yStep: geom.yStep,
+      columns: geom.columns,
+      rows: geom.rows,
+    },
+    cellAnchor
+  );
+
+  const data: HeatmapData = {
+    xStart: geom.xStart,
+    xStep: geom.xStep,
+    yStart: geom.yStart,
+    yStep: geom.yStep,
+    columns: geom.columns,
+    rows: geom.rows,
+    z: s.data.z,
+  };
+
+  return {
+    ...rest,
+    type: 'heatmap',
+    visible: ctx.visible,
+    yAxis: ctx.yAxis,
+    color: ctx.color,
+    data,
+    colormap,
+    zMin,
+    zMax,
+    zScale,
+    opacity,
+    cellAnchor,
+    nullHandling,
+    cellGapPx,
+    rawBounds: bounds,
+    drawable: geom.drawCells > 0,
+    cellCount: expected,
+  };
 }
 
 export function resolveOptions(
@@ -1300,7 +1500,7 @@ export function resolveOptions(
   const series: ReadonlyArray<ResolvedSeriesConfig> = canReuseEntireSeriesArray
     ? previousSeries!
     : (userOptions.series ?? []).map((s, i) => {
-        const explicitColor = normalizeOptionalColor(s.color);
+        const explicitColor = normalizeOptionalColor((s as { color?: string }).color);
         const inheritedColor = theme.colorPalette[i % theme.colorPalette.length];
         const color = explicitColor ?? inheritedColor;
         const prevResolved = previousSeries?.[i];
@@ -1638,6 +1838,14 @@ export function resolveOptions(
             });
 
             return { ...rest, visible, color, data: resolvedData };
+          }
+          case 'heatmap': {
+            return resolveHeatmapSeries(s, {
+              visible,
+              yAxis,
+              seriesIndex: i,
+              color,
+            });
           }
           case 'candlestick': {
             warnCandlestickNotImplemented();

@@ -426,3 +426,80 @@ describe('OptionResolver sample reuse (P1-7)', () => {
     expect(shouldRecomputeBaselineSampling(without.series, withFill.series)).toBe(true);
   });
 });
+
+describe('didSeriesDataLikelyChange — heatmap', () => {
+  const z = new Float32Array([1, 2, 3, 4]);
+  function hm(extra: Record<string, unknown> = {}): ResolvedSeriesConfig {
+    return {
+      type: 'heatmap',
+      name: 'h',
+      data: {
+        xStart: 0,
+        xStep: 1,
+        yStart: 0,
+        yStep: 1,
+        columns: 2,
+        rows: 2,
+        z,
+        ...(extra.data as object),
+      },
+      colormap: 'viridis',
+      zMin: 0,
+      zMax: 1,
+      zScale: 'linear',
+      opacity: 1,
+      cellAnchor: 'corner',
+      nullHandling: 'transparent',
+      cellGapPx: 0,
+      yAxis: 'y',
+      color: '#0af',
+      drawable: true,
+      cellCount: 4,
+      visible: true,
+      ...extra,
+    } as ResolvedSeriesConfig;
+  }
+
+  it('same identity → false', () => {
+    const a = hm();
+    expect(didSeriesDataLikelyChange([a], [a])).toBe(false);
+  });
+
+  it('new object same z → true (setOption stream)', () => {
+    const a = hm();
+    const b = hm({ name: 'h2' });
+    expect(didSeriesDataLikelyChange([a], [b])).toBe(true);
+  });
+
+  it('z ref change → true', () => {
+    const a = hm();
+    const b = hm({
+      data: {
+        xStart: 0,
+        xStep: 1,
+        yStart: 0,
+        yStep: 1,
+        columns: 2,
+        rows: 2,
+        z: new Float32Array([9, 9, 9, 9]),
+      },
+    });
+    expect(didSeriesDataLikelyChange([a], [b])).toBe(true);
+  });
+
+  it('dimension change → true', () => {
+    const a = hm();
+    const b = hm({
+      data: {
+        xStart: 0,
+        xStep: 1,
+        yStart: 0,
+        yStep: 1,
+        columns: 4,
+        rows: 1,
+        z,
+      },
+    });
+    expect(didSeriesDataLikelyChange([a], [b])).toBe(true);
+  });
+});

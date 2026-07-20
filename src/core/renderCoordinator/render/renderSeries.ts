@@ -15,6 +15,7 @@ import type {
   ResolvedBarSeriesConfig,
   ResolvedAreaSeriesConfig,
   ResolvedPieSeriesConfig,
+  ResolvedHeatmapSeriesConfig,
 } from '../../../config/OptionResolver';
 import type { DataPoint } from '../../../config/types';
 import type { LinearScale } from '../../../utils/scales';
@@ -25,6 +26,7 @@ import type { BarRenderer } from '../../../renderers/createBarRenderer';
 import type { ScatterRenderer } from '../../../renderers/createScatterRenderer';
 import type { ScatterDensityRenderer } from '../../../renderers/createScatterDensityRenderer';
 import type { PieRenderer } from '../../../renderers/createPieRenderer';
+import type { HeatmapRenderer } from '../../../renderers/createHeatmapRenderer';
 import type { CandlestickRenderer } from '../../../renderers/createCandlestickRenderer';
 import type { ReferenceLineRenderer } from '../../../renderers/createReferenceLineRenderer';
 import type { AnnotationMarkerRenderer } from '../../../renderers/createAnnotationMarkerRenderer';
@@ -55,6 +57,7 @@ export interface SeriesRenderers {
   readonly scatterRenderers: ReadonlyArray<ScatterRenderer>;
   readonly scatterDensityRenderers: ReadonlyArray<ScatterDensityRenderer>;
   readonly pieRenderers: ReadonlyArray<PieRenderer>;
+  readonly heatmapRenderers: ReadonlyArray<HeatmapRenderer>;
   readonly candlestickRenderers: ReadonlyArray<CandlestickRenderer>;
   /** 1:1 with lineRenderers; unused slots are no-ops until prepared. */
   readonly decimationComputes: ReadonlyArray<DecimationCompute>;
@@ -671,6 +674,20 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
         renderers.pieRenderers[i].prepare(s, gridArea);
         break;
       }
+      case 'heatmap': {
+        // No DataStore / LTTB / GPU decimation — renderer owns r32float texture.
+        // Intro opacity via prepare option (stable series identity → no z re-upload).
+        const hm = s as ResolvedHeatmapSeriesConfig;
+        renderers.heatmapRenderers[i]?.prepare(
+          hm,
+          xScale,
+          getYScale(s),
+          gridArea,
+          introP < 1 ? { opacityOverride: introP } : undefined
+        );
+        gpuSeriesKindByIndex[i] = 'other';
+        break;
+      }
       case 'candlestick': {
         // Candlestick renderer handles clipping internally, no intro animation for now.
         renderers.candlestickRenderers[i].prepare(
@@ -765,11 +782,15 @@ export function encodeDecimationCompute(
  * Render order (from back to front):
  * 1. Pies (non-cartesian, behind cartesian series)
  * 2. Annotations below series (reference lines, markers)
- * 3. Area fills
- * 4. Bars
- * 5. Candlesticks
- * 6. Scatter points
- * 7. Line strokes
+ * 3. Heatmaps (data-grid fill; series array order among heatmaps)
+ * 4. Area fills
+ * 5. Bars
+ * 6. Candlesticks
+ * 7. Scatter points
+ * 8. Line strokes
+ *
+ * Heatmaps draw before strokes so overlays/lines stay readable when mixed.
+ * Relative order among heatmaps follows `series[]` order.
  *
  * @param renderers - Series renderer instances
  * @param annotationRenderers - Annotation renderer instances
@@ -813,6 +834,27 @@ export function renderSeries(
       }
       if (markerBelowCount > 0) {
         annotationRenderers.annotationMarkerRenderer.render(mainPass, 0, markerBelowCount);
+      }
+      mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+    }
+  }
+
+  // Heatmaps (data-space textured quads) — before lines/scatter for readability.
+  if (plotScissor.w > 0 && plotScissor.h > 0) {
+    let anyHeatmap = false;
+    for (let idx = 0; idx < visibleSeriesForRender.length; idx++) {
+      if (visibleSeriesForRender[idx]!.series.type === 'heatmap') {
+        anyHeatmap = true;
+        break;
+      }
+    }
+    if (anyHeatmap) {
+      mainPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+      for (let idx = 0; idx < visibleSeriesForRender.length; idx++) {
+        const { series, originalIndex } = visibleSeriesForRender[idx]!;
+        if (series.type === 'heatmap') {
+          renderers.heatmapRenderers[originalIndex]?.render(mainPass);
+        }
       }
       mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
     }

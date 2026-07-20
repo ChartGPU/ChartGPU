@@ -146,6 +146,12 @@ export function formatTooltipItem(params: TooltipParams): string {
   if (isCandlestickValue(params.value)) {
     return formatCandlestickTooltip(params);
   }
+  if (typeof params.z === 'number') {
+    // Heatmap: show z as primary value; x/y are cell centers in value[].
+    const zText = formatNumber(params.z);
+    const xy = `x=${formatNumber(params.value[0])} y=${formatNumber(params.value[1])}`;
+    return formatRowHtml(params, `${zText} <span style="opacity:0.7">(${escapeHtml(xy)})</span>`);
+  }
   return formatRowHtml(params, formatNumber(params.value[1]));
 }
 
@@ -166,6 +172,11 @@ export function formatTooltipAxis(params: TooltipParams[]): string {
     .map((p) => {
       if (isCandlestickValue(p.value)) {
         return formatCandlestickRowHtml(p);
+      }
+      if (typeof p.z === 'number') {
+        const zText = formatNumber(p.z);
+        const xy = `x=${formatNumber(p.value[0])} y=${formatNumber(p.value[1])}`;
+        return formatRowHtml(p, `${zText} <span style="opacity:0.7">(${escapeHtml(xy)})</span>`);
       }
       return formatRowHtml(p, formatNumber(p.value[1]));
     })

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Uniform heatmap / spectrogram series** (`type: 'heatmap'`) — data-space grid of z-values rendered as a GPU `r32float` texture + colormap LUT + single quad (not scatter `mode: 'density'`). Supports viridis/plasma/inferno/magma/grayscale and custom stops, linear/log z scale, corner/center cell anchors, NaN null-handling, zoom/pan without z re-upload, equal-size `setOption` z updates, and cell tooltips (`TooltipParams.z`). `appendData` is unsupported (warn). Example: `examples/heatmap-spectrogram/`.
 - **Multi-axis Y-scaling** - Introduced robust support for multiple independent Y-axes via `yAxes` configuration array. Allows rendering multiple datasets with distinct numerical ranges (e.g., Price vs Volume) on the same chart, mapped via `yAxisIndex` on the series configuration. Features independent tick generation, dynamic right-left layouts via `position: "right"`, and precise hit-testing alignments.
 - **Shared GPUDevice support** - Multiple `ChartGPU` instances can share a single, pre-initialized `GPUDevice` (via injected `adapter` + `device`) to reduce redundant initialization and improve dashboard ergonomics.
 - **`deviceLost` event (shared device mode)** - When using an injected/shared device, charts emit a `deviceLost` event so apps can recreate chart instances without ChartGPU destroying the shared device.

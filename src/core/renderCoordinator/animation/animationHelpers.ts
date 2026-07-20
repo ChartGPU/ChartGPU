@@ -46,6 +46,14 @@ export type AnySeriesConfig =
   | { readonly type: 'bar'; readonly data: ReadonlyArray<DataPoint> }
   | { readonly type: 'scatter'; readonly data: ReadonlyArray<DataPoint> }
   | { readonly type: 'candlestick'; readonly data: ReadonlyArray<any> }
+  | {
+      readonly type: 'heatmap';
+      readonly data: {
+        readonly columns?: number;
+        readonly rows?: number;
+        readonly z?: { readonly length?: number };
+      };
+    }
   | ResolvedPieSeriesConfig;
 
 /**
@@ -140,6 +148,13 @@ function hasDrawableMarks(series: AnySeriesConfig): boolean {
   switch (series.type) {
     case 'pie': {
       return series.data.some((it: any) => typeof it?.value === 'number' && Number.isFinite(it.value) && it.value > 0);
+    }
+    case 'heatmap': {
+      const d = series.data as { columns?: number; rows?: number; z?: { length?: number } };
+      const cols = Math.floor(Number(d?.columns));
+      const rows = Math.floor(Number(d?.rows));
+      const zLen = d?.z && typeof d.z.length === 'number' ? d.z.length : 0;
+      return cols >= 1 && rows >= 1 && zLen > 0;
     }
     case 'line':
     case 'area':

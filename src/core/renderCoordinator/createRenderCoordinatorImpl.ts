@@ -90,9 +90,11 @@ import { findNearestPoint } from '../../interaction/findNearestPoint';
 import { findPointsAtX } from '../../interaction/findPointsAtX';
 import { computeCandlestickBodyWidthRange, findCandlestick } from '../../interaction/findCandlestick';
 import { findPieSlice } from '../../interaction/findPieSlice';
+import { resolveHeatmapTooltipParams } from '../../interaction/heatmapTooltip';
 import { createAxisScale } from '../../utils/scales';
 import type { ContinuousScale, LinearScale } from '../../utils/scales';
 import { parseCssColorToGPUColor } from '../../utils/colors';
+import type { ResolvedHeatmapSeriesConfig } from '../../config/OptionResolver';
 import { createTextOverlay } from '../../components/createTextOverlay';
 import type { TextOverlay } from '../../components/createTextOverlay';
 import { createLegend } from '../../components/createLegend';
@@ -551,6 +553,15 @@ const computePositiveYBoundsForAxis = (
     if (seriesConfig.type === 'pie') continue;
     if (seriesConfig.yAxis !== axisId) continue;
 
+    if (seriesConfig.type === 'heatmap') {
+      const b = seriesConfig.rawBounds;
+      if (b && b.yMin > 0 && b.yMax > 0) {
+        if (b.yMin < yMin) yMin = b.yMin;
+        if (b.yMax > yMax) yMax = b.yMax;
+      }
+      continue;
+    }
+
     if (seriesConfig.type === 'candlestick') {
       const rawOHLC = (seriesConfig.rawData ?? seriesConfig.data) as ReadonlyArray<OHLCDataPoint>;
       for (let i = 0; i < rawOHLC.length; i++) {
@@ -610,6 +621,14 @@ const computePositiveXBounds = (series: ResolvedChartGPUOptions['series']): { xM
   for (let s = 0; s < series.length; s++) {
     const seriesConfig = series[s];
     if (seriesConfig.type === 'pie' || seriesConfig.type === 'candlestick') continue;
+    if (seriesConfig.type === 'heatmap') {
+      const b = seriesConfig.rawBounds;
+      if (b && b.xMin > 0 && b.xMax > 0) {
+        if (b.xMin < xMin) xMin = b.xMin;
+        if (b.xMax > xMax) xMax = b.xMax;
+      }
+      continue;
+    }
     const data = (seriesConfig.rawData ?? seriesConfig.data) as CartesianSeriesData;
     const n = getPointCount(data);
     for (let i = 0; i < n; i++) {
@@ -698,6 +717,20 @@ const computeVisibleYBoundsForAxis = (
     const seriesConfig = series[s];
     if (seriesConfig.type === 'pie') continue;
     if (seriesConfig.yAxis !== axisId) continue;
+
+    if (seriesConfig.type === 'heatmap') {
+      const b = seriesConfig.rawBounds;
+      if (b && Number.isFinite(b.yMin) && Number.isFinite(b.yMax)) {
+        // Include full grid Y when any of the grid X span overlaps the window (or no window).
+        const overlapsX =
+          !filterX || (Number.isFinite(b.xMin) && Number.isFinite(b.xMax) && b.xMax >= xMinW && b.xMin <= xMaxW);
+        if (overlapsX) {
+          if (b.yMin < yMin) yMin = b.yMin;
+          if (b.yMax > yMax) yMax = b.yMax;
+        }
+      }
+      continue;
+    }
 
     if (seriesConfig.type === 'candlestick') {
       const visibleOHLC = seriesConfig.data as ReadonlyArray<OHLCDataPoint>;
@@ -1100,6 +1133,11 @@ export function createRenderCoordinator(
         );
         if (caches) caches.pieDataBySeriesIndex[i] = animated.data as any;
         out[i] = animated;
+        continue;
+      }
+
+      if (b.type === 'heatmap') {
+        out[i] = b;
         continue;
       }
 
@@ -1882,6 +1920,33 @@ export function createRenderCoordinator(
     return null;
   };
 
+  /**
+   * Heatmap cell under cursor: invert pixel → data (x,y), map to cell via layout helper.
+   * Reads z from CPU-side series data (not GPU mapAsync).
+   * Requires a real Y (local pointer); chart-sync x-only paths do not call this.
+   */
+  const findHeatmapAtPointer = (
+    series: ResolvedChartGPUOptions['series'],
+    gridX: number,
+    gridY: number,
+    interactionScales: NonNullable<ReturnType<typeof computeInteractionScalesGridCssPx>>
+  ): TooltipParams | null => {
+    const dataX = interactionScales.xScale.invert(gridX);
+    if (!Number.isFinite(dataX)) return null;
+
+    for (let i = series.length - 1; i >= 0; i--) {
+      const s = series[i];
+      if (s.type !== 'heatmap') continue;
+      const hm = s as ResolvedHeatmapSeriesConfig;
+      const yScale = interactionScales.yScales.get(hm.yAxis || 'y') ?? interactionScales.yScales.values().next().value;
+      if (!yScale) continue;
+      const dataY = yScale.invert(gridY);
+      const params = resolveHeatmapTooltipParams(hm, i, dataX, dataY);
+      if (params) return params;
+    }
+    return null;
+  };
+
   // Helper: Find candlestick match at pointer position (hoisted to avoid closure allocation)
   const findCandlestickAtPointer = (
     series: ResolvedChartGPUOptions['series'],
@@ -2026,6 +2091,10 @@ export function createRenderCoordinator(
     for (let i = 0; i < currentOptions.series.length; i++) {
       const s = currentOptions.series[i]!;
       if (s.type === 'pie') continue;
+      if (s.type === 'heatmap') {
+        maxPoints = Math.max(maxPoints, s.data.columns * s.data.rows);
+        continue;
+      }
       if (s.type === 'candlestick') {
         const raw =
           (runtimeRawDataByIndex[i] as ReadonlyArray<OHLCDataPoint> | null) ??
@@ -2142,6 +2211,12 @@ export function createRenderCoordinator(
     for (let i = 0; i < count; i++) {
       const s = currentOptions.series[i]!;
       if (s.type === 'pie') continue;
+      if (s.type === 'heatmap') {
+        // Heatmap owns GPU texture; only seed axis bounds from resolved grid extent.
+        runtimeRawDataByIndex[i] = null;
+        runtimeRawBoundsByIndex[i] = s.rawBounds ?? null;
+        continue;
+      }
 
       if (s.type === 'candlestick') {
         // Store candlestick raw OHLC data (not for streaming append, but for zoom-aware resampling).
@@ -2237,8 +2312,8 @@ export function createRenderCoordinator(
     for (let i = 0; i < runtimeBaseSeries.length; i++) {
       const baseline = runtimeBaseSeries[i]!;
 
-      // Pie charts don't need slicing
-      if (baseline.type === 'pie') {
+      // Pie / heatmap don't need x-window slicing (heatmap is a full grid texture).
+      if (baseline.type === 'pie' || baseline.type === 'heatmap') {
         next[i] = baseline;
         continue;
       }
@@ -2303,7 +2378,7 @@ export function createRenderCoordinator(
     for (let i = 0; i < runtimeBaseSeries.length; i++) {
       const s = runtimeBaseSeries[i]!;
 
-      if (s.type === 'pie') {
+      if (s.type === 'pie' || s.type === 'heatmap') {
         next[i] = s;
         continue;
       }
@@ -2491,7 +2566,7 @@ export function createRenderCoordinator(
       if (boundsModeChanged) {
         for (let i = 0; i < resolvedOptions.series.length; i++) {
           const s = resolvedOptions.series[i]!;
-          if (s.type === 'pie') continue;
+          if (s.type === 'pie' || s.type === 'heatmap') continue;
           const mode = (s as { rawBoundsMode?: string }).rawBoundsMode;
           const rb = (s as { rawBounds?: Bounds | null }).rawBounds ?? null;
           if (mode === 'data' || mode === 'xDataYAxis') {
@@ -2523,7 +2598,7 @@ export function createRenderCoordinator(
       if (boundsModeChanged) {
         const stampRuntimeBounds = (series: ResolvedChartGPUOptions['series']): ResolvedChartGPUOptions['series'] =>
           series.map((s, i) => {
-            if (s.type === 'pie') return s;
+            if (s.type === 'pie' || s.type === 'heatmap') return s;
             const b = runtimeRawBoundsByIndex[i];
             return b ? ({ ...s, rawBounds: b } as typeof s) : s;
           }) as ResolvedChartGPUOptions['series'];
@@ -2757,12 +2832,13 @@ export function createRenderCoordinator(
     if (!newPoints) return;
 
     const s = currentOptions.series[seriesIndex]!;
-    if (s.type === 'pie') {
-      // Pie series are non-cartesian and currently not supported by streaming append.
+    if (s.type === 'pie' || s.type === 'heatmap') {
+      // Pie / heatmap are not supported by streaming append (heatmap: use setOption z replace).
       if (!warnedPieAppendSeries.has(seriesIndex)) {
         warnedPieAppendSeries.add(seriesIndex);
         console.warn(
-          `RenderCoordinator.appendData(${seriesIndex}, ...): pie series are not supported by streaming append.`
+          `RenderCoordinator.appendData(${seriesIndex}, ...): ${s.type} series are not supported by streaming append.` +
+            (s.type === 'heatmap' ? ' Use setOption to replace heatmap data.z (equal-size updates are efficient).' : '')
         );
       }
       return;
@@ -3248,6 +3324,8 @@ export function createRenderCoordinator(
             // - Tooltip should be driven by x only (no y).
             // - In 'axis' mode, show one entry per series nearest in x.
             // - In 'item' mode, pick a deterministic single entry (first matching series).
+            // Heatmap cells need (x,y) hit-test — not available on x-only sync; heatmap
+            // tooltips are local-pointer only (see docs/api/options.md HeatmapSeriesConfig).
             // findPointsAtX handles visibility filtering internally and returns correct series indices
             const matches = findPointsAtX(seriesForRender, effectivePointer.gridX, interactionScales.xScale);
             if (matches.length === 0) {
@@ -3307,8 +3385,8 @@ export function createRenderCoordinator(
                 hideTooltip();
               }
             } else {
-              // Candlestick body hit-testing (mouse, axis trigger): include only when inside candle body.
-              // Hit-testing functions handle visibility filtering internally and return correct series indices
+              // Candlestick + cartesian axis hits first; heatmap cells append (drawn under strokes).
+              // Hit priority: pie (above) > points/candles > heatmap fallback when nothing else.
               const candlestickResult = findCandlestickAtPointer(
                 seriesForRender,
                 effectivePointer.gridX,
@@ -3317,29 +3395,46 @@ export function createRenderCoordinator(
               );
 
               const matches = findPointsAtX(seriesForRender, effectivePointer.gridX, interactionScales.xScale);
-              if (matches.length === 0) {
-                if (candlestickResult) {
-                  const paramsArray = [candlestickResult.params];
+              const heatmapParams = findHeatmapAtPointer(
+                seriesForRender,
+                effectivePointer.gridX,
+                effectivePointer.gridY,
+                interactionScales
+              );
+
+              if (matches.length === 0 && !candlestickResult) {
+                if (heatmapParams) {
                   const content = formatter
-                    ? (formatter as (p: ReadonlyArray<TooltipParams>) => string)(paramsArray)
-                    : formatTooltipAxis(paramsArray);
-                  if (content) {
-                    // Use candlestick anchor for tooltip positioning
-                    const anchor = computeCandlestickTooltipAnchor(
-                      candlestickResult.match,
-                      interactionScales.xScale,
-                      interactionScales.yScales,
-                      gridArea,
-                      canvas
-                    );
-                    const tooltipX = anchor?.x ?? containerX;
-                    const tooltipY = anchor?.y ?? containerY;
-                    if (shouldUpdateTooltip(tooltipCache, content, tooltipX, tooltipY)) {
-                      updateTooltipCache(tooltipCache, content, tooltipX, tooltipY);
-                      showTooltipInternal(tooltipX, tooltipY, content, paramsArray);
-                    }
-                  } else {
+                    ? (formatter as (p: ReadonlyArray<TooltipParams>) => string)([heatmapParams])
+                    : formatTooltipAxis([heatmapParams]);
+                  if (content && shouldUpdateTooltip(tooltipCache, content, containerX, containerY)) {
+                    updateTooltipCache(tooltipCache, content, containerX, containerY);
+                    showTooltipInternal(containerX, containerY, content, [heatmapParams]);
+                  } else if (!content) {
                     hideTooltip();
+                  }
+                } else {
+                  hideTooltip();
+                }
+              } else if (matches.length === 0) {
+                const paramsArray = [candlestickResult!.params];
+                if (heatmapParams) paramsArray.push(heatmapParams);
+                const content = formatter
+                  ? (formatter as (p: ReadonlyArray<TooltipParams>) => string)(paramsArray)
+                  : formatTooltipAxis(paramsArray);
+                if (content) {
+                  const anchor = computeCandlestickTooltipAnchor(
+                    candlestickResult!.match,
+                    interactionScales.xScale,
+                    interactionScales.yScales,
+                    gridArea,
+                    canvas
+                  );
+                  const tooltipX = anchor?.x ?? containerX;
+                  const tooltipY = anchor?.y ?? containerY;
+                  if (shouldUpdateTooltip(tooltipCache, content, tooltipX, tooltipY)) {
+                    updateTooltipCache(tooltipCache, content, tooltipX, tooltipY);
+                    showTooltipInternal(tooltipX, tooltipY, content, paramsArray);
                   }
                 } else {
                   hideTooltip();
@@ -3347,11 +3442,11 @@ export function createRenderCoordinator(
               } else {
                 const paramsArray = matches.map((m) => buildTooltipParams(m.seriesIndex, m.dataIndex, m.point));
                 if (candlestickResult) paramsArray.push(candlestickResult.params);
+                if (heatmapParams) paramsArray.push(heatmapParams);
                 const content = formatter
                   ? (formatter as (p: ReadonlyArray<TooltipParams>) => string)(paramsArray)
                   : formatTooltipAxis(paramsArray);
                 if (content) {
-                  // Use candlestick anchor if candlestick is present in tooltip
                   let tooltipX = containerX;
                   let tooltipY = containerY;
                   if (candlestickResult) {
@@ -3406,8 +3501,8 @@ export function createRenderCoordinator(
                 hideTooltip();
               }
             } else {
-              // Candlestick body hit-testing (mouse, item trigger): prefer candle body over nearest-point logic.
-              // Hit-testing functions handle visibility filtering internally and return correct series indices
+              // Item hit priority: candlestick body > nearest cartesian point > heatmap cell.
+              // Heatmaps draw under strokes, so overlay series win when both hit.
               const candlestickResult = findCandlestickAtPointer(
                 seriesForRender,
                 effectivePointer.gridX,
@@ -3419,7 +3514,6 @@ export function createRenderCoordinator(
                   ? (formatter as (p: TooltipParams) => string)(candlestickResult.params)
                   : formatTooltipItem(candlestickResult.params);
                 if (content) {
-                  // Use candlestick anchor for tooltip positioning
                   const anchor = computeCandlestickTooltipAnchor(
                     candlestickResult.match,
                     interactionScales.xScale,
@@ -3439,11 +3533,8 @@ export function createRenderCoordinator(
                 return;
               }
 
-              // Reuse the shared nearest-point match from above (P0-5).
               const match = sharedNearestMatch ?? null;
-              if (!match) {
-                hideTooltip();
-              } else {
+              if (match) {
                 const params = buildTooltipParams(match.seriesIndex, match.dataIndex, match.point);
                 const content = formatter
                   ? (formatter as (p: TooltipParams) => string)(params)
@@ -3454,6 +3545,27 @@ export function createRenderCoordinator(
                 } else if (!content) {
                   hideTooltip();
                 }
+                return;
+              }
+
+              const heatmapParams = findHeatmapAtPointer(
+                seriesForRender,
+                effectivePointer.gridX,
+                effectivePointer.gridY,
+                interactionScales
+              );
+              if (heatmapParams) {
+                const content = formatter
+                  ? (formatter as (p: TooltipParams) => string)(heatmapParams)
+                  : formatTooltipItem(heatmapParams);
+                if (content && shouldUpdateTooltip(tooltipCache, content, containerX, containerY)) {
+                  updateTooltipCache(tooltipCache, content, containerX, containerY);
+                  showTooltipInternal(containerX, containerY, content, heatmapParams);
+                } else if (!content) {
+                  hideTooltip();
+                }
+              } else {
+                hideTooltip();
               }
             }
           }

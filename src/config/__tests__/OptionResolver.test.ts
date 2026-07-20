@@ -1243,3 +1243,264 @@ describe('OptionResolver - candle-primary Y-axis and grid defaults', () => {
     expect(viaAxesY.yAxes[1]!.header).toBe('VOL');
   });
 });
+
+describe('OptionResolver - heatmap', () => {
+  const z = Float32Array.from({ length: 6 }, (_, i) => i);
+
+  const asHeatmap = (s: ResolvedSeriesConfig) => {
+    expect(s.type).toBe('heatmap');
+    if (s.type !== 'heatmap') throw new Error('unreachable: expected heatmap');
+    return s;
+  };
+
+  it('resolves defaults and rawBounds for valid grid', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'heatmap',
+          name: 'Power',
+          data: {
+            xStart: 0,
+            xStep: 1,
+            yStart: 0,
+            yStep: 2,
+            columns: 3,
+            rows: 2,
+            z,
+          },
+        },
+      ],
+    });
+    const s = asHeatmap(resolved.series[0]!);
+    expect(s.colormap).toBe('viridis');
+    expect(s.zScale).toBe('linear');
+    expect(s.opacity).toBe(1);
+    expect(s.cellAnchor).toBe('corner');
+    expect(s.nullHandling).toBe('transparent');
+    expect(s.drawable).toBe(true);
+    expect(s.cellCount).toBe(6);
+    expect(s.zMin).toBe(0);
+    expect(s.zMax).toBe(5);
+    expect(s.rawBounds).toEqual({ xMin: 0, xMax: 3, yMin: 0, yMax: 4 });
+    expect(s.yAxis).toBe('y');
+  });
+
+  it('warns and clamps when z length mismatches', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const short = new Float32Array([1, 2, 3]);
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'heatmap',
+          data: {
+            xStart: 0,
+            xStep: 1,
+            yStart: 0,
+            yStep: 1,
+            columns: 4,
+            rows: 4,
+            z: short,
+          },
+        },
+      ],
+    });
+    const s = asHeatmap(resolved.series[0]!);
+    expect(s.drawable).toBe(true);
+    expect(s.cellCount).toBe(16);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('marks non-drawable for zero xStep', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'heatmap',
+          data: {
+            xStart: 0,
+            xStep: 0,
+            yStart: 0,
+            yStep: 1,
+            columns: 2,
+            rows: 2,
+            z: new Float32Array(4),
+          },
+        },
+      ],
+    });
+    const s = asHeatmap(resolved.series[0]!);
+    expect(s.drawable).toBe(false);
+    warn.mockRestore();
+  });
+
+  it('marks non-drawable for zero yStep', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'heatmap',
+          data: {
+            xStart: 0,
+            xStep: 1,
+            yStart: 0,
+            yStep: 0,
+            columns: 2,
+            rows: 2,
+            z: new Float32Array(4),
+          },
+        },
+      ],
+    });
+    const s = asHeatmap(resolved.series[0]!);
+    expect(s.drawable).toBe(false);
+    warn.mockRestore();
+  });
+
+  it('honors explicit zMin/zMax and custom colormap stops', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'heatmap',
+          data: {
+            xStart: 0,
+            xStep: 1,
+            yStart: 0,
+            yStep: 1,
+            columns: 2,
+            rows: 2,
+            z: new Float32Array([0, 1, 2, 3]),
+          },
+          zMin: -10,
+          zMax: 10,
+          colormap: ['#000', '#fff'],
+          cellAnchor: 'center',
+        },
+      ],
+    });
+    const s = asHeatmap(resolved.series[0]!);
+    expect(s.zMin).toBe(-10);
+    expect(s.zMax).toBe(10);
+    expect(s.colormap).toEqual(['#000', '#fff']);
+    expect(s.cellAnchor).toBe('center');
+    expect(s.rawBounds).toEqual({ xMin: -0.5, xMax: 1.5, yMin: -0.5, yMax: 1.5 });
+  });
+
+  it('expands zMin === zMax by epsilon', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'heatmap',
+          data: {
+            xStart: 0,
+            xStep: 1,
+            yStart: 0,
+            yStep: 1,
+            columns: 1,
+            rows: 1,
+            z: new Float32Array([5]),
+          },
+          zMin: 5,
+          zMax: 5,
+        },
+      ],
+    });
+    const s = asHeatmap(resolved.series[0]!);
+    expect(s.zMin).toBeLessThan(5);
+    expect(s.zMax).toBeGreaterThan(5);
+  });
+
+  it('one-sided zMin pairs with data max', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'heatmap',
+          data: {
+            xStart: 0,
+            xStep: 1,
+            yStart: 0,
+            yStep: 1,
+            columns: 2,
+            rows: 1,
+            z: new Float32Array([1, 9]),
+          },
+          zMin: 0,
+        },
+      ],
+    });
+    const s = asHeatmap(resolved.series[0]!);
+    expect(s.zMin).toBe(0);
+    expect(s.zMax).toBe(9);
+  });
+
+  it('log zScale auto range uses positive values only', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'heatmap',
+          zScale: 'log',
+          data: {
+            xStart: 0,
+            xStep: 1,
+            yStart: 0,
+            yStep: 1,
+            columns: 4,
+            rows: 1,
+            z: new Float32Array([-1, 0, 2, 8]),
+          },
+        },
+      ],
+    });
+    const s = asHeatmap(resolved.series[0]!);
+    expect(s.zScale).toBe('log');
+    expect(s.zMin).toBe(2);
+    expect(s.zMax).toBe(8);
+  });
+
+  it('falls back invalid colormap and nullHandling', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'heatmap',
+          data: {
+            xStart: 0,
+            xStep: 1,
+            yStart: 0,
+            yStep: 1,
+            columns: 1,
+            rows: 1,
+            z: new Float32Array([1]),
+          },
+          colormap: 'not-a-map' as any,
+          nullHandling: 'bogus' as any,
+        },
+      ],
+    });
+    const s = asHeatmap(resolved.series[0]!);
+    expect(s.colormap).toBe('viridis');
+    expect(s.nullHandling).toBe('transparent');
+  });
+
+  it('empty z is non-drawable (drawCells 0)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'heatmap',
+          data: {
+            xStart: 0,
+            xStep: 1,
+            yStart: 0,
+            yStep: 1,
+            columns: 2,
+            rows: 2,
+            z: new Float32Array(0),
+          },
+        },
+      ],
+    });
+    const s = asHeatmap(resolved.series[0]!);
+    expect(s.drawable).toBe(false);
+    warn.mockRestore();
+  });
+});

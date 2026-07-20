@@ -22,8 +22,9 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 
 ### Configuration
 - **Options overview**: [options.md](options.md#chartgpuoptions)
-- **Series configuration** (line, area, bar, scatter, pie, candlestick): [options.md](options.md#series-configuration)
-- **Scatter density/heatmap mode** (scatter series `mode: 'density'`): [src/config/types.ts](../../src/config/types.ts), [src/config/defaults.ts](../../src/config/defaults.ts), [src/config/OptionResolver.ts](../../src/config/OptionResolver.ts), [src/core/createRenderCoordinator.ts](../../src/core/createRenderCoordinator.ts), [src/renderers/createScatterDensityRenderer.ts](../../src/renderers/createScatterDensityRenderer.ts), [src/shaders/scatterDensityBinning.wgsl](../../src/shaders/scatterDensityBinning.wgsl), [src/shaders/scatterDensityColormap.wgsl](../../src/shaders/scatterDensityColormap.wgsl), [`examples/scatter-density-1m/`](../../examples/scatter-density-1m/)
+- **Series configuration** (line, area, bar, scatter, pie, candlestick, heatmap): [options.md](options.md#series-configuration)
+- **Scatter density mode** (scatter series `mode: 'density'` — screen-space point-cloud bins, **not** a data-grid heatmap): [src/config/types.ts](../../src/config/types.ts), [src/renderers/createScatterDensityRenderer.ts](../../src/renderers/createScatterDensityRenderer.ts), [`examples/scatter-density-1m/`](../../examples/scatter-density-1m/)
+- **Uniform heatmap / spectrogram** (`type: 'heatmap'`): [options.md](options.md#heatmapseriesconfig), [src/renderers/createHeatmapRenderer.ts](../../src/renderers/createHeatmapRenderer.ts), [src/shaders/heatmap.wgsl](../../src/shaders/heatmap.wgsl), [src/utils/heatmapLayout.ts](../../src/utils/heatmapLayout.ts), [src/utils/colormap.ts](../../src/utils/colormap.ts), [`examples/heatmap-spectrogram/`](../../examples/heatmap-spectrogram/)
 - **Axis configuration**: [options.md](options.md#axis-configuration)
 - **Grid lines configuration**: [options.md](options.md#grid-lines-configuration)
 - **Data zoom (pan/zoom)**: [options.md](options.md#data-zoom-configuration)
