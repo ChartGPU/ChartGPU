@@ -1940,7 +1940,7 @@ export function resolveOptions(
               : null;
 
             let rawBounds: RawBounds | undefined;
-            let rawBoundsMode: RawBoundsMode = 'data';
+            let rawBoundsMode: RawBoundsMode;
             if (prevBand?.rawBounds && prevBand.rawBoundsMode === 'data') {
               rawBounds = prevBand.rawBounds;
               rawBoundsMode = 'data';
