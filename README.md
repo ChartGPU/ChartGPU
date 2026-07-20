@@ -92,8 +92,9 @@ See [Annotations Documentation](https://github.com/chartgpu/chartgpu/blob/main/d
 ## Highlights
 
 - 🚀 WebGPU-accelerated rendering for high FPS with large datasets
-- 📈 Multiple series types: line, area, bar, scatter, pie, candlestick
-- 🌡️ Scatter density/heatmap mode (`mode: 'density'`) for large point clouds — see [`docs/api/options.md#scatterseriesconfig`](docs/api/options.md#scatterseriesconfig) and [`examples/scatter-density-1m/`](examples/scatter-density-1m/)
+- 📈 Multiple series types: line, area, bar, scatter, pie, candlestick, **heatmap**
+- 🌡️ Scatter density mode (`mode: 'density'`) for large **point clouds** (screen-space bins) — see [`docs/api/options.md#scatterseriesconfig`](docs/api/options.md#scatterseriesconfig) and [`examples/scatter-density-1m/`](examples/scatter-density-1m/)
+- 🗺️ Uniform heatmap / spectrogram (`type: 'heatmap'`) for **data grids** (FFT waterfall, matrices) — not scatter density; see [`docs/api/options.md#heatmapseriesconfig`](docs/api/options.md#heatmapseriesconfig) and [`examples/heatmap-spectrogram/`](examples/heatmap-spectrogram/)
 - 📍 Annotation overlays: reference lines (horizontal/vertical), point markers, and text labels — see [`docs/api/options.md#annotations`](docs/api/options.md#annotations) and [`examples/annotations/`](examples/annotations/)
 - 🧭 Built-in interaction: hover highlight, tooltip, crosshair
 - 🔁 Streaming updates via `appendData(...)` with typed-array support (`XYArraysData`, `InterleavedXYData`, `DataPoint[]`) — see [`examples/cartesian-data-formats/`](examples/cartesian-data-formats/)

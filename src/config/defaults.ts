@@ -74,6 +74,15 @@ export const scatterDefaults = {
   densityNormalization: 'log' as const,
 } as const;
 
+export const heatmapDefaults = {
+  colormap: 'viridis' as const,
+  zScale: 'linear' as const,
+  opacity: 1,
+  cellAnchor: 'corner' as const,
+  nullHandling: 'transparent' as const,
+  cellGapPx: 0,
+} as const;
+
 /**
  * Default grid lines configuration.
  * Matches createGridRenderer defaults: horizontal=5, vertical=6.

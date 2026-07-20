@@ -5,7 +5,7 @@
 import type { ThemeConfig } from '../themes/types';
 
 export type AxisType = 'value' | 'time' | 'category' | 'log';
-export type SeriesType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick';
+export type SeriesType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick' | 'heatmap';
 
 /**
  * Render mode for chart rendering.
@@ -256,7 +256,8 @@ export interface ScatterSeriesConfig extends SeriesConfigBase {
    * Scatter rendering mode.
    *
    * - `'points'` (default): draw point markers (current behavior).
-   * - `'density'`: render a binned density heatmap in screen space.
+   * - `'density'`: render a binned density heatmap in **screen space** from a point cloud
+   *   (not a data-grid uniform heatmap — use `type: 'heatmap'` for spectrograms / matrices).
    */
   readonly mode?: 'points' | 'density';
   /**
@@ -270,6 +271,8 @@ export interface ScatterSeriesConfig extends SeriesConfigBase {
    *
    * - Named: `'viridis' | 'plasma' | 'inferno'`
    * - Custom: a low→high `string[]` of CSS colors
+   *
+   * Same named stops as {@link HeatmapSeriesConfig.colormap} for visual consistency.
    */
   readonly densityColormap?: 'viridis' | 'plasma' | 'inferno' | readonly string[];
   /**
@@ -423,13 +426,114 @@ export interface CandlestickSeriesConfig extends Omit<SeriesConfigBase, 'data'> 
   readonly priceLabel?: boolean | CandlestickPriceLabelConfig;
 }
 
+/**
+ * Uniform rectangular heatmap / spectrogram grid in data space.
+ *
+ * Cells form a regular grid:
+ *   x_i = xStart + i * xStep,   i ∈ [0, columns)
+ *   y_j = yStart + j * yStep,   j ∈ [0, rows)
+ *
+ * `z` is row-major:
+ *   z[j * columns + i] = value at column i, row j
+ * Row j = 0 is the band starting at yStart (increasing j → increasing y).
+ *
+ * Cell (i,j) covers [x_i, x_i + xStep) × [y_j, y_j + yStep) when `cellAnchor === 'corner'`
+ * (default). With `'center'`, (xStart, yStart) is the center of cell (0,0).
+ *
+ * Prefer `Float32Array` for efficient packing into the GPU upload path.
+ * `number[]` is accepted and copied. Rows are still padded/copied for WebGPU
+ * `bytesPerRow` alignment — not a strict zero-copy path.
+ *
+ * **Not** scatter `mode: 'density'` (screen-space point-cloud bins). This is a true data grid.
+ */
+export type HeatmapData = Readonly<{
+  /** Left edge (or center — see cellAnchor) of column 0. */
+  readonly xStart: number;
+  /** Data-space width of one column. Must be finite and ≠ 0 (negative allowed). */
+  readonly xStep: number;
+  /** Bottom/top edge (or center) of row 0 — see cellAnchor. */
+  readonly yStart: number;
+  /** Data-space height of one row. Must be finite and ≠ 0 (negative allowed). */
+  readonly yStep: number;
+  /** Integer ≥ 1 — X cell count. */
+  readonly columns: number;
+  /** Integer ≥ 1 — Y cell count. */
+  readonly rows: number;
+  /**
+   * Length must be `columns * rows`.
+   * Prefer Float32Array for efficient packing (GPU still pads rows for alignment).
+   */
+  readonly z: Float32Array | ReadonlyArray<number>;
+}>;
+
+/** Named colormap or custom low→high CSS color stops. */
+export type HeatmapColormap = 'viridis' | 'plasma' | 'inferno' | 'magma' | 'grayscale' | readonly string[];
+
+/** How non-finite z (NaN/±Inf) is colored. */
+export type HeatmapNullHandling = 'transparent' | 'lowest' | 'highest';
+
+/**
+ * Uniform heatmap / spectrogram series.
+ *
+ * Sampling / LTTB / GPU line decimation are ignored. `appendData` is unsupported in v1 —
+ * replace `data.z` (or the whole series) via `setOption` for streaming spectrograms.
+ * `color` on the series base is ignored (colormap owns color).
+ */
+export interface HeatmapSeriesConfig extends Omit<SeriesConfigBase, 'data' | 'sampling' | 'samplingThreshold'> {
+  readonly type: 'heatmap';
+  readonly data: HeatmapData;
+
+  /**
+   * Ignored for rendering (colormap owns color). Optional for SeriesConfigBase /
+   * legend / tooltip helper compatibility.
+   */
+  readonly color?: string;
+
+  /** Named colormap or custom stops. Default: `'viridis'`. */
+  readonly colormap?: HeatmapColormap;
+
+  /**
+   * Explicit z range for color mapping.
+   * If either omitted, resolve from finite z values.
+   */
+  readonly zMin?: number;
+  readonly zMax?: number;
+
+  /**
+   * How to normalize z before colormap.
+   * - `'linear'` (default): t = (z - zMin) / (zMax - zMin)
+   * - `'log'`: t from log(z) over positive range only; non-positive cells use nullHandling
+   */
+  readonly zScale?: 'linear' | 'log';
+
+  /** Opacity multiplier for the whole series [0, 1]. Default 1. */
+  readonly opacity?: number;
+
+  /**
+   * Cell placement relative to xStart/yStart.
+   * - `'corner'` (default): (xStart, yStart) is the min-corner of cell (0,0)
+   * - `'center'`: (xStart, yStart) is the center of cell (0,0)
+   */
+  readonly cellAnchor?: 'corner' | 'center';
+
+  /** Non-finite z handling. Default `'transparent'`. */
+  readonly nullHandling?: HeatmapNullHandling;
+
+  /**
+   * Optional border gap between cells in CSS px (0 = none). Default 0.
+   * Implemented as a slight UV inset when > 0.
+   */
+  readonly cellGapPx?: number;
+}
+
 export type SeriesConfig =
   | LineSeriesConfig
   | AreaSeriesConfig
   | BarSeriesConfig
   | ScatterSeriesConfig
   | PieSeriesConfig
-  | CandlestickSeriesConfig;
+  | CandlestickSeriesConfig
+  | HeatmapSeriesConfig;
 
 /**
  * Parameters passed to tooltip formatter function.
@@ -442,9 +546,15 @@ export interface TooltipParams {
    * Value tuple for the data point.
    * - Cartesian series (line, area, bar, scatter): [x, y]
    * - Candlestick series: [timestamp, open, close, low, high]
+   * - Heatmap: [cellCenterX, cellCenterY] (see also optional `z`)
    */
   readonly value: readonly [number, number] | readonly [number, number, number, number, number];
   readonly color: string;
+  /**
+   * Heatmap cell z value when the hit is a heatmap cell.
+   * `value` is still [cellCenterX, cellCenterY]; `dataIndex` is row-major `j * columns + i`.
+   */
+  readonly z?: number;
 }
 
 /**

@@ -40,7 +40,7 @@ function resolveBaselineSeriesEntry(
   rawSlot: RuntimeRawSlot,
   boundsSlot: RawBoundsSlot
 ): ResolvedSeriesConfig {
-  if (s.type === 'pie') return s;
+  if (s.type === 'pie' || s.type === 'heatmap') return s;
 
   if (s.type === 'candlestick') {
     const anyS = s as ResolvedSeriesConfig & {
@@ -114,7 +114,7 @@ function resolveSetOptionsReuseSeriesEntry(
   rawSlot: RuntimeRawSlot,
   boundsSlot: RawBoundsSlot
 ): ResolvedSeriesConfig {
-  if (s.type === 'pie') return s;
+  if (s.type === 'pie' || s.type === 'heatmap') return s;
 
   const anyS = s as ResolvedSeriesConfig & {
     rawData?: unknown;

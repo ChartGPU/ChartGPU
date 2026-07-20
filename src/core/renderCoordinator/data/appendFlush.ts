@@ -135,7 +135,7 @@ function flushPendingAppendsImplInner(d: any): boolean {
   for (const [seriesIndex, batches] of d.pendingAppendByIndex) {
     if (batches.length === 0) continue;
     const s = d.currentOptions.series[seriesIndex];
-    if (!s || s.type === 'pie') continue;
+    if (!s || s.type === 'pie' || s.type === 'heatmap') continue;
     didAppendAny = true;
 
     if (s.type === 'candlestick') {
@@ -649,6 +649,7 @@ function flushPendingAppendsImplInner(d: any): boolean {
       const base = d.runtimeBaseSeries[i]!;
       const cfg = d.currentOptions.series[i]!;
       if (base.type === 'pie' || cfg.type === 'pie') continue;
+      if (base.type === 'heatmap' || cfg.type === 'heatmap') continue;
       if (base.type === 'candlestick' || cfg.type === 'candlestick') {
         patchedInPlace = false;
         break;

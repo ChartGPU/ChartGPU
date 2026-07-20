@@ -69,6 +69,13 @@ const examples: readonly Example[] = [
     path: examplePath('scatter-density-1m'),
   },
   {
+    id: 'heatmap-spectrogram',
+    title: 'Uniform Heatmap / Spectrogram',
+    desc: 'Data-grid heatmap (type: heatmap) with static peaks and a live spectrogram window — not scatter density',
+    category: 'series',
+    path: examplePath('heatmap-spectrogram'),
+  },
+  {
     id: 'basic-line',
     title: 'Basic Line',
     desc: 'Sine wave line chart with grid, axes, and tooltip interaction',

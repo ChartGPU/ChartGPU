@@ -52,6 +52,13 @@ export function didSeriesDataLikelyChange(
       const bPie = b as ResolvedPieSeriesConfig;
       if (aPie.data !== bPie.data) return true;
       if (aPie.data.length !== bPie.data.length) return true;
+    } else if (a.type === 'heatmap') {
+      const aHm = a as { data?: { z?: unknown; columns?: number; rows?: number } };
+      const bHm = b as { data?: { z?: unknown; columns?: number; rows?: number } };
+      if (aHm.data?.z !== bHm.data?.z) return true;
+      if (aHm.data?.columns !== bHm.data?.columns || aHm.data?.rows !== bHm.data?.rows) return true;
+      // New series config identity with same z ref still counts as a change for setOption streams.
+      if (a !== b) return true;
     } else {
       const aAny = a as WithContentHash;
       const bAny = b as WithContentHash;
@@ -160,7 +167,7 @@ export function patchSeriesPresentationKeepingSampledData(
   for (let i = 0; i < nextSeries.length; i++) {
     const next = nextSeries[i]!;
     const prev = previousSampled[i];
-    if (!prev || prev.type !== next.type || next.type === 'pie') {
+    if (!prev || prev.type !== next.type || next.type === 'pie' || next.type === 'heatmap') {
       out[i] = next;
       continue;
     }
@@ -210,6 +217,7 @@ export function didRawBoundsModeChange(
     const bSeries = next[i];
     if (!aSeries || !bSeries) continue;
     if (aSeries.type === 'pie' || bSeries.type === 'pie') continue;
+    if (aSeries.type === 'heatmap' || bSeries.type === 'heatmap') continue;
     const a = aSeries as WithRawBoundsMeta;
     const b = bSeries as WithRawBoundsMeta;
     if (b.rawBoundsMode != null && a.rawBoundsMode != null && b.rawBoundsMode !== a.rawBoundsMode) {

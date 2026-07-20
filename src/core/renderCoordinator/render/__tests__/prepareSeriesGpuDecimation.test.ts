@@ -122,6 +122,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
       scatterRenderers: [],
       scatterDensityRenderers: [],
       pieRenderers: [],
+      heatmapRenderers: [],
       candlestickRenderers: [],
       decimationComputes: [
         {
@@ -216,6 +217,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
       scatterRenderers: [],
       scatterDensityRenderers: [],
       pieRenderers: [],
+      heatmapRenderers: [],
       candlestickRenderers: [],
       decimationComputes: [
         {
@@ -301,6 +303,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         scatterRenderers: [],
         scatterDensityRenderers: [],
         pieRenderers: [],
+        heatmapRenderers: [],
         candlestickRenderers: [],
         decimationComputes: [
           {
@@ -405,6 +408,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         scatterRenderers: [],
         scatterDensityRenderers: [],
         pieRenderers: [],
+        heatmapRenderers: [],
         candlestickRenderers: [],
         decimationComputes: [
           {
@@ -519,6 +523,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         scatterRenderers: [],
         scatterDensityRenderers: [],
         pieRenderers: [],
+        heatmapRenderers: [],
         candlestickRenderers: [],
         decimationComputes: [
           {
@@ -637,6 +642,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         scatterRenderers: [],
         scatterDensityRenderers: [],
         pieRenderers: [],
+        heatmapRenderers: [],
         candlestickRenderers: [],
         decimationComputes: [
           {
@@ -715,6 +721,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         scatterRenderers: [],
         scatterDensityRenderers: [],
         pieRenderers: [],
+        heatmapRenderers: [],
         candlestickRenderers: [],
         decimationComputes: [
           {
@@ -803,6 +810,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         scatterRenderers: [],
         scatterDensityRenderers: [],
         pieRenderers: [],
+        heatmapRenderers: [],
         candlestickRenderers: [],
         decimationComputes: [
           {
@@ -888,6 +896,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         scatterRenderers: [],
         scatterDensityRenderers: [],
         pieRenderers: [],
+        heatmapRenderers: [],
         candlestickRenderers: [],
         decimationComputes: [
           {
@@ -982,6 +991,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         scatterRenderers: [],
         scatterDensityRenderers: [],
         pieRenderers: [],
+        heatmapRenderers: [],
         candlestickRenderers: [],
         decimationComputes: [],
       },
@@ -1067,6 +1077,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         scatterRenderers: [],
         scatterDensityRenderers: [],
         pieRenderers: [],
+        heatmapRenderers: [],
         candlestickRenderers: [],
         decimationComputes: [
           {
@@ -1253,6 +1264,7 @@ describe('prepareSeries modular ring → line prepare (issue 0.1 / review 8)', (
         scatterRenderers: [],
         scatterDensityRenderers: [],
         pieRenderers: [],
+        heatmapRenderers: [],
         candlestickRenderers: [],
         decimationComputes: [],
       },
@@ -1321,6 +1333,7 @@ describe('prepareSeries modular ring → line prepare (issue 0.1 / review 8)', (
         scatterRenderers: [],
         scatterDensityRenderers: [],
         pieRenderers: [],
+        heatmapRenderers: [],
         candlestickRenderers: [],
         decimationComputes: [
           {

@@ -926,10 +926,13 @@ export async function createChartGPU(
     for (let i = 0; i < n; i++) {
       const s = resolvedOptions.series[i]!;
       const optionsRaw =
-        s.type === 'pie' ? null : (((s as unknown as { rawData?: unknown }).rawData ?? s.data) as unknown);
-      if (s.type === 'pie') {
+        s.type === 'pie' || s.type === 'heatmap'
+          ? null
+          : (((s as unknown as { rawData?: unknown }).rawData ?? s.data) as unknown);
+      if (s.type === 'pie' || s.type === 'heatmap') {
         nextData[i] = { x: [], y: [] };
-        nextBounds[i] = null;
+        nextBounds[i] =
+          s.type === 'heatmap' ? ((s as unknown as { rawBounds?: Bounds | null }).rawBounds ?? null) : null;
         nextSource[i] = null;
         nextModes[i] = null;
         nextOptionsRaw[i] = null;
@@ -1034,10 +1037,11 @@ export async function createChartGPU(
     for (let i = 0; i < nextCount; i++) {
       const s = resolvedOptions.series[i]!;
       const mode = (s as unknown as { rawBoundsMode?: string }).rawBoundsMode ?? null;
-      if (s.type === 'pie') {
-        // Pie series don't use the runtime store (non-cartesian)
+      if (s.type === 'pie' || s.type === 'heatmap') {
+        // Pie / heatmap don't use the cartesian runtime store
         nextData[i] = { x: [], y: [] };
-        nextBounds[i] = null;
+        nextBounds[i] =
+          s.type === 'heatmap' ? ((s as unknown as { rawBounds?: Bounds | null }).rawBounds ?? null) : null;
         nextSource[i] = null;
         nextModes[i] = null;
         nextOptionsRaw[i] = null;
@@ -1142,7 +1146,7 @@ export async function createChartGPU(
     if (runtimeHitTestSeriesCache) return runtimeHitTestSeriesCache;
     // Replace cartesian series `data` with chart-owned runtime data (pie series are unchanged).
     runtimeHitTestSeriesCache = resolvedOptions.series.map((s, i) => {
-      if (s.type === 'pie') return s;
+      if (s.type === 'pie' || s.type === 'heatmap') return s;
       if (s.type === 'candlestick') {
         return {
           ...s,
@@ -2197,12 +2201,14 @@ export async function createChartGPU(
       if (seriesIndex < 0 || seriesIndex >= resolvedOptions.series.length) return;
 
       const s = resolvedOptions.series[seriesIndex]!;
-      if (s.type === 'pie') {
-        // Pie series are non-cartesian and currently not supported by streaming append.
+      if (s.type === 'pie' || s.type === 'heatmap') {
         if (!warnedPieAppendSeries.has(seriesIndex)) {
           warnedPieAppendSeries.add(seriesIndex);
           console.warn(
-            `ChartGPU.appendData(${seriesIndex}, ...): pie series are not supported by streaming append. Use setOption(...) to replace pie data.`
+            `ChartGPU.appendData(${seriesIndex}, ...): ${s.type} series are not supported by streaming append. ` +
+              (s.type === 'heatmap'
+                ? 'Use setOption(...) to replace heatmap data.z (equal-size updates are efficient).'
+                : 'Use setOption(...) to replace pie data.')
           );
         }
         return;

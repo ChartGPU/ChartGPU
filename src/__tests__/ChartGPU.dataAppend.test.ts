@@ -1096,6 +1096,42 @@ describe('ChartGPU - dataAppend event', () => {
       await chart.dispose();
     });
 
+    it('does not emit for heatmap series (not supported)', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const options: ChartGPUOptions = {
+        series: [
+          {
+            type: 'heatmap',
+            data: {
+              xStart: 0,
+              xStep: 1,
+              yStart: 0,
+              yStep: 1,
+              columns: 2,
+              rows: 2,
+              z: new Float32Array([1, 2, 3, 4]),
+            },
+          },
+        ],
+      };
+
+      const chart = await ChartGPU.create(mockContainer, options);
+      const listener = vi.fn();
+      chart.on('dataAppend', listener);
+
+      chart.appendData(0, [{ x: 3, y: 30 }] as any);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(listener).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalled();
+      const msg = String(warn.mock.calls[0]?.[0] ?? '');
+      expect(msg).toMatch(/heatmap/i);
+      expect(msg).toMatch(/not supported/i);
+
+      await chart.dispose();
+      warn.mockRestore();
+    });
+
     it('does not emit after chart is disposed', async () => {
       const options: ChartGPUOptions = {
         series: [

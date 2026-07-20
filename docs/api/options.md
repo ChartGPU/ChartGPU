@@ -153,6 +153,52 @@ Notes (density mode):
 - **Zoom/pan behavior**: density is recomputed as the view changes. When x-values are monotonic, ChartGPU limits compute to the current visible x-range; otherwise it may process the full series. See the coordinator wiring in [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts) and compute shader [`scatterDensityBinning.wgsl`](../../src/shaders/scatterDensityBinning.wgsl).
 - **Performance vs resolution**: `binSize` trades resolution for performance. Smaller bins increase detail but increase both bin count and compute cost per recompute.
 - **Example**: for a working 1M-point density scatter demo (including controls for colormap, normalization, and bin size), see [`examples/scatter-density-1m/`](../../examples/scatter-density-1m/).
+- **Not a data-grid heatmap**: scatter density bins a **point cloud** in **screen space**. For spectrograms / correlation matrices / regular fields, use **`type: 'heatmap'`** ([HeatmapSeriesConfig](#heatmapseriesconfig)).
+
+### HeatmapSeriesConfig
+
+Uniform rectangular **data-grid** heatmap / spectrogram (`type: 'heatmap'`). Distinct from scatter `mode: 'density'`.
+
+#### Data layout (`HeatmapData`)
+
+```ts
+{
+  xStart, xStep, yStart, yStep,
+  columns, rows,
+  z: Float32Array | number[], // length === columns * rows, row-major
+}
+```
+
+- Cell indices: `z[j * columns + i]` at column `i`, row `j`.
+- Row `j = 0` is the band starting at `yStart` (increasing `j` → increasing `y`).
+- Prefer `Float32Array` for upload efficiency.
+
+#### Options
+
+| Field | Default | Notes |
+|-------|---------|--------|
+| `colormap` | `'viridis'` | `'viridis' \| 'plasma' \| 'inferno' \| 'magma' \| 'grayscale'` or custom low→high CSS stops |
+| `zMin` / `zMax` | auto from finite z | If equal, expanded by epsilon so colormap t does not NaN |
+| `zScale` | `'linear'` | `'log'` uses positive finite z only; non-positive cells follow `nullHandling` |
+| `opacity` | `1` | Series-wide alpha multiplier |
+| `cellAnchor` | `'corner'` | `'corner'`: `(xStart,yStart)` is min-corner of cell (0,0); `'center'`: center of cell (0,0) |
+| `nullHandling` | `'transparent'` | `'transparent' \| 'lowest' \| 'highest'` for NaN/±Inf (and log-invalid) z |
+| `cellGapPx` | `0` | Optional UV inset between cells (CSS px) |
+
+#### Behavior (v1)
+
+- **GPU path**: `r32float` z texture + 256-entry colormap LUT + single data-space quad (main pass **4× MSAA**). Shared colormap stops with density via [`src/utils/colormap.ts`](../../src/utils/colormap.ts). Prefer `Float32Array` for packing efficiency; GPU still **pads/copies** rows for `bytesPerRow` alignment (not a zero-copy path).
+- **No** LTTB / GPU line decimation / cartesian DataStore XY packing.
+- **Draw order**: all heatmaps render **before** area/bar/candlestick/scatter/line strokes (under overlays). Relative order among heatmaps follows `series[]`. Series array order does **not** interleave heatmaps above lines.
+- **Zoom / pan**: reprojects via uniforms only when z size/ref/content are unchanged (no z re-upload). Opacity / zMin / zMax / colormap changes do not force a z rewrite (LUT rebuilds on colormap only).
+- **Streaming**: mutate or replace `data.z` with the same `columns`/`rows` and call `setOption` with a **new series config object** (content stamp detects in-place z mutation). In-place z mutation under a **stable** series object without setOption is not detected. **`appendData` is unsupported** (console warning).
+- **Axis auto-bounds**: grid extent from `heatmapGridBounds` contributes to X/Y domains (z does not).
+- **Tooltip**: cell under cursor → `TooltipParams` with `value: [cellCenterX, cellCenterY]`, optional `z`, and `dataIndex = j * columns + i`. **Hit priority (item)**: pie → candlestick body → nearest cartesian point → heatmap cell (heatmaps are under strokes). **Axis** mode appends heatmap params alongside `findPointsAtX` matches, not instead of them. Transparent `nullHandling` + non-finite z → miss (no tooltip). **Chart-sync** tooltips are x-only and **do not** include heatmap cells (need data-space Y); heatmap tooltips require a **local pointer** over the plot.
+- **Legend**: series name + solid palette placeholder color only (not a colormap gradient swatch; gradient legend is a follow-up).
+- **Log axes**: VS uses the same log projection flags as other continuous series when X/Y are log.
+- **Negative steps**: supported. UV `u=0`/`v=0` always maps to cell `(0,0)` (signed origin+extent), matching CPU `heatmapHitTest` / `heatmapCellIndex`. Axis bounds normalize so min ≤ max.
+
+Example: [`examples/heatmap-spectrogram/`](../../examples/heatmap-spectrogram/). Implementation: [`createHeatmapRenderer.ts`](../../src/renderers/createHeatmapRenderer.ts), [`heatmap.wgsl`](../../src/shaders/heatmap.wgsl).
 
 ### PieSeriesConfig
 

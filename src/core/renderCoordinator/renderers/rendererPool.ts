@@ -13,6 +13,7 @@ import { createLineRenderer } from '../../../renderers/createLineRenderer';
 import { createScatterRenderer } from '../../../renderers/createScatterRenderer';
 import { createScatterDensityRenderer } from '../../../renderers/createScatterDensityRenderer';
 import { createPieRenderer } from '../../../renderers/createPieRenderer';
+import { createHeatmapRenderer } from '../../../renderers/createHeatmapRenderer';
 import { createCandlestickRenderer } from '../../../renderers/createCandlestickRenderer';
 import { createBarRenderer } from '../../../renderers/createBarRenderer';
 import { createDecimationCompute } from '../../../renderers/createDecimationCompute';
@@ -45,6 +46,7 @@ interface RendererPoolState {
   readonly scatterRenderers: ReadonlyArray<ReturnType<typeof createScatterRenderer>>;
   readonly scatterDensityRenderers: ReadonlyArray<ReturnType<typeof createScatterDensityRenderer>>;
   readonly pieRenderers: ReadonlyArray<ReturnType<typeof createPieRenderer>>;
+  readonly heatmapRenderers: ReadonlyArray<ReturnType<typeof createHeatmapRenderer>>;
   readonly candlestickRenderers: ReadonlyArray<ReturnType<typeof createCandlestickRenderer>>;
   /**
    * Per-line-series GPU decimation compute instances. Sized 1:1 with
@@ -99,6 +101,14 @@ interface RendererPool {
   ensurePieRendererCount(count: number): void;
 
   /**
+   * Ensures heatmap renderer count matches the given count.
+   * Grows or shrinks the pool as needed, disposing excess renderers.
+   *
+   * @param count - Desired number of heatmap renderers
+   */
+  ensureHeatmapRendererCount(count: number): void;
+
+  /**
    * Ensures candlestick renderer count matches the given count.
    * Grows or shrinks the pool as needed, disposing excess renderers.
    *
@@ -144,6 +154,7 @@ type RendererPoolNeeds = Readonly<{
   readonly scatter: number;
   readonly scatterDensity: number;
   readonly pie: number;
+  readonly heatmap: number;
   readonly candlestick: number;
   readonly decimation: number;
 }>;
@@ -162,6 +173,7 @@ function computeRendererPoolNeeds(series: ReadonlyArray<ResolvedSeriesConfig>): 
   let anyScatter = false;
   let anyScatterDensity = false;
   let anyPie = false;
+  let anyHeatmap = false;
   let anyCandle = false;
   let anyDecimation = false;
 
@@ -186,6 +198,9 @@ function computeRendererPoolNeeds(series: ReadonlyArray<ResolvedSeriesConfig>): 
       case 'pie':
         anyPie = true;
         break;
+      case 'heatmap':
+        anyHeatmap = true;
+        break;
       case 'candlestick':
         anyCandle = true;
         break;
@@ -204,6 +219,7 @@ function computeRendererPoolNeeds(series: ReadonlyArray<ResolvedSeriesConfig>): 
     scatter: anyScatter ? n : 0,
     scatterDensity: anyScatterDensity ? n : 0,
     pie: anyPie ? n : 0,
+    heatmap: anyHeatmap ? n : 0,
     candlestick: anyCandle ? n : 0,
     decimation: anyDecimation ? n : 0,
   };
@@ -223,6 +239,7 @@ export function ensureRendererPoolsForSeries(
   pool.ensureScatterRendererCount(needs.scatter);
   pool.ensureScatterDensityRendererCount(needs.scatterDensity);
   pool.ensurePieRendererCount(needs.pie);
+  pool.ensureHeatmapRendererCount(needs.heatmap);
   pool.ensureCandlestickRendererCount(needs.candlestick);
   return needs;
 }
@@ -253,6 +270,7 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
   const scatterRenderers: Array<ReturnType<typeof createScatterRenderer>> = [];
   const scatterDensityRenderers: Array<ReturnType<typeof createScatterDensityRenderer>> = [];
   const pieRenderers: Array<ReturnType<typeof createPieRenderer>> = [];
+  const heatmapRenderers: Array<ReturnType<typeof createHeatmapRenderer>> = [];
   const candlestickRenderers: Array<ReturnType<typeof createCandlestickRenderer>> = [];
   const decimationComputes: Array<ReturnType<typeof createDecimationCompute>> = [];
 
@@ -362,6 +380,16 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
     }
   }
 
+  function ensureHeatmapRendererCount(count: number): void {
+    while (heatmapRenderers.length > count) {
+      const r = heatmapRenderers.pop();
+      r?.dispose();
+    }
+    while (heatmapRenderers.length < count) {
+      heatmapRenderers.push(createHeatmapRenderer(device, { targetFormat, pipelineCache, sampleCount }));
+    }
+  }
+
   /**
    * Ensures candlestick renderer count matches the given count.
    * Shrinks pool by popping and disposing excess renderers.
@@ -416,6 +444,7 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
         scatterRenderers,
         scatterDensityRenderers,
         pieRenderers,
+        heatmapRenderers,
         candlestickRenderers,
         decimationComputes,
         barRenderer,
@@ -459,6 +488,12 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
     }
     pieRenderers.length = 0;
 
+    // Dispose heatmap renderers
+    for (let i = 0; i < heatmapRenderers.length; i++) {
+      heatmapRenderers[i].dispose();
+    }
+    heatmapRenderers.length = 0;
+
     // Dispose candlestick renderers
     for (let i = 0; i < candlestickRenderers.length; i++) {
       candlestickRenderers[i].dispose();
@@ -481,6 +516,7 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
     ensureScatterRendererCount,
     ensureScatterDensityRendererCount,
     ensurePieRendererCount,
+    ensureHeatmapRendererCount,
     ensureCandlestickRendererCount,
     ensureDecimationComputeCount,
     getState,
