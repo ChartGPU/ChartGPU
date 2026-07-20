@@ -59,6 +59,18 @@ import {
   type StagingRingView,
 } from './data/cartesianData';
 import { normalizeMaxPoints, planMaxPointsWindow, resolveEffectiveMaxPointsForAppend } from './data/maxPointsWindow';
+import {
+  getBandLength,
+  getBandPoint,
+  getBandX,
+  appendBandIntoXYYColumns,
+  asBandXYYArrays,
+  bandBounds,
+  bandDataToMutableXYY,
+  extendBoundsWithBandData,
+  isBandShapedPayload,
+} from './data/bandData';
+import type { BandSeriesData } from './config/types';
 import { pointerClientToLayoutCss } from './core/renderCoordinator/utils/canvasUtils';
 
 // --- Instance registry for auto-dispose on page unload (CGPU-OOM-139) ---
@@ -644,6 +656,16 @@ const computeGlobalBounds = (
       continue;
     }
 
+    if (seriesConfig.type === 'band') {
+      const bb = bandBounds((seriesConfig.rawData ?? seriesConfig.data) as BandSeriesData);
+      if (!bb) continue;
+      if (bb.xMin < xMin) xMin = bb.xMin;
+      if (bb.xMax > xMax) xMax = bb.xMax;
+      if (bb.yMin < yMin) yMin = bb.yMin;
+      if (bb.yMax > yMax) yMax = bb.yMax;
+      continue;
+    }
+
     const b = computeRawBoundsFromCartesianData(seriesConfig.data as CartesianSeriesData);
     if (!b) continue;
     if (b.xMin < xMin) xMin = b.xMin;
@@ -946,6 +968,10 @@ export async function createChartGPU(
           const ohlc = (s.data as ReadonlyArray<OHLCDataPoint>) ?? [];
           nextData[i] = ohlc.length === 0 ? [] : ohlc.slice();
           nextBounds[i] = (s as unknown as { rawBounds?: Bounds | null }).rawBounds ?? null;
+        } else if (s.type === 'band') {
+          const band = (s.data as BandSeriesData) ?? { x: [], y: [], y1: [] };
+          nextData[i] = asBandXYYArrays(bandDataToMutableXYY(band)) as unknown as MutableXYColumns;
+          nextBounds[i] = (s as unknown as { rawBounds?: Bounds | null }).rawBounds ?? bandBounds(band) ?? null;
         } else {
           const cart = (s.data as CartesianSeriesData) ?? [];
           nextData[i] = cartesianDataToMutableColumns(cart);
@@ -958,6 +984,8 @@ export async function createChartGPU(
       if (s.type === 'candlestick') {
         const ohlc = raw as ReadonlyArray<OHLCDataPoint>;
         nextData[i] = ohlc.length === 0 ? [] : ohlc.slice();
+      } else if (s.type === 'band') {
+        nextData[i] = asBandXYYArrays(bandDataToMutableXYY(raw as BandSeriesData)) as unknown as MutableXYColumns;
       } else if (isRingXYColumns(raw)) {
         // Private ring copy (chronological at start=0) for O(append) hit-test.
         // Preserve per-point size when coordinator ring has a size channel (issue 1.4).
@@ -984,6 +1012,17 @@ export async function createChartGPU(
       }
       if (bounds) {
         nextBounds[i] = bounds as Bounds;
+      } else if (s.type === 'band') {
+        // Dual-Y envelope — never cartesian scan (would drop y1 extrema).
+        nextBounds[i] =
+          bandBounds(nextData[i] as unknown as BandSeriesData) ??
+          (s as unknown as { rawBounds?: Bounds | null }).rawBounds ??
+          null;
+      } else if (s.type === 'candlestick') {
+        nextBounds[i] =
+          extendBoundsWithOHLCDataPoints(null, nextData[i] as ReadonlyArray<OHLCDataPoint>) ??
+          (s as unknown as { rawBounds?: Bounds | null }).rawBounds ??
+          null;
       } else {
         nextBounds[i] = computeRawBoundsFromCartesianData(
           nextData[i] as unknown as CartesianSeriesData
@@ -1045,6 +1084,52 @@ export async function createChartGPU(
         nextSource[i] = null;
         nextModes[i] = null;
         nextOptionsRaw[i] = null;
+        continue;
+      }
+
+      if (s.type === 'band') {
+        const raw = ((s as unknown as { rawData?: BandSeriesData }).rawData ?? s.data) as BandSeriesData;
+        const rawBounds = (s as unknown as { rawBounds?: Bounds | null }).rawBounds ?? null;
+        const prevOwned = i < prevCount ? prevData[i] : null;
+        const prevIsOwnedToken = i < prevCount && prevSource[i] === HIT_TEST_OWNED_TOKEN;
+        const optionsRawUnchanged = i < prevCount && prevOptionsRaw[i] === raw;
+        const prevHasY1 =
+          prevOwned != null &&
+          typeof prevOwned === 'object' &&
+          !Array.isArray(prevOwned) &&
+          'y1' in (prevOwned as object);
+        const reuseOwnedHistory = prevIsOwnedToken && prevHasY1 && optionsRawUnchanged && !hitTestStoreNeedsResync;
+        const reuseSeedIdentity = i < prevCount && prevSource[i] === raw && prevHasY1 && !hitTestStoreNeedsResync;
+        if (reuseOwnedHistory || reuseSeedIdentity) {
+          nextData[i] = prevData[i]!;
+          nextSource[i] = prevIsOwnedToken ? HIT_TEST_OWNED_TOKEN : raw;
+          nextOptionsRaw[i] = raw;
+          const modeChanged = mode != null && prevModes[i] != null && mode !== prevModes[i];
+          if (modeChanged) {
+            nextBounds[i] =
+              bandBounds(
+                asBandXYYArrays(
+                  prevData[i] as unknown as {
+                    x: ArrayLike<number>;
+                    y: ArrayLike<number>;
+                    y1: ArrayLike<number>;
+                  }
+                )
+              ) ??
+              rawBounds ??
+              prevBounds[i] ??
+              null;
+          } else {
+            nextBounds[i] = prevBounds[i] ?? rawBounds ?? null;
+          }
+        } else {
+          const cols = bandDataToMutableXYY(raw);
+          nextData[i] = asBandXYYArrays(cols) as unknown as MutableXYColumns;
+          nextBounds[i] = rawBounds ?? bandBounds(raw) ?? null;
+          nextSource[i] = raw;
+          nextOptionsRaw[i] = raw;
+        }
+        nextModes[i] = mode;
         continue;
       }
 
@@ -1144,7 +1229,7 @@ export async function createChartGPU(
 
   const getRuntimeHitTestSeries = (): ResolvedChartGPUOptions['series'] => {
     if (runtimeHitTestSeriesCache) return runtimeHitTestSeriesCache;
-    // Replace cartesian series `data` with chart-owned runtime data (pie series are unchanged).
+    // Replace series `data` with chart-owned runtime data (pie / heatmap unchanged).
     runtimeHitTestSeriesCache = resolvedOptions.series.map((s, i) => {
       if (s.type === 'pie' || s.type === 'heatmap') return s;
       if (s.type === 'candlestick') {
@@ -1153,7 +1238,20 @@ export async function createChartGPU(
           data: runtimeRawDataByIndex[i] ?? (s.data as ReadonlyArray<OHLCDataPoint>),
         };
       }
-      // For non-candlestick cartesian series: MutableXYColumns or RingXYColumns.
+      if (s.type === 'band') {
+        const runtimeData = runtimeRawDataByIndex[i];
+        // Prefer owned Xyy columns; never fall back to XY-only columns missing y1.
+        if (
+          runtimeData != null &&
+          typeof runtimeData === 'object' &&
+          !Array.isArray(runtimeData) &&
+          'y1' in (runtimeData as object)
+        ) {
+          return { ...s, data: runtimeData as unknown as BandSeriesData };
+        }
+        return { ...s, data: (s.rawData ?? s.data) as BandSeriesData };
+      }
+      // Cartesian series: MutableXYColumns or RingXYColumns.
       const runtimeData = runtimeRawDataByIndex[i] as MutableXYColumns | RingXYColumns;
       return { ...s, data: runtimeData as CartesianSeriesData };
     }) as ResolvedChartGPUOptions['series'];
@@ -2220,6 +2318,15 @@ export async function createChartGPU(
       if (s.type === 'candlestick') {
         if (!Array.isArray(newPoints)) return;
         pointCount = newPoints.length;
+      } else if (s.type === 'band') {
+        if (!isBandShapedPayload(newPoints)) {
+          console.warn(
+            `ChartGPU.appendData(${seriesIndex}, ...): band series requires Xyy payloads ` +
+              `({x,y,y1}, [x,y,y1] tuples/objects, or interleaved stride-3). Skipping batch.`
+          );
+          return;
+        }
+        pointCount = getBandLength(newPoints as BandSeriesData);
       } else {
         pointCount = getCartesianPointCount(newPoints as CartesianSeriesData);
       }
@@ -2312,6 +2419,60 @@ export async function createChartGPU(
           runtimeRawBoundsByIndex[seriesIndex] = extendBoundsWithOHLCDataPoints(null, owned);
         }
         runtimeRawDataByIndex[seriesIndex] = owned;
+      } else if (maintainHitTestStore && s.type === 'band') {
+        type BandCols = { x: number[]; y: number[]; y1: number[] };
+        let cols = runtimeRawDataByIndex[seriesIndex] as BandCols | null;
+        if (!cols || !('y1' in (cols as object))) {
+          const seed =
+            (s as { rawData?: BandSeriesData; data: BandSeriesData }).rawData ??
+            ((s as { data: BandSeriesData }).data as BandSeriesData);
+          const n = getBandLength(seed);
+          const x: number[] = new Array(n);
+          const y: number[] = new Array(n);
+          const y1: number[] = new Array(n);
+          for (let j = 0; j < n; j++) {
+            const p = getBandPoint(seed, j);
+            x[j] = p ? p.x : Number.NaN;
+            y[j] = p ? p.y : Number.NaN;
+            y1[j] = p ? p.y1 : Number.NaN;
+          }
+          cols = { x, y, y1 };
+        } else {
+          cols = {
+            x: Array.isArray(cols.x) ? cols.x : Array.from(cols.x as ArrayLike<number>),
+            y: Array.isArray(cols.y) ? cols.y : Array.from(cols.y as ArrayLike<number>),
+            y1: Array.isArray(cols.y1) ? cols.y1 : Array.from(cols.y1 as ArrayLike<number>),
+          };
+        }
+        const bandAppend = newPoints as BandSeriesData;
+        if (hasDataAppendListeners) {
+          for (let i = 0; i < pointCount; i++) {
+            const p = getBandPoint(bandAppend, i);
+            if (p && Number.isFinite(p.x)) {
+              if (p.x < appendXMin) appendXMin = p.x;
+              if (p.x > appendXMax) appendXMax = p.x;
+            }
+          }
+        }
+        const plan = planMaxPointsWindow(cols.x.length, pointCount, maxPoints);
+        if (plan.dropPrevCount > 0) {
+          cols.x.splice(0, plan.dropPrevCount);
+          cols.y.splice(0, plan.dropPrevCount);
+          cols.y1.splice(0, plan.dropPrevCount);
+        }
+        appendBandIntoXYYColumns(cols, bandAppend, {
+          newSrcOffset: plan.newSrcOffset,
+          keepNewCount: plan.keepNewCount,
+        });
+        if (!plan.didWindow) {
+          runtimeRawBoundsByIndex[seriesIndex] = extendBoundsWithBandData(
+            runtimeRawBoundsByIndex[seriesIndex],
+            bandAppend
+          );
+        } else {
+          runtimeRawBoundsByIndex[seriesIndex] = bandBounds(asBandXYYArrays(cols));
+        }
+        runtimeRawDataByIndex[seriesIndex] = asBandXYYArrays(cols) as unknown as MutableXYColumns;
       } else if (maintainHitTestStore) {
         // Handle other cartesian series (line, area, bar, scatter) with columnar append.
         // Prefer RingXY when maxPoints is set (matches coordinator O(append) policy).
@@ -2533,6 +2694,15 @@ export async function createChartGPU(
           const ohlcPoints = newPoints as OHLCDataPoint[];
           for (let i = 0; i < pointCount; i++) {
             const x = getOHLCTimestamp(ohlcPoints[i]!);
+            if (Number.isFinite(x)) {
+              if (x < appendXMin) appendXMin = x;
+              if (x > appendXMax) appendXMax = x;
+            }
+          }
+        } else if (s.type === 'band') {
+          const bandAppend = newPoints as BandSeriesData;
+          for (let i = 0; i < pointCount; i++) {
+            const x = getBandX(bandAppend, i);
             if (Number.isFinite(x)) {
               if (x < appendXMin) appendXMin = x;
               if (x > appendXMax) appendXMax = x;

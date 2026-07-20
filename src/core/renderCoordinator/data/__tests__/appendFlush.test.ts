@@ -151,4 +151,125 @@ describe('appendFlush module ownership', () => {
     expect(flush()).toBe(true);
     expect(recomputeRuntimeBaseSeries).toHaveBeenCalled();
   });
+
+  it('band maxPoints FIFO drops aligned x/y/y1 triples', () => {
+    const recomputeRuntimeBaseSeries = vi.fn();
+    const cols = {
+      x: [0, 1, 2] as number[],
+      y: [10, 11, 12] as number[],
+      y1: [20, 21, 22] as number[],
+    };
+    const deps = baseDeps({
+      recomputeRuntimeBaseSeries,
+      gpuSeriesKindByIndex: ['other'],
+      runtimeRawDataByIndex: [cols as any],
+      runtimeRawBoundsByIndex: [{ xMin: 0, xMax: 2, yMin: 10, yMax: 22 }],
+      currentOptions: {
+        series: [
+          {
+            type: 'band',
+            sampling: 'none',
+            samplingThreshold: 0,
+            data: cols,
+            rawData: cols,
+            rawBounds: { xMin: 0, xMax: 2, yMin: 10, yMax: 22 },
+          } as any,
+        ],
+        autoScroll: false,
+        xAxis: {},
+      } as any,
+      planMaxPointsWindow: (prevLen: number, newCount: number, maxPoints: number | null | undefined) => {
+        // Simple FIFO: keep last maxPoints total.
+        const max = maxPoints ?? 1000;
+        const total = prevLen + newCount;
+        if (total <= max) {
+          return {
+            didWindow: false,
+            dropPrevCount: 0,
+            keepNewCount: newCount,
+            newSrcOffset: 0,
+            isRing: false,
+            ringCapacity: 0,
+          };
+        }
+        const drop = total - max;
+        const dropPrev = Math.min(prevLen, drop);
+        const keepNew = newCount - Math.max(0, drop - prevLen);
+        return {
+          didWindow: true,
+          dropPrevCount: dropPrev,
+          keepNewCount: Math.max(0, keepNew),
+          newSrcOffset: newCount - Math.max(0, keepNew),
+          isRing: false,
+          ringCapacity: 0,
+        };
+      },
+      normalizeMaxPoints: (v: unknown) => (typeof v === 'number' ? v : null),
+    });
+    deps.pendingAppendByIndex.set(0, [
+      {
+        points: {
+          x: [3, 4],
+          y: [13, 14],
+          y1: [23, 24],
+        },
+        maxPoints: 3,
+      },
+    ]);
+    deps.runtimeBaseSeries = deps.currentOptions.series as any;
+    deps.renderSeries = deps.currentOptions.series as any;
+
+    const flush = createAppendFlush(() => deps);
+    expect(flush()).toBe(true);
+
+    const out = deps.runtimeRawDataByIndex[0] as { x: number[]; y: number[]; y1: number[] };
+    expect(out.x.length).toBe(3);
+    expect(out.y.length).toBe(3);
+    expect(out.y1.length).toBe(3);
+    // Oldest dropped; retained should end with new points.
+    expect(out.x[out.x.length - 1]).toBe(4);
+    expect(out.y[out.y.length - 1]).toBe(14);
+    expect(out.y1[out.y1.length - 1]).toBe(24);
+    // Equal lengths always
+    expect(out.x.length).toBe(out.y1.length);
+  });
+
+  it('band XY-only append is skipped with warn (length unchanged)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cols = {
+      x: [0, 1] as number[],
+      y: [10, 11] as number[],
+      y1: [20, 21] as number[],
+    };
+    const deps = baseDeps({
+      gpuSeriesKindByIndex: ['other'],
+      runtimeRawDataByIndex: [cols as any],
+      currentOptions: {
+        series: [
+          {
+            type: 'band',
+            sampling: 'none',
+            data: cols,
+            rawData: cols,
+          } as any,
+        ],
+        autoScroll: false,
+        xAxis: {},
+      } as any,
+      recomputeRuntimeBaseSeries: vi.fn(),
+      normalizeMaxPoints: () => null,
+    });
+    // Cartesian XY only — missing y1
+    deps.pendingAppendByIndex.set(0, [{ points: { x: [2], y: [12] } as any }]);
+    deps.runtimeBaseSeries = deps.currentOptions.series as any;
+    deps.renderSeries = deps.currentOptions.series as any;
+
+    const flush = createAppendFlush(() => deps);
+    flush();
+
+    expect(cols.x.length).toBe(2);
+    expect(cols.y1.length).toBe(2);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
 });

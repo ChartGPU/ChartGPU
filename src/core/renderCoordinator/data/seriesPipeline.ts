@@ -11,8 +11,9 @@
  */
 
 import type { ResolvedChartGPUOptions, ResolvedSeriesConfig } from '../../../config/OptionResolver';
-import type { CartesianSeriesData, OHLCDataPoint } from '../../../config/types';
+import type { BandSeriesData, CartesianSeriesData, OHLCDataPoint } from '../../../config/types';
 import { isGpuDecimationEligible } from '../../../data/gpuDecimationEligibility';
+import { hasBandNullGaps, sampleBandSeries, sliceBandByX } from '../../../data/bandData';
 import {
   resolveCartesianDisplayData,
   resolveCandlestickDisplayData,
@@ -35,12 +36,46 @@ type RawBoundsSlot =
 /**
  * Build one baseline series entry (pie / candle / cartesian).
  */
+function resolveBandDisplayData(
+  series: ResolvedSeriesConfig & { sampling?: string; samplingThreshold?: number },
+  raw: BandSeriesData,
+  sampleTarget?: number
+): BandSeriesData {
+  const sampling = (series.sampling ?? 'lttb') as string;
+  if (sampling === 'none' || sampling === 'ohlc') return raw;
+  if (hasBandNullGaps(raw)) return raw;
+  const threshold =
+    sampleTarget != null && Number.isFinite(sampleTarget)
+      ? Math.max(2, sampleTarget | 0)
+      : Math.max(2, (series.samplingThreshold ?? 5000) | 0);
+  return sampleBandSeries(raw, sampling as any, threshold);
+}
+
 function resolveBaselineSeriesEntry(
   s: ResolvedSeriesConfig,
   rawSlot: RuntimeRawSlot,
   boundsSlot: RawBoundsSlot
 ): ResolvedSeriesConfig {
   if (s.type === 'pie' || s.type === 'heatmap') return s;
+
+  if (s.type === 'band') {
+    const anyS = s as ResolvedSeriesConfig & {
+      rawData?: unknown;
+      rawBounds?: RawBoundsSlot;
+      sampling?: string;
+      samplingThreshold?: number;
+      data?: unknown;
+    };
+    const rawBand = (rawSlot as BandSeriesData | null | undefined) ?? ((anyS.rawData ?? anyS.data) as BandSeriesData);
+    const bounds = boundsSlot ?? anyS.rawBounds ?? undefined;
+    const baselineSampled = resolveBandDisplayData(anyS, rawBand);
+    return {
+      ...s,
+      rawData: rawBand,
+      rawBounds: bounds,
+      data: baselineSampled,
+    } as ResolvedSeriesConfig;
+  }
 
   if (s.type === 'candlestick') {
     const anyS = s as ResolvedSeriesConfig & {
@@ -131,6 +166,16 @@ function resolveSetOptionsReuseSeriesEntry(
       rawBounds: boundsSlot ?? anyS.rawBounds ?? undefined,
     } as ResolvedSeriesConfig;
   }
+  if (s.type === 'band') {
+    const rawBand = (rawSlot as BandSeriesData | null | undefined) ?? ((anyS.rawData ?? anyS.data) as BandSeriesData);
+    return {
+      ...s,
+      rawData: rawBand,
+      rawBounds: boundsSlot ?? anyS.rawBounds ?? undefined,
+      // Keep OptionResolver-sampled data when present.
+      data: (anyS.data as BandSeriesData) ?? rawBand,
+    } as ResolvedSeriesConfig;
+  }
 
   const rawCartesian: CartesianSeriesData =
     (rawSlot as CartesianSeriesData | null | undefined) ?? ((anyS.rawData ?? anyS.data) as CartesianSeriesData);
@@ -162,7 +207,7 @@ type ZoomedSeriesResult = {
   readonly series: ResolvedSeriesConfig;
   /** When set, caller should store into lastSampledData[i]. */
   readonly cacheEntry: {
-    readonly data: CartesianSeriesData | ReadonlyArray<OHLCDataPoint>;
+    readonly data: CartesianSeriesData | ReadonlyArray<OHLCDataPoint> | BandSeriesData;
     readonly cachedRange: { readonly min: number; readonly max: number };
   } | null;
 };
@@ -210,6 +255,27 @@ export function resolveZoomedSeriesEntry(input: {
       sampleTarget: target,
     });
     const visibleSampled = input.sliceOHLC(sampled, input.visibleMin, input.visibleMax);
+    return {
+      series: { ...s, data: visibleSampled } as ResolvedSeriesConfig,
+      cacheEntry: {
+        data: sampled,
+        cachedRange: { min: input.bufferedMin, max: input.bufferedMax },
+      },
+    };
+  }
+
+  if (s.type === 'band') {
+    const rawBand =
+      (input.rawSlot as BandSeriesData | null | undefined) ?? ((anyS.rawData ?? anyS.data) as BandSeriesData);
+    if (anyS.sampling === 'none') {
+      return {
+        series: { ...s, rawData: rawBand, data: rawBand } as ResolvedSeriesConfig,
+        cacheEntry: null,
+      };
+    }
+    const buffered = sliceBandByX(rawBand, input.bufferedMin, input.bufferedMax);
+    const sampled = resolveBandDisplayData(anyS, buffered, target);
+    const visibleSampled = sliceBandByX(sampled, input.visibleMin, input.visibleMax);
     return {
       series: { ...s, data: visibleSampled } as ResolvedSeriesConfig,
       cacheEntry: {

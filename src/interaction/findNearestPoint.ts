@@ -1,4 +1,10 @@
-import type { DataPoint, CartesianSeriesData, DataPointTuple, ScatterPointTuple } from '../config/types';
+import type {
+  BandSeriesData,
+  DataPoint,
+  CartesianSeriesData,
+  DataPointTuple,
+  ScatterPointTuple,
+} from '../config/types';
 import type {
   ResolvedBarSeriesConfig,
   ResolvedScatterSeriesConfig,
@@ -7,6 +13,7 @@ import type {
 import type { LinearScale } from '../utils/scales';
 import { bucketStackedXKey } from '../utils/barStackKey';
 import { getPointCount, getX, getY, getSize } from '../data/cartesianData';
+import { getBandLength, getBandPoint } from '../data/bandData';
 import { isMonotonicNonDecreasingFiniteX } from '../core/renderCoordinator/data/computeVisibleSlice';
 
 const DEFAULT_MAX_DISTANCE_PX = 20;
@@ -535,14 +542,118 @@ export function findNearestPoint(
     }
   }
 
+  // Band series: prefer nearest-x sample (plan D7), then attach y/y1 from that index.
+  // Distance uses midline in screen space for multi-series tie-breaks.
+  for (let s = 0; s < series.length; s++) {
+    const seriesCfg = series[s];
+    if (seriesCfg.type !== 'band' || seriesCfg.visible === false) continue;
+    const data = seriesCfg.data as BandSeriesData;
+    const n = getBandLength(data);
+    if (n === 0) continue;
+
+    let mono = true;
+    let prevBandX = Number.NEGATIVE_INFINITY;
+    for (let i = 0; i < n; i++) {
+      const p = getBandPoint(data, i);
+      if (!p || !Number.isFinite(p.x)) {
+        mono = false;
+        break;
+      }
+      if (p.x < prevBandX) {
+        mono = false;
+        break;
+      }
+      prevBandX = p.x;
+    }
+
+    const considerBandIndex = (i: number): void => {
+      const p = getBandPoint(data, i);
+      if (!p || !Number.isFinite(p.x)) return;
+      const y0 = Number.isFinite(p.y) ? p.y : Number.NaN;
+      const y1v = Number.isFinite(p.y1) ? p.y1 : Number.NaN;
+      if (!Number.isFinite(y0) && !Number.isFinite(y1v)) return;
+      const midY = Number.isFinite(y0) && Number.isFinite(y1v) ? (y0 + y1v) / 2 : Number.isFinite(y0) ? y0 : y1v;
+      const sx = xScale.scale(p.x);
+      const sy = yScale.scale(midY);
+      if (!Number.isFinite(sx) || !Number.isFinite(sy)) return;
+      const dx = sx - x;
+      const dy = sy - y;
+      const distSq = dx * dx + dy * dy;
+      if (distSq > maxDistSq) return;
+      const isBetter =
+        distSq < bestDistSq ||
+        (distSq === bestDistSq &&
+          (bestPoint === null || s < bestSeriesIndex || (s === bestSeriesIndex && i < bestDataIndex)));
+      if (isBetter) {
+        bestDistSq = distSq;
+        bestSeriesIndex = s;
+        bestDataIndex = i;
+        bestPoint = [p.x, Number.isFinite(y0) ? y0 : midY];
+      }
+    };
+
+    if (mono) {
+      let lo = 0;
+      let hi = n;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        const px = getBandPoint(data, mid)?.x ?? Number.NaN;
+        if (px < xTarget) lo = mid + 1;
+        else hi = mid;
+      }
+      const startIdx = lo;
+      for (let i = startIdx; i < n; i++) {
+        const p = getBandPoint(data, i);
+        if (!p || !Number.isFinite(p.x)) continue;
+        const sx = xScale.scale(p.x);
+        if (!Number.isFinite(sx)) continue;
+        const dx = sx - x;
+        if (dx * dx > bestDistSq && bestPoint !== null) break;
+        considerBandIndex(i);
+      }
+      for (let i = startIdx - 1; i >= 0; i--) {
+        const p = getBandPoint(data, i);
+        if (!p || !Number.isFinite(p.x)) continue;
+        const sx = xScale.scale(p.x);
+        if (!Number.isFinite(sx)) continue;
+        const dx = sx - x;
+        if (dx * dx > bestDistSq && bestPoint !== null) break;
+        considerBandIndex(i);
+      }
+    } else {
+      let bestI = -1;
+      let bestDx = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < n; i++) {
+        const p = getBandPoint(data, i);
+        if (!p || !Number.isFinite(p.x)) continue;
+        if (!Number.isFinite(p.y) && !Number.isFinite(p.y1)) continue;
+        const sx = xScale.scale(p.x);
+        if (!Number.isFinite(sx)) continue;
+        const dx = Math.abs(sx - x);
+        if (dx < bestDx || (dx === bestDx && (bestI < 0 || i < bestI))) {
+          bestDx = dx;
+          bestI = i;
+        }
+      }
+      if (bestI >= 0) considerBandIndex(bestI);
+    }
+  }
+
   // Build index mapping for non-bar cartesian series (scatter, line, area) to preserve original series indices
   // after filtering for visibility, matching the pattern used for bar series above.
   const cartesianSeriesConfigs: ResolvedSeriesConfig[] = [];
   const cartesianSeriesIndexMap: number[] = [];
   for (let s = 0; s < series.length; s++) {
     const seriesCfg = series[s];
-    // Pie and candlestick series are non-cartesian (or not yet implemented); they don't participate in x/y nearest-point hit-testing.
-    if (seriesCfg.type === 'pie' || seriesCfg.type === 'candlestick' || seriesCfg.type === 'heatmap') continue;
+    // Pie / candlestick / heatmap / band handled separately.
+    if (
+      seriesCfg.type === 'pie' ||
+      seriesCfg.type === 'candlestick' ||
+      seriesCfg.type === 'heatmap' ||
+      seriesCfg.type === 'band'
+    ) {
+      continue;
+    }
 
     // Skip invisible series (matches bar series visibility check above).
     if (seriesCfg.visible === false) continue;

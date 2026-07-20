@@ -16,7 +16,7 @@ Chart configuration. Full types: [`types.ts`](../../src/config/types.ts).
 
 ## Series Configuration
 
-- **`SeriesType`**: `'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick'`. See [`types.ts`](../../src/config/types.ts).
+- **`SeriesType`**: `'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick' | 'heatmap' | 'band'`. See [`types.ts`](../../src/config/types.ts).
 - **Sampling (cartesian)**: `sampling?: 'none' | 'lttb' | 'average' | 'max' | 'min'`, `samplingThreshold?: number` (default 5000). Zoom-aware resampling when data zoom enabled.
 - **`visible?: boolean`**: hide series from rendering and interaction. Legend toggle updates both.
 - **Data identity / in-place mutation**: ChartGPU treats series `data` by **reference identity** for hot paths (`setOption` resolve, content hashing, GPU upload skip, area geometry cache). Mutating point values under a stable array / columns object **without** replacing the reference may not be detected. Prefer a new array (or `appendData(...)`) when content changes. Axes-only / presentation-only updates that re-pass the same `data` reference are intentionally O(1) on the data path.
@@ -199,6 +199,40 @@ Uniform rectangular **data-grid** heatmap / spectrogram (`type: 'heatmap'`). Dis
 - **Negative steps**: supported. UV `u=0`/`v=0` always maps to cell `(0,0)` (signed origin+extent), matching CPU `heatmapHitTest` / `heatmapCellIndex`. Axis bounds normalize so min ≤ max.
 
 Example: [`examples/heatmap-spectrogram/`](../../examples/heatmap-spectrogram/). Implementation: [`createHeatmapRenderer.ts`](../../src/renderers/createHeatmapRenderer.ts), [`heatmap.wgsl`](../../src/shaders/heatmap.wgsl).
+
+### BandSeriesConfig
+
+Band / range series (`type: 'band'`) fills the region **between two curves that share the same x** — confidence / prediction intervals, sensor min–max envelopes, bid–ask ranges, and threshold fills (constant `y` vs varying `y1`).
+
+**Not** the same as:
+
+| | `type: 'area'` | Annotation `bandX` | `type: 'band'` |
+|--|----------------|--------------------|----------------|
+| Input | `(x, y)[]` | `from`/`to` x-span | `(x, y, y1)[]` |
+| Fill | Curve → **baseline** | Full-height vertical strip | Curve **y** ↔ curve **y1** |
+| Use | Mountain under a series | Regime / outage highlight | Confidence / min–max range |
+
+- **`data`**: one of:
+  - `ReadonlyArray<BandDataPoint | null>` — tuple `[x, y, y1]` or `{ x, y, y1 }`
+  - `{ x, y, y1 }` parallel arrays (SciChart Xyy-style); length = min of the three (mismatch warns)
+  - Interleaved `ArrayBufferView` stride **3**: `[x0,y0,y1_0, …]` — **do not** use stride-2 `InterleavedXYData` (would drop `y1`). `appendData` rejects interleaved views whose length is not a multiple of 3.
+- **`y` / `y1`**: first and second curves; convention in docs is lower/upper but **crossing is allowed** (`y` may exceed `y1`).
+- **`areaStyle?: { color?, opacity? }`**: fill between curves. Default opacity **0.25**. Color falls back to `series.color` → palette.
+- **`lineStyle?`**: stroke for the `y` curve. **When omitted, no y stroke** (fill-only). When present, width defaults to **1**; width 0 / opacity 0 also hides.
+- **`lineStyleY1?`**: stroke for the `y1` curve. **When omitted, no y1 stroke** (fill-only is valid).
+- **`connectNulls?: boolean`** (default `false`): null/NaN gaps break fill + both strokes unless `true`.
+- **`sampling?`**: `'none' | 'lttb' | 'average' | 'max' | 'min'` (default like other series: `lttb`). **No `ohlc`** (rejected with warn → `lttb`). **No GPU compute decimation** in v1.
+  - **LTTB**: runs on midline `m = (y+y1)/2`, then **carries both y and y1 from chosen indices** (aligned).
+  - **min / max**: **aliases in v1** — both keep the full dual-Y envelope per bucket (`y = envMin`, `y1 = envMax` of `min/max(y,y1)`), so axis bounds retain envelope fidelity under downsample.
+  - **average**: average each of y and y1 separately per bucket (only over finite samples in that channel).
+- **Draw layering**: bands are **type-layered** after heatmaps and before area fills / lines (not strict `series[]` z-order vs area/line). Put mean lines after bands in the array for readability; strokes of the same band series still draw after its fill.
+- **Axis auto-bounds**: X from finite `x`; Y from **both** finite `y` and `y1`.
+- **Tooltip**: nearest sample by x; `value: [x, y]`, plus optional `y1`, `yMid`, `yRange`.
+- **`appendData`**: **supported** with Xyy payloads (`{x,y,y1}`, tuples, or interleaved). FIFO `maxPoints` works like cartesian series.
+- **GPU**: private storage buffer of `BandPoint { x, y, y1, pad }` (16-byte); per-segment trapezoid triangle-list (area topology, dual tops). Zoom/pan rewrites VS uniforms only when data identity is stable.
+- **Log axes**: same log projection as area/line; non-positive y/y1 on log Y discard that segment endpoint. Log auto-bounds scan **both** y channels for strictly positive values.
+
+Example: [`examples/band-range/`](../../examples/band-range/). Implementation: [`createBandRenderer.ts`](../../src/renderers/createBandRenderer.ts), [`band.wgsl`](../../src/shaders/band.wgsl), [`bandData.ts`](../../src/data/bandData.ts).
 
 ### PieSeriesConfig
 

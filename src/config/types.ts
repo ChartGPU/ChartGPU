@@ -5,7 +5,7 @@
 import type { ThemeConfig } from '../themes/types';
 
 export type AxisType = 'value' | 'time' | 'category' | 'log';
-export type SeriesType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick' | 'heatmap';
+export type SeriesType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick' | 'heatmap' | 'band';
 
 /**
  * Render mode for chart rendering.
@@ -526,6 +526,97 @@ export interface HeatmapSeriesConfig extends Omit<SeriesConfigBase, 'data' | 'sa
   readonly cellGapPx?: number;
 }
 
+/**
+ * One sample of a band / range series: shared x, two y values.
+ * Order: y = first/lower curve by convention in docs, y1 = second/upper.
+ * Crossing is allowed (y may be > y1 at some samples).
+ */
+export type BandDataPointTuple = readonly [x: number, y: number, y1: number];
+
+export type BandDataPointObject = Readonly<{
+  readonly x: number;
+  readonly y: number;
+  readonly y1: number;
+}>;
+
+export type BandDataPoint = BandDataPointTuple | BandDataPointObject;
+
+/**
+ * Separate arrays for band series (SciChart Xyy-style).
+ * All arrays must have the same length (resolver uses min length and may warn).
+ */
+export type BandXYYArraysData = Readonly<{
+  readonly x: ArrayLike<number>;
+  readonly y: ArrayLike<number>;
+  readonly y1: ArrayLike<number>;
+}>;
+
+/**
+ * Pre-interleaved band data: [x0, y0, y1_0, x1, y1, y1_1, ...]
+ * stride = 3. Prefer Float32Array for GPU-friendly transfer.
+ *
+ * Do NOT reuse InterleavedXYData (stride 2) — that would silently drop y1.
+ */
+export type InterleavedXYYData = ArrayBufferView;
+
+/**
+ * Accepted band data formats.
+ * Distinct from CartesianSeriesData so `[x,y,size?]` scatter tuples are never
+ * misread as `[x,y,y1]`.
+ */
+export type BandSeriesData = ReadonlyArray<BandDataPoint | null> | BandXYYArraysData | InterleavedXYYData;
+
+/**
+ * Band / range series: fill between two curves that share x (confidence bands,
+ * min–max envelopes, threshold fills). Not area-to-baseline and not annotation `bandX`.
+ */
+export interface BandSeriesConfig {
+  readonly type: 'band';
+  readonly name?: string;
+  readonly yAxis?: string;
+  readonly visible?: boolean;
+  readonly data: BandSeriesData;
+
+  /**
+   * Optional shared series color fallback for strokes/fill when styles omit color.
+   * Theme palette still applies when fully omitted.
+   */
+  readonly color?: string;
+
+  /**
+   * Stroke for the `y` curve. Omit or set width 0 / opacity 0 to hide.
+   * Default when present: width 1, color from series/theme, opacity 1.
+   */
+  readonly lineStyle?: LineStyleConfig;
+
+  /**
+   * Stroke for the `y1` curve. When omitted, no y1 stroke (fill-only is valid).
+   * When provided, defaults width/opacity like line.
+   */
+  readonly lineStyleY1?: LineStyleConfig;
+
+  /**
+   * Fill between y and y1. Default: series color @ opacity 0.25 (or theme).
+   * Color + opacity only in v1 (no gradient).
+   */
+  readonly areaStyle?: AreaStyleConfig;
+
+  /**
+   * When true, null/NaN gaps are bridged. When false (default), gaps break
+   * fill segments and strokes (same contract as line/area).
+   */
+  readonly connectNulls?: boolean;
+
+  /**
+   * Sampling for large N. v1: `'none' | 'lttb' | 'average' | 'max' | 'min'`.
+   * **No** `'ohlc'`. GPU decimation is not used for band in v1.
+   *
+   * LTTB/min/max/average consider both y and y1 (index-aligned dual-Y policy).
+   */
+  readonly sampling?: Exclude<SeriesSampling, 'ohlc'>;
+  readonly samplingThreshold?: number;
+}
+
 export type SeriesConfig =
   | LineSeriesConfig
   | AreaSeriesConfig
@@ -533,7 +624,8 @@ export type SeriesConfig =
   | ScatterSeriesConfig
   | PieSeriesConfig
   | CandlestickSeriesConfig
-  | HeatmapSeriesConfig;
+  | HeatmapSeriesConfig
+  | BandSeriesConfig;
 
 /**
  * Parameters passed to tooltip formatter function.
@@ -545,6 +637,7 @@ export interface TooltipParams {
   /**
    * Value tuple for the data point.
    * - Cartesian series (line, area, bar, scatter): [x, y]
+   * - Band series: [x, y] (lower/first curve); see also optional `y1` / `yMid` / `yRange`
    * - Candlestick series: [timestamp, open, close, low, high]
    * - Heatmap: [cellCenterX, cellCenterY] (see also optional `z`)
    */
@@ -555,6 +648,15 @@ export interface TooltipParams {
    * `value` is still [cellCenterX, cellCenterY]; `dataIndex` is row-major `j * columns + i`.
    */
   readonly z?: number;
+  /**
+   * Band series: second curve value at the hit sample (`y1`).
+   * `value` remains `[x, y]` for backward compatibility with cartesian formatters.
+   */
+  readonly y1?: number;
+  /** Band series: midpoint `(y + y1) / 2` when both are finite. */
+  readonly yMid?: number;
+  /** Band series: absolute range `|y1 - y|` when both are finite. */
+  readonly yRange?: number;
 }
 
 /**

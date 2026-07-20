@@ -420,4 +420,109 @@ describe('findNearestPoint', () => {
       expect(bucketStackedXKey(105, 50, 2.04, 0)).toBe(2);
     });
   });
+
+  describe('band series hit-test', () => {
+    it('finds nearest band sample by x and returns [x,y] point', () => {
+      const data = {
+        x: [1, 2, 3, 4, 5],
+        y: [0, 0, 0, 0, 0],
+        y1: [2, 4, 6, 8, 10],
+      };
+      const series: ResolvedSeriesConfig[] = [
+        {
+          type: 'band',
+          data,
+          color: '#38bdf8',
+          visible: true,
+          connectNulls: false,
+          sampling: 'none',
+          samplingThreshold: 5000,
+          yAxis: 'y',
+          rawData: data,
+          areaStyle: { color: '#38bdf8', opacity: 0.25 },
+          lineStyle: { width: 1, opacity: 1, color: '#38bdf8' },
+        } as any,
+      ];
+      const xScale = createLinearScale().domain(0, 6).range(0, 600);
+      const yScale = createLinearScale().domain(0, 12).range(600, 0);
+      const cursorX = xScale.scale(3.1);
+      const cursorY = yScale.scale(3);
+      const result = findNearestPoint(series, cursorX, cursorY, xScale, yScale, 50);
+      expect(result).not.toBeNull();
+      expect(result!.seriesIndex).toBe(0);
+      expect(result!.dataIndex).toBe(2);
+      expect(result!.point).toEqual([3, 0]);
+    });
+
+    it('skips null band samples', () => {
+      const data = [[1, 0, 2], null, [3, 0, 4]] as any;
+      const series: ResolvedSeriesConfig[] = [
+        {
+          type: 'band',
+          data,
+          color: '#f00',
+          visible: true,
+          connectNulls: false,
+          sampling: 'none',
+          samplingThreshold: 5000,
+          yAxis: 'y',
+          rawData: data,
+          areaStyle: { color: '#f00', opacity: 0.25 },
+          lineStyle: { width: 0, opacity: 0, color: '#f00' },
+        } as any,
+      ];
+      const xScale = createLinearScale().domain(0, 4).range(0, 400);
+      const yScale = createLinearScale().domain(0, 5).range(400, 0);
+      // Cursor near x=2 (null) — should pick a finite neighbor within max distance.
+      const result = findNearestPoint(series, xScale.scale(2), yScale.scale(1), xScale, yScale, 200);
+      expect(result).not.toBeNull();
+      expect(result!.dataIndex === 0 || result!.dataIndex === 2).toBe(true);
+      // Soft-if guard avoided: always assert dataIndex is finite sample.
+      expect([0, 2]).toContain(result!.dataIndex);
+    });
+
+    it('works alongside a line series (multi-series)', () => {
+      const bandData = { x: [1, 2, 3], y: [0, 0, 0], y1: [2, 2, 2] };
+      const lineData: DataPoint[] = [
+        [1, 10],
+        [2, 10],
+        [3, 10],
+      ];
+      const series: ResolvedSeriesConfig[] = [
+        {
+          type: 'band',
+          data: bandData,
+          color: '#0af',
+          visible: true,
+          connectNulls: false,
+          sampling: 'none',
+          samplingThreshold: 5000,
+          yAxis: 'y',
+          rawData: bandData,
+          areaStyle: { color: '#0af', opacity: 0.2 },
+          lineStyle: { width: 0, opacity: 0, color: '#0af' },
+        } as any,
+        {
+          type: 'line',
+          data: lineData,
+          color: '#f00',
+          visible: true,
+        } as any,
+      ];
+      const xScale = createLinearScale().domain(0, 4).range(0, 400);
+      const yScale = createLinearScale().domain(0, 12).range(400, 0);
+      // Cursor near line at y=10
+      const lineHit = findNearestPoint(series, xScale.scale(2), yScale.scale(10), xScale, yScale, 50);
+      expect(lineHit).not.toBeNull();
+      expect(lineHit!.seriesIndex).toBe(1);
+      expect(lineHit!.dataIndex).toBe(1);
+      expect(lineHit!.point).toEqual([2, 10]);
+      // Cursor near band midline at x=2
+      const bandHit = findNearestPoint(series, xScale.scale(2), yScale.scale(1), xScale, yScale, 50);
+      expect(bandHit).not.toBeNull();
+      expect(bandHit!.seriesIndex).toBe(0);
+      expect(bandHit!.dataIndex).toBe(1);
+      expect(bandHit!.point).toEqual([2, 0]);
+    });
+  });
 });

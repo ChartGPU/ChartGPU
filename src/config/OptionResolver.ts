@@ -32,6 +32,8 @@ import type {
   HeatmapData,
   HeatmapColormap,
   HeatmapNullHandling,
+  BandSeriesConfig,
+  BandSeriesData,
 } from './types';
 import {
   candlePrimaryGridDefaults,
@@ -63,6 +65,7 @@ import {
   getPointCount,
   hasNullGaps,
 } from '../data/cartesianData';
+import { bandBounds, cheapBandContentStamp, getBandLength, hasBandNullGaps, sampleBandSeries } from '../data/bandData';
 
 export type { ResolvedCandlestickPriceLabel } from './resolvePriceLabel';
 export { resolvePriceLabel } from './resolvePriceLabel';
@@ -268,6 +271,33 @@ export type ResolvedHeatmapSeriesConfig = Readonly<
   }
 >;
 
+export type ResolvedBandSeriesConfig = Readonly<
+  Omit<
+    BandSeriesConfig,
+    'color' | 'lineStyle' | 'lineStyleY1' | 'areaStyle' | 'sampling' | 'samplingThreshold' | 'data' | 'connectNulls'
+  > & {
+    readonly type: 'band';
+    readonly connectNulls: boolean;
+    readonly color: string;
+    /**
+     * Stroke for y curve. **Undefined when user omitted `lineStyle`** (fill-only).
+     * When present, width defaults to 1; width 0 / opacity 0 also hides.
+     */
+    readonly lineStyle?: ResolvedLineStyleConfig;
+    /** Stroke for y1 curve; undefined when user omitted lineStyleY1. */
+    readonly lineStyleY1?: ResolvedLineStyleConfig;
+    readonly areaStyle: ResolvedAreaStyleConfig;
+    readonly sampling: Exclude<SeriesSampling, 'ohlc'>;
+    readonly samplingThreshold: number;
+    readonly rawData: BandSeriesData;
+    readonly data: BandSeriesData;
+    readonly yAxis: string;
+    readonly rawBounds?: RawBounds;
+    /** @internal How rawBounds was derived. */
+    readonly rawBoundsMode?: RawBoundsMode;
+  }
+>;
+
 export type ResolvedCandlestickItemStyleConfig = Readonly<Required<CandlestickItemStyleConfig>>;
 
 export type ResolvedCandlestickSeriesConfig = Readonly<
@@ -315,7 +345,8 @@ export type ResolvedSeriesConfig =
   | ResolvedScatterSeriesConfig
   | ResolvedPieSeriesConfig
   | ResolvedCandlestickSeriesConfig
-  | ResolvedHeatmapSeriesConfig;
+  | ResolvedHeatmapSeriesConfig
+  | ResolvedBandSeriesConfig;
 
 export type ResolvedPerformanceConfig = Readonly<{
   readonly lod: PerformanceLod;
@@ -1846,6 +1877,105 @@ export function resolveOptions(
               seriesIndex: i,
               color,
             });
+          }
+          case 'band': {
+            // Fill color: areaStyle.color → series.color → palette
+            const areaStyleColor = normalizeOptionalColor(s.areaStyle?.color);
+            const effectiveFillColor = areaStyleColor ?? explicitColor ?? inheritedColor;
+
+            const areaStyle: ResolvedAreaStyleConfig = {
+              opacity: s.areaStyle?.opacity ?? defaultAreaStyle.opacity,
+              color: effectiveFillColor,
+            };
+
+            // lineStyle omitted → no y stroke (fill-only; locked plan rule).
+            // When present, default width 1 / opacity like line edges.
+            let lineStyle: ResolvedLineStyleConfig | undefined;
+            if (s.lineStyle != null) {
+              const lineStyleColor = normalizeOptionalColor(s.lineStyle.color);
+              const effectiveStrokeColor = lineStyleColor ?? explicitColor ?? inheritedColor;
+              lineStyle = {
+                width: s.lineStyle.width ?? 1,
+                opacity: s.lineStyle.opacity ?? defaultLineStyle.opacity,
+                color: effectiveStrokeColor,
+              };
+            }
+
+            // lineStyleY1 omitted → no y1 stroke (v1 locked decision).
+            let lineStyleY1: ResolvedLineStyleConfig | undefined;
+            if (s.lineStyleY1 != null) {
+              const y1Color = normalizeOptionalColor(s.lineStyleY1.color) ?? explicitColor ?? inheritedColor;
+              lineStyleY1 = {
+                width: s.lineStyleY1.width ?? 1,
+                opacity: s.lineStyleY1.opacity ?? defaultLineStyle.opacity,
+                color: y1Color,
+              };
+            }
+
+            // Reject ohlc for band (never map to candle sampling).
+            let bandSampling: Exclude<SeriesSampling, 'ohlc'> =
+              sampling === 'ohlc' ? 'lttb' : (sampling as Exclude<SeriesSampling, 'ohlc'>);
+            if (sampling === 'ohlc') {
+              console.warn(`ChartGPU band series[${i}]: sampling 'ohlc' is not supported; using 'lttb'.`);
+            }
+
+            const connectNulls = s.connectNulls ?? false;
+            const contentHash = resolveSeriesContentHash(prevResolved, 'band', s.data, () =>
+              cheapBandContentStamp(s.data)
+            );
+            const reuseSample = canReuseResolvedSeriesSample(
+              prevResolved,
+              'band',
+              s.data,
+              bandSampling,
+              samplingThreshold,
+              connectNulls,
+              contentHash
+            );
+            const prevBand = reuseSample
+              ? (prevResolved as ResolvedBandSeriesConfig & {
+                  contentHash?: number;
+                  rawBoundsMode?: RawBoundsMode;
+                })
+              : null;
+
+            let rawBounds: RawBounds | undefined;
+            let rawBoundsMode: RawBoundsMode = 'data';
+            if (prevBand?.rawBounds && prevBand.rawBoundsMode === 'data') {
+              rawBounds = prevBand.rawBounds;
+              rawBoundsMode = 'data';
+            } else {
+              rawBounds = bandBounds(s.data) ?? undefined;
+              rawBoundsMode = rawBounds ? 'data' : 'synthetic';
+            }
+
+            // Touch length for mismatch warnings (getBandLength).
+            getBandLength(s.data);
+
+            const sampledBandData = prevBand
+              ? prevBand.data
+              : bandSampling === 'none' || hasBandNullGaps(s.data)
+                ? s.data
+                : sampleBandSeries(s.data, bandSampling, samplingThreshold);
+
+            return {
+              type: 'band' as const,
+              name: s.name,
+              visible,
+              rawData: s.data,
+              data: sampledBandData,
+              color: effectiveFillColor,
+              areaStyle,
+              ...(lineStyle ? { lineStyle } : {}),
+              ...(lineStyleY1 ? { lineStyleY1 } : {}),
+              sampling: bandSampling,
+              samplingThreshold,
+              rawBounds,
+              rawBoundsMode,
+              connectNulls,
+              yAxis,
+              contentHash,
+            };
           }
           case 'candlestick': {
             warnCandlestickNotImplemented();

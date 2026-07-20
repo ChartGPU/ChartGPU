@@ -152,6 +152,14 @@ export function formatTooltipItem(params: TooltipParams): string {
     const xy = `x=${formatNumber(params.value[0])} y=${formatNumber(params.value[1])}`;
     return formatRowHtml(params, `${zText} <span style="opacity:0.7">(${escapeHtml(xy)})</span>`);
   }
+  if (typeof params.y1 === 'number' && Number.isFinite(params.y1)) {
+    // Band: display ordered envelope; raw TooltipParams y/y1 stay unordered.
+    const a = params.value[1];
+    const b = params.y1;
+    const lo = formatNumber(Math.min(a, b));
+    const hi = formatNumber(Math.max(a, b));
+    return formatRowHtml(params, `${lo} … ${hi}`);
+  }
   return formatRowHtml(params, formatNumber(params.value[1]));
 }
 
@@ -177,6 +185,13 @@ export function formatTooltipAxis(params: TooltipParams[]): string {
         const zText = formatNumber(p.z);
         const xy = `x=${formatNumber(p.value[0])} y=${formatNumber(p.value[1])}`;
         return formatRowHtml(p, `${zText} <span style="opacity:0.7">(${escapeHtml(xy)})</span>`);
+      }
+      if (typeof p.y1 === 'number' && Number.isFinite(p.y1)) {
+        const a = p.value[1];
+        const b = p.y1;
+        const lo = formatNumber(Math.min(a, b));
+        const hi = formatNumber(Math.max(a, b));
+        return formatRowHtml(p, `${lo} … ${hi}`);
       }
       return formatRowHtml(p, formatNumber(p.value[1]));
     })

@@ -74,6 +74,13 @@ export type {
   HeatmapData,
   HeatmapColormap,
   HeatmapNullHandling,
+  BandSeriesConfig,
+  BandSeriesData,
+  BandDataPoint,
+  BandDataPointTuple,
+  BandDataPointObject,
+  BandXYYArraysData,
+  InterleavedXYYData,
   RenderMode,
   ScatterSeriesConfig,
   ScatterSymbol,
@@ -102,6 +109,7 @@ export type {
   ResolvedPieDataItem,
   ResolvedPieSeriesConfig,
   ResolvedHeatmapSeriesConfig,
+  ResolvedBandSeriesConfig,
   ResolvedSeriesConfig,
 } from './config/OptionResolver';
 
