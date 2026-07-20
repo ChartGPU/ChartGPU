@@ -9,6 +9,7 @@ import {
   resolveAnimationConfig,
   createEasingWithDelay,
   hasAnyDrawableMarks,
+  isSnapOnlyUpdateAnimationSeries,
   lerpDomain,
   lerpLogDomain,
   interpolateCartesianData,
@@ -168,6 +169,20 @@ describe('createEasingWithDelay', () => {
   });
 });
 
+describe('isSnapOnlyUpdateAnimationSeries', () => {
+  it('snaps heatmap and band so dual-Y / grid data is not cartesian-lerped', () => {
+    // Coordinator uses this predicate to set out[i] = target series (no y-lerp).
+    // Band must snap so y1 is not stripped by interpolateCartesianSeriesDataByIndex.
+    expect(isSnapOnlyUpdateAnimationSeries('band')).toBe(true);
+    expect(isSnapOnlyUpdateAnimationSeries('heatmap')).toBe(true);
+    expect(isSnapOnlyUpdateAnimationSeries('line')).toBe(false);
+    expect(isSnapOnlyUpdateAnimationSeries('area')).toBe(false);
+    expect(isSnapOnlyUpdateAnimationSeries('scatter')).toBe(false);
+    expect(isSnapOnlyUpdateAnimationSeries('pie')).toBe(false);
+    expect(isSnapOnlyUpdateAnimationSeries('bar')).toBe(false);
+  });
+});
+
 describe('hasAnyDrawableMarks', () => {
   it('returns true for line series with data', () => {
     const series = {
@@ -214,6 +229,10 @@ describe('hasAnyDrawableMarks', () => {
     expect(hasAnyDrawableMarks([{ type: 'bar' as const, data: [[0, 1]] } as any])).toBe(true);
     expect(hasAnyDrawableMarks([{ type: 'scatter' as const, data: [[0, 1]] } as any])).toBe(true);
     expect(hasAnyDrawableMarks([{ type: 'candlestick' as const, data: [[0, 1, 2, 3, 4]] } as any])).toBe(true);
+    expect(hasAnyDrawableMarks([{ type: 'band' as const, data: { x: [0, 1], y: [0, 0], y1: [1, 1] } } as any])).toBe(
+      true
+    );
+    expect(hasAnyDrawableMarks([{ type: 'band' as const, data: { x: [], y: [], y1: [] } } as any])).toBe(false);
   });
 
   it('returns true when at least one series has marks', () => {

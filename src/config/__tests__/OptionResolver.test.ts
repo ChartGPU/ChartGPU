@@ -1504,3 +1504,103 @@ describe('OptionResolver - heatmap', () => {
     warn.mockRestore();
   });
 });
+
+describe('OptionResolver - band', () => {
+  it('resolves defaults: connectNulls false, areaStyle opacity 0.25, omit lineStyle = fill-only', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'band',
+          data: { x: [0, 1], y: [0, 0], y1: [1, 1] },
+        },
+      ],
+    });
+    const s = resolved.series[0]!;
+    expect(s.type).toBe('band');
+    if (s.type !== 'band') throw new Error('expected band');
+    expect(s.connectNulls).toBe(false);
+    expect(s.areaStyle.opacity).toBe(0.25);
+    expect(s.areaStyle.color).toBeTruthy();
+    expect(s.lineStyle).toBeUndefined();
+    expect(s.lineStyleY1).toBeUndefined();
+    expect(s.rawBounds?.yMin).toBe(0);
+    expect(s.rawBounds?.yMax).toBe(1);
+  });
+
+  it('resolves lineStyle only when provided (default width 1)', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'band',
+          data: { x: [0, 1], y: [0, 0], y1: [1, 1] },
+          lineStyle: {},
+        },
+      ],
+    });
+    const s = resolved.series[0]!;
+    if (s.type !== 'band') throw new Error('expected band');
+    expect(s.lineStyle?.width).toBe(1);
+    expect(s.lineStyleY1).toBeUndefined();
+  });
+
+  it('color fallback fills areaStyle and strokes when omitted', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'band',
+          color: '#abcdef',
+          data: { x: [0, 1], y: [0, 0], y1: [1, 1] },
+          lineStyle: { width: 2 },
+          lineStyleY1: { width: 1 },
+        },
+      ],
+    });
+    const s = resolved.series[0]!;
+    if (s.type !== 'band') throw new Error('expected band');
+    expect(s.areaStyle.color).toBe('#abcdef');
+    expect(s.lineStyle?.color).toBe('#abcdef');
+    expect(s.lineStyleY1?.color).toBe('#abcdef');
+  });
+
+  it('rejects ohlc sampling with warn and uses lttb', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'band',
+          data: { x: [0, 1], y: [0, 0], y1: [1, 1] },
+          sampling: 'ohlc' as any,
+        },
+      ],
+    });
+    const s = resolved.series[0]!;
+    if (s.type !== 'band') throw new Error('expected band');
+    expect(s.sampling).toBe('lttb');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('warns on length mismatch without throwing', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'band',
+          data: { x: [0, 1, 2], y: [0, 1], y1: [1, 2, 3] },
+        },
+      ],
+    });
+    expect(resolved.series[0]!.type).toBe('band');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('empty data does not throw and has no rawBounds from empty', () => {
+    const resolved = resolveOptions({
+      series: [{ type: 'band', data: { x: [], y: [], y1: [] } }],
+    });
+    const s = resolved.series[0]!;
+    if (s.type !== 'band') throw new Error('expected band');
+    expect(s.rawBounds).toBeUndefined();
+  });
+});

@@ -54,6 +54,13 @@ export type AnySeriesConfig =
         readonly z?: { readonly length?: number };
       };
     }
+  | {
+      readonly type: 'band';
+      readonly data:
+        | ReadonlyArray<unknown>
+        | { readonly x: ArrayLike<number>; readonly y: ArrayLike<number>; readonly y1: ArrayLike<number> }
+        | ArrayBufferView;
+    }
   | ResolvedPieSeriesConfig;
 
 /**
@@ -135,6 +142,15 @@ export function createEasingWithDelay(delayMs: number, durationMs: number, easin
 }
 
 /**
+ * Series types that snap to the target config on update animation (no point lerp).
+ * Band must snap: cartesian y-lerp would drop y1 and repack NaN fill.
+ * Heatmap has no dual-Y sample interpolation in v1 either.
+ */
+export function isSnapOnlyUpdateAnimationSeries(type: string): boolean {
+  return type === 'heatmap' || type === 'band';
+}
+
+/**
  * Checks if a series configuration has drawable marks.
  *
  * Returns true if the series has data that will produce visible marks:
@@ -155,6 +171,17 @@ function hasDrawableMarks(series: AnySeriesConfig): boolean {
       const rows = Math.floor(Number(d?.rows));
       const zLen = d?.z && typeof d.z.length === 'number' ? d.z.length : 0;
       return cols >= 1 && rows >= 1 && zLen > 0;
+    }
+    case 'band': {
+      const d = series.data as { x?: { length?: number }; length?: number };
+      if (Array.isArray(series.data)) return series.data.length > 0;
+      if (d && typeof d === 'object' && 'x' in d && d.x && typeof d.x.length === 'number') {
+        return d.x.length > 0;
+      }
+      if (ArrayBuffer.isView(series.data)) {
+        return (series.data as ArrayBufferView).byteLength > 0;
+      }
+      return false;
     }
     case 'line':
     case 'area':

@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { packToFloat32ArrayAbsolute } from '../../../../data/sampleSeries';
+import { getBandLength, getBandPoint } from '../../../../data/bandData';
 import { sliceVisibleRangeByX } from '../computeVisibleSlice';
 import { buildRuntimeBaseSeries, buildSetOptionsReuseSeries, resolveZoomedSeriesEntry } from '../seriesPipeline';
 import type { ResolvedSeriesConfig } from '../../../../config/OptionResolver';
@@ -139,6 +140,74 @@ describe('resolveZoomedSeriesEntry', () => {
     });
     expect(r.series.data).toBe(slot);
     expect((r.series as { rawData?: unknown }).rawData).toBe(slot);
+  });
+
+  it('band sampling:none keeps full Xyy raw at any zoom', () => {
+    const rawBand = {
+      x: Float64Array.from([0, 1, 2, 3, 4, 5]),
+      y: Float64Array.from([0, 0, 0, 0, 0, 0]),
+      y1: Float64Array.from([1, 2, 3, 4, 5, 6]),
+    };
+    const bandNone = {
+      type: 'band',
+      sampling: 'none',
+      samplingThreshold: 10,
+      data: rawBand,
+      rawData: rawBand,
+    } as unknown as ResolvedSeriesConfig;
+    const r = resolveZoomedSeriesEntry({
+      series: bandNone,
+      rawSlot: rawBand,
+      bufferedMin: 1,
+      bufferedMax: 4,
+      visibleMin: 2,
+      visibleMax: 3,
+      spanFraction: 0.2,
+      sliceX: sliceX as any,
+      sliceOHLC: sliceOHLC as any,
+    });
+    expect(r.series.data).toBe(rawBand);
+    expect((r.series as { rawData?: unknown }).rawData).toBe(rawBand);
+    expect(r.cacheEntry).toBeNull();
+  });
+
+  it('band CPU lttb samples and returns cache with y+y1 aligned', () => {
+    const n = 80;
+    const rawBand = {
+      x: Float64Array.from(Array.from({ length: n }, (_, i) => i)),
+      y: Float64Array.from(Array.from({ length: n }, (_, i) => i)),
+      y1: Float64Array.from(Array.from({ length: n }, (_, i) => i * 1000 + 7)),
+    };
+    const bandLttb = {
+      type: 'band',
+      sampling: 'lttb',
+      samplingThreshold: 12,
+      data: rawBand,
+      rawData: rawBand,
+    } as unknown as ResolvedSeriesConfig;
+    const r = resolveZoomedSeriesEntry({
+      series: bandLttb,
+      rawSlot: rawBand,
+      bufferedMin: 0,
+      bufferedMax: n - 1,
+      visibleMin: 0,
+      visibleMax: n - 1,
+      spanFraction: 1,
+      sliceX: sliceX as any,
+      sliceOHLC: sliceOHLC as any,
+    });
+    // Zoomed band path returns sampled tuples/array with cache entry when not sampling none.
+    expect(r.cacheEntry).not.toBeNull();
+    const data = r.series.data as any;
+    // When full-span-ish, sampled length ≤ threshold*buffer factor; y1 pairing holds.
+    const sn = getBandLength(data);
+    expect(sn).toBeGreaterThan(0);
+    expect(sn).toBeLessThanOrEqual(n);
+    for (let i = 0; i < sn; i++) {
+      const p = getBandPoint(data, i);
+      if (!p || !Number.isFinite(p.y)) continue;
+      expect(p.y1).toBe(p.y * 1000 + 7);
+    }
   });
 
   it('CPU path samples and returns cache entry', () => {

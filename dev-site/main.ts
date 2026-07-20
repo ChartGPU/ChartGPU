@@ -76,6 +76,13 @@ const examples: readonly Example[] = [
     path: examplePath('heatmap-spectrogram'),
   },
   {
+    id: 'band-range',
+    title: 'Band / Range Series',
+    desc: 'Fill between y and y1 (type: band) — confidence intervals, live min–max envelopes, threshold fills',
+    category: 'series',
+    path: examplePath('band-range'),
+  },
+  {
     id: 'basic-line',
     title: 'Basic Line',
     desc: 'Sine wave line chart with grid, axes, and tooltip interaction',

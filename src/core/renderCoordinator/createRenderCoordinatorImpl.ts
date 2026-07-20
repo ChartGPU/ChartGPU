@@ -4,7 +4,19 @@ import type {
   ResolvedPieSeriesConfig,
   ResolvedSeriesConfig,
 } from '../../config/OptionResolver';
-import type { AnnotationConfig, DataPoint, OHLCDataPoint } from '../../config/types';
+import type { AnnotationConfig, BandSeriesData, DataPoint, OHLCDataPoint } from '../../config/types';
+import {
+  sliceBandByX,
+  scanBandVisibleYBounds,
+  scanBandPositiveYBounds,
+  getBandPoint,
+  getBandLength,
+  getBandX,
+  asBandXYYArrays,
+  bandBounds,
+  bandDataToMutableXYY,
+  isBandShapedPayload,
+} from '../../data/bandData';
 import { GPUContext, isHTMLCanvasElement as isHTMLCanvasElementGPU } from '../GPUContext';
 import { createDataStore } from '../../data/createDataStore';
 import { isGpuDecimationEligible } from '../../data/gpuDecimationEligibility';
@@ -137,6 +149,7 @@ import {
   resolveAnimationConfig as resolveAnimationConfigHelper,
   isDomainEqual,
   hasAnyDrawableMarks,
+  isSnapOnlyUpdateAnimationSeries,
   createEasingWithDelay,
   interpolateCartesianData,
   interpolatePieData,
@@ -431,6 +444,18 @@ const computeGlobalXBounds = (
       continue;
     }
 
+    if (seriesConfig.type === 'band') {
+      const data = (seriesConfig.rawData ?? seriesConfig.data) as BandSeriesData;
+      const n = getBandLength(data);
+      for (let i = 0; i < n; i++) {
+        const x = getBandX(data, i);
+        if (!Number.isFinite(x)) continue;
+        if (x < xMin) xMin = x;
+        if (x > xMax) xMax = x;
+      }
+      continue;
+    }
+
     const data = seriesConfig.data as CartesianSeriesData;
     const n = getPointCount(data);
     for (let i = 0; i < n; i++) {
@@ -492,6 +517,16 @@ const computeGlobalYBoundsForAxis = (
         const yHigh = Math.max(low, high);
         if (yLow < yMin) yMin = yLow;
         if (yHigh > yMax) yMax = yHigh;
+      }
+      continue;
+    }
+
+    if (seriesConfig.type === 'band') {
+      const data = (seriesConfig.rawData ?? seriesConfig.data) as BandSeriesData;
+      const b = bandBounds(data);
+      if (b) {
+        if (b.yMin < yMin) yMin = b.yMin;
+        if (b.yMax > yMax) yMax = b.yMax;
       }
       continue;
     }
@@ -581,6 +616,16 @@ const computePositiveYBoundsForAxis = (
       continue;
     }
 
+    if (seriesConfig.type === 'band') {
+      const data = (seriesConfig.rawData ?? seriesConfig.data) as BandSeriesData;
+      const scanned = scanBandPositiveYBounds(data, filterX ? xWindow : null);
+      if (scanned) {
+        if (scanned.yMin < yMin) yMin = scanned.yMin;
+        if (scanned.yMax > yMax) yMax = scanned.yMax;
+      }
+      continue;
+    }
+
     const data = (seriesConfig.rawData ?? seriesConfig.data) as CartesianSeriesData;
     const scanned = scanCartesianPositiveYBounds(data, filterX ? xWindow : null);
     if (scanned) {
@@ -626,6 +671,17 @@ const computePositiveXBounds = (series: ResolvedChartGPUOptions['series']): { xM
       if (b && b.xMin > 0 && b.xMax > 0) {
         if (b.xMin < xMin) xMin = b.xMin;
         if (b.xMax > xMax) xMax = b.xMax;
+      }
+      continue;
+    }
+    if (seriesConfig.type === 'band') {
+      const data = (seriesConfig.rawData ?? seriesConfig.data) as BandSeriesData;
+      const n = getBandLength(data);
+      for (let i = 0; i < n; i++) {
+        const x = getBandX(data, i);
+        if (!Number.isFinite(x) || !(x > 0)) continue;
+        if (x < xMin) xMin = x;
+        if (x > xMax) xMax = x;
       }
       continue;
     }
@@ -728,6 +784,15 @@ const computeVisibleYBoundsForAxis = (
           if (b.yMin < yMin) yMin = b.yMin;
           if (b.yMax > yMax) yMax = b.yMax;
         }
+      }
+      continue;
+    }
+
+    if (seriesConfig.type === 'band') {
+      const scanned = scanBandVisibleYBounds(seriesConfig.data, xWindow);
+      if (scanned) {
+        if (scanned.yMin < yMin) yMin = scanned.yMin;
+        if (scanned.yMax > yMax) yMax = scanned.yMax;
       }
       continue;
     }
@@ -1136,7 +1201,9 @@ export function createRenderCoordinator(
         continue;
       }
 
-      if (b.type === 'heatmap') {
+      // Heatmap / band: snap to target (no point lerp). Band would lose y1 under
+      // cartesian y-interpolation and repack NaN fill while animation runs.
+      if (isSnapOnlyUpdateAnimationSeries(b.type)) {
         out[i] = b;
         continue;
       }
@@ -1851,6 +1918,23 @@ export function createRenderCoordinator(
   const buildTooltipParams = (seriesIndex: number, dataIndex: number, point: DataPoint): TooltipParams => {
     const s = currentOptions.series[seriesIndex];
     const { x, y } = getPointXY(point);
+    if (s?.type === 'band') {
+      const bp = getBandPoint(s.data, dataIndex);
+      const y1 = bp && Number.isFinite(bp.y1) ? bp.y1 : undefined;
+      const y0 = bp && Number.isFinite(bp.y) ? bp.y : y;
+      const yMid = y1 !== undefined && Number.isFinite(y0) ? (y0 + y1) / 2 : undefined;
+      const yRange = y1 !== undefined && Number.isFinite(y0) ? Math.abs(y1 - y0) : undefined;
+      return {
+        seriesName: s?.name ?? '',
+        seriesIndex,
+        dataIndex,
+        value: [x, y0],
+        color: s?.color ?? '#888',
+        ...(y1 !== undefined ? { y1 } : {}),
+        ...(yMid !== undefined ? { yMid } : {}),
+        ...(yRange !== undefined ? { yRange } : {}),
+      };
+    }
     return {
       seriesName: s?.name ?? '',
       seriesIndex,
@@ -2095,6 +2179,12 @@ export function createRenderCoordinator(
         maxPoints = Math.max(maxPoints, s.data.columns * s.data.rows);
         continue;
       }
+      if (s.type === 'band') {
+        const rawBand =
+          (runtimeRawDataByIndex[i] as BandSeriesData | null) ?? ((s.rawData ?? s.data) as BandSeriesData);
+        maxPoints = Math.max(maxPoints, getBandLength(rawBand));
+        continue;
+      }
       if (s.type === 'candlestick') {
         const raw =
           (runtimeRawDataByIndex[i] as ReadonlyArray<OHLCDataPoint> | null) ??
@@ -2218,6 +2308,14 @@ export function createRenderCoordinator(
         continue;
       }
 
+      if (s.type === 'band') {
+        // Own mutable XYY columns for appendData / re-sample.
+        const seed = (s.rawData ?? s.data) as BandSeriesData;
+        runtimeRawDataByIndex[i] = asBandXYYArrays(bandDataToMutableXYY(seed));
+        runtimeRawBoundsByIndex[i] = s.rawBounds ?? bandBounds(seed) ?? null;
+        continue;
+      }
+
       if (s.type === 'candlestick') {
         // Store candlestick raw OHLC data (not for streaming append, but for zoom-aware resampling).
         const rawOHLC = (s.rawData ?? s.data) as ReadonlyArray<OHLCDataPoint>;
@@ -2313,6 +2411,7 @@ export function createRenderCoordinator(
       const baseline = runtimeBaseSeries[i]!;
 
       // Pie / heatmap don't need x-window slicing (heatmap is a full grid texture).
+      // Band: slice via Xyy helper (not cartesian sliceX).
       if (baseline.type === 'pie' || baseline.type === 'heatmap') {
         next[i] = baseline;
         continue;
@@ -2326,6 +2425,11 @@ export function createRenderCoordinator(
           next[i] = {
             ...baseline,
             data: sliceVisibleRangeByOHLC(cache.data as ReadonlyArray<OHLCDataPoint>, visibleX.min, visibleX.max),
+          };
+        } else if (baseline.type === 'band') {
+          next[i] = {
+            ...baseline,
+            data: sliceBandByX(cache.data as BandSeriesData, visibleX.min, visibleX.max),
           };
         } else {
           next[i] = {
@@ -2341,6 +2445,11 @@ export function createRenderCoordinator(
         next[i] = {
           ...baseline,
           data: sliceVisibleRangeByOHLC(baseline.data as ReadonlyArray<OHLCDataPoint>, visibleX.min, visibleX.max),
+        };
+      } else if (baseline.type === 'band') {
+        next[i] = {
+          ...baseline,
+          data: sliceBandByX(baseline.data, visibleX.min, visibleX.max),
         };
       } else {
         next[i] = {
@@ -2395,7 +2504,8 @@ export function createRenderCoordinator(
         s.type === 'line' ||
         s.type === 'area' ||
         s.type === 'bar' ||
-        s.type === 'scatter'
+        s.type === 'scatter' ||
+        s.type === 'band'
       ) {
         const result = resolveZoomedSeriesEntry({
           series: s,
@@ -2845,10 +2955,19 @@ export function createRenderCoordinator(
     }
 
     // Check point count based on format (avoid assuming .length exists for all types)
+    if (s.type === 'band' && !isBandShapedPayload(newPoints)) {
+      console.warn(
+        `RenderCoordinator.appendData(${seriesIndex}, ...): band series requires Xyy payloads ` +
+          `({x,y,y1}, [x,y,y1] tuples/objects, or interleaved stride-3). Skipping batch.`
+      );
+      return;
+    }
     const pointCount =
       s.type === 'candlestick'
         ? (newPoints as ReadonlyArray<OHLCDataPoint>).length
-        : getPointCount(newPoints as CartesianSeriesData);
+        : s.type === 'band'
+          ? getBandLength(newPoints as BandSeriesData)
+          : getPointCount(newPoints as CartesianSeriesData);
     if (pointCount === 0) return;
 
     // Store batches with per-call maxPoints so coalesced flushes match ChartGPU hit-test.
@@ -3202,6 +3321,10 @@ export function createRenderCoordinator(
       const candles = pool.candlestickRenderers;
       for (let ci = 0; ci < candles.length; ci++) {
         candles[ci]!.invalidateGeometry();
+      }
+      const bands = pool.bandRenderers;
+      for (let bi = 0; bi < bands.length; bi++) {
+        bands[bi]!.invalidateGeometry();
       }
     }
 

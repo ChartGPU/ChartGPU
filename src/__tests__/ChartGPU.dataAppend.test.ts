@@ -2212,3 +2212,203 @@ describe('ChartGPU - dual-store correctness (PR167 review)', () => {
     await chart.dispose();
   });
 });
+
+describe('ChartGPU - band hit-test store + append', () => {
+  let mockContainer: HTMLElement;
+  let warnSpy: ReturnType<typeof vi.spyOn> | null = null;
+
+  beforeEach(() => {
+    mockContainer = createMockContainer();
+    setupMockNavigatorGPU();
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      setTimeout(() => cb(performance.now()), 0);
+      return 1;
+    });
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    vi.stubGlobal('devicePixelRatio', 2);
+  });
+
+  afterEach(() => {
+    warnSpy?.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  const makePointer = (clientX: number, clientY: number): PointerEvent =>
+    ({
+      clientX,
+      clientY,
+    }) as PointerEvent;
+
+  it('setOption-only band seed keeps y1 in hit-test path', async () => {
+    // Dual-store regression: cartesian mutable columns dropped y1 after setOption-only seed.
+    // Use y≈y1 near y=50 so midline hit matches the same screen Y as line FIFO tests.
+    const bandData = {
+      x: [0, 1, 2, 3, 4],
+      y: [48, 49, 50, 49, 48],
+      y1: [52, 51, 50, 51, 52],
+    };
+    const chart = await ChartGPU.create(mockContainer, {
+      animation: false,
+      tooltip: { show: true },
+      grid: { left: 0, right: 0, top: 0, bottom: 0 },
+      xAxis: { min: 0, max: 4 },
+      yAxis: { min: -10, max: 60 },
+      series: [
+        {
+          type: 'band',
+          data: bandData,
+          sampling: 'none',
+          areaStyle: { color: '#38bdf8', opacity: 0.25 },
+        },
+      ],
+    });
+
+    // Same screen Y as line FIFO tests (near domain y=50).
+    // No appendData — pure setOption-only seed must still hit (dual-store y1 regression).
+    const hit = chart.hitTest(makePointer(400, 86));
+    expect(hit.isInGrid).toBe(true);
+    expect(hit.match).not.toBeNull();
+    // Soft-if avoided: always assert series + finite y (lower curve).
+    expect(hit.match!.seriesIndex).toBe(0);
+    expect(Number.isFinite(hit.match!.value[0])).toBe(true);
+    expect(Number.isFinite(hit.match!.value[1])).toBe(true);
+    // Midline uses y1; if store dropped y1, band hit path would skip non-finite
+    // pairs or use wrong distance. Re-hit at same coords stays stable.
+    const hit2 = chart.hitTest(makePointer(400, 86));
+    expect(hit2.match).not.toBeNull();
+    expect(hit2.match!.seriesIndex).toBe(0);
+    expect(hit2.match!.dataIndex).toBe(hit.match!.dataIndex);
+
+    await chart.dispose();
+  });
+
+  it('band maxPoints append keeps aligned triples in hit-test domain', async () => {
+    const bandData = {
+      x: [0, 1],
+      y: [48, 49],
+      y1: [52, 51],
+    };
+    const chart = await ChartGPU.create(mockContainer, {
+      animation: false,
+      tooltip: { show: true },
+      grid: { left: 0, right: 0, top: 0, bottom: 0 },
+      yAxis: { min: -10, max: 60 },
+      series: [
+        {
+          type: 'band',
+          data: bandData,
+          sampling: 'none',
+          areaStyle: { color: '#a78bfa', opacity: 0.3 },
+        },
+      ],
+    });
+
+    chart.appendData(
+      0,
+      {
+        x: [2, 3, 100],
+        y: [48, 49, 50],
+        y1: [52, 51, 50],
+      },
+      { maxPoints: 3 }
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const hitRight = chart.hitTest(makePointer(799, 86));
+    expect(hitRight.isInGrid).toBe(true);
+    expect(hitRight.match).not.toBeNull();
+    expect(hitRight.match?.value[0]).toBeCloseTo(100, 0);
+
+    await chart.dispose();
+  });
+
+  it('band XY-only append warns and does not grow store', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Midline near y=50 so hitTest at screen Y used by FIFO tests is reliable.
+    const bandData = {
+      x: [0, 1],
+      y: [48, 49],
+      y1: [52, 51],
+    };
+    const chart = await ChartGPU.create(mockContainer, {
+      animation: false,
+      tooltip: { show: true },
+      grid: { left: 0, right: 0, top: 0, bottom: 0 },
+      yAxis: { min: -10, max: 60 },
+      series: [
+        {
+          type: 'band',
+          data: bandData,
+          sampling: 'none',
+          areaStyle: { color: '#0af', opacity: 0.2 },
+        },
+      ],
+    });
+
+    // Cartesian XY without y1 — must warn and skip.
+    chart.appendData(0, { x: [2], y: [50] } as any);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('band series requires Xyy'))).toBe(true);
+
+    // Domain should not include x=2 if append was skipped — always require a hit.
+    const hitRight = chart.hitTest(makePointer(799, 86));
+    expect(hitRight.match).not.toBeNull();
+    expect(hitRight.match!.value[0]).toBeLessThanOrEqual(1);
+
+    warn.mockRestore();
+    await chart.dispose();
+  });
+
+  it('setOption replace: autoScroll-only wipe vs spread-preserving series (band live zoom UX)', async () => {
+    // setOption replaces the full options object (not deep-merge). Live demos that
+    // pause autoScroll on user zoom must re-pass series (or spread chart.options);
+    // `{ autoScroll: false }` alone empties series and the band disappears.
+    const bandData = {
+      x: [0, 1, 2, 3, 4],
+      y: [48, 49, 50, 49, 48],
+      y1: [52, 51, 50, 51, 52],
+    };
+    const base = {
+      animation: false as const,
+      autoScroll: true,
+      tooltip: { show: true },
+      grid: { left: 0, right: 0, top: 0, bottom: 0 },
+      xAxis: { min: 0, max: 4 },
+      yAxis: { min: -10, max: 60 },
+      series: [
+        {
+          type: 'band' as const,
+          data: bandData,
+          sampling: 'none' as const,
+          areaStyle: { color: '#a78bfa', opacity: 0.3 },
+        },
+      ],
+    };
+
+    const wiped = await ChartGPU.create(mockContainer, base);
+    expect(wiped.options.series?.length).toBe(1);
+    wiped.setOption({ autoScroll: false });
+    expect(wiped.options.series?.length ?? 0).toBe(0);
+    expect(wiped.getHitTestSeriesPointCount(0)).toBe(0);
+    await wiped.dispose();
+
+    const kept = await ChartGPU.create(mockContainer, base);
+    kept.appendData(0, { x: [5], y: [49], y1: [51] }, { maxPoints: 100 });
+    await new Promise((r) => setTimeout(r, 20));
+    // Correct live-zoom pattern: spread current user options, only flip the flag.
+    kept.setOption({
+      ...kept.options,
+      autoScroll: false,
+    });
+    expect(kept.options.autoScroll).toBe(false);
+    expect(kept.options.series?.length).toBe(1);
+    // Runtime store still has seed + append (not wiped by autoScroll toggle).
+    expect(kept.getHitTestSeriesPointCount(0)).toBe(6);
+    const hit = kept.hitTest(makePointer(400, 86));
+    expect(hit.match).not.toBeNull();
+    expect(hit.match!.seriesIndex).toBe(0);
+    await kept.dispose();
+  });
+});

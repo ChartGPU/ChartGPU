@@ -16,6 +16,7 @@ import type {
   ResolvedAreaSeriesConfig,
   ResolvedPieSeriesConfig,
   ResolvedHeatmapSeriesConfig,
+  ResolvedBandSeriesConfig,
 } from '../../../config/OptionResolver';
 import type { DataPoint } from '../../../config/types';
 import type { LinearScale } from '../../../utils/scales';
@@ -28,6 +29,7 @@ import type { ScatterDensityRenderer } from '../../../renderers/createScatterDen
 import type { PieRenderer } from '../../../renderers/createPieRenderer';
 import type { HeatmapRenderer } from '../../../renderers/createHeatmapRenderer';
 import type { CandlestickRenderer } from '../../../renderers/createCandlestickRenderer';
+import type { BandRenderer } from '../../../renderers/createBandRenderer';
 import type { ReferenceLineRenderer } from '../../../renderers/createReferenceLineRenderer';
 import type { AnnotationMarkerRenderer } from '../../../renderers/createAnnotationMarkerRenderer';
 import type { DecimationCompute } from '../../../renderers/createDecimationCompute';
@@ -58,6 +60,7 @@ export interface SeriesRenderers {
   readonly scatterDensityRenderers: ReadonlyArray<ScatterDensityRenderer>;
   readonly pieRenderers: ReadonlyArray<PieRenderer>;
   readonly heatmapRenderers: ReadonlyArray<HeatmapRenderer>;
+  readonly bandRenderers: ReadonlyArray<BandRenderer>;
   readonly candlestickRenderers: ReadonlyArray<CandlestickRenderer>;
   /** 1:1 with lineRenderers; unused slots are no-ops until prepared. */
   readonly decimationComputes: ReadonlyArray<DecimationCompute>;
@@ -688,6 +691,23 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
         gpuSeriesKindByIndex[i] = 'other';
         break;
       }
+      case 'band': {
+        // Private-buffer Xyy fill + optional dual strokes. Not GPU-decimation eligible.
+        const band = s as ResolvedBandSeriesConfig;
+        const bandData = band.data;
+        const dpr = Math.max(1e-6, gridArea.devicePixelRatio || 1);
+        renderers.bandRenderers[i]?.prepare(
+          band,
+          bandData,
+          xScale,
+          getYScale(s),
+          dpr,
+          gridArea.canvasWidth,
+          gridArea.canvasHeight
+        );
+        gpuSeriesKindByIndex[i] = 'other';
+        break;
+      }
       case 'candlestick': {
         // Candlestick renderer handles clipping internally, no intro animation for now.
         renderers.candlestickRenderers[i].prepare(
@@ -854,6 +874,36 @@ export function renderSeries(
         const { series, originalIndex } = visibleSeriesForRender[idx]!;
         if (series.type === 'heatmap') {
           renderers.heatmapRenderers[originalIndex]?.render(mainPass);
+        }
+      }
+      mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+    }
+  }
+
+  // Band fills (+ dual strokes inside band renderer) — before area/line for typical CI under mean.
+  if (plotScissor.w > 0 && plotScissor.h > 0) {
+    let anyBand = false;
+    for (let idx = 0; idx < visibleSeriesForRender.length; idx++) {
+      if (visibleSeriesForRender[idx]!.series.type === 'band') {
+        anyBand = true;
+        break;
+      }
+    }
+    if (anyBand) {
+      mainPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+      for (let idx = 0; idx < visibleSeriesForRender.length; idx++) {
+        const { series, originalIndex } = visibleSeriesForRender[idx]!;
+        if (series.type === 'band') {
+          if (introP < 1) {
+            const w = clampInt(Math.floor(plotScissor.w * introP), 0, plotScissor.w);
+            if (w > 0 && plotScissor.h > 0) {
+              mainPass.setScissorRect(plotScissor.x, plotScissor.y, w, plotScissor.h);
+              renderers.bandRenderers[originalIndex]?.render(mainPass);
+              mainPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+            }
+          } else {
+            renderers.bandRenderers[originalIndex]?.render(mainPass);
+          }
         }
       }
       mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);

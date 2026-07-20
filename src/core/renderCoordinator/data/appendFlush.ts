@@ -6,14 +6,23 @@
  */
 
 import type { ResolvedChartGPUOptions } from '../../../config/OptionResolver';
-import type { CartesianSeriesData, OHLCDataPoint } from '../../../config/types';
+import type { BandSeriesData, CartesianSeriesData, OHLCDataPoint } from '../../../config/types';
 import type { ZoomRange } from '../../../interaction/createZoomState';
 import type { DataStore } from '../../../data/createDataStore';
 import type { DataStoreBufferKind, CanRangedAppendLineInput } from './canRangedAppendLine';
+import {
+  appendBandIntoXYYColumns,
+  asBandXYYArrays,
+  bandBounds,
+  bandDataToMutableXYY,
+  extendBoundsWithBandData,
+  getBandLength,
+  isBandShapedPayload,
+} from '../../../data/bandData';
 
 /** Pending append batch stored per series index. */
 type PendingAppendBatch = {
-  readonly points: CartesianSeriesData | ReadonlyArray<OHLCDataPoint>;
+  readonly points: CartesianSeriesData | ReadonlyArray<OHLCDataPoint> | BandSeriesData;
   readonly maxPoints?: number;
 };
 
@@ -177,6 +186,62 @@ function flushPendingAppendsImplInner(d: any): boolean {
       if (didWindow) {
         // Windowing can invalidate prior y/x extrema — full rescan.
         d.runtimeRawBoundsByIndex[seriesIndex] = d.extendBoundsWithOHLCDataPoints(null, raw);
+      }
+    } else if (s.type === 'band') {
+      // Band Xyy columns (private GPU buffer re-packs on prepare).
+      type BandCols = { x: number[]; y: number[]; y1: number[] };
+      let cols = d.runtimeRawDataByIndex[seriesIndex] as BandCols | null;
+      if (!cols || !('y1' in cols)) {
+        const seed = (s.rawData ?? s.data) as BandSeriesData;
+        cols = bandDataToMutableXYY(seed);
+        d.runtimeRawDataByIndex[seriesIndex] = asBandXYYArrays(cols);
+        d.runtimeRawBoundsByIndex[seriesIndex] = s.rawBounds ?? bandBounds(seed) ?? null;
+      } else {
+        // Ensure mutable arrays (runtime may hold readonly views)
+        cols = {
+          x: Array.isArray(cols.x) ? cols.x : Array.from(cols.x as ArrayLike<number>),
+          y: Array.isArray(cols.y) ? cols.y : Array.from(cols.y as ArrayLike<number>),
+          y1: Array.isArray(cols.y1) ? cols.y1 : Array.from(cols.y1 as ArrayLike<number>),
+        };
+        d.runtimeRawDataByIndex[seriesIndex] = asBandXYYArrays(cols);
+      }
+
+      let didWindow = false;
+      for (const batch of batches) {
+        const bandPoints = batch.points as BandSeriesData;
+        if (!isBandShapedPayload(bandPoints)) {
+          console.warn(
+            `RenderCoordinator.appendData(${seriesIndex}, ...): band series requires Xyy payloads. Skipping batch.`
+          );
+          continue;
+        }
+        const maxPoints = d.normalizeMaxPoints(batch.maxPoints);
+        const appendN = getBandLength(bandPoints);
+        if (appendN === 0) continue;
+        const prevLen = cols.x.length;
+        const plan = d.planMaxPointsWindow(prevLen, appendN, maxPoints);
+        if (plan.dropPrevCount > 0) {
+          cols.x.splice(0, plan.dropPrevCount);
+          cols.y.splice(0, plan.dropPrevCount);
+          cols.y1.splice(0, plan.dropPrevCount);
+          didWindow = true;
+        }
+        appendBandIntoXYYColumns(cols, bandPoints, {
+          newSrcOffset: plan.newSrcOffset,
+          keepNewCount: plan.keepNewCount,
+        });
+        if (!plan.didWindow) {
+          d.runtimeRawBoundsByIndex[seriesIndex] = extendBoundsWithBandData(
+            d.runtimeRawBoundsByIndex[seriesIndex],
+            bandPoints
+          );
+        } else {
+          didWindow = true;
+        }
+      }
+      d.runtimeRawDataByIndex[seriesIndex] = asBandXYYArrays(cols);
+      if (didWindow) {
+        d.runtimeRawBoundsByIndex[seriesIndex] = bandBounds(asBandXYYArrays(cols));
       }
     } else {
       // Handle other cartesian series (line, area, bar, scatter).

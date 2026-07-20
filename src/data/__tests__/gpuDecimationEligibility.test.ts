@@ -62,7 +62,7 @@ describe('isGpuDecimationEligible', () => {
       [0, 1],
       [1, 2],
     ];
-    const typesToReject = ['area', 'bar', 'scatter', 'pie', 'candlestick'];
+    const typesToReject = ['area', 'bar', 'scatter', 'pie', 'candlestick', 'heatmap', 'band'];
     for (const type of typesToReject) {
       const s = makeLineSeries({
         sampling: 'lttb',

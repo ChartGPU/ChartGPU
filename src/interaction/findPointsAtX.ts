@@ -1,8 +1,9 @@
-import type { DataPoint, CartesianSeriesData } from '../config/types';
+import type { BandSeriesData, DataPoint, CartesianSeriesData } from '../config/types';
 import type { ResolvedBarSeriesConfig, ResolvedSeriesConfig } from '../config/OptionResolver';
 import type { LinearScale } from '../utils/scales';
 import { computeBarLayoutPx } from './findNearestPoint';
 import { getPointCount, getX, getY, getSize } from '../data/cartesianData';
+import { getBandLength, getBandPoint } from '../data/bandData';
 
 export type PointsAtXMatch = Readonly<{
   seriesIndex: number;
@@ -145,11 +146,43 @@ export function findPointsAtX(
 
   for (let s = 0; s < series.length; s++) {
     const seriesConfig = series[s];
-    // Pie and candlestick are non-cartesian (or not yet implemented); they can't match an x position.
-    if (seriesConfig.type === 'pie' || seriesConfig.type === 'candlestick' || seriesConfig.type === 'heatmap') continue;
+    // Pie / candlestick / heatmap are non-cartesian for x-rollover.
+    if (seriesConfig.type === 'pie' || seriesConfig.type === 'candlestick' || seriesConfig.type === 'heatmap') {
+      continue;
+    }
 
     // Skip invisible series.
     if (seriesConfig.visible === false) continue;
+
+    // Band: nearest sample by domain x (axis rollover).
+    if (seriesConfig.type === 'band') {
+      const bandData = seriesConfig.data as BandSeriesData;
+      const bn = getBandLength(bandData);
+      if (bn === 0) continue;
+      let bestI = -1;
+      let bestDx = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < bn; i++) {
+        const p = getBandPoint(bandData, i);
+        if (!p || !Number.isFinite(p.x)) continue;
+        const sx = xScale.scale(p.x);
+        if (!Number.isFinite(sx)) continue;
+        const dx = Math.abs(sx - xValue);
+        if (dx < bestDx || (dx === bestDx && (bestI < 0 || i < bestI))) {
+          if (dx > maxDx) continue;
+          bestDx = dx;
+          bestI = i;
+        }
+      }
+      if (bestI >= 0) {
+        const p = getBandPoint(bandData, bestI)!;
+        matches.push({
+          seriesIndex: s,
+          dataIndex: bestI,
+          point: [p.x, p.y],
+        });
+      }
+      continue;
+    }
 
     const data = seriesConfig.data as CartesianSeriesData;
     const n = getPointCount(data);

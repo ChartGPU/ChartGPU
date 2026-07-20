@@ -68,6 +68,10 @@ vi.mock('../../../renderers/createHeatmapRenderer', () => ({
   createHeatmapRenderer: vi.fn(() => createMockRenderer('Heatmap')),
 }));
 
+vi.mock('../../../renderers/createBandRenderer', () => ({
+  createBandRenderer: vi.fn(() => createMockRenderer('Band')),
+}));
+
 vi.mock('../../../renderers/createCandlestickRenderer', () => ({
   createCandlestickRenderer: vi.fn(() => createMockRenderer('Candlestick')),
 }));
@@ -136,6 +140,7 @@ describe('RendererPool', () => {
     expect(state.scatterDensityRenderers).toHaveLength(0);
     expect(state.pieRenderers).toHaveLength(0);
     expect(state.heatmapRenderers).toHaveLength(0);
+    expect(state.bandRenderers).toHaveLength(0);
     expect(state.candlestickRenderers).toHaveLength(0);
   });
 
@@ -302,6 +307,35 @@ describe('RendererPool', () => {
     });
   });
 
+  describe('Band Renderers', () => {
+    it('grows band renderer pool', () => {
+      const pool = createRendererPool(config);
+      pool.ensureBandRendererCount(3);
+      expect(pool.getState().bandRenderers).toHaveLength(3);
+    });
+
+    it('shrinks band renderer pool and disposes excess', () => {
+      const pool = createRendererPool(config);
+      pool.ensureBandRendererCount(4);
+      expect(pool.getState().bandRenderers).toHaveLength(4);
+      pool.ensureBandRendererCount(1);
+      expect(pool.getState().bandRenderers).toHaveLength(1);
+    });
+
+    it('ensureRendererPoolsForSeries sizes band pool for mixed series', () => {
+      const pool = createRendererPool(config);
+      const series = [
+        { type: 'band' },
+        { type: 'line', sampling: 'none' },
+        { type: 'band' },
+      ] as unknown as ResolvedSeriesConfig[];
+      ensureRendererPoolsForSeries(pool, series);
+      const state = pool.getState();
+      expect(state.bandRenderers).toHaveLength(3);
+      expect(state.lineRenderers).toHaveLength(3);
+    });
+  });
+
   describe('Candlestick Renderers', () => {
     it('grows candlestick renderer pool', () => {
       const pool = createRendererPool(config);
@@ -334,6 +368,7 @@ describe('RendererPool', () => {
       pool.ensureScatterDensityRendererCount(2);
       pool.ensurePieRendererCount(1);
       pool.ensureHeatmapRendererCount(2);
+      pool.ensureBandRendererCount(2);
       pool.ensureCandlestickRendererCount(2);
 
       // Dispose pool
@@ -347,6 +382,7 @@ describe('RendererPool', () => {
       expect(stateAfter.scatterDensityRenderers).toHaveLength(0);
       expect(stateAfter.pieRenderers).toHaveLength(0);
       expect(stateAfter.heatmapRenderers).toHaveLength(0);
+      expect(stateAfter.bandRenderers).toHaveLength(0);
       expect(stateAfter.candlestickRenderers).toHaveLength(0);
     });
 
