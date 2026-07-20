@@ -83,6 +83,13 @@ const examples: readonly Example[] = [
     path: examplePath('band-range'),
   },
   {
+    id: '3d-showcase',
+    title: '3D Showcase',
+    desc: 'Labeled axes, contours, cloud FIFO + surface strip streaming, pick tooltips — cartesian3d product demo',
+    category: 'series',
+    path: examplePath('3d-showcase'),
+  },
+  {
     id: 'point-cloud-3d',
     title: '3D Point Cloud',
     desc: 'cartesian3d + pointCloud3d — world XYZ billboards with depth and orbit camera (not scatter density)',

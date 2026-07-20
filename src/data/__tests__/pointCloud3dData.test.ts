@@ -209,6 +209,69 @@ describe('appendPackedPointCloud3D', () => {
 
   // Durable seed / value-channel policy is unit-tested in cloudPackPolicy.test.ts
   // (production shouldInvalidateCloudPack used by createRenderCoordinator3D).
+
+  it('maxPoints FIFO drops oldest on overflow', () => {
+    let p = packPointCloud3D({ x: [0, 1, 2], y: [0, 0, 0], z: [0, 0, 0] });
+    p = appendPackedPointCloud3D(p.packed, p.count, { x: [3, 4], y: [0, 0], z: [0, 0] }, { maxPoints: 4 });
+    expect(p.count).toBe(4);
+    // dropped 0; kept 1,2,3,4
+    expect(p.packed[0]).toBe(1);
+    expect(p.packed[4]).toBe(2);
+    expect(p.packed[8]).toBe(3);
+    expect(p.packed[12]).toBe(4);
+  });
+
+  it('maxPoints strict replace keeps batch tail', () => {
+    const a = packPointCloud3D({ x: [0, 1], y: [0, 0], z: [0, 0] });
+    const b = appendPackedPointCloud3D(
+      a.packed,
+      a.count,
+      { x: [10, 11, 12, 13, 14], y: [0, 0, 0, 0, 0], z: [0, 0, 0, 0, 0] },
+      { maxPoints: 3 }
+    );
+    expect(b.count).toBe(3);
+    expect(b.packed[0]).toBe(12);
+    expect(b.packed[4]).toBe(13);
+    expect(b.packed[8]).toBe(14);
+  });
+
+  it('maxPoints empty append leaves count when under cap', () => {
+    const a = packPointCloud3D({ x: [1, 2], y: [0, 0], z: [0, 0] });
+    const b = appendPackedPointCloud3D(a.packed, a.count, { x: [], y: [], z: [] }, { maxPoints: 10 });
+    expect(b.count).toBe(2);
+  });
+
+  it('maxPoints pure fill does not drop', () => {
+    const a = packPointCloud3D({ x: [0], y: [0], z: [0] });
+    const b = appendPackedPointCloud3D(a.packed, a.count, { x: [1], y: [0], z: [0] }, { maxPoints: 5 });
+    expect(b.count).toBe(2);
+    expect(b.packed[0]).toBe(0);
+    expect(b.packed[4]).toBe(1);
+  });
+
+  it('equal-N strict-replace returns new buffer identity (forces GPU re-upload)', () => {
+    const a = packPointCloud3D({ x: [0, 1, 2], y: [0, 0, 0], z: [0, 0, 0] });
+    const b = appendPackedPointCloud3D(
+      a.packed,
+      a.count,
+      { x: [10, 11, 12], y: [1, 1, 1], z: [2, 2, 2] },
+      { maxPoints: 3 }
+    );
+    expect(b.count).toBe(3);
+    expect(b.packed).not.toBe(a.packed);
+    expect(b.packed[0]).toBe(10);
+    expect(b.packed[4]).toBe(11);
+    expect(b.packed[8]).toBe(12);
+  });
+
+  it('equal-N ring wrap returns new buffer identity', () => {
+    const a = packPointCloud3D({ x: [0, 1, 2, 3], y: [0, 0, 0, 0], z: [0, 0, 0, 0] });
+    const b = appendPackedPointCloud3D(a.packed, a.count, { x: [4, 5], y: [0, 0], z: [0, 0] }, { maxPoints: 4 });
+    expect(b.count).toBe(4);
+    expect(b.packed).not.toBe(a.packed);
+    expect(b.packed[0]).toBe(2);
+    expect(b.packed[12]).toBe(5);
+  });
 });
 
 describe('packSurface3D', () => {

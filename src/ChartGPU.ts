@@ -140,7 +140,7 @@ export type ZoomChangeSourceKind = 'user' | 'auto-scroll' | 'api';
  * Hit-test match for a chart element.
  */
 export type ChartGPUHitTestMatch = Readonly<{
-  readonly kind: 'cartesian' | 'candlestick' | 'pie' | 'pointCloud3d';
+  readonly kind: 'cartesian' | 'candlestick' | 'pie' | 'pointCloud3d' | 'surface3d';
   readonly seriesIndex: number;
   readonly dataIndex: number;
   /**
@@ -148,10 +148,17 @@ export type ChartGPUHitTestMatch = Readonly<{
    * - candlestick: still reported as [timestamp, open] at the ChartGPU wrapper (see hitTest)
    * - pie: [slice index proxy via value] (see pie hit path)
    * - pointCloud3d: [x, y, z]
+   * - surface3d: [x, y, z] world hit (height along Y)
    */
   readonly value: readonly [number, number] | readonly [number, number, number];
   /** Point-cloud colormap/scalar channel when present (3D only). */
   readonly valueChannel?: number;
+  /** surface3d cell column index. */
+  readonly i?: number;
+  /** surface3d cell row index. */
+  readonly j?: number;
+  /** surface3d height (same as value[1] under Y-up). */
+  readonly height?: number;
 }>;
 
 /**
@@ -184,6 +191,12 @@ export interface ChartGPUInstance {
    * 3D only: current resolved camera pose. Returns `null` on 2D charts.
    */
   getCamera?(): import('./core/3d/camera').ResolvedCamera | null;
+  /**
+   * 3D only: streaming / partial update for a `surface3d` series (resolved index).
+   * Modes: `replaceY`, `appendColumns` (+scrollX), `appendRows` (+scrollZ).
+   * No-op on 2D charts.
+   */
+  updateSurface3D?(seriesIndex: number, update: import('./config/types').Surface3DUpdate): void;
   /**
    * @internal Test/debug: how many times the hit-test columnar store was fully rebuilt.
    */

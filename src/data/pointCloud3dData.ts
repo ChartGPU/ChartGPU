@@ -11,6 +11,7 @@
 
 import type { PointCloud3DArraysData, PointCloud3DData } from '../config/types';
 import { emptyAABB, expandAABBPoint, type AABB } from '../core/3d/aabb';
+import { normalizeMaxPoints, planMaxPointsWindow } from './maxPointsWindow';
 
 export type PackedPointCloud3D = Readonly<{
   /** Interleaved xyzv Float32Array; capacity may exceed count * 4 (append growth). */
@@ -283,89 +284,129 @@ export function packPointCloud3D(
   return emptyPacked();
 }
 
-/**
- * Append XYZ points into a growable packed buffer (geometric capacity).
- * Growth: min capacity {@link POINT_CLOUD_GROW_MIN_CAPACITY}, factor {@link POINT_CLOUD_GROW_FACTOR}.
- * Returns new packed buffer + count (may reallocate).
- */
-export function appendPackedPointCloud3D(
-  existing: Float32Array,
-  existingCount: number,
-  newData: PointCloud3DData,
-  options?: Readonly<{ readonly valueOverride?: ArrayLike<number>; readonly warn?: (msg: string) => void }>
-): PackedPointCloud3D {
-  const packedNew = packPointCloud3D(newData, options);
-  if (packedNew.count === 0) {
-    const bounds = emptyAABB();
-    for (let i = 0; i < existingCount; i++) {
-      expandAABBPoint(bounds, existing[i * 4]!, existing[i * 4 + 1]!, existing[i * 4 + 2]!);
-    }
-    let vMin = Infinity;
-    let vMax = -Infinity;
-    let hasValue = false;
-    for (let i = 0; i < existingCount; i++) {
-      const v = existing[i * 4 + 3]!;
-      if (Number.isFinite(v) && v !== 0) {
-        hasValue = true;
-        if (v < vMin) vMin = v;
-        if (v > vMax) vMax = v;
-      }
-    }
-    const aabb: AABB | null =
-      existingCount > 0 && Number.isFinite(bounds.min[0])
-        ? { min: [bounds.min[0], bounds.min[1], bounds.min[2]], max: [bounds.max[0], bounds.max[1], bounds.max[2]] }
-        : null;
-    return {
-      packed: existing,
-      count: existingCount,
-      aabb,
-      valueMin: hasValue ? vMin : 0,
-      valueMax: hasValue ? vMax : 1,
-      hasValue,
-    };
-  }
-
-  const total = existingCount + packedNew.count;
-  let dest: Float32Array;
-  if (existing.length >= total * 4) {
-    dest = existing;
-  } else {
-    let cap = Math.max(POINT_CLOUD_GROW_MIN_CAPACITY, existing.length / 4);
-    while (cap < total) cap = Math.ceil(cap * POINT_CLOUD_GROW_FACTOR);
-    dest = new Float32Array(cap * 4);
-    if (existingCount > 0) dest.set(existing.subarray(0, existingCount * 4));
-  }
-  dest.set(packedNew.packed.subarray(0, packedNew.count * 4), existingCount * 4);
-
+const recomputeExtents = (
+  dest: Float32Array,
+  count: number,
+  fallbackValueMin: number,
+  fallbackValueMax: number,
+  preferHasValue: boolean
+): Pick<PackedPointCloud3D, 'aabb' | 'valueMin' | 'valueMax' | 'hasValue'> => {
   const bounds = emptyAABB();
   let vMin = Infinity;
   let vMax = -Infinity;
   let hasValue = false;
-  for (let i = 0; i < total; i++) {
+  for (let i = 0; i < count; i++) {
     const x = dest[i * 4]!;
     const y = dest[i * 4 + 1]!;
     const z = dest[i * 4 + 2]!;
     const v = dest[i * 4 + 3]!;
     expandAABBPoint(bounds, x, y, z);
     if (Number.isFinite(v)) {
-      if (v !== 0 || packedNew.hasValue) {
-        hasValue = hasValue || packedNew.hasValue || v !== 0;
+      if (v !== 0 || preferHasValue) {
+        hasValue = hasValue || preferHasValue || v !== 0;
         if (v < vMin) vMin = v;
         if (v > vMax) vMax = v;
       }
     }
   }
   const aabb: AABB | null =
-    total > 0 && Number.isFinite(bounds.min[0])
+    count > 0 && Number.isFinite(bounds.min[0])
       ? { min: [bounds.min[0], bounds.min[1], bounds.min[2]], max: [bounds.max[0], bounds.max[1], bounds.max[2]] }
       : null;
   return {
+    aabb,
+    valueMin: hasValue && Number.isFinite(vMin) ? vMin : fallbackValueMin,
+    valueMax: hasValue && Number.isFinite(vMax) ? vMax : fallbackValueMax,
+    hasValue: hasValue || preferHasValue,
+  };
+};
+
+/**
+ * Append XYZ points into a growable packed buffer (geometric capacity).
+ * Growth: min capacity {@link POINT_CLOUD_GROW_MIN_CAPACITY}, factor {@link POINT_CLOUD_GROW_FACTOR}.
+ * When `maxPoints` is set, applies {@link planMaxPointsWindow} (FIFO / strict tail) via pack rewrite.
+ * Returns new packed buffer + count (may reallocate).
+ */
+export function appendPackedPointCloud3D(
+  existing: Float32Array,
+  existingCount: number,
+  newData: PointCloud3DData,
+  options?: Readonly<{
+    readonly valueOverride?: ArrayLike<number>;
+    readonly warn?: (msg: string) => void;
+    /** Peak retained points (FIFO). Same semantics as 2D `appendData(..., { maxPoints })`. */
+    readonly maxPoints?: number;
+  }>
+): PackedPointCloud3D {
+  const packedNew = packPointCloud3D(newData, options);
+  const maxPoints = normalizeMaxPoints(options?.maxPoints);
+
+  if (packedNew.count === 0) {
+    // Empty append: still enforce maxPoints window on existing if over capacity
+    if (maxPoints != null && existingCount > maxPoints) {
+      const drop = existingCount - maxPoints;
+      const dest = new Float32Array(maxPoints * 4);
+      dest.set(existing.subarray(drop * 4, existingCount * 4));
+      const ext = recomputeExtents(dest, maxPoints, 0, 1, false);
+      return { packed: dest, count: maxPoints, ...ext };
+    }
+    const ext = recomputeExtents(existing, existingCount, 0, 1, false);
+    return {
+      packed: existing,
+      count: existingCount,
+      ...ext,
+    };
+  }
+
+  const plan = planMaxPointsWindow(existingCount, packedNew.count, maxPoints);
+
+  // Strict replace: keep only tail of new batch.
+  // Always allocate a fresh buffer so renderer identity caches (equal-N rewrite) re-upload GPU.
+  if (plan.isStrictReplace) {
+    const keep = plan.keepNewCount;
+    const srcOff = plan.newSrcOffset;
+    const cap = Math.max(keep, maxPoints ?? keep);
+    const dest = new Float32Array(cap * 4);
+    dest.set(packedNew.packed.subarray(srcOff * 4, (srcOff + keep) * 4), 0);
+    const ext = recomputeExtents(dest, keep, packedNew.valueMin, packedNew.valueMax, packedNew.hasValue);
+    return { packed: dest, count: keep, ...ext };
+  }
+
+  // Drop prefix of previous then append kept new points (ring wrap or pure append).
+  // Window rewrite (dropPrev > 0) always uses a new array identity so equal-N FIFO
+  // forces GPU re-upload in PointCloud3DRenderer (identity + count cache).
+  // Pure fill/append may reuse capacity when the buffer is large enough (count grows).
+  const keepPrev = existingCount - plan.dropPrevCount;
+  const total = plan.nextCount;
+
+  let dest: Float32Array;
+  if (plan.dropPrevCount === 0 && existing.length >= total * 4) {
+    dest = existing;
+    dest.set(packedNew.packed.subarray(0, packedNew.count * 4), existingCount * 4);
+  } else {
+    let cap: number;
+    if (maxPoints != null) {
+      cap = Math.max(maxPoints, total, POINT_CLOUD_GROW_MIN_CAPACITY);
+    } else {
+      // Unbounded geometric growth from min capacity (or existing capacity in points)
+      cap = Math.max(POINT_CLOUD_GROW_MIN_CAPACITY, existing.length / 4);
+      while (cap < total) cap = Math.ceil(cap * POINT_CLOUD_GROW_FACTOR);
+    }
+    dest = new Float32Array(cap * 4);
+    if (keepPrev > 0) {
+      dest.set(existing.subarray(plan.dropPrevCount * 4, existingCount * 4), 0);
+    }
+    dest.set(
+      packedNew.packed.subarray(plan.newSrcOffset * 4, (plan.newSrcOffset + plan.keepNewCount) * 4),
+      keepPrev * 4
+    );
+  }
+
+  const ext = recomputeExtents(dest, total, packedNew.valueMin, packedNew.valueMax, packedNew.hasValue);
+  return {
     packed: dest,
     count: total,
-    aabb,
-    valueMin: hasValue && Number.isFinite(vMin) ? vMin : packedNew.valueMin,
-    valueMax: hasValue && Number.isFinite(vMax) ? vMax : packedNew.valueMax,
-    hasValue: hasValue || packedNew.hasValue,
+    ...ext,
   };
 }
 

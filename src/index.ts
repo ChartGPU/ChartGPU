@@ -85,12 +85,15 @@ export type {
   Chart3DCameraOptions,
   Interaction3DOptions,
   Axes3DOptions,
+  Axis3DOptions,
   PointCloud3DSeriesConfig,
   PointCloud3DData,
   PointCloud3DArraysData,
   InterleavedXYZData,
   Surface3DSeriesConfig,
   Surface3DGridData,
+  Surface3DContourOptions,
+  Surface3DUpdate,
   RenderMode,
   ScatterSeriesConfig,
   ScatterSymbol,
@@ -111,6 +114,7 @@ export {
   surface3dDefaults,
   camera3dDefaults,
   interaction3dDefaults,
+  axes3dDefaults,
 } from './config/defaults';
 export {
   isCandlePrimaryChart,

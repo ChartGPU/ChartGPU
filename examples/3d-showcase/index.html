@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D Showcase - ChartGPU</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #0a0a0a;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    }
+    .page {
+      min-height: 100%;
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+      gap: 14px;
+      padding: 20px;
+      box-sizing: border-box;
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+    header h1 { margin: 0; font-size: 1.45rem; color: #fff; }
+    header p { margin: 8px 0 0; color: #aaa; line-height: 1.45; }
+    .whats-new {
+      margin: 10px 0 0;
+      padding: 0 0 0 1.1rem;
+      color: #b8c0cc;
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+    .whats-new li { margin: 2px 0; }
+    .whats-new strong { color: #e8ecf4; font-weight: 600; }
+    .back { display: inline-block; margin-top: 10px; color: #aaa; text-decoration: none; }
+    .back:hover { color: #fff; }
+    .note {
+      font-size: 0.85rem;
+      color: #9aa0aa;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: #12121a;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 18px;
+      align-items: center;
+      padding: 12px 14px;
+      border: 1px solid #333;
+      border-radius: 10px;
+      background: #0f0f14;
+    }
+    .controls label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.9rem;
+      color: #ccc;
+    }
+    .controls .hint {
+      width: 100%;
+      font-size: 0.8rem;
+      color: #777;
+      margin: 0;
+    }
+    select, button { accent-color: #5470c6; }
+    button {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      border: 1px solid #444;
+      border-radius: 6px;
+      padding: 6px 12px;
+      cursor: pointer;
+    }
+    button.active { border-color: #5470c6; background: #1e2a4a; }
+    .chart-shell {
+      border: 1px solid #333;
+      border-radius: 12px;
+      background: #0f0f14;
+      overflow: hidden;
+      min-height: 480px;
+      height: clamp(480px, 68vh, 760px);
+      position: relative;
+    }
+    #chart { width: 100%; height: 100%; }
+    .error { padding: 16px; color: #ffb4b4; white-space: pre-wrap; }
+    footer {
+      font-size: 0.8rem;
+      color: #777;
+      line-height: 1.4;
+    }
+    #status { font-variant-numeric: tabular-nums; color: #8ab4ff; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1>3D Showcase</h1>
+      <p>
+        Default view is a <strong>stable inspect scene</strong> so you can orbit, hover, and read axes.
+        Optional streams stay slow and opt-in — they no longer race off-screen.
+      </p>
+      <ul class="whats-new">
+        <li><strong>Labeled axes + grids</strong> — readable X / Height / Y chrome</li>
+        <li><strong>Hover pick</strong> — surface cell vs LiDAR point (tooltip)</li>
+        <li><strong>Contours</strong> — isolines on the height field (toggle)</li>
+        <li><strong>Optional:</strong> bounded cloud FIFO · smooth spectrogram strip (camera can follow scroll)</li>
+      </ul>
+      <a class="back" href="../index.html">← Examples</a>
+      <a class="back" href="../point-cloud-3d/index.html" style="margin-left:12px">Point cloud</a>
+      <a class="back" href="../surface-3d/index.html" style="margin-left:12px">Surface</a>
+    </header>
+
+    <div class="note">
+      <strong>Production profiling:</strong> measure FPS with
+      <code>bun run build</code> + <code>bun run preview:examples</code> (or examples production build),
+      not the Vite dev server (dev incurs ~3× GPU overhead). Prefer a calm first paint; raise cloud size
+      only when stress-testing.
+    </div>
+
+    <div class="controls">
+      <p class="hint">Streams are <strong>off by default</strong>. Enable one at a time to demo FIFO or strip scroll (strip runs at display refresh for smooth motion).</p>
+      <label>Cloud <select id="cloudSize">
+        <option value="50000" selected>50k</option>
+        <option value="150000">150k</option>
+        <option value="500000">500k</option>
+        <option value="1000000">1M</option>
+      </select></label>
+      <label><input type="checkbox" id="streamCloud" /> Stream cloud FIFO</label>
+      <label><input type="checkbox" id="streamSurface" /> Scroll surface strip</label>
+      <label><input type="checkbox" id="followScroll" checked /> Follow surface scroll</label>
+      <label><input type="checkbox" id="showContours" checked /> Contours</label>
+      <label>Camera <select id="camType">
+        <option value="perspective">Perspective</option>
+        <option value="orthographic">Orthographic</option>
+      </select></label>
+      <button type="button" id="resetCam">Reset camera</button>
+      <span id="status">—</span>
+    </div>
+
+    <div class="chart-shell">
+      <div id="chart"></div>
+      <div id="error" class="error" style="display:none"></div>
+    </div>
+
+    <footer>
+      Try: orbit · hover a ridge (surface) vs a sample (LiDAR) · toggle contours · then optionally enable
+      strip scroll (display-rate, smooth). Drag to orbit · Shift-drag to pan · Wheel to zoom · Double-click / Reset camera.
+      Thin demos: <code>point-cloud-3d</code> / <code>surface-3d</code>.
+    </footer>
+  </div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>
