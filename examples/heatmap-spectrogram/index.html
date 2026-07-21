@@ -72,15 +72,18 @@
       <h1>Uniform Heatmap / Spectrogram</h1>
       <p>
         Data-grid heatmap (<code>type: 'heatmap'</code>) — not scatter density.
-        Static peaks mode and a live updating spectrogram window that rewrites <code>data.z</code> each frame
-        (block-window replace when the ring wraps; not continuous scroll-shift).
+        Static peaks mode and a live spectrogram that streams columns via
+        <code>chart.updateHeatmap({ mode: 'appendColumns', scrollX: true })</code>
+        (GPU modular ring + O(rows) strip upload).
       </p>
       <a class="back" href="../index.html">← Back to examples</a>
     </header>
 
     <div class="note">
       Hover cells for tooltip (x, y cell center + z). Zoom/pan reprojects without re-uploading z.
-      Streaming uses equal-size <code>setOption</code> updates — <code>appendData</code> is unsupported for heatmap.
+      Live mode uses <code>updateHeatmap</code> column-append (not per-frame full <code>setOption</code>).
+      <code>appendData</code> remains unsupported for heatmap — wrong payload model (points vs grid).
+      Style controls keep the same <code>data</code> object identity so the stream is not cleared.
     </div>
 
     <div class="controls">

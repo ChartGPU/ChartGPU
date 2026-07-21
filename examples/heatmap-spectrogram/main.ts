@@ -33,25 +33,18 @@ const fillStaticPeaks = (z: Float32Array, columns: number, rows: number): void =
     for (let i = 0; i < columns; i++) {
       const u = i / Math.max(1, columns - 1);
       const v = j / Math.max(1, rows - 1);
-      // Two Gaussians + a diagonal ridge
       const g1 = Math.exp(-((u - 0.3) ** 2 + (v - 0.4) ** 2) / 0.02);
       const g2 = Math.exp(-((u - 0.7) ** 2 + (v - 0.65) ** 2) / 0.015);
       const ridge = Math.exp(-((u - v) ** 2) / 0.01) * 0.5;
-      // Map to dB-like range for the example color scale
       const amp = Math.min(1, g1 + g2 + ridge);
       z[j * columns + i] = -100 + amp * 100;
     }
   }
 };
 
-const fillSpectrogramColumn = (
-  z: Float32Array,
-  columns: number,
-  rows: number,
-  col: number,
-  t: number
-): void => {
-  // Chirp + harmonics in frequency bins
+/** Fill one spectrum column (length === rows) for updateHeatmap appendColumns. */
+const fillSpectrogramColumnInto = (column: Float32Array, t: number): void => {
+  const rows = column.length;
   for (let j = 0; j < rows; j++) {
     const fNorm = j / Math.max(1, rows - 1);
     const chirp = 0.15 + 0.7 * (0.5 + 0.5 * Math.sin(t * 0.7));
@@ -59,7 +52,7 @@ const fillSpectrogramColumn = (
     const harm = 0.45 * Math.exp(-((fNorm - chirp * 0.55) ** 2) / 0.002);
     const noise = 0.04 * Math.random();
     const amp = Math.min(1, main + harm + noise);
-    z[j * columns + col] = -100 + amp * 100;
+    column[j] = -100 + amp * 100;
   }
 };
 
@@ -93,21 +86,26 @@ async function main(): Promise<void> {
   const z = new Float32Array(TIME_BINS * FREQ_BINS);
   fillStaticPeaks(z, TIME_BINS, FREQ_BINS);
 
-  let windowT0 = 0;
-  let writeCol = 0;
+  /** Reused column-major strip buffer for appendColumns (length === rows). */
+  const spectrumColumn = new Float32Array(FREQ_BINS);
+  let liveT = 0;
   let live = true;
 
-  const buildData = (ctrl: Controls): HeatmapData => ({
-    xStart: ctrl.mode === 'live' ? windowT0 : 0,
+  /**
+   * Stable data object identity for live style setOption (colormap/opacity/zMin/zMax)
+   * so shouldClearHeatmapStream keeps the scrolled stream.
+   */
+  let liveData: HeatmapData = {
+    xStart: 0,
     xStep: DT,
     yStart: 20,
     yStep: DF,
     columns: TIME_BINS,
     rows: FREQ_BINS,
     z,
-  });
+  };
 
-  const buildOptions = (ctrl: Controls): ChartGPUOptions => ({
+  const buildOptions = (ctrl: Controls, data: HeatmapData): ChartGPUOptions => ({
     grid: { left: 64, right: 24, top: 28, bottom: 48 },
     xAxis: {
       type: 'value',
@@ -124,7 +122,7 @@ async function main(): Promise<void> {
       {
         type: 'heatmap',
         name: ctrl.mode === 'live' ? 'Spectrogram' : 'Peaks',
-        data: buildData(ctrl),
+        data,
         colormap: ctrl.colormap,
         zMin: Number.isFinite(ctrl.zMin) ? ctrl.zMin : -100,
         zMax: Number.isFinite(ctrl.zMax) ? ctrl.zMax : 0,
@@ -142,9 +140,10 @@ async function main(): Promise<void> {
   } else {
     z.fill(-100);
     live = true;
+    liveT = 0;
   }
 
-  const chart: ChartGPUInstance = await ChartGPU.create(chartEl, buildOptions(ctrl));
+  const chart: ChartGPUInstance = await ChartGPU.create(chartEl, buildOptions(ctrl, liveData));
 
   const ro = new ResizeObserver(() => chart.resize());
   ro.observe(chartEl);
@@ -153,11 +152,44 @@ async function main(): Promise<void> {
   const applyControls = async (): Promise<void> => {
     ctrl = readControls();
     opacityVal.textContent = ctrl.opacity.toFixed(2);
+    const wasLive = live;
     live = ctrl.mode === 'live';
+
     if (ctrl.mode === 'static') {
       fillStaticPeaks(z, TIME_BINS, FREQ_BINS);
+      // New data identity clears any live stream.
+      liveData = {
+        xStart: 0,
+        xStep: DT,
+        yStart: 20,
+        yStep: DF,
+        columns: TIME_BINS,
+        rows: FREQ_BINS,
+        z,
+      };
+      await chart.setOption(buildOptions(ctrl, liveData));
+      return;
     }
-    await chart.setOption(buildOptions(ctrl));
+
+    if (!wasLive) {
+      // Entering live: clear field and new data identity for a clean stream seed.
+      z.fill(-100);
+      liveT = 0;
+      liveData = {
+        xStart: 0,
+        xStep: DT,
+        yStart: 20,
+        yStep: DF,
+        columns: TIME_BINS,
+        rows: FREQ_BINS,
+        z,
+      };
+      await chart.setOption(buildOptions(ctrl, liveData));
+      return;
+    }
+
+    // Style-only while live: same data ref → stream kept (scrolled xStart preserved).
+    await chart.setOption(buildOptions(ctrl, liveData));
   };
 
   for (const el of [modeEl, colormapEl, opacityEl, zMinEl, zMaxEl]) {
@@ -176,19 +208,17 @@ async function main(): Promise<void> {
     if (!live) return;
     const dt = Math.min(0.05, (now - lastT) / 1000);
     lastT = now;
-    // Advance ~1 column per ~16ms at 60fps
     const steps = Math.max(1, Math.round(dt / DT));
     for (let s = 0; s < steps; s++) {
-      const t = windowT0 + writeCol * DT;
-      fillSpectrogramColumn(z, TIME_BINS, FREQ_BINS, writeCol, t);
-      writeCol += 1;
-      if (writeCol >= TIME_BINS) {
-        writeCol = 0;
-        windowT0 += TIME_BINS * DT;
-      }
+      fillSpectrogramColumnInto(spectrumColumn, liveT);
+      liveT += DT;
+      chart.updateHeatmap?.(0, {
+        mode: 'appendColumns',
+        columns: 1,
+        z: spectrumColumn,
+        scrollX: true,
+      });
     }
-    // New series element each frame so dirty gate uploads mutated z buffer.
-    void chart.setOption(buildOptions(readControls()));
   };
   raf = requestAnimationFrame(tick);
 
@@ -200,20 +230,13 @@ async function main(): Promise<void> {
     ro.disconnect();
     chart.dispose();
   };
+  window.addEventListener('pagehide', cleanup);
   window.addEventListener('beforeunload', cleanup);
+  // Vite HMR: dispose RAF + WebGPU so reloads do not leak devices/frames.
   import.meta.hot?.dispose(cleanup);
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    main().catch((err) => {
-      console.error(err);
-      showError(err instanceof Error ? err.message : String(err));
-    });
-  });
-} else {
-  main().catch((err) => {
-    console.error(err);
-    showError(err instanceof Error ? err.message : String(err));
-  });
-}
+main().catch((err: unknown) => {
+  console.error(err);
+  showError(err instanceof Error ? err.message : String(err));
+});

@@ -231,14 +231,57 @@ Uniform rectangular **data-grid** heatmap / spectrogram (`type: 'heatmap'`). Dis
 - **No** LTTB / GPU line decimation / cartesian DataStore XY packing.
 - **Draw order**: all heatmaps render **before** area/bar/candlestick/scatter/line strokes (under overlays). Relative order among heatmaps follows `series[]`. Series array order does **not** interleave heatmaps above lines.
 - **Zoom / pan**: reprojects via uniforms only when z size/ref/content are unchanged (no z re-upload). Opacity / zMin / zMax / colormap changes do not force a z rewrite (LUT rebuilds on colormap only).
-- **Streaming**: mutate or replace `data.z` with the same `columns`/`rows` and call `setOption` with a **new series config object** (content stamp detects in-place z mutation). In-place z mutation under a **stable** series object without setOption is not detected. **`appendData` is unsupported** (console warning).
-- **Axis auto-bounds**: grid extent from `heatmapGridBounds` contributes to X/Y domains (z does not).
+- **Streaming**: prefer **`chart.updateHeatmap(seriesIndex, update)`** (below). Equal-size `setOption` z replace still works. **`appendData` is unsupported** (console warning points at `updateHeatmap`).
+- **Axis auto-bounds**: grid extent from `heatmapGridBounds` contributes to X/Y domains (z does not). After scroll, auto X tracks the new `xStart`/width.
 - **Tooltip**: cell under cursor → `TooltipParams` with `value: [cellCenterX, cellCenterY]`, optional `z`, and `dataIndex = j * columns + i`. **Hit priority (item)**: pie → candlestick body → nearest cartesian point → heatmap cell (heatmaps are under strokes). **Axis** mode appends heatmap params alongside `findPointsAtX` matches, not instead of them. Transparent `nullHandling` + non-finite z → miss (no tooltip). **Chart-sync** tooltips are x-only and **do not** include heatmap cells (need data-space Y); heatmap tooltips require a **local pointer** over the plot.
 - **Legend**: series name + solid palette placeholder color only (not a colormap gradient swatch; gradient legend is a follow-up).
 - **Log axes**: VS uses the same log projection flags as other continuous series when X/Y are log.
 - **Negative steps**: supported. UV `u=0`/`v=0` always maps to cell `(0,0)` (signed origin+extent), matching CPU `heatmapHitTest` / `heatmapCellIndex`. Axis bounds normalize so min ≤ max.
 
-Example: [`examples/heatmap-spectrogram/`](../../examples/heatmap-spectrogram/). Implementation: [`createHeatmapRenderer.ts`](../../src/renderers/createHeatmapRenderer.ts), [`heatmap.wgsl`](../../src/shaders/heatmap.wgsl).
+#### Streaming (`chart.updateHeatmap`)
+
+Mirrors 3D `updateSurface3D`. Discriminated union `HeatmapUpdate`:
+
+| Mode | Payload layout | Notes |
+|------|----------------|--------|
+| `replaceZ` | Full field **row-major** `z[j * columns + i]` | Optional `zMin`/`zMax`; when both set, skip full-field domain recompute |
+| `appendColumns` | **Column-major strips** `z[c * rows + r]` | `scrollX` default **true**: fixed window, drop oldest, `xStart += drop * xStep`. `scrollX: false` **grows** `columns` (texture recreate) |
+| `appendRows` | **Row-major blocks** `z[r * columns + i]` | `scrollY` default true: drop oldest rows, `yStart += drop * yStep`; `scrollY: false` grows `rows` |
+
+```ts
+// Spectrogram: one new spectrum column per frame (length === series.rows)
+chart.updateHeatmap(0, {
+  mode: 'appendColumns',
+  columns: 1,
+  z: spectrumColumn, // Float32Array(rows), column-major
+  scrollX: true,
+});
+```
+
+**GPU hot path:** single-column `appendColumns` + `scrollX` uses a **modular texture ring** + strip `writeTexture` (O(rows) GPU z traffic), not a full-grid pack/upload every frame. Multi-column batch / `replaceZ` / dimension change reset the ring and full-upload. CPU `z` for hit-test stays a **linear logical window** (oldest column at index 0).
+
+**Stream vs `setOption` (same policy as surface3d):**
+
+| Action | Behavior |
+|--------|----------|
+| `updateHeatmap` | Owns a stream override (`xStart` / `yStart` / `z` / dims) |
+| `setOption` with **same** `series[i].data` object identity | Stream **kept** (style-only: colormap, opacity, zMin/zMax, …) |
+| `setOption` with a **new** `data` object | Stream **cleared**; user data wins |
+| First seed (`prevUser == null`) | Stream not cleared spuriously |
+
+**Colormap domain on stream (D5):**
+
+| Situation | Behavior |
+|-----------|----------|
+| Series has **both** finite user `zMin`/`zMax` (`zDomainExplicit`) | Keep that range on append (no expand-from-strip drift) |
+| Style `setOption` with same `data` ref and new `zMin`/`zMax` | Style domain wins; stream field (xStart/z) kept |
+| `replaceZ` with both `zMin`/`zMax` in the update | Use those values |
+| Auto domain + single-column scroll | Expand min/max from the new strip only |
+| Auto domain + multi-column / `appendRows` / replace without pair | Recompute from full field |
+
+Live spectrogram demos should set explicit `zMin`/`zMax` (fixed dB range).
+
+Example: [`examples/heatmap-spectrogram/`](../../examples/heatmap-spectrogram/). Implementation: [`createHeatmapRenderer.ts`](../../src/renderers/createHeatmapRenderer.ts), [`heatmap.wgsl`](../../src/shaders/heatmap.wgsl), [`heatmapStream.ts`](../../src/data/heatmapStream.ts).
 
 ### BandSeriesConfig
 

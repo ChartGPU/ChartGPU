@@ -108,6 +108,7 @@ function makeSeries(
     colormap: 'viridis',
     zMin: 0,
     zMax: 1,
+    zDomainExplicit: true,
     zScale: 'linear',
     opacity: 1,
     cellAnchor: 'corner',

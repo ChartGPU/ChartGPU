@@ -465,9 +465,23 @@ describe('didSeriesDataLikelyChange — heatmap', () => {
     expect(didSeriesDataLikelyChange([a], [a])).toBe(false);
   });
 
-  it('new object same z → true (setOption stream)', () => {
+  it('style-only with same data ref → false (presentation path)', () => {
     const a = hm();
-    const b = hm({ name: 'h2' });
+    // Reuse same data object (style setOption keeps stream identity)
+    const b = {
+      ...a,
+      name: 'h2',
+      opacity: 0.5,
+      colormap: 'inferno',
+      zMin: -50,
+      zMax: 0,
+    } as ResolvedSeriesConfig;
+    expect(didSeriesDataLikelyChange([a], [b])).toBe(false);
+  });
+
+  it('new data object identity (even same z buffer) → true', () => {
+    const a = hm();
+    const b = hm({ name: 'h2' }); // hm() builds a new data object each call
     expect(didSeriesDataLikelyChange([a], [b])).toBe(true);
   });
 

@@ -8,11 +8,12 @@
  * Dirty gates:
  * - z texture: size change, z array ref change, or content stamp change on setOption
  * - LUT: colormap key change
- * - uniforms only: zoom/pan, opacity (incl. opacityOverride), zMin/zMax, nullHandling
+ * - uniforms only: zoom/pan, opacity (incl. opacityOverride), zMin/zMax, nullHandling, ringStart
  *
- * In-place z mutation under a **stable** series config identity is not detected
- * (same as cartesian content-hash contract). Streaming must either replace the
- * z array reference or pass a new resolved series object via setOption (stamp scan).
+ * Streaming (updateHeatmap): modular GPU ring (strategy C) — single-column scroll
+ * writes O(rows) via strip `writeTexture` and advances `ringStart` without memmoving
+ * the texture. CPU field stays linear logical window. Full re-upload on replaceZ /
+ * dimension change / multi-column batch.
  */
 
 import heatmapWgsl from '../shaders/heatmap.wgsl?raw';
@@ -47,8 +48,31 @@ export interface HeatmapRenderer {
   ): void;
   render(passEncoder: GPURenderPassEncoder): void;
   dispose(): void;
-  /** Test: z-texture uploads since create. */
+  /**
+   * Spectrogram strip path (strategy C): write one (or few) columns into the
+   * modular ring texture and advance ringStart. Does **not** full-pack the grid.
+   * Payload is column-major: z[c * rows + r].
+   *
+   * @returns true when strip was applied; false if texture missing / dims invalid
+   * (caller should fall back to full prepare upload).
+   */
+  uploadColumnStrip(
+    columnMajorZ: ArrayLike<number>,
+    colCount: number,
+    rows: number,
+    columns: number,
+    logicalZ: Float32Array | ReadonlyArray<number>
+  ): boolean;
+  /** Reset modular ring to 0 (replaceZ / dimension change / multi-col batch). */
+  resetRing(): void;
+  /** Current modular ring start (oldest column texel index). */
+  getRingStart(): number;
+  /** Test: full-grid z-texture uploads since create. */
   getZUploadCount(): number;
+  /** Test: strip (O(rows)) column uploads since create. */
+  getZStripUploadCount(): number;
+  /** Test: total float elements written in strip uploads (approx GPU z traffic). */
+  getZStripUploadFloats(): number;
   /** Test: LUT writeTexture calls since create. */
   getLutUploadCount(): number;
   hasZTexture(): boolean;
@@ -111,6 +135,27 @@ export function packZTextureData(
   return out;
 }
 
+/**
+ * Pack a single column (height = rows) for a 1×rows writeTexture subrect.
+ * bytesPerRow must be ≥ 4 and multiple of 256 → one float column still needs a
+ * full 256-byte row stride in the staging layout (WebGPU rule).
+ */
+export function packColumnStripStaging(
+  columnMajorZ: ArrayLike<number>,
+  colOffset: number,
+  rows: number
+): { data: Float32Array<ArrayBuffer>; paddedColumns: number; bytesPerRow: number } {
+  // Single-column subrect: width=1, height=rows. bytesPerRow still multiple of 256.
+  const paddedColumns = paddedFloatColumns(1);
+  const data: Float32Array<ArrayBuffer> = new Float32Array(new ArrayBuffer(paddedColumns * rows * 4));
+  for (let r = 0; r < rows; r++) {
+    const srcIdx = colOffset * rows + r;
+    const v = srcIdx < columnMajorZ.length ? Number(columnMajorZ[srcIdx]) : Number.NaN;
+    data[r * paddedColumns] = Number.isFinite(v) ? v : Number.NaN;
+  }
+  return { data, paddedColumns, bytesPerRow: paddedColumns * 4 };
+}
+
 export function paddedFloatColumns(columns: number): number {
   const bytes = columns * 4;
   const aligned = Math.ceil(bytes / TEXTURE_BYTES_PER_ROW_ALIGNMENT) * TEXTURE_BYTES_PER_ROW_ALIGNMENT;
@@ -128,8 +173,9 @@ export function createHeatmapRenderer(device: GPUDevice, options?: HeatmapRender
   const vsUniformF32 = new Float32Array(24);
   const vsUniformU32 = new Uint32Array(vsUniformF32.buffer);
 
-  const fsUniformBuffer = createUniformBuffer(device, 32, { label: 'heatmap/fsUniforms' });
-  const fsUniformF32 = new Float32Array(8);
+  // 48 bytes: z domain + dims + ringStart + gap
+  const fsUniformBuffer = createUniformBuffer(device, 48, { label: 'heatmap/fsUniforms' });
+  const fsUniformF32 = new Float32Array(12);
   const fsUniformU32 = new Uint32Array(fsUniformF32.buffer);
 
   const bindGroupLayout = device.createBindGroupLayout({
@@ -184,10 +230,14 @@ export function createHeatmapRenderer(device: GPUDevice, options?: HeatmapRender
   let lastZStamp = 0;
   let lastSeriesConfig: ResolvedHeatmapSeriesConfig | null = null;
   let zUploadCount = 0;
+  let zStripUploadCount = 0;
+  let zStripUploadFloats = 0;
   let lutUploadCount = 0;
   let lastColormapKey = '';
   let hasPrepared = false;
   let canDraw = false;
+  /** Modular ring: texel X of logical column 0. */
+  let ringStart = 0;
 
   const assertNotDisposed = (): void => {
     if (disposed) throw new Error('HeatmapRenderer is disposed.');
@@ -207,6 +257,7 @@ export function createHeatmapRenderer(device: GPUDevice, options?: HeatmapRender
     lastColumns = 0;
     lastRows = 0;
     lastPaddedColumns = 0;
+    ringStart = 0;
   };
 
   const ensureLut = (seriesConfig: ResolvedHeatmapSeriesConfig): void => {
@@ -250,6 +301,7 @@ export function createHeatmapRenderer(device: GPUDevice, options?: HeatmapRender
     lastPaddedColumns = padded;
     lastZRef = null;
     lastZStamp = 0;
+    ringStart = 0;
     bindGroup = null;
     return true;
   };
@@ -267,6 +319,8 @@ export function createHeatmapRenderer(device: GPUDevice, options?: HeatmapRender
     zUploadCount += 1;
     lastZRef = z;
     lastZStamp = stamp;
+    // Full field is linear logical layout
+    ringStart = 0;
   };
 
   const ensureBindGroup = (): void => {
@@ -281,6 +335,42 @@ export function createHeatmapRenderer(device: GPUDevice, options?: HeatmapRender
         { binding: 3, resource: lutView },
       ],
     });
+  };
+
+  const uploadColumnStrip: HeatmapRenderer['uploadColumnStrip'] = (columnMajorZ, colCount, rows, columns, logicalZ) => {
+    assertNotDisposed();
+    const nCols = Math.max(0, Math.floor(colCount));
+    const nRows = Math.max(0, Math.floor(rows));
+    const nWin = Math.max(0, Math.floor(columns));
+    if (nCols < 1 || nRows < 1 || nWin < 1) return false;
+    if (!zTexture || lastColumns !== nWin || lastRows !== nRows) return false;
+
+    // Write each new column into the modular destination (overwrite oldest first).
+    for (let c = 0; c < nCols; c++) {
+      const destCol = (ringStart + c) % nWin;
+      const { data, bytesPerRow } = packColumnStripStaging(columnMajorZ, c, nRows);
+      device.queue.writeTexture(
+        { texture: zTexture, origin: { x: destCol, y: 0, z: 0 } },
+        data,
+        { bytesPerRow, rowsPerImage: nRows },
+        { width: 1, height: nRows, depthOrArrayLayers: 1 }
+      );
+      zStripUploadCount += 1;
+      zStripUploadFloats += nRows;
+    }
+    ringStart = (ringStart + nCols) % nWin;
+    // Align dirty gate so prepare does not full-reupload the new logical field.
+    lastZRef = logicalZ;
+    lastZStamp = heatmapZContentStamp(logicalZ, nWin * nRows);
+    return true;
+  };
+
+  const resetRing: HeatmapRenderer['resetRing'] = () => {
+    assertNotDisposed();
+    ringStart = 0;
+    // Force full re-upload on next prepare if data still dirty
+    lastZRef = null;
+    lastZStamp = 0;
   };
 
   const prepare: HeatmapRenderer['prepare'] = (seriesConfig, xScale, yScale, gridArea, prepareOpts) => {
@@ -304,12 +394,16 @@ export function createHeatmapRenderer(device: GPUDevice, options?: HeatmapRender
     ensureLut(seriesConfig);
     const sizeRecreated = ensureZTexture(columns, rows);
 
+    // ringStart is advanced only by uploadColumnStrip (stream path) or reset by
+    // full uploadZ / resetRing / dimension change — not via prepare options.
+
     const zRef = data.z;
     const expectedCells = columns * rows;
     const seriesIdentityChanged = lastSeriesConfig !== seriesConfig;
 
     // Z upload: size | zRef | (setOption identity + content stamp change)
     // Visual-only setOption (opacity/zMin/colormap) keeps stamp → no z upload.
+    // After strip upload, lastZRef is already the logical field → skip.
     let shouldUploadZ = sizeRecreated || lastZRef !== zRef;
     if (!shouldUploadZ && seriesIdentityChanged) {
       const stamp = heatmapZContentStamp(zRef, expectedCells);
@@ -360,13 +454,17 @@ export function createHeatmapRenderer(device: GPUDevice, options?: HeatmapRender
     fsUniformU32[4] = nullHandlingToU32(seriesConfig.nullHandling);
     fsUniformU32[5] = columns >>> 0;
     fsUniformU32[6] = rows >>> 0;
+    fsUniformU32[7] = ringStart >>> 0;
     const plotW = Math.max(
       1,
       gridArea.canvasWidth / Math.max(1e-6, gridArea.devicePixelRatio) - gridArea.left - gridArea.right
     );
     const gapTexels =
       seriesConfig.cellGapPx > 0 && plotW > 0 ? Math.min(0.4, (seriesConfig.cellGapPx / plotW) * columns) : 0;
-    fsUniformF32[7] = gapTexels;
+    fsUniformF32[8] = gapTexels;
+    fsUniformF32[9] = 0;
+    fsUniformF32[10] = 0;
+    fsUniformF32[11] = 0;
     writeUniformBuffer(device, fsUniformBuffer, fsUniformF32);
 
     ensureBindGroup();
@@ -410,7 +508,12 @@ export function createHeatmapRenderer(device: GPUDevice, options?: HeatmapRender
     prepare,
     render,
     dispose,
+    uploadColumnStrip,
+    resetRing,
+    getRingStart: () => ringStart,
     getZUploadCount: () => zUploadCount,
+    getZStripUploadCount: () => zStripUploadCount,
+    getZStripUploadFloats: () => zStripUploadFloats,
     getLutUploadCount: () => lutUploadCount,
     hasZTexture: () => zTexture != null,
   };

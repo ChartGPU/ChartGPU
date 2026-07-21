@@ -131,6 +131,38 @@ export type Surface3DUpdate =
     }>;
 
 /**
+ * Streaming / partial update for `heatmap` via `chart.updateHeatmap`.
+ *
+ * Full field layout (replaceZ / stored grid): **row-major** `z[j * columns + i]`.
+ * appendColumns payload: **column-major** strips `z[c * rows + r]` for each new column.
+ * appendRows payload: **row-major** blocks `z[r * columns + i]`.
+ *
+ * Mirrors {@link Surface3DUpdate} (`replaceZ` ↔ `replaceY`, scrollX / scrollY).
+ */
+export type HeatmapUpdate =
+  | Readonly<{
+      mode: 'replaceZ';
+      z: ArrayLike<number>;
+      /** Optional colormap domain; when both set, skip full-field domain recompute. */
+      zMin?: number;
+      zMax?: number;
+    }>
+  | Readonly<{
+      mode: 'appendColumns';
+      columns: number;
+      z: ArrayLike<number>; // length >= columns * rows (column-major strips)
+      /** Drop oldest columns and shift xStart (spectrogram scroll). Default true. */
+      scrollX?: boolean;
+    }>
+  | Readonly<{
+      mode: 'appendRows';
+      rows: number;
+      z: ArrayLike<number>; // length >= columns * rows (row-major blocks)
+      /** Drop oldest rows and shift yStart. Default true. */
+      scrollY?: boolean;
+    }>;
+
+/**
  * Render mode for chart rendering.
  *
  * - `'auto'` (default): ChartGPU schedules renders automatically using requestAnimationFrame
@@ -641,8 +673,11 @@ export type HeatmapNullHandling = 'transparent' | 'lowest' | 'highest';
 /**
  * Uniform heatmap / spectrogram series.
  *
- * Sampling / LTTB / GPU line decimation are ignored. `appendData` is unsupported in v1 —
- * replace `data.z` (or the whole series) via `setOption` for streaming spectrograms.
+ * Sampling / LTTB / GPU line decimation are ignored.
+ * **Streaming:** use `chart.updateHeatmap(seriesIndex, update)` for `replaceZ`,
+ * `appendColumns` (+scrollX), and `appendRows` (+scrollY). Equal-size `setOption`
+ * z replace still works. **`appendData` is unsupported** (wrong payload model —
+ * points vs grid); the warning points at `updateHeatmap`.
  * `color` on the series base is ignored (colormap owns color).
  */
 export interface HeatmapSeriesConfig extends Omit<SeriesConfigBase, 'data' | 'sampling' | 'samplingThreshold'> {
