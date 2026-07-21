@@ -1672,3 +1672,153 @@ describe('OptionResolver - band', () => {
     expect(s.rawBounds).toBeUndefined();
   });
 });
+
+describe('OptionResolver - errorBar', () => {
+  it('resolves defaults and absolute HLC', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'errorBar',
+          data: {
+            x: [0, 1, 2],
+            y: [2.5, 3.5, 4],
+            high: [3, 4, 5],
+            low: [2, 3, 3.5],
+          },
+        },
+      ],
+    });
+    const s = resolved.series[0]!;
+    expect(s.type).toBe('errorBar');
+    if (s.type !== 'errorBar') throw new Error('expected errorBar');
+    expect(s.errorMode).toBe('both');
+    expect(s.direction).toBe('vertical');
+    expect(s.drawWhiskers).toBe(true);
+    expect(s.drawConnector).toBe(true);
+    expect(s.showCenter).toBe(false);
+    expect(s.symbolSize).toBe(6);
+    expect(s.sampling).toBe('none');
+    expect(s.capWidth).toBe('40%');
+    expect(s.itemStyle.borderWidth).toBe(1.5);
+    expect(s.rawBounds?.yMin).toBe(2);
+    expect(s.rawBounds?.yMax).toBe(5);
+  });
+
+  it('resolves relative yError to absolute high/low', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'errorBar',
+          data: { x: [0, 1], y: [10, 20], yError: 2 },
+        },
+      ],
+    });
+    const s = resolved.series[0]!;
+    if (s.type !== 'errorBar') throw new Error('expected errorBar');
+    expect(Number(s.data.high[0])).toBe(12);
+    expect(Number(s.data.low[0])).toBe(8);
+    expect(Number(s.data.high[1])).toBe(22);
+    expect(Number(s.data.low[1])).toBe(18);
+  });
+
+  it('warns and ignores non-none sampling', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'errorBar',
+          data: { x: [0], y: [1], high: [2], low: [0] },
+          sampling: 'lttb' as 'none',
+        },
+      ],
+    });
+    const s = resolved.series[0]!;
+    if (s.type !== 'errorBar') throw new Error('expected errorBar');
+    expect(s.sampling).toBe('none');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('warns on length mismatch without throwing', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'errorBar',
+          data: { x: [0, 1, 2], y: [0, 1], high: [1, 2, 3], low: [0, 0, 0] },
+        },
+      ],
+    });
+    expect(resolved.series[0]!.type).toBe('errorBar');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('itemStyle.color falls back to series color then palette', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'errorBar',
+          color: '#38bdf8',
+          data: { x: [0], y: [1], high: [2], low: [0] },
+        },
+      ],
+    });
+    const s = resolved.series[0]!;
+    if (s.type !== 'errorBar') throw new Error('expected errorBar');
+    expect(s.itemStyle.color).toBe('#38bdf8');
+  });
+
+  it('reuses owned HLC identity on same data ref setOption (samplingThreshold aligned)', () => {
+    const data = {
+      x: [0, 1, 2],
+      y: [2, 3, 4],
+      high: [3, 4, 5],
+      low: [1, 2, 3],
+    };
+    const first = resolveOptions({ series: [{ type: 'errorBar', data }] });
+    const s0 = first.series[0]!;
+    if (s0.type !== 'errorBar') throw new Error('expected errorBar');
+    const hlcRef = s0.data;
+
+    // New series config object, same data ref + previousResolved → canReuseResolvedSeriesSample
+    const second = resolveOptions({ series: [{ type: 'errorBar', data }] }, { previousResolved: first });
+    const s1 = second.series[0]!;
+    if (s1.type !== 'errorBar') throw new Error('expected errorBar');
+    // Owned HLC array identity reused when data ref + contentHash stable.
+    expect(s1.data).toBe(hlcRef);
+    expect(s1.rawBounds).toBe(s0.rawBounds);
+  });
+
+  it('recomputes bounds when direction toggles with previousResolved (direction-keyed reuse)', () => {
+    const data = {
+      x: [0, 10],
+      y: [5, 5],
+      high: [8, 8],
+      low: [2, 2],
+    };
+    const vertical = resolveOptions({
+      series: [{ type: 'errorBar', data, direction: 'vertical' }],
+    });
+    const v = vertical.series[0]!;
+    if (v.type !== 'errorBar') throw new Error('expected errorBar');
+    expect(v.rawBounds?.yMin).toBe(2);
+    expect(v.rawBounds?.yMax).toBe(8);
+    const verticalBounds = v.rawBounds;
+
+    // Same data ref + previousResolved, but direction change must not reuse vertical bounds.
+    const horizontal = resolveOptions(
+      { series: [{ type: 'errorBar', data, direction: 'horizontal' }] },
+      { previousResolved: vertical }
+    );
+    const h = horizontal.series[0]!;
+    if (h.type !== 'errorBar') throw new Error('expected errorBar');
+    // Horizontal: high/low contribute to X extents; bounds object must be recomputed.
+    expect(h.rawBounds).not.toBe(verticalBounds);
+    expect(h.rawBounds?.xMin).toBeLessThanOrEqual(2);
+    expect(h.rawBounds?.xMax).toBeGreaterThanOrEqual(8);
+    // Y is only from center y for horizontal
+    expect(h.rawBounds?.yMin).toBe(5);
+    expect(h.rawBounds?.yMax).toBe(6); // collapsed single y expanded by bounds helper
+  });
+});

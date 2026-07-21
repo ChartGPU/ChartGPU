@@ -62,6 +62,17 @@ export type AnySeriesConfig =
         | { readonly x: ArrayLike<number>; readonly y: ArrayLike<number>; readonly y1: ArrayLike<number> }
         | ArrayBufferView;
     }
+  | {
+      readonly type: 'errorBar';
+      readonly data:
+        | ReadonlyArray<unknown>
+        | {
+            readonly x: ArrayLike<number>;
+            readonly y: ArrayLike<number>;
+            readonly high: ArrayLike<number>;
+            readonly low: ArrayLike<number>;
+          };
+    }
   | ResolvedPieSeriesConfig;
 
 /**
@@ -148,7 +159,7 @@ export function createEasingWithDelay(delayMs: number, durationMs: number, easin
  * Heatmap has no dual-Y sample interpolation in v1 either.
  */
 export function isSnapOnlyUpdateAnimationSeries(type: string): boolean {
-  return type === 'heatmap' || type === 'band';
+  return type === 'heatmap' || type === 'band' || type === 'errorBar';
 }
 
 /**
@@ -181,6 +192,14 @@ function hasDrawableMarks(series: AnySeriesConfig): boolean {
       }
       if (ArrayBuffer.isView(series.data)) {
         return (series.data as ArrayBufferView).byteLength > 0;
+      }
+      return false;
+    }
+    case 'errorBar': {
+      const d = series.data as { x?: { length?: number }; length?: number };
+      if (Array.isArray(series.data)) return series.data.length > 0;
+      if (d && typeof d === 'object' && 'x' in d && d.x && typeof d.x.length === 'number') {
+        return d.x.length > 0;
       }
       return false;
     }

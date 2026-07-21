@@ -6,7 +6,7 @@
  */
 
 import type { ResolvedChartGPUOptions } from '../../../config/OptionResolver';
-import type { BandSeriesData, CartesianSeriesData, OHLCDataPoint } from '../../../config/types';
+import type { BandSeriesData, CartesianSeriesData, ErrorBarSeriesData, OHLCDataPoint } from '../../../config/types';
 import type { ZoomRange } from '../../../interaction/createZoomState';
 import type { DataStore } from '../../../data/createDataStore';
 import type { DataStoreBufferKind, CanRangedAppendLineInput } from './canRangedAppendLine';
@@ -19,10 +19,20 @@ import {
   getBandLength,
   isBandShapedPayload,
 } from '../../../data/bandData';
+import {
+  appendErrorBarIntoHlcColumns,
+  asErrorBarHlcArrays,
+  errorBarBounds,
+  errorBarDataToMutableHlc,
+  extendBoundsWithErrorBarData,
+  getErrorBarLength,
+  isErrorBarShapedPayload,
+  type MutableErrorBarHlcColumns,
+} from '../../../data/errorBarData';
 
 /** Pending append batch stored per series index. */
 type PendingAppendBatch = {
-  readonly points: CartesianSeriesData | ReadonlyArray<OHLCDataPoint> | BandSeriesData;
+  readonly points: CartesianSeriesData | ReadonlyArray<OHLCDataPoint> | BandSeriesData | ErrorBarSeriesData;
   readonly maxPoints?: number;
 };
 
@@ -242,6 +252,65 @@ function flushPendingAppendsImplInner(d: any): boolean {
       d.runtimeRawDataByIndex[seriesIndex] = asBandXYYArrays(cols);
       if (didWindow) {
         d.runtimeRawBoundsByIndex[seriesIndex] = bandBounds(asBandXYYArrays(cols));
+      }
+    } else if (s.type === 'errorBar') {
+      // Error-bar HLC columns (private GPU instance buffer re-packs on prepare).
+      let cols = d.runtimeRawDataByIndex[seriesIndex] as MutableErrorBarHlcColumns | null;
+      const direction =
+        (s as { direction?: 'vertical' | 'horizontal' }).direction === 'horizontal' ? 'horizontal' : 'vertical';
+      if (!cols || !('high' in cols) || !('low' in cols)) {
+        const seed = (s.rawData ?? s.data) as ErrorBarSeriesData;
+        cols = errorBarDataToMutableHlc(seed);
+        d.runtimeRawDataByIndex[seriesIndex] = asErrorBarHlcArrays(cols);
+        d.runtimeRawBoundsByIndex[seriesIndex] = s.rawBounds ?? errorBarBounds(seed, direction) ?? null;
+      } else {
+        cols = {
+          x: Array.isArray(cols.x) ? cols.x : Array.from(cols.x as ArrayLike<number>),
+          y: Array.isArray(cols.y) ? cols.y : Array.from(cols.y as ArrayLike<number>),
+          high: Array.isArray(cols.high) ? cols.high : Array.from(cols.high as ArrayLike<number>),
+          low: Array.isArray(cols.low) ? cols.low : Array.from(cols.low as ArrayLike<number>),
+        };
+        d.runtimeRawDataByIndex[seriesIndex] = asErrorBarHlcArrays(cols);
+      }
+
+      let didWindow = false;
+      for (const batch of batches) {
+        const ebPoints = batch.points as ErrorBarSeriesData;
+        if (!isErrorBarShapedPayload(ebPoints)) {
+          console.warn(
+            `RenderCoordinator.appendData(${seriesIndex}, ...): errorBar series requires HLC or relative-error payloads. Skipping batch.`
+          );
+          continue;
+        }
+        const maxPoints = d.normalizeMaxPoints(batch.maxPoints);
+        const appendN = getErrorBarLength(ebPoints);
+        if (appendN === 0) continue;
+        const prevLen = cols.x.length;
+        const plan = d.planMaxPointsWindow(prevLen, appendN, maxPoints);
+        if (plan.dropPrevCount > 0) {
+          cols.x.splice(0, plan.dropPrevCount);
+          cols.y.splice(0, plan.dropPrevCount);
+          cols.high.splice(0, plan.dropPrevCount);
+          cols.low.splice(0, plan.dropPrevCount);
+          didWindow = true;
+        }
+        appendErrorBarIntoHlcColumns(cols, ebPoints, {
+          newSrcOffset: plan.newSrcOffset,
+          keepNewCount: plan.keepNewCount,
+        });
+        if (!plan.didWindow) {
+          d.runtimeRawBoundsByIndex[seriesIndex] = extendBoundsWithErrorBarData(
+            d.runtimeRawBoundsByIndex[seriesIndex],
+            ebPoints,
+            direction
+          );
+        } else {
+          didWindow = true;
+        }
+      }
+      d.runtimeRawDataByIndex[seriesIndex] = asErrorBarHlcArrays(cols);
+      if (didWindow) {
+        d.runtimeRawBoundsByIndex[seriesIndex] = errorBarBounds(asErrorBarHlcArrays(cols), direction);
       }
     } else {
       // Handle other cartesian series (line, area, bar, scatter).

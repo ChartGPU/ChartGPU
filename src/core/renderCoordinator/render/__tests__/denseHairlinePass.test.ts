@@ -53,6 +53,7 @@ function emptyRenderers(lines: LineRenderer[]): SeriesRenderers {
     heatmapRenderers: [],
     candlestickRenderers: [],
     ohlcRenderers: [],
+    errorBarRenderers: [],
     decimationComputes: [],
   };
 }

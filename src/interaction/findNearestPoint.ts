@@ -645,13 +645,14 @@ export function findNearestPoint(
   const cartesianSeriesIndexMap: number[] = [];
   for (let s = 0; s < series.length; s++) {
     const seriesCfg = series[s];
-    // Pie / candlestick / heatmap / band handled separately.
+    // Pie / candlestick / heatmap / band / errorBar handled separately.
     if (
       seriesCfg.type === 'pie' ||
       seriesCfg.type === 'candlestick' ||
       seriesCfg.type === 'ohlc' ||
       seriesCfg.type === 'heatmap' ||
-      seriesCfg.type === 'band'
+      seriesCfg.type === 'band' ||
+      seriesCfg.type === 'errorBar'
     ) {
       continue;
     }

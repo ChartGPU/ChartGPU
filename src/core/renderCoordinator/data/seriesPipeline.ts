@@ -77,6 +77,23 @@ function resolveBaselineSeriesEntry(
     } as ResolvedSeriesConfig;
   }
 
+  if (s.type === 'errorBar') {
+    const anyS = s as ResolvedSeriesConfig & {
+      rawData?: unknown;
+      rawBounds?: RawBoundsSlot;
+      data?: unknown;
+    };
+    // Error bars are sampling='none' only — display data is owned HLC columns.
+    const rawEb = (rawSlot as unknown) ?? anyS.rawData ?? anyS.data;
+    const bounds = boundsSlot ?? anyS.rawBounds ?? undefined;
+    return {
+      ...s,
+      rawData: rawEb,
+      rawBounds: bounds,
+      data: rawEb,
+    } as ResolvedSeriesConfig;
+  }
+
   if (s.type === 'candlestick' || s.type === 'ohlc') {
     const anyS = s as ResolvedSeriesConfig & {
       rawData?: unknown;
@@ -174,6 +191,15 @@ function resolveSetOptionsReuseSeriesEntry(
       rawBounds: boundsSlot ?? anyS.rawBounds ?? undefined,
       // Keep OptionResolver-sampled data when present.
       data: (anyS.data as BandSeriesData) ?? rawBand,
+    } as ResolvedSeriesConfig;
+  }
+  if (s.type === 'errorBar') {
+    const rawEb = (rawSlot as unknown) ?? anyS.rawData ?? anyS.data;
+    return {
+      ...s,
+      rawData: rawEb,
+      rawBounds: boundsSlot ?? anyS.rawBounds ?? undefined,
+      data: rawEb ?? anyS.data,
     } as ResolvedSeriesConfig;
   }
 
@@ -282,6 +308,15 @@ export function resolveZoomedSeriesEntry(input: {
         data: sampled,
         cachedRange: { min: input.bufferedMin, max: input.bufferedMax },
       },
+    };
+  }
+
+  if (s.type === 'errorBar') {
+    // Always full raw (sampling 'none' only). Zoom via scales, not data rewrite.
+    const rawEb = (input.rawSlot as unknown) ?? anyS.rawData ?? anyS.data;
+    return {
+      series: { ...s, rawData: rawEb, data: rawEb } as ResolvedSeriesConfig,
+      cacheEntry: null,
     };
   }
 

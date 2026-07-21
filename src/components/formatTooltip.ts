@@ -71,9 +71,16 @@ function formatPercentChange(open: number, close: number): string {
   return `${sign}${change.toFixed(2)}%`;
 }
 
-function formatRowHtml(params: TooltipParams, valueText: string): string {
+/**
+ * Build a single tooltip row.
+ * @param valueText - Plain text (will be escaped). Prefer this for untrusted/plain values.
+ * @param valueHtml - Trusted HTML built by library formatters (e.g. muted secondary spans).
+ *                    When set, used instead of escaped `valueText` — callers must escape
+ *                    any dynamic plain fragments themselves before interpolating.
+ */
+function formatRowHtml(params: TooltipParams, valueText: string, valueHtml?: string): string {
   const safeName = escapeHtml(resolveSeriesName(params));
-  const safeValue = escapeHtml(valueText);
+  const safeValue = valueHtml ?? escapeHtml(valueText);
   const safeColor = escapeHtml(sanitizeCssColor(params.color));
 
   return [
@@ -85,6 +92,11 @@ function formatRowHtml(params: TooltipParams, valueText: string): string {
     `<span style="font-variant-numeric:tabular-nums;white-space:nowrap;">${safeValue}</span>`,
     '</div>',
   ].join('');
+}
+
+/** Muted secondary fragment; `plain` is escaped before wrap. */
+function mutedSecondaryHtml(plain: string): string {
+  return `<span style="opacity:0.7">${escapeHtml(plain)}</span>`;
 }
 
 function formatCandlestickRowHtml(params: TooltipParams): string {
@@ -150,7 +162,7 @@ export function formatTooltipItem(params: TooltipParams): string {
     // Heatmap: show z as primary value; x/y are cell centers in value[].
     const zText = formatNumber(params.z);
     const xy = `x=${formatNumber(params.value[0])} y=${formatNumber(params.value[1])}`;
-    return formatRowHtml(params, `${zText} <span style="opacity:0.7">(${escapeHtml(xy)})</span>`);
+    return formatRowHtml(params, `${zText} (${xy})`, `${escapeHtml(zText)} ${mutedSecondaryHtml(`(${xy})`)}`);
   }
   if (typeof params.y1 === 'number' && Number.isFinite(params.y1)) {
     // Band: display ordered envelope; raw TooltipParams y/y1 stay unordered.
@@ -159,6 +171,14 @@ export function formatTooltipItem(params: TooltipParams): string {
     const lo = formatNumber(Math.min(a, b));
     const hi = formatNumber(Math.max(a, b));
     return formatRowHtml(params, `${lo} … ${hi}`);
+  }
+  if (typeof params.high === 'number' && typeof params.low === 'number') {
+    // Error bar: center with high/low whiskers.
+    const y = formatNumber(params.value[1]);
+    const hi = formatNumber(params.high);
+    const lo = formatNumber(params.low);
+    const plain = `${y} [${lo} … ${hi}]`;
+    return formatRowHtml(params, plain, `${escapeHtml(y)} ${mutedSecondaryHtml(`[${lo} … ${hi}]`)}`);
   }
   return formatRowHtml(params, formatNumber(params.value[1]));
 }
@@ -184,7 +204,7 @@ export function formatTooltipAxis(params: TooltipParams[]): string {
       if (typeof p.z === 'number') {
         const zText = formatNumber(p.z);
         const xy = `x=${formatNumber(p.value[0])} y=${formatNumber(p.value[1])}`;
-        return formatRowHtml(p, `${zText} <span style="opacity:0.7">(${escapeHtml(xy)})</span>`);
+        return formatRowHtml(p, `${zText} (${xy})`, `${escapeHtml(zText)} ${mutedSecondaryHtml(`(${xy})`)}`);
       }
       if (typeof p.y1 === 'number' && Number.isFinite(p.y1)) {
         const a = p.value[1];
@@ -192,6 +212,12 @@ export function formatTooltipAxis(params: TooltipParams[]): string {
         const lo = formatNumber(Math.min(a, b));
         const hi = formatNumber(Math.max(a, b));
         return formatRowHtml(p, `${lo} … ${hi}`);
+      }
+      if (typeof p.high === 'number' && typeof p.low === 'number') {
+        const y = formatNumber(p.value[1]);
+        const hi = formatNumber(p.high);
+        const lo = formatNumber(p.low);
+        return formatRowHtml(p, `${y} [${lo} … ${hi}]`, `${escapeHtml(y)} ${mutedSecondaryHtml(`[${lo} … ${hi}]`)}`);
       }
       return formatRowHtml(p, formatNumber(p.value[1]));
     })
