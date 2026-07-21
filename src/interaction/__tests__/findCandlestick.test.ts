@@ -45,8 +45,8 @@ const seriesCfg: FinanceOhlcHitSeriesConfig = {
 } as FinanceOhlcHitSeriesConfig;
 
 // Identity domain→range so scale(v)=v for easy anchor math.
-const xScale = createLinearScale({ domain: { min: 0, max: 200 }, range: { min: 0, max: 200 } });
-const yScale = createLinearScale({ domain: { min: 0, max: 100 }, range: { min: 0, max: 100 } });
+const xScale = createLinearScale().domain(0, 200).range(0, 200);
+const yScale = createLinearScale().domain(0, 100).range(0, 100);
 
 describe('findCandlestick yHitMode', () => {
   it('openClose hits inside open–close body', () => {

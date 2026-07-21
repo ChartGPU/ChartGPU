@@ -117,10 +117,10 @@ describe('createOhlcRenderer geometry cache', () => {
     const renderer = createOhlcRenderer(device);
     const data = sampleData.map((row) => [...row]) as ResolvedOhlcSeriesConfig['data'];
     const series = ohlcSeries(data);
-    const x0 = createLinearScale({ domain: { min: 0, max: 3 }, range: { min: 0, max: 1 } });
-    const y0 = createLinearScale({ domain: { min: 0, max: 20 }, range: { min: 0, max: 1 } });
-    const x1 = createLinearScale({ domain: { min: 0.5, max: 2.5 }, range: { min: 0, max: 1 } });
-    const y1 = createLinearScale({ domain: { min: 5, max: 18 }, range: { min: 0, max: 1 } });
+    const x0 = createLinearScale().domain(0, 3).range(0, 1);
+    const y0 = createLinearScale().domain(0, 20).range(0, 1);
+    const x1 = createLinearScale().domain(0.5, 2.5).range(0, 1);
+    const y1 = createLinearScale().domain(5, 18).range(0, 1);
 
     renderer.prepare(series, data, x0, y0, gridArea());
     const writesAfterFirst = (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mock.calls.length;
@@ -139,8 +139,8 @@ describe('createOhlcRenderer geometry cache', () => {
     const renderer = createOhlcRenderer(device);
     const data = sampleData.map((row) => [...row]) as Array<[number, number, number, number, number]>;
     const series = ohlcSeries(data);
-    const x = createLinearScale({ domain: { min: 0, max: 3 }, range: { min: 0, max: 1 } });
-    const y = createLinearScale({ domain: { min: 0, max: 20 }, range: { min: 0, max: 1 } });
+    const x = createLinearScale().domain(0, 3).range(0, 1);
+    const y = createLinearScale().domain(0, 20).range(0, 1);
 
     renderer.prepare(series, data, x, y, gridArea());
     const writesAfterFirst = (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mock.calls.length;
@@ -158,8 +158,8 @@ describe('createOhlcRenderer geometry cache', () => {
     const renderer = createOhlcRenderer(device);
     const data = sampleData.map((row) => [...row]) as Array<[number, number, number, number, number]>;
     const series = ohlcSeries(data);
-    const x = createLinearScale({ domain: { min: 0, max: 10 }, range: { min: 0, max: 1 } });
-    const y = createLinearScale({ domain: { min: 0, max: 20 }, range: { min: 0, max: 1 } });
+    const x = createLinearScale().domain(0, 10).range(0, 1);
+    const y = createLinearScale().domain(0, 20).range(0, 1);
 
     renderer.prepare(series, data, x, y, gridArea());
     const writesAfterFirst = (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mock.calls.length;
@@ -176,8 +176,8 @@ describe('createOhlcRenderer geometry cache', () => {
     const renderer = createOhlcRenderer(device);
     const data = sampleData.map((row) => [...row]) as ResolvedOhlcSeriesConfig['data'];
     const series = ohlcSeries(data);
-    const x = createLinearScale({ domain: { min: 0, max: 3 }, range: { min: 0, max: 1 } });
-    const y = createLinearScale({ domain: { min: 0, max: 20 }, range: { min: 0, max: 1 } });
+    const x = createLinearScale().domain(0, 3).range(0, 1);
+    const y = createLinearScale().domain(0, 20).range(0, 1);
 
     renderer.prepare(series, data, x, y, gridArea());
     const writesAfterFirst = (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mock.calls.length;
@@ -192,8 +192,8 @@ describe('createOhlcRenderer geometry cache', () => {
     const renderer = createOhlcRenderer(device);
     const data = sampleData.map((row) => [...row]) as Array<[number, number, number, number, number]>;
     const series = ohlcSeries(data);
-    const x = createLinearScale({ domain: { min: 0, max: 3 }, range: { min: 0, max: 1 } });
-    const y = createLinearScale({ domain: { min: 0, max: 20 }, range: { min: 0, max: 1 } });
+    const x = createLinearScale().domain(0, 3).range(0, 1);
+    const y = createLinearScale().domain(0, 20).range(0, 1);
 
     renderer.prepare(series, data, x, y, gridArea());
     const writesAfterFirst = (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mock.calls.length;
