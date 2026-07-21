@@ -1,6 +1,7 @@
 import { createChart, type ChartGPUInstance, type OHLCDataPoint } from '../../src/index';
 import { generateHistoricalData } from './generateHistoricalData';
 import { createTickSimulator, createCandleAggregator, type Tick } from './tickSimulator';
+import { mountLogoGpu } from './logoGpu';
 
 // Timeframe intervals in milliseconds
 const TIMEFRAME_INTERVALS: Record<string, number> = {
@@ -24,7 +25,7 @@ const TIMEFRAME_TIMESCALES: Record<string, number> = {
 
 // Configuration (base values - some are mutable for user control)
 const CONFIG = {
-  symbol: 'MEME/USD',
+  symbol: 'ChartGPU',
   ticksPerSecond: 20, // Moderate tick rate for visible updates
   tickVolatility: 0.008, // Per-tick volatility (visible but not wild)
   startPrice: 100, // Nice round starting price
@@ -112,6 +113,12 @@ function getMaxCandles(candleCount: number): number {
 async function init() {
   const container = document.getElementById('chart')!;
 
+  // Brand wordmark via pure WebGPU blit (PNG is exact; procedural glyphs would not be)
+  const logoHost = document.getElementById('ticker-logo-host');
+  if (logoHost) {
+    void mountLogoGpu(logoHost);
+  }
+
   // Generate impressive historical data
   console.log(`Generating ${currentCandleCount.toLocaleString()} historical candles...`);
   const startGen = performance.now();
@@ -138,6 +145,13 @@ async function init() {
   // Create chart
   // Candle-primary defaults: first Y → right, grid left=20 / right=70 (no grid override needed).
   fullChartOptions = {
+    // Darker than built-in dark (#1a1a2e) — metallic near-black plot field
+    theme: {
+      backgroundColor: '#07070a',
+      gridLineColor: 'rgba(255,255,255,0.06)',
+      axisLineColor: 'rgba(224,224,224,0.28)',
+      axisTickColor: 'rgba(224,224,224,0.45)',
+    },
     xAxis: { type: 'time', name: 'Time' },
     // Non-rotated top-rail unit header (exchange-style); series name carries the symbol.
     yAxis: { type: 'value', header: 'USD' },
@@ -271,11 +285,11 @@ function toggleStreaming() {
   isStreaming = !isStreaming;
   if (isStreaming) {
     tickSimulator.start();
-    document.getElementById('toggle-btn')!.textContent = '⏸ Pause';
+    document.getElementById('toggle-btn')!.textContent = 'Pause';
     document.getElementById('toggle-btn')!.classList.add('active');
   } else {
     tickSimulator.stop();
-    document.getElementById('toggle-btn')!.textContent = '▶ Start';
+    document.getElementById('toggle-btn')!.textContent = 'Start';
     document.getElementById('toggle-btn')!.classList.remove('active');
   }
 }
@@ -284,7 +298,7 @@ function toggleAutoScroll() {
   autoScrollEnabled = !autoScrollEnabled;
   chart.setOption({ autoScroll: autoScrollEnabled });
   const btn = document.getElementById('autoscroll-btn')!;
-  btn.textContent = autoScrollEnabled ? '📍 Auto-Scroll: ON' : '📍 Auto-Scroll: OFF';
+  btn.textContent = autoScrollEnabled ? 'Auto-scroll: On' : 'Auto-scroll: Off';
   btn.classList.toggle('toggle-active', autoScrollEnabled);
 }
 
@@ -516,18 +530,9 @@ function setupControls() {
 
 function updatePrice(price: number) {
   const priceEl = document.getElementById('current-price')!;
-  const prevPrice = parseFloat(priceEl.dataset.price || '0');
-
-  priceEl.textContent = `$${price.toFixed(2)}`;
-  priceEl.dataset.price = price.toString();
-
-  // Flash color on change
-  priceEl.classList.remove('price-up', 'price-down');
-  if (price > prevPrice) {
-    priceEl.classList.add('price-up');
-  } else if (price < prevPrice) {
-    priceEl.classList.add('price-down');
-  }
+  // Steady ink — no flash; $ lives on the ticker symbol, not the quote.
+  priceEl.textContent = price.toFixed(2);
+  priceEl.dataset.price = String(price);
 }
 
 function startStatsLoop() {

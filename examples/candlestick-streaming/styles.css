@@ -1,306 +1,461 @@
+/* Hallmark · pre-emit critique: P5 H5 E5 S4 R5 V4
+ * Hallmark · component: app-chrome · genre: atmospheric · theme: ChartGPU brand
+ * tone: technical · paper: oklch(12% 0.012 265) · accent: gold · display: Space Grotesk + body: DM Sans
+ * axes: dark / geometric-sans / warm · enrichment: none · studied: no
+ * states: default · hover · focus · active · disabled
+ */
+
 :root {
-  --bg-primary: #0d0d0f;
-  --bg-secondary: #16161a;
-  --bg-tertiary: #1e1e24;
-  --text-primary: #ffffff;
-  --text-secondary: #a0a0a8;
-  --accent: #6366f1;
-  --green: #22c55e;
-  --red: #ef4444;
-  --border: #2a2a32;
+  --color-paper: oklch(12% 0.012 265);
+  --color-paper-2: oklch(15% 0.014 265);
+  --color-paper-3: oklch(19% 0.016 265);
+  --color-paper-hover: oklch(22% 0.018 265);
+
+  --color-ink: oklch(92% 0.01 265);
+  --color-ink-2: oklch(62% 0.02 265);
+  --color-ink-3: oklch(42% 0.015 265);
+
+  --color-accent: oklch(74% 0.14 85);
+  --color-accent-soft: oklch(74% 0.14 85 / 0.14);
+  --color-accent-ink: oklch(18% 0.03 85);
+  --color-blue: oklch(58% 0.14 250);
+  --color-focus: oklch(74% 0.14 85);
+
+  --color-rule: oklch(92% 0.01 265 / 0.08);
+  --color-rule-strong: oklch(92% 0.01 265 / 0.14);
+
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  --font-body: 'DM Sans', system-ui, sans-serif;
+  --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Mono', Consolas, monospace;
+
+  --text-xs: 0.6875rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.9375rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.5rem;
+
+  --space-3xs: 0.25rem;
+  --space-2xs: 0.5rem;
+  --space-xs: 0.75rem;
+  --space-sm: 1rem;
+  --space-md: 1.5rem;
+  --space-lg: 2rem;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-short: 180ms;
+  --dur-mid: 280ms;
+
+  --header-h: 52px;
+  --stats-h: 48px;
+  --footer-h: 36px;
 }
 
-* {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
 
+html,
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  min-height: 100vh;
+  height: 100%;
+  overflow-x: clip;
+}
+
+body {
+  font-family: var(--font-body);
+  font-size: var(--text-md);
+  background: var(--color-paper);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
 }
 
 .app {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  min-height: 0;
 }
 
-/* Header */
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
 .header {
   display: flex;
   align-items: center;
-  gap: 24px;
-  padding: 12px 20px;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border);
+  gap: var(--space-md);
+  min-height: var(--header-h);
+  padding: 0 var(--space-md);
+  background: var(--color-paper-2);
+  border-bottom: 1px solid var(--color-rule);
 }
 
-.logo {
+/* Stock ticker: $wordmark + last price */
+.ticker {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0.65rem;
+  flex-shrink: 0;
+  min-width: 0;
+  line-height: 1;
 }
 
-.logo-icon {
-  font-size: 24px;
+/* Cashtag + logo as one unit — tight tracking like $AAPL */
+.ticker-symbol {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.05rem;
+  flex-shrink: 0;
+  line-height: 0;
 }
 
-.logo-text {
-  font-size: 18px;
-  font-weight: 700;
-  background: linear-gradient(135deg, #6366f1, #a855f7);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
-.logo-badge {
-  font-size: 10px;
+.ticker-cash {
+  font-family: var(--font-display);
+  /* Sit just under the wordmark cap height (~22px logo) */
+  font-size: 0.8125rem;
   font-weight: 600;
-  padding: 2px 6px;
-  background: var(--accent);
-  border-radius: 4px;
-  text-transform: uppercase;
+  font-style: normal;
+  letter-spacing: -0.02em;
+  /* Quiet ink — gold fights the logo's GPU gold; blue would fight CHART */
+  color: var(--color-ink-2);
+  line-height: 1;
+  flex-shrink: 0;
+  /* Optical: near wordmark cap-height, tucked into logo leading edge */
+  transform: translate(1px, -1px);
 }
 
-.symbol-info {
+.ticker-logo-host {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
+  align-items: center;
+  flex-shrink: 0;
+  line-height: 0;
 }
 
-.symbol-name {
-  font-size: 20px;
+.ticker-logo {
+  display: block;
+  height: 22px;
+  width: auto;
+  /* ~809/247 aspect locked by logoGpu */
+  object-fit: contain;
+  /* Avoid subpixel blur on the gold edge */
+  image-rendering: auto;
+}
+
+.ticker-price {
+  font-family: var(--font-mono);
+  font-size: 1.05rem;
   font-weight: 600;
-}
-
-.current-price {
-  font-size: 24px;
-  font-weight: 700;
   font-variant-numeric: tabular-nums;
-  transition: color 0.15s;
-}
-
-.current-price.price-up {
-  color: var(--green);
-}
-
-.current-price.price-down {
-  color: var(--red);
+  letter-spacing: -0.03em;
+  color: var(--color-ink);
+  /* Steady ink — no flash on ticks */
 }
 
 .timeframes {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
 }
 
 .github-link {
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 6px 12px;
+  gap: var(--space-2xs);
   margin-left: auto;
-  background-color: var(--bg-tertiary);
-  color: var(--text-secondary);
-  text-decoration: none;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  font-size: 13px;
+  padding: 0.4rem 0.75rem;
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
   font-weight: 500;
-  transition: all 0.15s;
+  color: var(--color-ink-2);
+  text-decoration: none;
+  background: transparent;
+  border: 1px solid var(--color-rule-strong);
+  border-radius: var(--radius-sm);
+  transition:
+    color var(--dur-short) var(--ease-out),
+    border-color var(--dur-short) var(--ease-out),
+    background var(--dur-short) var(--ease-out);
 }
 
 .github-link:hover {
-  color: var(--text-primary);
-  border-color: var(--text-secondary);
+  color: var(--color-ink);
+  border-color: var(--color-ink-3);
+  background: var(--color-paper-3);
+}
+
+.github-link:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
 }
 
 .github-icon {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   fill: currentColor;
 }
 
 .timeframe-btn {
-  padding: 6px 12px;
-  font-size: 13px;
+  padding: 0.35rem 0.65rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
   font-weight: 500;
-  color: var(--text-secondary);
+  color: var(--color-ink-2);
   background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all 0.15s;
+  transition:
+    color var(--dur-short) var(--ease-out),
+    border-color var(--dur-short) var(--ease-out),
+    background var(--dur-short) var(--ease-out);
 }
 
 .timeframe-btn:hover {
-  color: var(--text-primary);
-  border-color: var(--text-secondary);
+  color: var(--color-ink);
+  border-color: var(--color-rule-strong);
+  background: var(--color-paper-3);
+}
+
+.timeframe-btn:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
 }
 
 .timeframe-btn.active {
-  color: var(--text-primary);
-  background: var(--accent);
-  border-color: var(--accent);
+  color: var(--color-accent-ink);
+  background: var(--color-accent);
+  border-color: var(--color-accent);
 }
 
-/* Stats Bar */
+/* ── Stats bar ──────────────────────────────────────────────────────────── */
+
 .stats-bar {
   display: flex;
   align-items: center;
-  gap: 24px;
-  padding: 10px 20px;
-  background: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-md);
+  min-height: var(--stats-h);
+  padding: var(--space-2xs) var(--space-md);
+  background: var(--color-paper);
+  border-bottom: 1px solid var(--color-rule);
 }
 
 .stat {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
+  min-width: 3.5rem;
 }
 
 .stat-label {
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
   font-weight: 500;
-  color: var(--text-secondary);
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  color: var(--color-ink-3);
 }
 
 .stat-value {
-  font-size: 16px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  color: var(--green);
+  color: var(--color-ink);
 }
 
 .stat-separator {
   width: 1px;
-  height: 32px;
-  background: var(--border);
-  margin: 0 8px;
+  height: 1.75rem;
+  background: var(--color-rule-strong);
+  flex-shrink: 0;
 }
 
-.control-btn {
-  padding: 8px 16px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-  background: var(--green);
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.control-btn:hover {
-  filter: brightness(1.1);
-}
-
-.control-btn.active {
-  background: var(--red);
-}
-
-.control-btn.secondary {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-}
-
-.control-btn.secondary:hover {
-  border-color: var(--text-secondary);
-}
-
-.control-btn.toggle-active {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-/* Candle Presets */
 .candle-presets {
   display: flex;
   align-items: center;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 .preset-label {
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
   font-weight: 500;
-  color: var(--text-secondary);
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-right: 4px;
+  color: var(--color-ink-3);
+  margin-right: 2px;
 }
 
 .preset-btn {
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-secondary);
+  padding: 0.25rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--color-ink-2);
   background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 4px;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all 0.15s;
+  transition:
+    color var(--dur-short) var(--ease-out),
+    border-color var(--dur-short) var(--ease-out),
+    background var(--dur-short) var(--ease-out);
 }
 
 .preset-btn:hover {
-  color: var(--text-primary);
-  border-color: var(--text-secondary);
+  color: var(--color-ink);
+  border-color: var(--color-rule-strong);
+}
+
+.preset-btn:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
 }
 
 .preset-btn.active {
-  color: var(--text-primary);
-  background: var(--accent);
-  border-color: var(--accent);
+  color: var(--color-accent-ink);
+  background: var(--color-accent);
+  border-color: var(--color-accent);
 }
 
-/* Chart */
+.control-btn {
+  padding: 0.4rem 0.85rem;
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-accent-ink);
+  background: var(--color-accent);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    filter var(--dur-short) var(--ease-out),
+    background var(--dur-short) var(--ease-out),
+    border-color var(--dur-short) var(--ease-out),
+    color var(--dur-short) var(--ease-out);
+}
+
+.control-btn:hover {
+  filter: brightness(1.06);
+}
+
+.control-btn:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.control-btn:active {
+  filter: brightness(0.96);
+}
+
+.control-btn.active {
+  color: var(--color-ink);
+  background: oklch(42% 0.12 25);
+  border-color: oklch(50% 0.14 25);
+  filter: none;
+}
+
+.control-btn.secondary {
+  color: var(--color-ink-2);
+  background: var(--color-paper-2);
+  border-color: var(--color-rule-strong);
+  filter: none;
+}
+
+.control-btn.secondary:hover {
+  color: var(--color-ink);
+  border-color: var(--color-ink-3);
+  background: var(--color-paper-3);
+  filter: none;
+}
+
+.control-btn.toggle-active {
+  color: var(--color-accent-ink);
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+/* ── Chart ──────────────────────────────────────────────────────────────── */
+
 .chart-container {
   flex: 1;
   min-height: 0;
-  background: var(--bg-primary);
+  /* Match chart theme.backgroundColor — metallic black plot field */
+  background: #07070a;
 }
 
-/* Footer */
+/* ── Footer ─────────────────────────────────────────────────────────────── */
+
 .footer {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10px 20px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  background: var(--bg-secondary);
-  border-top: 1px solid var(--border);
+  gap: var(--space-sm);
+  min-height: var(--footer-h);
+  padding: 0 var(--space-md);
+  font-size: var(--text-xs);
+  color: var(--color-ink-3);
+  background: var(--color-paper-2);
+  border-top: 1px solid var(--color-rule);
 }
 
 .footer a {
-  color: var(--accent);
+  color: var(--color-ink-2);
   text-decoration: none;
+  transition: color var(--dur-short) var(--ease-out);
 }
 
 .footer a:hover {
-  text-decoration: underline;
+  color: var(--color-accent);
 }
 
-/* Responsive */
+.footer a:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* ── Responsive ─────────────────────────────────────────────────────────── */
+
 @media (max-width: 768px) {
   .header {
     flex-wrap: wrap;
-    gap: 12px;
+    gap: var(--space-xs);
+    padding: var(--space-2xs) var(--space-sm);
   }
 
   .timeframes {
     order: 3;
     width: 100%;
+  }
+
+  .github-link {
     margin-left: 0;
   }
 
   .stats-bar {
-    flex-wrap: wrap;
-    gap: 12px 24px;
+    gap: var(--space-xs) var(--space-sm);
+    padding: var(--space-2xs) var(--space-sm);
+  }
+
+  .stat-separator {
+    display: none;
+  }
+
+  .ticker-price {
+    font-size: var(--text-md);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
   }
 }
