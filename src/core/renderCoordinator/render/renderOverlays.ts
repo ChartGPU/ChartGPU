@@ -32,6 +32,8 @@ const DEFAULT_HIGHLIGHT_SIZE_CSS_PX = 4;
 
 interface OverlayRenderers {
   gridRenderer: GridRenderer;
+  /** Optional sampleCount-1 grid for dense-only main (skip 4× MSAA clear+resolve). */
+  gridRendererSS1?: GridRenderer | null;
   xAxisRenderer: AxisRenderer;
   yAxisRenderers: Map<string, AxisRenderer>;
   crosshairRenderer: CrosshairRenderer;
@@ -196,38 +198,42 @@ export function prepareOverlays(renderers: OverlayRenderers, context: OverlayPre
   const gridUnchanged = memo != null && gridPrepareSignaturesEqual(memo.grid, gridSig);
 
   if (!gridUnchanged) {
-    // Clear grid when hidden (or when both counts are zero).
-    if (horizontalCount === 0 && verticalCount === 0) {
-      renderers.gridRenderer.prepare(gridArea, {
-        lineCount: { horizontal: 0, vertical: 0 },
-      });
-    } else if (
-      horizontalCount > 0 &&
-      verticalCount > 0 &&
-      gridLinesConfig.horizontal.color !== gridLinesConfig.vertical.color
-    ) {
-      // Per-direction colors: render two batches (horizontal then vertical).
-      renderers.gridRenderer.prepare(gridArea, {
-        lineCount: { horizontal: horizontalCount, vertical: 0 },
-        color: gridLinesConfig.horizontal.color,
-        horizontalClipYs: horizontalClipYs.length > 0 ? horizontalClipYs : undefined,
-      });
-      renderers.gridRenderer.prepare(gridArea, {
-        lineCount: { horizontal: 0, vertical: verticalCount },
-        color: gridLinesConfig.vertical.color,
-        verticalClipXs: verticalClipXs.length > 0 ? verticalClipXs : undefined,
-        append: true,
-      });
-    } else {
-      // Single color (either both directions share a color, or only one direction is enabled).
-      const color = horizontalCount > 0 ? gridLinesConfig.horizontal.color : gridLinesConfig.vertical.color;
-      renderers.gridRenderer.prepare(gridArea, {
-        lineCount: { horizontal: horizontalCount, vertical: verticalCount },
-        color,
-        horizontalClipYs: horizontalClipYs.length > 0 ? horizontalClipYs : undefined,
-        verticalClipXs: verticalClipXs.length > 0 ? verticalClipXs : undefined,
-      });
-    }
+    const prepareGrid = (gr: GridRenderer): void => {
+      // Clear grid when hidden (or when both counts are zero).
+      if (horizontalCount === 0 && verticalCount === 0) {
+        gr.prepare(gridArea, {
+          lineCount: { horizontal: 0, vertical: 0 },
+        });
+      } else if (
+        horizontalCount > 0 &&
+        verticalCount > 0 &&
+        gridLinesConfig.horizontal.color !== gridLinesConfig.vertical.color
+      ) {
+        // Per-direction colors: render two batches (horizontal then vertical).
+        gr.prepare(gridArea, {
+          lineCount: { horizontal: horizontalCount, vertical: 0 },
+          color: gridLinesConfig.horizontal.color,
+          horizontalClipYs: horizontalClipYs.length > 0 ? horizontalClipYs : undefined,
+        });
+        gr.prepare(gridArea, {
+          lineCount: { horizontal: 0, vertical: verticalCount },
+          color: gridLinesConfig.vertical.color,
+          verticalClipXs: verticalClipXs.length > 0 ? verticalClipXs : undefined,
+          append: true,
+        });
+      } else {
+        // Single color (either both directions share a color, or only one direction is enabled).
+        const color = horizontalCount > 0 ? gridLinesConfig.horizontal.color : gridLinesConfig.vertical.color;
+        gr.prepare(gridArea, {
+          lineCount: { horizontal: horizontalCount, vertical: verticalCount },
+          color,
+          horizontalClipYs: horizontalClipYs.length > 0 ? horizontalClipYs : undefined,
+          verticalClipXs: verticalClipXs.length > 0 ? verticalClipXs : undefined,
+        });
+      }
+    };
+    prepareGrid(renderers.gridRenderer);
+    if (renderers.gridRendererSS1) prepareGrid(renderers.gridRendererSS1);
     if (memo) memo.grid = gridSig;
   }
 

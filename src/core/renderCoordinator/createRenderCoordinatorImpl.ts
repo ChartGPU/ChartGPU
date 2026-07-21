@@ -81,8 +81,11 @@ import {
   invalidateStepExpandCache,
   renderAboveSeriesAnnotations,
   hasDenseHairlineLines,
+  hasDenseDeferredArea,
   hasDenseDeferredScatter,
+  hasNonDeferredMainSeriesContent,
   renderDenseHairlineLines,
+  renderDenseDeferredArea,
   renderDenseDeferredScatter,
   planGpuFrame,
   encodeFrameComputePasses,
@@ -1650,6 +1653,8 @@ export function createRenderCoordinator(
 
   /** DOM axis-label rebuild signature; skip clear+rebuild when unchanged. */
   let lastAxisLabelDomSignature = '';
+  /** Throttle DOM axis label rebuilds during continuous axes-only y animation. */
+  let lastAxisLabelDomUpdateMs = 0;
   /**
    * Bumped on every setOptions so labelSig invalidates when tick formatters,
    * axis type, theme fonts, or other options that affect label content change.
@@ -1668,6 +1673,16 @@ export function createRenderCoordinator(
     sampleCount: msaaSampleCount,
     pipelineCache,
   });
+  // SampleCount-1 grid for dense-only main (group 8 multi-M: skip 4× MSAA clear+resolve
+  // when every series layer is deferred to the post-resolve SS1 pass).
+  const gridRendererSS1 =
+    msaaSampleCount > 1
+      ? createGridRenderer(device, {
+          targetFormat,
+          sampleCount: 1,
+          pipelineCache,
+        })
+      : null;
   // Axes / crosshair / highlight must match the overlay pass sampleCount.
   const xAxisRenderer = createAxisRenderer(device, {
     targetFormat,
@@ -1687,6 +1702,12 @@ export function createRenderCoordinator(
     pipelineCache,
   });
   highlightRenderer.setVisible(false);
+  // SampleCount-1 UI for dense-only direct swapchain path (group 8 multi-M mountain).
+  // Axes only: pointer overlays (crosshair/highlight) force the full MSAA path via
+  // needsPointerOverlaysForDenseOnly — no SS1 twins for those renderers.
+  const xAxisRendererSS1 =
+    overlayMsaaSampleCount > 1 ? createAxisRenderer(device, { targetFormat, sampleCount: 1, pipelineCache }) : null;
+  const yAxisRenderersSS1 = new Map<string, ReturnType<typeof createAxisRenderer>>();
 
   // Frame graph (WG-P1-5):
   // 1. Main MSAA → resolve (grid, series, below-series annotations)
@@ -3790,6 +3811,12 @@ export function createRenderCoordinator(
       for (let ai = 0; ai < areas.length; ai++) {
         areas[ai]!.invalidateGeometry();
       }
+      // Line dense compact LOD is identity-cached (same contract as area) — clear
+      // so in-place interpolation does not leave stroke on first-frame subsample.
+      const lines = pool.lineRenderers;
+      for (let li = 0; li < lines.length; li++) {
+        lines[li]!.invalidateGeometry();
+      }
       pool.barRenderer.invalidateGeometry();
       const scatters = pool.scatterRenderers;
       for (let si = 0; si < scatters.length; si++) {
@@ -3879,6 +3906,7 @@ export function createRenderCoordinator(
     prepareOverlays(
       {
         gridRenderer,
+        gridRendererSS1,
         xAxisRenderer,
         yAxisRenderers,
         crosshairRenderer,
@@ -4328,20 +4356,46 @@ export function createRenderCoordinator(
     // Post-resolve dense only helps when main is 4× MSAA. With sampleCount 1
     // (`antialias: false`), content already draws in the main pass.
     // GPU pass graph owned by frameRender.planGpuFrame (not re-derived ad hoc).
+    const hasDenseHairline = hasDenseHairlineLines(poolState, seriesPreparation);
+    const hasDenseScatter = hasDenseDeferredScatter(poolState, seriesPreparation);
+    const hasDenseArea = hasDenseDeferredArea(poolState, seriesPreparation);
     const framePlan = planGpuFrame({
       msaaSampleCount,
-      hasDenseHairline: hasDenseHairlineLines(poolState, seriesPreparation),
-      hasDenseScatter: hasDenseDeferredScatter(poolState, seriesPreparation),
+      hasDenseHairline,
+      hasDenseScatter,
+      hasDenseArea,
     });
     const { useDirectSwapchainResolve, useSwapchainAsMainView, needResolveAndOverlay, needMainColor } = framePlan;
     // passOrder drives which optional passes run (dense hairline / overlay).
     const runDenseHairlinePass = framePlanIncludesDenseHairline(framePlan);
     const runAnnotationOverlayPass = framePlanIncludesAnnotationOverlay(framePlan);
+    // Group 8 multi-M mountain: when every series layer is deferred to SS1, draw a
+    // single sampleCount-1 pass straight to the swapchain (grid + dense series + UI).
+    // Eliminates 4× MSAA main clear/resolve AND overlay blit — the multi-M residual.
+    //
+    // Correctness gates (review issues 1–4, 10): SS1 twins for annotations /
+    // crosshair / highlight prepare are incomplete. Drawing MSAA annotation
+    // pipelines into a sampleCount:1 pass fails WebGPU validation; above-series
+    // markers drop entirely; pointer overlays never receive prepare/setVisible.
+    // Fall back to the full main→resolve→dense→overlay graph whenever any of
+    // those features are active. Suite mountain (no annotations, no hover) still
+    // hits this path.
+    const hasAnnotationsForDenseOnly =
+      referenceLineBelowCount > 0 || markerBelowCount > 0 || referenceLineAboveCount > 0 || markerAboveCount > 0;
+    const needsPointerOverlaysForDenseOnly = effectivePointer.hasPointer && effectivePointer.isInGrid;
+    const denseOnlyDirectSS1 =
+      runDenseHairlinePass &&
+      msaaSampleCount > 1 &&
+      !hasNonDeferredMainSeriesContent(poolState, seriesPreparation) &&
+      gridRendererSS1 != null &&
+      xAxisRendererSS1 != null &&
+      !hasAnnotationsForDenseOnly &&
+      !needsPointerOverlaysForDenseOnly;
 
     textureManager.ensureTextures(gridArea.canvasWidth, gridArea.canvasHeight, {
-      needResolveAndOverlay,
+      needResolveAndOverlay: needResolveAndOverlay && !denseOnlyDirectSS1,
       // Direct sampleCount-1 path needs no offscreen color target.
-      needMainColor,
+      needMainColor: needMainColor && !denseOnlyDirectSS1,
     });
     const texState = textureManager.getState();
 
@@ -4355,64 +4409,25 @@ export function createRenderCoordinator(
     // Encode compute passes (scatter density + line decimation) — frameRender ownership.
     encodeFrameComputePasses(poolState, seriesForRender, encoder);
 
-    const mainPass = encoder.beginRenderPass({
-      label: useDirectSwapchainResolve ? 'renderCoordinator/mainPassDirect' : 'renderCoordinator/mainPass',
-      colorAttachments: [
-        useSwapchainAsMainView
-          ? {
-              view: swapchainView,
-              clearValue,
-              loadOp: 'clear',
-              storeOp: 'store',
-            }
-          : {
-              view: texState.mainColorView!, // MSAA (4×) main color
-              resolveTarget: useDirectSwapchainResolve ? swapchainView : texState.mainResolveView!, // intermediate resolve for hairline/overlay path
-              clearValue,
-              loadOp: 'clear',
-              storeOp: 'discard', // MSAA content discarded after resolve
-            },
-      ],
-    });
-
-    // Render order:
-    // - grid first (background)
-    // - pies early (non-cartesian, visible behind cartesian series)
-    // - area fills next (so they don't cover strokes/axes)
-    // - bars next (fills)
-    // - scatter next (points on top of fills, below strokes/overlays)
-    // - line strokes next
-    // - (direct path) above-series annotations + axes/highlight/crosshair last
-    if (gridRenderer) {
-      gridRenderer.render(mainPass);
-    }
-
-    // Series layers — frameRender.encodeMainSeriesPass.
-    encodeMainSeriesPass(
-      poolState,
-      {
-        referenceLineRenderer,
-        referenceLineRendererMsaa,
-        annotationMarkerRenderer,
-        annotationMarkerRendererMsaa,
-      },
-      {
-        hasCartesianSeries,
-        gridArea,
-        mainPass,
-        plotScissor,
-        introPhase,
-        introProgress01,
-        referenceLineBelowCount,
-        markerBelowCount,
-      },
-      seriesPreparation
-    );
-
-    if (useDirectSwapchainResolve) {
-      // Above-series annotations + UI into the same 4× MSAA main pass (sampleCount
-      // matches ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT === MAIN_SCENE_MSAA_SAMPLE_COUNT).
-      renderAboveSeriesAnnotations(
+    if (denseOnlyDirectSS1) {
+      // Single SS1 pass: clear → grid → dense area/scatter/line → axes/UI → present.
+      const directPass = encoder.beginRenderPass({
+        label: 'renderCoordinator/denseOnlyDirectSS1',
+        colorAttachments: [
+          {
+            view: swapchainView,
+            clearValue,
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+      });
+      gridRendererSS1!.render(directPass);
+      // Fully-deferred dense content: main series encode is a no-op. Annotation
+      // counts are forced zero by the denseOnlyDirectSS1 gate (hasAnnotationsForDenseOnly),
+      // so no below/above-series annotation draw happens on this path.
+      encodeMainSeriesPass(
+        poolState,
         {
           referenceLineRenderer,
           referenceLineRendererMsaa,
@@ -4422,86 +4437,156 @@ export function createRenderCoordinator(
         {
           hasCartesianSeries,
           gridArea,
-          overlayPass: mainPass,
+          mainPass: directPass,
           plotScissor,
-          referenceLineAboveCount,
-          markerAboveCount,
-        }
+          introPhase,
+          introProgress01,
+          referenceLineBelowCount,
+          markerBelowCount,
+        },
+        seriesPreparation
       );
-      highlightRenderer.render(mainPass);
-      if (hasCartesianSeries) {
-        xAxisRenderer.render(mainPass);
-        for (const r of yAxisRenderers.values()) {
-          r.render(mainPass);
+      renderDenseDeferredArea(
+        poolState,
+        {
+          gridArea,
+          densePass: directPass,
+          plotScissor,
+          introPhase,
+          introProgress01,
+        },
+        seriesPreparation
+      );
+      renderDenseDeferredScatter(
+        poolState,
+        {
+          gridArea,
+          densePass: directPass,
+          plotScissor,
+          introPhase,
+          introProgress01,
+        },
+        seriesPreparation
+      );
+      renderDenseHairlineLines(
+        poolState,
+        {
+          gridArea,
+          hairlinePass: directPass,
+          plotScissor,
+          introPhase,
+          introProgress01,
+        },
+        seriesPreparation
+      );
+      // Mirror axis geometry onto SS1 pipelines (same ticks as prepareOverlays MSAA path).
+      // Annotations / pointer overlays are gated out above — no MSAA pipelines in this pass.
+      {
+        const axisLineColor = currentOptions.theme.axisLineColor;
+        const axisTickColor = currentOptions.theme.axisTickColor;
+        xAxisRendererSS1!.prepare(
+          currentOptions.xAxis,
+          xScale,
+          'x',
+          gridArea,
+          axisLineColor,
+          axisTickColor,
+          xTickCount,
+          xTickValues
+        );
+        for (const yAxisConfig of currentOptions.yAxes) {
+          const axisId = yAxisConfig.id!;
+          let yr = yAxisRenderersSS1.get(axisId);
+          if (!yr) {
+            yr = createAxisRenderer(device, { targetFormat, sampleCount: 1, pipelineCache });
+            yAxisRenderersSS1.set(axisId, yr);
+          }
+          const axisYScale = currentYScales.get(axisId) ?? currentYScales.values().next().value;
+          if (!axisYScale) continue;
+          // Match prepareOverlays: resolve tick values from the visible scale domain
+          // (log majors or linear even splits) — never undefined / default-only counts.
+          const { min: dMin, max: dMax } = axisYScale.getDomain();
+          let yTicks: readonly number[];
+          if (yAxisConfig.type === 'log') {
+            yTicks = generateLogTicksForVisibleDomain(dMin, dMax, yAxisConfig.logBase ?? 10);
+          } else {
+            const count = (yAxisConfig as { tickCount?: number }).tickCount ?? DEFAULT_TICK_COUNT;
+            yTicks = generateLinearTicks(dMin, dMax, count);
+          }
+          const yTickCount =
+            yTicks.length > 0
+              ? yTicks.length
+              : ((yAxisConfig as { tickCount?: number }).tickCount ?? DEFAULT_TICK_COUNT);
+          yr.prepare(yAxisConfig, axisYScale, 'y', gridArea, axisLineColor, axisTickColor, yTickCount, yTicks);
         }
       }
-      crosshairRenderer.render(mainPass);
-    }
+      if (hasCartesianSeries) {
+        xAxisRendererSS1!.render(directPass);
+        for (const r of yAxisRenderersSS1.values()) {
+          r.render(directPass);
+        }
+      }
+      // No crosshair/highlight on this path: denseOnlyDirectSS1 is gated off when
+      // the pointer is in-grid (full MSAA overlay path owns those renderers).
+      directPass.end();
+    } else {
+      const mainPass = encoder.beginRenderPass({
+        label: useDirectSwapchainResolve ? 'renderCoordinator/mainPassDirect' : 'renderCoordinator/mainPass',
+        colorAttachments: [
+          useSwapchainAsMainView
+            ? {
+                view: swapchainView,
+                clearValue,
+                loadOp: 'clear',
+                storeOp: 'store',
+              }
+            : {
+                view: texState.mainColorView!, // MSAA (4×) main color
+                resolveTarget: useDirectSwapchainResolve ? swapchainView : texState.mainResolveView!, // intermediate resolve for hairline/overlay path
+                clearValue,
+                loadOp: 'clear',
+                storeOp: 'discard', // MSAA content discarded after resolve
+              },
+        ],
+      });
 
-    mainPass.end();
-
-    // Optional passes follow framePlan.passOrder (denseHairline → annotationOverlay).
-    if (runDenseHairlinePass || runAnnotationOverlayPass) {
-      if (runDenseHairlinePass) {
-        // Post-resolve sampleCount:1 load-pass: dense hairline lines (group 3)
-        // and/or dense-compact scatter (group 2 ≥250k). Same pass hosts both.
-        const hairlinePass = encoder.beginRenderPass({
-          label: 'renderCoordinator/denseHairlinePass',
-          colorAttachments: [
-            {
-              view: texState.mainResolveView!,
-              loadOp: 'load',
-              storeOp: 'store',
-            },
-          ],
-        });
-        // Layering matches main pass (scatter under lines): dense scatter first,
-        // then dense hairline strokes. Pure-scatter charts only typically defer
-        // scatter; mixed charts with lines keep scatter on main (see prepare).
-        renderDenseDeferredScatter(
-          poolState,
-          {
-            gridArea,
-            densePass: hairlinePass,
-            plotScissor,
-            introPhase,
-            introProgress01,
-          },
-          seriesPreparation
-        );
-        renderDenseHairlineLines(
-          poolState,
-          {
-            gridArea,
-            hairlinePass,
-            plotScissor,
-            introPhase,
-            introProgress01,
-          },
-          seriesPreparation
-        );
-        hairlinePass.end();
+      // Render order:
+      // - grid first (background)
+      // - pies early (non-cartesian, visible behind cartesian series)
+      // - area fills next (so they don't cover strokes/axes)
+      // - bars next (fills)
+      // - scatter next (points on top of fills, below strokes/overlays)
+      // - line strokes next
+      // - (direct path) above-series annotations + axes/highlight/crosshair last
+      if (gridRenderer) {
+        gridRenderer.render(mainPass);
       }
 
-      if (runAnnotationOverlayPass) {
-        // MSAA annotation overlay: blit resolved main → MSAA target, then above-series annotations + UI.
-        const overlayPass = encoder.beginRenderPass({
-          label: 'renderCoordinator/annotationOverlayMsaaPass',
-          colorAttachments: [
-            {
-              view: texState.overlayMsaaView!,
-              resolveTarget: swapchainView,
-              clearValue,
-              loadOp: 'clear',
-              storeOp: 'discard',
-            },
-          ],
-        });
+      // Series layers — frameRender.encodeMainSeriesPass.
+      encodeMainSeriesPass(
+        poolState,
+        {
+          referenceLineRenderer,
+          referenceLineRendererMsaa,
+          annotationMarkerRenderer,
+          annotationMarkerRendererMsaa,
+        },
+        {
+          hasCartesianSeries,
+          gridArea,
+          mainPass,
+          plotScissor,
+          introPhase,
+          introProgress01,
+          referenceLineBelowCount,
+          markerBelowCount,
+        },
+        seriesPreparation
+      );
 
-        overlayPass.setPipeline(texState.overlayBlitPipeline);
-        overlayPass.setBindGroup(0, texState.overlayBlitBindGroup!);
-        overlayPass.draw(3);
-
+      if (useDirectSwapchainResolve) {
+        // Above-series annotations + UI into the same 4× MSAA main pass (sampleCount
+        // matches ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT === MAIN_SCENE_MSAA_SAMPLE_COUNT).
         renderAboveSeriesAnnotations(
           {
             referenceLineRenderer,
@@ -4512,25 +4597,127 @@ export function createRenderCoordinator(
           {
             hasCartesianSeries,
             gridArea,
-            overlayPass,
+            overlayPass: mainPass,
             plotScissor,
             referenceLineAboveCount,
             markerAboveCount,
           }
         );
-
-        highlightRenderer.render(overlayPass);
+        highlightRenderer.render(mainPass);
         if (hasCartesianSeries) {
-          xAxisRenderer.render(overlayPass);
+          xAxisRenderer.render(mainPass);
           for (const r of yAxisRenderers.values()) {
-            r.render(overlayPass);
+            r.render(mainPass);
           }
         }
-        crosshairRenderer.render(overlayPass);
-
-        overlayPass.end();
+        crosshairRenderer.render(mainPass);
       }
-    }
+
+      mainPass.end();
+
+      // Optional passes follow framePlan.passOrder (denseHairline → annotationOverlay).
+      if (runDenseHairlinePass || runAnnotationOverlayPass) {
+        if (runDenseHairlinePass) {
+          // Post-resolve sampleCount:1 load-pass: dense mountain fill (group 8),
+          // dense-compact scatter (group 2 ≥250k), dense hairline lines (group 3).
+          // Same pass hosts all three — layering matches main (area → scatter → lines).
+          const hairlinePass = encoder.beginRenderPass({
+            label: 'renderCoordinator/denseHairlinePass',
+            colorAttachments: [
+              {
+                view: texState.mainResolveView!,
+                loadOp: 'load',
+                storeOp: 'store',
+              },
+            ],
+          });
+          // Fill under markers under strokes (main-pass order). Pure-scatter charts
+          // only typically defer scatter; mixed charts with lines keep scatter on main.
+          renderDenseDeferredArea(
+            poolState,
+            {
+              gridArea,
+              densePass: hairlinePass,
+              plotScissor,
+              introPhase,
+              introProgress01,
+            },
+            seriesPreparation
+          );
+          renderDenseDeferredScatter(
+            poolState,
+            {
+              gridArea,
+              densePass: hairlinePass,
+              plotScissor,
+              introPhase,
+              introProgress01,
+            },
+            seriesPreparation
+          );
+          renderDenseHairlineLines(
+            poolState,
+            {
+              gridArea,
+              hairlinePass,
+              plotScissor,
+              introPhase,
+              introProgress01,
+            },
+            seriesPreparation
+          );
+          hairlinePass.end();
+        }
+
+        if (runAnnotationOverlayPass) {
+          // MSAA annotation overlay: blit resolved main → MSAA target, then above-series annotations + UI.
+          const overlayPass = encoder.beginRenderPass({
+            label: 'renderCoordinator/annotationOverlayMsaaPass',
+            colorAttachments: [
+              {
+                view: texState.overlayMsaaView!,
+                resolveTarget: swapchainView,
+                clearValue,
+                loadOp: 'clear',
+                storeOp: 'discard',
+              },
+            ],
+          });
+
+          overlayPass.setPipeline(texState.overlayBlitPipeline);
+          overlayPass.setBindGroup(0, texState.overlayBlitBindGroup!);
+          overlayPass.draw(3);
+
+          renderAboveSeriesAnnotations(
+            {
+              referenceLineRenderer,
+              referenceLineRendererMsaa,
+              annotationMarkerRenderer,
+              annotationMarkerRendererMsaa,
+            },
+            {
+              hasCartesianSeries,
+              gridArea,
+              overlayPass,
+              plotScissor,
+              referenceLineAboveCount,
+              markerAboveCount,
+            }
+          );
+
+          highlightRenderer.render(overlayPass);
+          if (hasCartesianSeries) {
+            xAxisRenderer.render(overlayPass);
+            for (const r of yAxisRenderers.values()) {
+              r.render(overlayPass);
+            }
+          }
+          crosshairRenderer.render(overlayPass);
+
+          overlayPass.end();
+        }
+      }
+    } // end !denseOnlyDirectSS1
 
     // Multi-chart shared-device: coalesce N chart submits into one microtask batch.
     enqueueDeviceSubmit(device, encoder.finish());
@@ -4595,38 +4782,60 @@ export function createRenderCoordinator(
         labelSig += `yt:${yAxisConfig.type ?? ''};yb:${yAxisConfig.logBase ?? ''};`;
       }
       if (labelSig !== lastAxisLabelDomSignature) {
-        lastAxisLabelDomSignature = labelSig;
-        renderAxisLabels(axisLabelOverlay, overlayContainer, {
-          gpuContext,
-          currentOptions,
-          xScale,
-          xTickValues,
-          plotClipRect,
-          visibleXRangeMs,
-        });
+        // Throttle DOM label rebuilds during continuous axes-only animation (suite
+        // mountain/column expand y every frame). Full rebuilds at 60Hz dominate
+        // multi-M Avg FPS via layout/GC; ~20 Hz is still smooth for tick numbers.
+        const nowMs = performance.now();
+        const structural =
+          lastAxisLabelDomSignature === '' ||
+          !lastAxisLabelDomSignature.startsWith(
+            `${plotClipRect.left},${plotClipRect.right},${plotClipRect.top},${plotClipRect.bottom}|`
+          ) ||
+          !labelSig.includes(`epoch:${axisLabelContentEpoch}|`);
+        // Compare epoch segment more carefully: force immediate on theme/formatter epoch.
+        const lastEpochIdx = lastAxisLabelDomSignature.indexOf('epoch:');
+        const nextEpochIdx = labelSig.indexOf('epoch:');
+        const epochChanged =
+          lastEpochIdx < 0 ||
+          nextEpochIdx < 0 ||
+          lastAxisLabelDomSignature.slice(lastEpochIdx, lastEpochIdx + 24) !==
+            labelSig.slice(nextEpochIdx, nextEpochIdx + 24);
+        const throttleOk = structural || epochChanged || nowMs - lastAxisLabelDomUpdateMs >= 50;
+        if (throttleOk) {
+          lastAxisLabelDomSignature = labelSig;
+          lastAxisLabelDomUpdateMs = nowMs;
+          renderAxisLabels(axisLabelOverlay, overlayContainer, {
+            gpuContext,
+            currentOptions,
+            xScale,
+            xTickValues,
+            plotClipRect,
+            visibleXRangeMs,
+          });
 
-        const canvas2 = gpuContext.canvas as HTMLCanvasElement | null;
-        if (canvas2) {
-          const canvasCssW = getCanvasCssWidth(canvas2);
-          const canvasCssH = getCanvasCssHeight(canvas2);
-          const offX = canvas2.offsetLeft || 0;
-          const offY = canvas2.offsetTop || 0;
-          for (const yAxisConfig of currentOptions.yAxes) {
-            const axisId = yAxisConfig.id!;
-            const yScaleForAxis = currentYScales.get(axisId);
-            if (!yScaleForAxis) continue;
-            renderYAxisLabels({
-              axisLabelOverlay,
-              overlayContainer,
-              yAxisConfig,
-              yScale: yScaleForAxis,
-              plotClipRect,
-              canvasCssWidth: canvasCssW,
-              canvasCssHeight: canvasCssH,
-              offsetX: offX,
-              offsetY: offY,
-              theme: currentOptions.theme,
-            });
+          const canvas2 = gpuContext.canvas as HTMLCanvasElement | null;
+          if (canvas2) {
+            const canvasCssW = getCanvasCssWidth(canvas2);
+            const canvasCssH = getCanvasCssHeight(canvas2);
+            const offX = canvas2.offsetLeft || 0;
+            const offY = canvas2.offsetTop || 0;
+            for (const yAxisConfig of currentOptions.yAxes) {
+              const axisId = yAxisConfig.id!;
+              const yScaleForAxis = currentYScales.get(axisId);
+              if (!yScaleForAxis) continue;
+              renderYAxisLabels({
+                axisLabelOverlay,
+                overlayContainer,
+                yAxisConfig,
+                yScale: yScaleForAxis,
+                plotClipRect,
+                canvasCssWidth: canvasCssW,
+                canvasCssHeight: canvasCssH,
+                offsetX: offX,
+                offsetY: offY,
+                theme: currentOptions.theme,
+              });
+            }
           }
         }
       }
@@ -4742,9 +4951,13 @@ export function createRenderCoordinator(
     rendererPool.dispose();
 
     gridRenderer.dispose();
+    gridRendererSS1?.dispose();
     xAxisRenderer.dispose();
+    xAxisRendererSS1?.dispose();
     for (const r of yAxisRenderers.values()) r.dispose();
     yAxisRenderers.clear();
+    for (const r of yAxisRenderersSS1.values()) r.dispose();
+    yAxisRenderersSS1.clear();
     referenceLineRenderer.dispose();
     referenceLineRendererMsaa.dispose();
     annotationMarkerRenderer.dispose();

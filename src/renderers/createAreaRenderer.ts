@@ -20,6 +20,7 @@ import {
   computePackedXAffineFromScale,
   resolveLogProjection,
 } from './packedXAffine';
+import { resolveAreaDrawPolicy } from './areaDrawPolicy';
 
 /**
  * Optional stacked mountain geometry: per-point floor (yBottom) and ceiling (yTop).
@@ -34,6 +35,16 @@ export type AreaStackGeometry = Readonly<{
    * (yTop = yBottom + contribution already applied by caller into data.y).
    */
   yTop?: ArrayLike<number>;
+}>;
+
+/** Optional draw-only LOD inputs for multi-M mountain fill (`performance.lod`). */
+export type AreaDrawLodOptions = Readonly<{
+  /** Plot width in device pixels (scissor). Drives max drawn segments. */
+  readonly plotWidthDevicePx?: number;
+  /**
+   * When true (`performance.lod: 'strict'`), always draw full N−1 segments.
+   */
+  readonly forceStandardDraw?: boolean;
 }>;
 
 export interface AreaRenderer {
@@ -62,7 +73,11 @@ export interface AreaRenderer {
     /**
      * Stacked mountain per-point yBottom / yTop. Forces private pack + stacked pipeline.
      */
-    stackGeometry?: AreaStackGeometry
+    stackGeometry?: AreaStackGeometry,
+    /**
+     * Dense fill LOD under `performance.lod: 'auto'` (draw-only; residency unchanged).
+     */
+    drawLod?: AreaDrawLodOptions
   ): void;
   /**
    * Drop cached domain-space geometry so the next `prepare` re-packs vertices.
@@ -72,7 +87,20 @@ export interface AreaRenderer {
    * `lastSetSeriesCache.clear()` in the coordinator).
    */
   invalidateGeometry(): void;
+  /**
+   * Draw into the **main** MSAA pass. Dense LOD fills may no-op here and draw via
+   * {@link renderDense} into the post-resolve sampleCount:1 pass.
+   */
   render(passEncoder: GPURenderPassEncoder): void;
+  /**
+   * True when the last prepare deferred dense fill out of the 4× MSAA main pass.
+   */
+  isDenseDeferred(): boolean;
+  /**
+   * Draw dense LOD fill into a **sampleCount:1** load-pass on the resolved main color.
+   * No-op when the last prepare did not defer.
+   */
+  renderDense(passEncoder: GPURenderPassEncoder): void;
   dispose(): void;
 }
 
@@ -150,6 +178,51 @@ function packAreaPointsInto(out: Float32Array, data: CartesianSeriesData, pointC
   }
 }
 
+/**
+ * Pack a dense-LOD subsample into `out` (stride-4 floats unused — vec2 layout).
+ * Always includes the final sample so the mountain ends on the last point.
+ * Returns the packed point count (draw segments = return − 1).
+ *
+ * When `xOffset` is non-zero, stores x′ = x − xOffset (matches DataStore pack /
+ * packed-origin clip affine on the storage-share path).
+ */
+function packLodAreaPointsInto(
+  out: Float32Array,
+  data: CartesianSeriesData,
+  pointCount: number,
+  stride: number,
+  xOffset = 0
+): number {
+  if (pointCount < 2) return pointCount;
+  const last = pointCount - 1;
+  const step = Math.max(1, stride | 0);
+  let o = 0;
+  for (let i = 0; i < last; i += step) {
+    const x = getX(data, i);
+    const y = getY(data, i);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      out[o * 2] = Number.NaN;
+      out[o * 2 + 1] = Number.NaN;
+    } else {
+      out[o * 2] = xOffset !== 0 ? x - xOffset : x;
+      out[o * 2 + 1] = y;
+    }
+    o++;
+  }
+  // Always pin the last sample.
+  const xL = getX(data, last);
+  const yL = getY(data, last);
+  if (!Number.isFinite(xL) || !Number.isFinite(yL)) {
+    out[o * 2] = Number.NaN;
+    out[o * 2 + 1] = Number.NaN;
+  } else {
+    out[o * 2] = xOffset !== 0 ? xL - xOffset : xL;
+    out[o * 2 + 1] = yL;
+  }
+  o++;
+  return o;
+}
+
 /** Pack AreaPoint {x, yTop, yBottom, pad} stride-4 for stacked mountain fill. */
 function packStackedAreaPointsInto(
   out: Float32Array,
@@ -205,15 +278,16 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     ],
   });
 
-  // VSUniforms: mat4 (64) + baseline/logBaseX/logBaseY/logFlags (16) = 80.
-  const vsUniformBuffer = createUniformBuffer(device, 80, {
+  // VSUniforms: mat4 (64) + baseline/logBaseX/logBaseY/logFlags (16)
+  // + lodStride/lastPointIndex/pad (16) = 96.
+  const vsUniformBuffer = createUniformBuffer(device, 96, {
     label: 'areaRenderer/vsUniforms',
   });
   const fsUniformBuffer = createUniformBuffer(device, 16, {
     label: 'areaRenderer/fsUniforms',
   });
 
-  const vsUniformScratchBuffer = new ArrayBuffer(80);
+  const vsUniformScratchBuffer = new ArrayBuffer(96);
   const vsUniformScratchF32 = new Float32Array(vsUniformScratchBuffer);
   const fsUniformScratchF32 = new Float32Array(4);
 
@@ -275,13 +349,79 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     pipelineCache
   );
 
+  // Dense LOD post-resolve path: sampleCount **1** (never 2). Avoids 4× MSAA
+  // overdraw on multi-M mountain fill under performance.lod auto.
+  const pipelineDenseSS1 =
+    sampleCount > 1
+      ? createRenderPipeline(
+          device,
+          {
+            label: 'areaRenderer/pipelineDenseSS1',
+            bindGroupLayouts: [bindGroupLayout],
+            vertex: {
+              code: areaWgsl,
+              label: 'area.wgsl',
+            },
+            fragment: {
+              code: areaWgsl,
+              label: 'area.wgsl',
+              formats: targetFormat,
+              blend: blendState,
+            },
+            primitive: { topology: 'triangle-list', cullMode: 'none' },
+            multisample: { count: 1 },
+          },
+          pipelineCache
+        )
+      : null;
+  const pipelineStackedDenseSS1 =
+    sampleCount > 1
+      ? createRenderPipeline(
+          device,
+          {
+            label: 'areaRenderer/pipelineStackedDenseSS1',
+            bindGroupLayouts: [bindGroupLayout],
+            vertex: {
+              code: areaStackedWgsl,
+              label: 'areaStacked.wgsl',
+            },
+            fragment: {
+              code: areaStackedWgsl,
+              label: 'areaStacked.wgsl',
+              formats: targetFormat,
+              blend: blendState,
+            },
+            primitive: { topology: 'triangle-list', cullMode: 'none' },
+            multisample: { count: 1 },
+          },
+          pipelineCache
+        )
+      : null;
+
   /** Private storage buffer for pure-area series (not shared with line). */
   let privateBuffer: GPUBuffer | null = null;
   /** Bound storage for draw (private or external). */
   let boundDataBuffer: GPUBuffer | null = null;
   let currentBindGroup: GPUBindGroup | null = null;
-  /** Logical point count (draw uses N-1 segment instances). */
+  /** Logical point count (resident samples). */
   let pointCount = 0;
+  /** Drawn segment instances (may be ≪ N−1 under dense LOD). */
+  let drawSegmentCount = 0;
+  let drawLodStride = 1;
+  let drawLastPointIndex = 0;
+  /** Dense LOD + main MSAA → defer fill to post-resolve sampleCount:1. */
+  let deferDenseToPostResolve = false;
+  /**
+   * Compact draw buffer for dense LOD (pixel-budget subsample). Identity-cached
+   * by data ref + stride + N so axes-only frames skip re-pack (group 8 multi-M).
+   */
+  let lodCompactPointCount = 0;
+  let lodCompactStride = 0;
+  let lodCompactDataRef: CartesianSeriesData | null = null;
+  let lodCompactSourceN = 0;
+  let lodCompactXOffset = Number.NaN;
+  /** Last full (non-compact) private pack length for identity re-pack on append. */
+  let lastFullPackN = -1;
   // Geometry identity: reuse private pack when data ref stable (axes-only).
   let boundDataRef: CartesianSeriesData | null = null;
   /** Stack geometry identity — invalidate when peer baselines change under same data ref. */
@@ -339,7 +479,7 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     boundDataBuffer = buffer;
   };
 
-  // Issue 2.5: skip uniform writes when affine/color/baseline/log unchanged.
+  // Issue 2.5: skip uniform writes when affine/color/baseline/log/lod unchanged.
   let lastAx = Number.NaN;
   let lastBx = Number.NaN;
   let lastAy = Number.NaN;
@@ -348,6 +488,8 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
   let lastLogFlags = 0;
   let lastLogBaseX = Number.NaN;
   let lastLogBaseY = Number.NaN;
+  let lastLodStride = -1;
+  let lastLastPointIndex = -1;
   let lastFsR = Number.NaN;
   let lastFsG = Number.NaN;
   let lastFsB = Number.NaN;
@@ -362,7 +504,9 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     baseline: number,
     logFlags: number,
     logBaseX: number,
-    logBaseY: number
+    logBaseY: number,
+    lodStride: number,
+    lastPointIndex: number
   ): void => {
     const dirty =
       lastAx !== ax ||
@@ -372,13 +516,19 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
       lastBaseline !== baseline ||
       lastLogFlags !== logFlags ||
       lastLogBaseX !== logBaseX ||
-      lastLogBaseY !== logBaseY;
+      lastLogBaseY !== logBaseY ||
+      lastLodStride !== lodStride ||
+      lastLastPointIndex !== lastPointIndex;
     if (!dirty) return;
     writeTransformMat4F32(vsUniformScratchF32, ax, bx, ay, by);
     vsUniformScratchF32[16] = baseline;
     vsUniformScratchF32[17] = logBaseX;
     vsUniformScratchF32[18] = logBaseY;
     vsUniformScratchU32[19] = logFlags >>> 0;
+    vsUniformScratchU32[20] = lodStride >>> 0;
+    vsUniformScratchU32[21] = lastPointIndex >>> 0;
+    vsUniformScratchU32[22] = 0;
+    vsUniformScratchU32[23] = 0;
     writeUniformBuffer(device, vsUniformBuffer, vsUniformScratchBuffer);
     lastAx = ax;
     lastBx = bx;
@@ -388,6 +538,65 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     lastLogFlags = logFlags;
     lastLogBaseX = logBaseX;
     lastLogBaseY = logBaseY;
+    lastLodStride = lodStride;
+    lastLastPointIndex = lastPointIndex;
+  };
+
+  const applyDrawLod = (n: number, drawLod?: AreaDrawLodOptions): void => {
+    const pol = resolveAreaDrawPolicy({
+      pointCount: n,
+      plotWidthDevicePx: drawLod?.plotWidthDevicePx,
+      forceStandard: drawLod?.forceStandardDraw === true,
+    });
+    drawLodStride = pol.stride;
+    drawSegmentCount = pol.drawSegmentCount;
+    drawLastPointIndex = pol.lastPointIndex;
+    // Defer only when dense LOD is active, main is 4× MSAA, and SS1 pipelines exist.
+    // sampleCount 1 already draws in main (multi-chart antialias:false).
+    deferDenseToPostResolve = pol.policy === 'denseLod' && sampleCount > 1 && pipelineDenseSS1 != null;
+  };
+
+  /**
+   * When dense LOD is active, pack a compact subsample into the private buffer and
+   * draw with stride 1 (better GPU cache than binding multi-M storage + VS stride).
+   * Returns true when compact path is bound and draw uniforms should use stride 1.
+   */
+  const tryBindCompactLod = (data: CartesianSeriesData, n: number, xOffset: number): boolean => {
+    if (drawLodStride <= 1 || n < 2) return false;
+    // Ring/staging mutates under stable identity — keep full + VS stride.
+    if (isStagingRingView(data) || isRingXYColumns(data)) return false;
+
+    const cacheHit =
+      lodCompactDataRef === data &&
+      lodCompactSourceN === n &&
+      lodCompactStride === drawLodStride &&
+      lodCompactXOffset === xOffset &&
+      lodCompactPointCount >= 2 &&
+      privateBuffer != null;
+
+    if (!cacheHit) {
+      const maxLodPts = drawSegmentCount + 1;
+      ensureCpuStaging(Math.max(maxLodPts, 8) * 2);
+      const packed = packLodAreaPointsInto(cpuStaging, data, n, drawLodStride, xOffset);
+      const requiredBytes = Math.max(4, packed * 8);
+      ensurePrivateBuffer(requiredBytes);
+      if (packed > 0 && privateBuffer) {
+        device.queue.writeBuffer(privateBuffer, 0, cpuStaging.buffer, cpuStaging.byteOffset, packed * 8);
+      }
+      lodCompactPointCount = packed;
+      lodCompactStride = drawLodStride;
+      lodCompactDataRef = data;
+      lodCompactSourceN = n;
+      lodCompactXOffset = xOffset;
+    }
+
+    if (!privateBuffer || lodCompactPointCount < 2) return false;
+    bindStorage(privateBuffer);
+    // Compact buffer is chronological with unit stride.
+    drawLodStride = 1;
+    drawLastPointIndex = lodCompactPointCount - 1;
+    drawSegmentCount = lodCompactPointCount - 1;
+    return true;
   };
 
   const prepare: AreaRenderer['prepare'] = (
@@ -399,7 +608,8 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     storageBuffer,
     pointCountOverride,
     xOffset = 0,
-    stackGeometry
+    stackGeometry,
+    drawLod
   ) => {
     assertNotDisposed();
 
@@ -462,6 +672,9 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
         bindStorage(privateBuffer);
       }
 
+      applyDrawLod(pointCount, drawLod);
+      // Stacked keeps full AreaPoint buffer + VS stride (compact pack is vec2-only).
+
       const { xMin, xMax, yMin, yMax } = cachedBounds ?? {
         xMin: 0,
         xMax: 1,
@@ -478,12 +691,13 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
           : computeClipAffineFromScale(yScale, yMin, yMax);
       const { logFlags, logBaseX, logBaseY } = resolveLogProjection(xScale, yScale);
       // Scalar baseline unused in stacked VS; keep uniform slot filled for dirty gate.
-      writeVsUniforms(ax, bx, ay, by, 0, logFlags, logBaseX, logBaseY);
+      writeVsUniforms(ax, bx, ay, by, 0, logFlags, logBaseX, logBaseY, drawLodStride, drawLastPointIndex);
     } else if (storageBuffer) {
       useStackedPipeline = false;
       boundStackYBottomRef = null;
       boundStackYTopRef = null;
-      // Shared line / decimation path — no private pack (issue 1.4 step 3).
+      // Shared line / decimation path — no private pack (issue 1.4 step 3) unless
+      // dense LOD builds a compact draw buffer (group 8 multi-M mountain).
       // Require explicit point count: drawing raw N from a shorter decimation
       // buffer is undefined (review issue 8).
       if (typeof pointCountOverride !== 'number' || !Number.isFinite(pointCountOverride) || pointCountOverride < 0) {
@@ -492,10 +706,18 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
         );
       }
       pointCount = Math.floor(pointCountOverride);
-      boundDataRef = null; // external ownership
-      bindStorage(storageBuffer);
+      boundDataRef = null; // external ownership of full residency
+      applyDrawLod(pointCount, drawLod);
+      // Dense multi-M: prefer compact draw buffer (pixel budget) so the GPU does not
+      // keep a multi-M storage binding hot on the fill path. Falls back to full
+      // storage + VS stride when compact pack is unavailable (ring/staging).
+      // Compact pack is identity-cached; axes-only frames are free after first hit.
+      if (!tryBindCompactLod(data, pointCount, xOffset)) {
+        bindStorage(storageBuffer);
+      }
 
       // Packed-origin X affine (stable for epoch-ms); Y continuous (log-aware).
+      // Compact pack uses the same xOffset convention as DataStore / storage share.
       const { a: ax, b: bxPacked } = computePackedXAffineFromScale(xScale, xOffset);
       const { a: ay, b: by } = computeClipAffineFromContinuousScale(yScale);
       const { logFlags, logBaseX, logBaseY } = resolveLogProjection(xScale, yScale);
@@ -510,7 +732,18 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
           : Number.isFinite(baseline ?? Number.NaN)
             ? (baseline as number)
             : defaultBaseline;
-      writeVsUniforms(ax, bxPacked, ay, by, baselineValue, logFlags, logBaseX, logBaseY);
+      writeVsUniforms(
+        ax,
+        bxPacked,
+        ay,
+        by,
+        baselineValue,
+        logFlags,
+        logBaseX,
+        logBaseY,
+        drawLodStride,
+        drawLastPointIndex
+      );
     } else {
       useStackedPipeline = false;
       boundStackYBottomRef = null;
@@ -520,25 +753,45 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
       // owned XY columns in place; modular-ring fallback path uses this branch).
       // Staging/ring views reuse object identity with constant count while
       // start/staging floats mutate — always re-pack those (FIFO after wrap).
+      // Dense LOD: pack only the compact subsample (skip full multi-M private upload).
       const n = getPointCount(data);
       const ringOrStaging = isStagingRingView(data) || isRingXYColumns(data);
-      if (boundDataRef !== data || n !== pointCount || ringOrStaging) {
-        ensureCpuStaging(n * 2);
-        packAreaPointsInto(cpuStaging, data, n);
-        const requiredBytes = Math.max(4, n * 8);
-        ensurePrivateBuffer(requiredBytes);
-        if (n > 0 && privateBuffer) {
-          device.queue.writeBuffer(privateBuffer, 0, cpuStaging.buffer, cpuStaging.byteOffset, n * 8);
+      pointCount = n;
+      applyDrawLod(pointCount, drawLod);
+
+      const usedCompact = !ringOrStaging && tryBindCompactLod(data, n, 0);
+      if (!usedCompact) {
+        // Full private pack (standard / ring / leaving compact path).
+        // Re-pack when data identity, length (streaming append), or path mode changes.
+        if (boundDataRef !== data || lastFullPackN !== n || lodCompactPointCount > 0 || ringOrStaging) {
+          ensureCpuStaging(n * 2);
+          packAreaPointsInto(cpuStaging, data, n);
+          const requiredBytes = Math.max(4, n * 8);
+          ensurePrivateBuffer(requiredBytes);
+          if (n > 0 && privateBuffer) {
+            device.queue.writeBuffer(privateBuffer, 0, cpuStaging.buffer, cpuStaging.byteOffset, n * 8);
+          }
+          boundDataRef = data;
+          lastFullPackN = n;
+          lodCompactPointCount = 0;
+          lodCompactDataRef = null;
+          lodCompactSourceN = 0;
+          lodCompactStride = 0;
+          const fromSeries = (seriesConfig as { readonly rawBounds?: typeof cachedBounds }).rawBounds;
+          cachedBounds = fromSeries ?? computeRawBoundsFromCartesianData(data) ?? null;
         }
-        pointCount = n;
+        if (privateBuffer) {
+          bindStorage(privateBuffer);
+        }
+      } else {
         boundDataRef = data;
-
+        lastFullPackN = -1;
         const fromSeries = (seriesConfig as { readonly rawBounds?: typeof cachedBounds }).rawBounds;
-        cachedBounds = fromSeries ?? computeRawBoundsFromCartesianData(data) ?? null;
-      }
-
-      if (privateBuffer) {
-        bindStorage(privateBuffer);
+        if (fromSeries) {
+          cachedBounds = fromSeries;
+        } else if (!cachedBounds) {
+          cachedBounds = computeRawBoundsFromCartesianData(data) ?? null;
+        }
       }
 
       const { xMin, xMax, yMin, yMax } = cachedBounds ?? {
@@ -567,7 +820,7 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
           : Number.isFinite(baseline ?? Number.NaN)
             ? (baseline as number)
             : fallbackBaseline;
-      writeVsUniforms(ax, bx, ay, by, baselineValue, logFlags, logBaseX, logBaseY);
+      writeVsUniforms(ax, bx, ay, by, baselineValue, logFlags, logBaseX, logBaseY, drawLodStride, drawLastPointIndex);
     }
 
     const [r, g, b, a] = parseSeriesColorToRgba01(seriesConfig.areaStyle.color);
@@ -591,18 +844,40 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     boundStackYBottomRef = null;
     boundStackYTopRef = null;
     cachedBounds = null;
+    lodCompactPointCount = 0;
+    lodCompactDataRef = null;
+    lodCompactSourceN = 0;
+    lodCompactStride = 0;
+    lodCompactXOffset = Number.NaN;
+    lastFullPackN = -1;
   };
 
   const render: AreaRenderer['render'] = (passEncoder) => {
     assertNotDisposed();
     // Need ≥2 points → ≥1 segment instance for a non-empty fill.
-    if (!currentBindGroup || pointCount < 2) return;
+    if (!currentBindGroup || pointCount < 2 || drawSegmentCount < 1) return;
+    // Dense LOD deferred to post-resolve sampleCount:1 (see renderDense).
+    if (deferDenseToPostResolve) return;
 
-    const segments = pointCount - 1;
     passEncoder.setPipeline(useStackedPipeline ? pipelineStacked : pipeline);
     passEncoder.setBindGroup(0, currentBindGroup);
-    // 6 vertices per instance (trapezoid), (pointCount - 1) instances (segments).
-    passEncoder.draw(6, segments);
+    // 6 vertices per instance (trapezoid); drawSegmentCount may be ≪ N−1 under dense LOD.
+    passEncoder.draw(6, drawSegmentCount);
+  };
+
+  const isDenseDeferred: AreaRenderer['isDenseDeferred'] = () => {
+    assertNotDisposed();
+    return deferDenseToPostResolve && currentBindGroup != null && pointCount >= 2 && drawSegmentCount >= 1;
+  };
+
+  const renderDense: AreaRenderer['renderDense'] = (passEncoder) => {
+    assertNotDisposed();
+    if (!isDenseDeferred() || !currentBindGroup) return;
+    const ss1 = useStackedPipeline ? pipelineStackedDenseSS1 : pipelineDenseSS1;
+    if (!ss1) return;
+    passEncoder.setPipeline(ss1);
+    passEncoder.setBindGroup(0, currentBindGroup);
+    passEncoder.draw(6, drawSegmentCount);
   };
 
   const dispose: AreaRenderer['dispose'] = () => {
@@ -615,6 +890,16 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     currentBindGroup = null;
     boundDataBuffer = null;
     pointCount = 0;
+    drawSegmentCount = 0;
+    drawLodStride = 1;
+    drawLastPointIndex = 0;
+    deferDenseToPostResolve = false;
+    lodCompactPointCount = 0;
+    lodCompactDataRef = null;
+    lodCompactSourceN = 0;
+    lodCompactStride = 0;
+    lodCompactXOffset = Number.NaN;
+    lastFullPackN = -1;
     cpuStaging = new Float32Array(0);
 
     if (privateBuffer) {
@@ -638,5 +923,5 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     }
   };
 
-  return { prepare, invalidateGeometry, render, dispose };
+  return { prepare, invalidateGeometry, render, isDenseDeferred, renderDense, dispose };
 }

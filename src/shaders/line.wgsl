@@ -31,6 +31,11 @@ struct VSUniforms {
   logBaseX        : f32,           //  4 bytes
   logBaseY        : f32,           //  4 bytes
   logFlags        : u32,           //  4 bytes
+  // Dense draw LOD (hairline multi-M / mountain stroke): instance i connects
+  // pointAt(i0) → pointAt(i1) with i0 = min(i*lodStride, lastPointIndex).
+  // lodStride == 1 → classic consecutive segments.
+  lodStride       : u32,           //  4 bytes
+  lastPointIndex  : u32,           //  4 bytes
   _pad0           : u32,           //  4 bytes
 };
 // Total: 112 bytes (aligned to 16).
@@ -115,9 +120,14 @@ fn vsMain(
 ) -> VSOut {
   let uv = quadUv(vid);
 
+  // Dense LOD stride (usually 1 for AA quads; multi-M hairline may stride).
+  let stride = max(vsUniforms.lodStride, 1u);
+  let last = vsUniforms.lastPointIndex;
+  let i0 = min(iid * stride, last);
+  let i1 = min(i0 + stride, last);
   // Read segment endpoints in data coordinates (logical order under ring mode).
-  let pA_raw = pointAt(iid);
-  let pB_raw = pointAt(iid + 1u);
+  let pA_raw = pointAt(i0);
+  let pB_raw = pointAt(i1);
 
   // ── Gap detection ──────────────────────────────────────────────
   // Null entries in the data array are packed as NaN by the CPU.
@@ -244,8 +254,13 @@ fn vsMainHairline(
   // the whole segment so one-sided nulls cannot draw a spur to clip origin.
   // Modular ring remap matches vsMain / decimation so wrap does not draw physical
   // newest→oldest edges.
-  let pA_raw = pointAt(iid);
-  let pB_raw = pointAt(iid + 1u);
+  // Dense LOD: multi-M mountain/unsorted stroke caps instances toward pixel budget.
+  let stride = max(vsUniforms.lodStride, 1u);
+  let last = vsUniforms.lastPointIndex;
+  let i0 = min(iid * stride, last);
+  let i1 = min(i0 + stride, last);
+  let pA_raw = pointAt(i0);
+  let pB_raw = pointAt(i1);
   if (pA_raw.x != pA_raw.x || pA_raw.y != pA_raw.y || pB_raw.x != pB_raw.x || pB_raw.y != pB_raw.y ||
       !canLogProject(pA_raw) || !canLogProject(pB_raw)) {
     var out: VSOut;
