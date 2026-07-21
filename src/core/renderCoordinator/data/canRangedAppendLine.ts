@@ -17,6 +17,7 @@
 import type { ResolvedSeriesConfig } from '../../../config/OptionResolver';
 import type { CartesianSeriesData, SeriesSampling, SeriesType } from '../../../config/types';
 import { isGpuDecimationEligible } from '../../../data/gpuDecimationEligibility';
+import { isStackedMountainSeries } from '../../../data/stackedArea';
 
 /** What DataStore currently holds for a series index (written by prepareSeries). */
 export type DataStoreBufferKind = 'unknown' | 'fullRawLine' | 'gpuDecimationRaw' | 'other';
@@ -38,6 +39,10 @@ export function canRangedAppendLine(input: CanRangedAppendLineInput): boolean {
   // Line and pure area share the XY storage layout; both may ranged-append when
   // the resident buffer is full raw. GPU decimation remains line-only (predicate).
   if (input.seriesType !== 'line' && input.seriesType !== 'area') return false;
+
+  // Stacked mountain private-packs yBottom/yTop and may upload yTop stroke columns —
+  // ranged contribution append would desync stack baselines (issue 7).
+  if (input.series != null && isStackedMountainSeries(input.series)) return false;
 
   const kind = input.kind;
   const isGpuDecimationActive = kind === 'gpuDecimationRaw';

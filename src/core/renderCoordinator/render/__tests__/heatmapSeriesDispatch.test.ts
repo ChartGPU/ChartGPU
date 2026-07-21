@@ -11,6 +11,7 @@ beforeAll(() => {
 });
 
 import { prepareSeries, renderSeries, type SeriesRenderers, type SeriesPreparationResult } from '../renderSeries';
+import { createStackedMountainCache } from '../stackedMountainCache';
 import type { ResolvedHeatmapSeriesConfig, ResolvedLineSeriesConfig } from '../../../../config/OptionResolver';
 import type { HeatmapRenderer } from '../../../../renderers/createHeatmapRenderer';
 import type { LineRenderer } from '../../../../renderers/createLineRenderer';
@@ -168,6 +169,7 @@ describe('heatmap multi-series prepare/render dispatch', () => {
       maxRadiusCss: 50,
       lastSetSeriesCache: new Map(),
       filterGapsCache: new Map(),
+      stackedMountainCache: createStackedMountainCache(),
     });
 
     expect(h0.prepare).toHaveBeenCalledTimes(1);

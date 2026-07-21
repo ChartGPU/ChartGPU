@@ -45,6 +45,10 @@ import { findVisibleRangeIndicesByX } from '../data/computeVisibleSlice';
 import { resolvePieRadiiCss } from '../utils/timeAxisUtils';
 import { isRingXYColumns, isStagingRingView } from '../../../data/cartesianData';
 import { type FilterGapsCache, getFilteredGapsCached } from './filterGapsCache';
+import { getStackedMountainGeometryMap, type StackedMountainCache } from './stackedMountainCache';
+
+// Re-export only production-used symbols for coordinator / frameRender.
+export { createStackedMountainCache, invalidateStackedMountainCache } from './stackedMountainCache';
 
 /** Once-per-process warn when GPU-eligible line lacks a decimation pool slot. */
 const warnedMissingDecimationSlots = new Set<number>();
@@ -114,6 +118,11 @@ export interface SeriesPrepareContext {
    * under a stable reference.
    */
   filterGapsCache: FilterGapsCache;
+  /**
+   * Per-chart stacked mountain baseline cache (not process-global).
+   * Caller owns and must {@link invalidateStackedMountainCache} with lastSetSeriesCache.
+   */
+  stackedMountainCache: StackedMountainCache;
 }
 
 export interface SeriesRenderContext {
@@ -181,6 +190,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
     maxRadiusCss,
     lastSetSeriesCache,
     filterGapsCache,
+    stackedMountainCache,
   } = context;
   // zoomState kept on context for callers; sampling:none no longer needs full-span (1.6).
   void context.zoomState;
@@ -285,6 +295,12 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
     if (ls.type === 'line' && ls.visible !== false) lineSeriesCount++;
   }
 
+  // Stacked mountain: pure baselines with per-chart cache (D5 / dirty gate).
+  // Fingerprint includes stack id, yAxis, point count, connectNulls, visibility.
+  const stackedGeomByIndex = getStackedMountainGeometryMap(seriesForRender, stackedMountainCache, (seriesIndex, data) =>
+    getFilteredGapsCached(filterGapsCache, seriesIndex, data)
+  );
+
   // Preparation loop: prepare ALL series (including hidden) to maintain correct indices
   for (let i = 0; i < seriesForRender.length; i++) {
     const s = seriesForRender[i];
@@ -296,6 +312,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
         // in-place column growth from appendData (empty until a zoom creates a new
         // sliced array ref).
         const baseline = resolveAreaBaseline(s, getYScale(s));
+        const stackGeom = stackedGeomByIndex.get(i);
         // When connectNulls is true, strip null/NaN gap entries so the area draws through gaps.
         // Cached by data ref identity (P2-12) so static frames do not re-allocate.
         // sampling:'none' uploads full raw (same fullRawLine contract as line).
@@ -304,6 +321,17 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
             ? (((s as { rawData?: unknown }).rawData as typeof s.data | undefined) ?? s.data)
             : s.data;
         const areaData = s.connectNulls ? getFilteredGapsCached(filterGapsCache, i, areaSource) : areaSource;
+        if (stackGeom) {
+          // Stacked: private-pack yBottom/yTop from same view as packData (connectNulls-safe).
+          // Skip DataStore contribution upload — private pack owns GPU residency (issue 18).
+          renderers.areaRenderers[i].prepare(s, stackGeom.packData, xScale, getYScale(s), 0, undefined, undefined, 0, {
+            yBottom: stackGeom.yBottom,
+            yTop: stackGeom.yTop,
+          });
+          // Stacked mountain is not GPU-decimation eligible; tag other for append.
+          gpuSeriesKindByIndex[i] = 'other';
+          break;
+        }
         const { packingXOffset, xOffset } = resolveLinePackingXOffset({
           data: areaData,
           dataStore,
@@ -342,8 +370,63 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
       case 'line': {
         // GPU compute-shader decimation (P0-2 / Stretch S1) vs CPU path.
         // Eligibility is a pure predicate; see `isGpuDecimationEligible`.
+        // Stacked mountain lines are never GPU-decimation eligible (D9).
+        const stackGeomLine = stackedGeomByIndex.get(i);
         const rawDataForGpu = s.rawData;
-        const gpuEligible = isGpuDecimationEligible(s, rawDataForGpu);
+        const gpuEligible = !stackGeomLine && isGpuDecimationEligible(s, rawDataForGpu);
+
+        // Stacked mountain line: stroke at yTop; fill between yBottom and yTop (private pack).
+        if (stackGeomLine && s.areaStyle) {
+          const strokeData = stackGeomLine.strokeData;
+          const packData = stackGeomLine.packData;
+          const { packingXOffset, xOffset } = resolveLinePackingXOffset({
+            data: strokeData,
+            dataStore,
+            seriesIndex: i,
+            xAxisType: currentOptions.xAxis.type,
+          });
+          // Stroke needs GPU buffer of yTop for line renderer; still not ranged-appendable.
+          if (!appendedGpuThisFrame.has(i)) {
+            setSeriesIfChanged(i, strokeData, { xOffset: packingXOffset });
+          }
+          const buffer = dataStore.getSeriesBuffer(i);
+          const lineSeriesForRenderer = { ...s, data: strokeData };
+          renderers.lineRenderers[i].prepare(
+            lineSeriesForRenderer,
+            buffer,
+            xScale,
+            getYScale(s),
+            xOffset,
+            gridArea.devicePixelRatio,
+            gridArea.canvasWidth,
+            gridArea.canvasHeight,
+            undefined,
+            lineSeriesCount,
+            dataStore.getSeriesRingLayout(i),
+            forceStandardDraw
+          );
+          const yScaleForArea = getYScale(s);
+          const areaLike: ResolvedAreaSeriesConfig = {
+            type: 'area',
+            name: s.name,
+            rawData: packData as ResolvedAreaSeriesConfig['rawData'],
+            data: packData as ResolvedAreaSeriesConfig['data'],
+            color: s.areaStyle.color,
+            areaStyle: s.areaStyle,
+            sampling: s.sampling,
+            samplingThreshold: s.samplingThreshold,
+            connectNulls: s.connectNulls,
+            yAxis: (s as { yAxis?: string }).yAxis ?? 'y',
+            rawBounds: (s as { rawBounds?: ResolvedAreaSeriesConfig['rawBounds'] }).rawBounds,
+            stack: (s as { stack?: string }).stack,
+          };
+          renderers.areaRenderers[i].prepare(areaLike, packData, xScale, yScaleForArea, 0, undefined, undefined, 0, {
+            yBottom: stackGeomLine.yBottom,
+            yTop: stackGeomLine.yTop,
+          });
+          gpuSeriesKindByIndex[i] = 'other';
+          break;
+        }
 
         if (gpuEligible) {
           // Time-axis packing origin: first finite domain x only establishes a

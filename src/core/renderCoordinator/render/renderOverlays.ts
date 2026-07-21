@@ -325,11 +325,15 @@ export function prepareOverlays(renderers: OverlayRenderers, context: OverlayPre
               effectivePointer.gridX,
               effectivePointer.gridY,
               interactionScales.xScale,
-              interactionScales.yScales.values().next().value!
+              interactionScales.yScales.values().next().value!,
+              undefined,
+              interactionScales.yScales
             );
 
       if (match) {
-        const { x, y } = getPointXY(match.point);
+        const { x, y: pointY } = getPointXY(match.point);
+        // Stacked mountain: highlight on layer yTop (stroke surface); tooltip keeps contribution in point.y.
+        const y = typeof match.highlightY === 'number' && Number.isFinite(match.highlightY) ? match.highlightY : pointY;
         const xGridCss = interactionScales.xScale.scale(x);
         const matchedSeriesCfg = seriesForRender[match.seriesIndex] as any;
         const matchedAxisId = matchedSeriesCfg?.yAxis || 'y';

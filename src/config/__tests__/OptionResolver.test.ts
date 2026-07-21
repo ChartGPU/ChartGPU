@@ -1822,3 +1822,216 @@ describe('OptionResolver - errorBar', () => {
     expect(h.rawBounds?.yMax).toBe(6); // collapsed single y expanded by bounds helper
   });
 });
+
+describe('OptionResolver - stacked mountain/area stack', () => {
+  it('normalizes stack on line+areaStyle and area; expands rawBounds to exact stacked total', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'line',
+          name: 'Organic',
+          stack: '  traffic  ',
+          areaStyle: { opacity: 0.85 },
+          data: [
+            [0, 1],
+            [1, 1],
+            [2, 1],
+          ],
+          sampling: 'none',
+        },
+        {
+          type: 'line',
+          name: 'Paid',
+          stack: 'traffic',
+          areaStyle: { opacity: 0.85 },
+          data: [
+            [0, 2],
+            [1, 2],
+            [2, 2],
+          ],
+          sampling: 'none',
+        },
+        {
+          type: 'area',
+          name: 'Other',
+          stack: 'other',
+          data: [
+            [0, 5],
+            [1, 5],
+          ],
+          sampling: 'none',
+        },
+      ],
+    });
+    const a = resolved.series[0]!;
+    const b = resolved.series[1]!;
+    expect(a.type).toBe('line');
+    expect(b.type).toBe('line');
+    if (a.type !== 'line') throw new Error('expected line');
+    if (b.type !== 'line') throw new Error('expected line');
+    expect(a.stack).toBe('traffic');
+    expect(b.stack).toBe('traffic');
+    // Stacked tops: layer0 max 1, layer1 max 3 → group yMax exactly 3, yMin 0
+    expect(a.rawBounds?.yMax).toBe(3);
+    expect(a.rawBounds?.yMin).toBe(0);
+    expect(b.rawBounds?.yMax).toBe(3);
+    expect(b.rawBounds?.yMin).toBe(0);
+    const c = resolved.series[2]!;
+    if (c.type !== 'area') throw new Error('expected area');
+    expect(c.stack).toBe('other');
+    expect(c.rawBounds?.yMax).toBe(5);
+  });
+
+  it('isolates multi-axis stacks with same stack id (bounds independent)', () => {
+    const resolved = resolveOptions({
+      yAxes: [
+        { id: 'y', type: 'value' },
+        { id: 'y2', type: 'value', position: 'right' },
+      ],
+      series: [
+        {
+          type: 'line',
+          stack: 'g',
+          yAxis: 'y',
+          areaStyle: {},
+          data: [
+            [0, 1],
+            [1, 1],
+          ],
+          sampling: 'none',
+        },
+        {
+          type: 'line',
+          stack: 'g',
+          yAxis: 'y',
+          areaStyle: {},
+          data: [
+            [0, 2],
+            [1, 2],
+          ],
+          sampling: 'none',
+        },
+        {
+          type: 'line',
+          stack: 'g',
+          yAxis: 'y2',
+          areaStyle: {},
+          data: [
+            [0, 10],
+            [1, 10],
+          ],
+          sampling: 'none',
+        },
+        {
+          type: 'line',
+          stack: 'g',
+          yAxis: 'y2',
+          areaStyle: {},
+          data: [
+            [0, 20],
+            [1, 20],
+          ],
+          sampling: 'none',
+        },
+      ],
+    });
+    const left0 = resolved.series[0]!;
+    const left1 = resolved.series[1]!;
+    const right0 = resolved.series[2]!;
+    const right1 = resolved.series[3]!;
+    if (left0.type !== 'line' || left1.type !== 'line') throw new Error('expected line');
+    if (right0.type !== 'line' || right1.type !== 'line') throw new Error('expected line');
+    expect(left0.rawBounds?.yMax).toBe(3);
+    expect(left1.rawBounds?.yMax).toBe(3);
+    expect(right0.rawBounds?.yMax).toBe(30);
+    expect(right1.rawBounds?.yMax).toBe(30);
+  });
+
+  it('expands pos/neg stack yMin and yMax', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'area',
+          stack: 's',
+          data: [
+            [0, 2],
+            [1, -1],
+          ],
+          sampling: 'none',
+        },
+        {
+          type: 'area',
+          stack: 's',
+          data: [
+            [0, 3],
+            [1, -2],
+          ],
+          sampling: 'none',
+        },
+      ],
+    });
+    const a = resolved.series[0]!;
+    if (a.type !== 'area') throw new Error('expected area');
+    expect(a.rawBounds?.yMax).toBe(5);
+    expect(a.rawBounds?.yMin).toBe(-3);
+  });
+
+  it('empty / whitespace stack is unstacked (no stack field effect)', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'area',
+          stack: '   ',
+          data: [
+            [0, 1],
+            [1, 2],
+          ],
+          sampling: 'none',
+        },
+      ],
+    });
+    const s = resolved.series[0]!;
+    if (s.type !== 'area') throw new Error('expected area');
+    expect(s.stack).toBeUndefined();
+    expect(s.rawBounds?.yMax).toBe(2);
+  });
+
+  it('warns once when area has stack + baseline', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    resolveOptions({
+      series: [
+        {
+          type: 'area',
+          stack: 'm',
+          baseline: 10,
+          data: [
+            [0, 1],
+            [1, 2],
+          ],
+          sampling: 'none',
+        },
+      ],
+    });
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('baseline is ignored'))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('warns once when line has stack without areaStyle', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    resolveOptions({
+      series: [
+        {
+          type: 'line',
+          stack: 'm',
+          data: [
+            [0, 1],
+            [1, 2],
+          ],
+          sampling: 'none',
+        },
+      ],
+    });
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('stack without areaStyle'))).toBe(true);
+    warn.mockRestore();
+  });
+});

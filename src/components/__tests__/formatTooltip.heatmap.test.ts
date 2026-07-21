@@ -124,3 +124,39 @@ describe('formatTooltip band y1', () => {
     expect(html).toMatch(/1\s*…\s*3|1\s*\.\.\.\s*3/);
   });
 });
+
+describe('formatTooltip stacked mountain stackTotal', () => {
+  it('formatTooltipItem shows contribution with muted total', () => {
+    const params = {
+      seriesName: 'Paid',
+      seriesIndex: 1,
+      dataIndex: 0,
+      value: [1, 2] as const,
+      color: '#a78bfa',
+      stack: 'traffic',
+      stackTotal: 6,
+    };
+    const html = formatTooltipItem(params);
+    expect(html).toContain('Paid');
+    expect(html).toContain('2');
+    expect(html).toContain('total 6');
+    expect(html).toMatch(/opacity:\s*0\.7/);
+  });
+
+  it('formatTooltipAxis includes stackTotal muted span', () => {
+    const params = [
+      {
+        seriesName: 'Organic',
+        seriesIndex: 0,
+        dataIndex: 0,
+        value: [1, 1] as const,
+        color: '#38bdf8',
+        stack: 'traffic',
+        stackTotal: 6,
+      },
+    ];
+    const html = formatTooltipAxis(params);
+    expect(html).toContain('Organic');
+    expect(html).toContain('total 6');
+  });
+});

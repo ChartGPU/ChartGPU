@@ -11,6 +11,7 @@ import { createDataStore } from '../../../../data/createDataStore';
 import { createRingXYColumns, createStagingRingView, isStagingRingView } from '../../../../data/cartesianData';
 import { prepareSeries } from '../renderSeries';
 import type { SeriesPrepareContext } from '../renderSeries';
+import { createStackedMountainCache } from '../stackedMountainCache';
 import type { ResolvedChartGPUOptions } from '../../../../config/OptionResolver';
 
 beforeAll(() => {
@@ -127,6 +128,7 @@ function prepareCtx(
     maxRadiusCss: 0,
     lastSetSeriesCache: partial.lastSetSeriesCache,
     filterGapsCache: partial.filterGapsCache ?? new Map(),
+    stackedMountainCache: createStackedMountainCache(),
   };
 }
 

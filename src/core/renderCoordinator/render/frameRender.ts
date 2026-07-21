@@ -17,6 +17,8 @@ import {
   encodeDecimationCompute,
   encodeScatterDensityCompute,
   renderAboveSeriesAnnotations,
+  createStackedMountainCache,
+  invalidateStackedMountainCache,
   type SeriesRenderers,
   type SeriesPrepareContext,
   type SeriesRenderContext,
@@ -31,8 +33,11 @@ export {
   hasDenseHairlineLines,
   renderDenseHairlineLines,
   renderAboveSeriesAnnotations,
+  createStackedMountainCache,
+  invalidateStackedMountainCache,
   type LastSetSeriesCache,
 };
+// StackedMountainCache type is used only via create/invalidate at coordinator call sites.
 
 /**
  * Order of optional dense-hairline pass relative to main resolve and overlay.

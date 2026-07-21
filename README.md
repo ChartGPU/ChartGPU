@@ -92,12 +92,13 @@ See [Annotations Documentation](https://github.com/chartgpu/chartgpu/blob/main/d
 ## Highlights
 
 - 🚀 WebGPU-accelerated rendering for high FPS with large datasets
-- 📈 Multiple series types: line, area, bar, scatter, pie, candlestick, **ohlc** bars, heatmap, **band**, **errorBar**, plus **3D** `pointCloud3d` / `surface3d`
+- 📈 Multiple series types: line, area, bar, scatter, pie, candlestick, **ohlc** bars, heatmap, **band**, **errorBar**, **stacked mountain** (`stack` on line/area), plus **3D** `pointCloud3d` / `surface3d`
 - 🧊 **3D modality** (`coordinateSystem: 'cartesian3d'`) — world XYZ point clouds + uniform height-field surfaces with depth, orbit camera, labeled axes/grids, pick, cloud `maxPoints` FIFO, surface streaming + contours — see [`docs/api/3d.md`](docs/api/3d.md), hero demo [`examples/3d-showcase/`](examples/3d-showcase/), thin samples [`examples/point-cloud-3d/`](examples/point-cloud-3d/), [`examples/surface-3d/`](examples/surface-3d/)
 - 🌡️ Scatter density mode (`mode: 'density'`) for large **2D** scatters (screen-space bins, not world XYZ) — see [`docs/api/options.md#scatterseriesconfig`](docs/api/options.md#scatterseriesconfig) and [`examples/scatter-density-1m/`](examples/scatter-density-1m/)
 - 🗺️ Uniform heatmap / spectrogram (`type: 'heatmap'`) for **data grids** (FFT waterfall, matrices) — not scatter density; see [`docs/api/options.md#heatmapseriesconfig`](docs/api/options.md#heatmapseriesconfig) and [`examples/heatmap-spectrogram/`](examples/heatmap-spectrogram/)
 - 📉 Band / range series (`type: 'band'`) fills between dual Y curves (`y` + `y1`) for confidence intervals and envelopes — not area-to-baseline and not annotation `bandX`; see [`docs/api/options.md#bandseriesconfig`](docs/api/options.md#bandseriesconfig) and [`examples/band-range/`](examples/band-range/)
 - 📊 Error bars (`type: 'errorBar'`) — SciChart-style HLC whiskers around a measured center (absolute high/low or relative `yError`; not band fill / not OHLC); see [`docs/api/options.md#errorbarseriesconfig`](docs/api/options.md#errorbarseriesconfig) and [`examples/error-bars/`](examples/error-bars/)
+- 🗻 Stacked mountain / area — multi-series composition fill via `stack` on `line`+`areaStyle` or `type: 'area'` (not single-series mountain; not `type: 'band'`); see [`docs/api/options.md`](docs/api/options.md#stacked-mountain--area-stack-on-line-mountain-or-area) and [`examples/stacked-mountain/`](examples/stacked-mountain/)
 - 📍 Annotation overlays: reference lines (horizontal/vertical), point markers, and text labels — see [`docs/api/options.md#annotations`](docs/api/options.md#annotations) and [`examples/annotations/`](examples/annotations/)
 - 🧭 Built-in interaction: hover highlight, tooltip, crosshair
 - 🔁 Streaming updates via `appendData(...)` with typed-array support (`XYArraysData`, `InterleavedXYData`, `DataPoint[]`) — see [`examples/cartesian-data-formats/`](examples/cartesian-data-formats/)

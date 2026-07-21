@@ -91,6 +91,33 @@ describe('isGpuDecimationEligible', () => {
     expect(isGpuDecimationEligible(s, data)).toBe(true);
   });
 
+  it('rejects stacked mountain line (stack composition not GPU-decimation eligible, D9)', () => {
+    const s = makeLineSeries({
+      sampling: 'lttb',
+      areaStyle: { opacity: 0.85, color: '#0af' },
+      stack: 'traffic',
+    } as Partial<ResolvedSeriesConfig>);
+    const data: CartesianSeriesData = [
+      [0, 1],
+      [1, 2],
+      [2, 3],
+    ];
+    expect(isGpuDecimationEligible(s, data)).toBe(false);
+  });
+
+  it('allows stroke-only line with inert stack (no areaStyle)', () => {
+    const s = makeLineSeries({
+      sampling: 'lttb',
+      stack: 'traffic',
+    } as Partial<ResolvedSeriesConfig>);
+    const data: CartesianSeriesData = [
+      [0, 1],
+      [1, 2],
+      [2, 3],
+    ];
+    expect(isGpuDecimationEligible(s, data)).toBe(true);
+  });
+
   it('treats Float32Array interleaved data as gap-free (no `null` entries possible)', () => {
     const s = makeLineSeries({ sampling: 'lttb' });
     const data: CartesianSeriesData = new Float32Array([0, 1, 1, 2, 2, 3]);

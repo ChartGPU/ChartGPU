@@ -23,6 +23,7 @@ import type { SeriesSampling } from '../config/types';
 import type { ResolvedSeriesConfig } from '../config/OptionResolver';
 import { hasNullGaps, type CoordinatorCartesianData } from './cartesianData';
 import type { DecimationAlgorithm } from '../renderers/createDecimationCompute';
+import { isStackedMountainSeries } from './stackedArea';
 
 /**
  * Sampling modes that route to the GPU compute decimation path.
@@ -62,6 +63,9 @@ export function mapSamplingToDecimationAlgorithm(sampling: SeriesSampling): Deci
  */
 export function isGpuDecimationEligible(series: ResolvedSeriesConfig, rawData: CoordinatorCartesianData): boolean {
   if (series.type !== 'line') return false;
+  // Stacked mountain composition requires full peer alignment — not GPU-decimation eligible (D9).
+  // Stroke-only lines with inert stack (no areaStyle) remain eligible.
+  if (isStackedMountainSeries(series)) return false;
   // Line+areaStyle shares the stroke storage / decimation output (issue 1.4).
   if (!GPU_DECIMATION_SAMPLING_MODES.has(series.sampling)) return false;
   if (hasNullGaps(rawData)) return false;

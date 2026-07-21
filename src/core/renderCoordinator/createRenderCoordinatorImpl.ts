@@ -34,6 +34,7 @@ import { heatmapGridBounds } from '../../utils/heatmapLayout';
 import { GPUContext, isHTMLCanvasElement as isHTMLCanvasElementGPU } from '../GPUContext';
 import { createDataStore } from '../../data/createDataStore';
 import { isGpuDecimationEligible } from '../../data/gpuDecimationEligibility';
+import { computeStackedMountainYExtentsForAxis } from '../../data/stackedArea';
 import { canRangedAppendLine, type DataStoreBufferKind } from './data/canRangedAppendLine';
 import { buildRuntimeBaseSeries, buildSetOptionsReuseSeries, resolveZoomedSeriesEntry } from './data/seriesPipeline';
 import { createAppendFlush, type AppendFlushDeps } from './data/appendFlush';
@@ -72,6 +73,8 @@ import { syncCandlestickOwnedFromUserSeries } from './data/syncCandlestickRuntim
 import { processAnnotations } from './annotations/processAnnotations';
 import {
   prepareSeries,
+  createStackedMountainCache,
+  invalidateStackedMountainCache,
   renderAboveSeriesAnnotations,
   hasDenseHairlineLines,
   renderDenseHairlineLines,
@@ -569,6 +572,16 @@ const computeGlobalYBoundsForAxis = (
     }
   }
 
+  // Stacked mountain: expand contribution-only runtime bounds to composition totals.
+  const stackExt = computeStackedMountainYExtentsForAxis(series, axisId, {
+    includeHidden: false,
+    preferRawData: true,
+  });
+  if (stackExt) {
+    if (stackExt.yMin < yMin) yMin = stackExt.yMin;
+    if (stackExt.yMax > yMax) yMax = stackExt.yMax;
+  }
+
   if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) {
     return { yMin: 0, yMax: 1 };
   }
@@ -864,6 +877,16 @@ const computeVisibleYBoundsForAxis = (
       if (scanned.yMin < yMin) yMin = scanned.yMin;
       if (scanned.yMax > yMax) yMax = scanned.yMax;
     }
+  }
+
+  // Stacked mountain: visible window composition totals (not contribution-only scan).
+  const stackExt = computeStackedMountainYExtentsForAxis(series, axisId, {
+    includeHidden: false,
+    xWindow: filterX ? xWindow : null,
+  });
+  if (stackExt) {
+    if (stackExt.yMin < yMin) yMin = stackExt.yMin;
+    if (stackExt.yMax > yMax) yMax = stackExt.yMax;
   }
 
   if (!Number.isFinite(yMin) || !Number.isFinite(yMax) || yMin === Number.POSITIVE_INFINITY) {
@@ -1505,6 +1528,8 @@ export function createRenderCoordinator(
   // P1-2: skip DataStore.setSeries pack+hash when the same data ref + xOffset is re-uploaded.
   // Must be cleared while update-animation interpolates (mutates values under a stable ref).
   const lastSetSeriesCache: LastSetSeriesCache = new Map();
+  /** Per-chart stacked mountain baseline cache (not process-global). */
+  const stackedMountainCache = createStackedMountainCache();
 
   // P2-12: reuse filterGaps output while series data ref is stable (connectNulls).
   // Cleared with lastSetSeriesCache when data mutates under a stable ref.
@@ -1758,6 +1783,7 @@ export function createRenderCoordinator(
         gpuSeriesKindByIndex,
         lastSetSeriesCache,
         filterGapsCache,
+        invalidateStackedMountainCache: () => invalidateStackedMountainCache(stackedMountainCache),
         lastSampledData,
         warnedSamplingDefeatsFastPath,
         recomputeRuntimeBaseSeries,
@@ -1966,7 +1992,12 @@ export function createRenderCoordinator(
     };
   };
 
-  const buildTooltipParams = (seriesIndex: number, dataIndex: number, point: DataPoint): TooltipParams => {
+  const buildTooltipParams = (
+    seriesIndex: number,
+    dataIndex: number,
+    point: DataPoint,
+    extras?: Readonly<{ stack?: string; stackTotal?: number }>
+  ): TooltipParams => {
     const s = currentOptions.series[seriesIndex];
     const { x, y } = getPointXY(point);
     if (s?.type === 'band') {
@@ -2005,12 +2036,18 @@ export function createRenderCoordinator(
         ...(yErrorLow !== undefined ? { yErrorLow } : {}),
       };
     }
+    const stack =
+      extras?.stack ??
+      (typeof (s as { stack?: unknown } | undefined)?.stack === 'string' ? (s as { stack?: string }).stack : undefined);
+    const stackTotal = extras?.stackTotal;
     return {
       seriesName: s?.name ?? '',
       seriesIndex,
       dataIndex,
       value: [x, y],
       color: s?.color ?? '#888',
+      ...(stack != null && stack !== '' ? { stack } : {}),
+      ...(typeof stackTotal === 'number' && Number.isFinite(stackTotal) ? { stackTotal } : {}),
     };
   };
 
@@ -2420,6 +2457,7 @@ export function createRenderCoordinator(
     // setSeries cache so the next render uploads the fresh references (P1-2).
     lastSetSeriesCache.clear();
     filterGapsCache.clear();
+    invalidateStackedMountainCache(stackedMountainCache);
 
     for (let i = 0; i < count; i++) {
       const s = currentOptions.series[i]!;
@@ -2819,6 +2857,7 @@ export function createRenderCoordinator(
         gpuSeriesKindByIndex = new Array(resolvedOptions.series.length).fill('unknown');
         lastSetSeriesCache.clear();
         filterGapsCache.clear();
+        invalidateStackedMountainCache(stackedMountainCache);
         lastSampledData = new Array(resolvedOptions.series.length).fill(null);
         // Presentation-stable data: re-sample from runtime store (append path
         // also uses this via flush).
@@ -3621,6 +3660,8 @@ export function createRenderCoordinator(
     if (updateTransition && updateP < 1) {
       lastSetSeriesCache.clear();
       filterGapsCache.clear();
+      // Stack baselines fingerprint peers — clear when values mutate in place.
+      invalidateStackedMountainCache(stackedMountainCache);
       const pool = rendererPool.getState();
       const areas = pool.areaRenderers;
       for (let ai = 0; ai < areas.length; ai++) {
@@ -3699,7 +3740,9 @@ export function createRenderCoordinator(
         effectivePointer.gridX,
         effectivePointer.gridY,
         interactionScales.xScale,
-        interactionScales.yScales.values().next().value!
+        interactionScales.yScales.values().next().value!,
+        undefined,
+        interactionScales.yScales
       );
     } else {
       sharedNearestMatch = null;
@@ -4000,7 +4043,10 @@ export function createRenderCoordinator(
 
               const match = sharedNearestMatch ?? null;
               if (match) {
-                const params = buildTooltipParams(match.seriesIndex, match.dataIndex, match.point);
+                const params = buildTooltipParams(match.seriesIndex, match.dataIndex, match.point, {
+                  stack: match.stack,
+                  stackTotal: match.stackTotal,
+                });
                 const content = formatter
                   ? (formatter as (p: TooltipParams) => string)(params)
                   : formatTooltipItem(params);
@@ -4072,6 +4118,7 @@ export function createRenderCoordinator(
       maxRadiusCss,
       lastSetSeriesCache,
       filterGapsCache,
+      stackedMountainCache,
     });
     // One-frame skip only: StagingRingView safety is isStagingRingView in
     // setSeriesIfChanged, not this set. Clear so partial multi-series flushes
@@ -4508,6 +4555,7 @@ export function createRenderCoordinator(
     pendingAppendByIndex.clear();
     lastSetSeriesCache.clear();
     filterGapsCache.clear();
+    invalidateStackedMountainCache(stackedMountainCache);
     clearOverlayPrepareMemo(overlayPrepareMemo);
     stickyAutoXDomain = null;
     stickyAutoYDomainByAxis.clear();

@@ -364,6 +364,14 @@ export interface LineSeriesConfig extends SeriesConfigBase {
    * the surrounding valid points. When false (default), gaps break the line.
    */
   readonly connectNulls?: boolean;
+  /**
+   * Stack group id for **mountain fill** composition (multi-series stacked area).
+   * Non-empty string + `areaStyle` → this series stacks with peers sharing the same id
+   * (and the same `yAxis`). Stroke-only lines (no `areaStyle`) ignore `stack` for fill.
+   * Same string semantics as {@link BarSeriesConfig.stack}. Series array order within
+   * the stack = bottom → top. Omitted / empty → unstacked single-series mountain.
+   */
+  readonly stack?: string;
 }
 
 export interface AreaSeriesConfig extends SeriesConfigBase {
@@ -371,6 +379,8 @@ export interface AreaSeriesConfig extends SeriesConfigBase {
   /**
    * Baseline in data-space used as the filled area floor.
    * If omitted, ChartGPU will default to the y-axis minimum.
+   * Ignored for layout when non-empty {@link AreaSeriesConfig.stack} is set
+   * (stack floor is the cumulative sum of layers below, from 0).
    */
   readonly baseline?: number;
   readonly areaStyle?: AreaStyleConfig;
@@ -379,6 +389,12 @@ export interface AreaSeriesConfig extends SeriesConfigBase {
    * the surrounding valid points. When false (default), gaps break the area fill.
    */
   readonly connectNulls?: boolean;
+  /**
+   * Stack group id. Non-empty → stacked with peers of the same id (and same `yAxis`).
+   * Same semantics as {@link BarSeriesConfig.stack} / line mountain `stack`.
+   * When stacked, per-series `baseline` is ignored for geometry.
+   */
+  readonly stack?: string;
 }
 
 export interface BarItemStyleConfig {
@@ -1041,6 +1057,7 @@ export interface TooltipParams {
   /**
    * Value tuple for the data point.
    * - Cartesian series (line, area, bar, scatter): [x, y]
+   * - Stacked mountain/area: [x, y] where **y is this layer’s contribution** (not cumulative top)
    * - Band series: [x, y] (lower/first curve); see also optional `y1` / `yMid` / `yRange`
    * - Candlestick series: [timestamp, open, close, low, high]
    * - Heatmap: [cellCenterX, cellCenterY] (see also optional `z`)
@@ -1070,6 +1087,16 @@ export interface TooltipParams {
   readonly yErrorHigh?: number;
   /** Error bar: derived `y - low` when both finite. */
   readonly yErrorLow?: number;
+  /**
+   * Stack group id when the hit is a stacked mountain/area layer
+   * (`stack` on line+`areaStyle` or `type: 'area'`).
+   */
+  readonly stack?: string;
+  /**
+   * Stacked mountain/area: composition total at this x (top of positive stack /
+   * bottom of negative stack net). `value[1]` remains the **layer contribution**.
+   */
+  readonly stackTotal?: number;
 }
 
 /**
