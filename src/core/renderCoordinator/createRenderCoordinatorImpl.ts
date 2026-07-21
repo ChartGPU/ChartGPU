@@ -101,7 +101,11 @@ import { createZoomState } from '../../interaction/createZoomState';
 import type { ZoomRange, ZoomState } from '../../interaction/createZoomState';
 import { findNearestPoint } from '../../interaction/findNearestPoint';
 import { findPointsAtX } from '../../interaction/findPointsAtX';
-import { computeCandlestickBodyWidthRange, findCandlestick } from '../../interaction/findCandlestick';
+import {
+  computeCandlestickBodyWidthRange,
+  findCandlestick,
+  type FinanceOhlcHitSeriesConfig,
+} from '../../interaction/findCandlestick';
 import { findPieSlice } from '../../interaction/findPieSlice';
 import { resolveHeatmapTooltipParams } from '../../interaction/heatmapTooltip';
 import { createAxisScale } from '../../utils/scales';
@@ -434,7 +438,7 @@ const computeGlobalXBounds = (
       }
     }
 
-    if (seriesConfig.type === 'candlestick') {
+    if (seriesConfig.type === 'candlestick' || seriesConfig.type === 'ohlc') {
       const rawOHLC = (seriesConfig.rawData ?? seriesConfig.data) as ReadonlyArray<OHLCDataPoint>;
       for (let i = 0; i < rawOHLC.length; i++) {
         const p = rawOHLC[i]!;
@@ -509,7 +513,7 @@ const computeGlobalYBoundsForAxis = (
       }
     }
 
-    if (seriesConfig.type === 'candlestick') {
+    if (seriesConfig.type === 'candlestick' || seriesConfig.type === 'ohlc') {
       const rawOHLC = (seriesConfig.rawData ?? seriesConfig.data) as ReadonlyArray<OHLCDataPoint>;
       for (let i = 0; i < rawOHLC.length; i++) {
         const p = rawOHLC[i]!;
@@ -601,7 +605,7 @@ const computePositiveYBoundsForAxis = (
       continue;
     }
 
-    if (seriesConfig.type === 'candlestick') {
+    if (seriesConfig.type === 'candlestick' || seriesConfig.type === 'ohlc') {
       const rawOHLC = (seriesConfig.rawData ?? seriesConfig.data) as ReadonlyArray<OHLCDataPoint>;
       for (let i = 0; i < rawOHLC.length; i++) {
         const p = rawOHLC[i]!;
@@ -670,7 +674,7 @@ const computePositiveXBounds = (series: ResolvedChartGPUOptions['series']): { xM
   let xMax = Number.NEGATIVE_INFINITY;
   for (let s = 0; s < series.length; s++) {
     const seriesConfig = series[s];
-    if (seriesConfig.type === 'pie' || seriesConfig.type === 'candlestick') continue;
+    if (seriesConfig.type === 'pie' || seriesConfig.type === 'candlestick' || seriesConfig.type === 'ohlc') continue;
     if (!isResolvedSeries2D(seriesConfig)) continue;
     if (seriesConfig.type === 'heatmap') {
       const b = seriesConfig.rawBounds;
@@ -813,7 +817,7 @@ const computeVisibleYBoundsForAxis = (
       continue;
     }
 
-    if (seriesConfig.type === 'candlestick') {
+    if (seriesConfig.type === 'candlestick' || seriesConfig.type === 'ohlc') {
       const visibleOHLC = seriesConfig.data as ReadonlyArray<OHLCDataPoint>;
       for (let i = 0; i < visibleOHLC.length; i++) {
         const p = visibleOHLC[i]!;
@@ -2061,11 +2065,11 @@ export function createRenderCoordinator(
     // Iterate from last to first for correct z-ordering (last series drawn on top)
     for (let i = series.length - 1; i >= 0; i--) {
       const s = series[i];
-      if (s.type !== 'candlestick') continue;
+      if (!(s.type === 'candlestick' || s.type === 'ohlc')) continue;
       // Skip invisible series (candlestick hit-testing should respect visibility)
       if (s.visible === false) continue;
 
-      const cs = s as ResolvedCandlestickSeriesConfig;
+      const cs = s as FinanceOhlcHitSeriesConfig;
       const barWidthClip = computeCandlestickBodyWidthRange(
         cs,
         cs.data,
@@ -2079,7 +2083,9 @@ export function createRenderCoordinator(
         gridY,
         interactionScales.xScale,
         interactionScales.yScales.get((s as any).yAxis || 'y')!,
-        barWidthClip
+        barWidthClip,
+        // OHLC bars: hit stem [low, high] (same as ChartGPU.hitTest). Candles stay body-only.
+        { yHitMode: s.type === 'ohlc' ? 'lowHigh' : 'openClose' }
       );
       if (!m) continue;
 
@@ -2201,7 +2207,7 @@ export function createRenderCoordinator(
         maxPoints = Math.max(maxPoints, getBandLength(rawBand));
         continue;
       }
-      if (s.type === 'candlestick') {
+      if (s.type === 'candlestick' || s.type === 'ohlc') {
         const raw =
           (runtimeRawDataByIndex[i] as ReadonlyArray<OHLCDataPoint> | null) ??
           ((s.rawData ?? s.data) as ReadonlyArray<OHLCDataPoint>);
@@ -2336,7 +2342,7 @@ export function createRenderCoordinator(
         continue;
       }
 
-      if (s.type === 'candlestick') {
+      if (s.type === 'candlestick' || s.type === 'ohlc') {
         // Store candlestick raw OHLC data (not for streaming append, but for zoom-aware resampling).
         const rawOHLC = (s.rawData ?? s.data) as ReadonlyArray<OHLCDataPoint>;
         const owned = rawOHLC.length === 0 ? [] : rawOHLC.slice();
@@ -2458,7 +2464,7 @@ export function createRenderCoordinator(
 
       // Strategy 1: Use cache if it covers visible range
       if (cache && visibleX.min >= cache.cachedRange.min && visibleX.max <= cache.cachedRange.max) {
-        if (baseline.type === 'candlestick') {
+        if (baseline.type === 'candlestick' || baseline.type === 'ohlc') {
           next[i] = {
             ...baseline,
             data: sliceVisibleRangeByOHLC(cache.data as ReadonlyArray<OHLCDataPoint>, visibleX.min, visibleX.max),
@@ -2478,7 +2484,7 @@ export function createRenderCoordinator(
       }
 
       // Strategy 2: Fallback to baseline sampled data
-      if (baseline.type === 'candlestick') {
+      if (baseline.type === 'candlestick' || baseline.type === 'ohlc') {
         next[i] = {
           ...baseline,
           data: sliceVisibleRangeByOHLC(baseline.data as ReadonlyArray<OHLCDataPoint>, visibleX.min, visibleX.max),
@@ -2538,6 +2544,7 @@ export function createRenderCoordinator(
       // Candlestick + cartesian: single pure zoomed resolver (seriesPipeline).
       if (
         s.type === 'candlestick' ||
+        s.type === 'ohlc' ||
         s.type === 'line' ||
         s.type === 'area' ||
         s.type === 'bar' ||
@@ -2720,10 +2727,10 @@ export function createRenderCoordinator(
             // Prefer scanning runtime store (owned columns / ring / raw ref after
             // promote) so append-extended extrema survive axes-auto flip.
             const runtime = runtimeRawDataByIndex[i];
-            if (runtime != null && s.type !== 'candlestick') {
+            if (runtime != null && !(s.type === 'candlestick' || s.type === 'ohlc')) {
               runtimeRawBoundsByIndex[i] =
                 (computeRawBoundsFromCartesianData(runtime as CartesianSeriesData) as Bounds | null) ?? rb ?? null;
-            } else if (s.type === 'candlestick') {
+            } else if (s.type === 'candlestick' || s.type === 'ohlc') {
               const ohlc =
                 (runtime as ReadonlyArray<OHLCDataPoint> | null) ??
                 ((s.rawData ?? s.data) as ReadonlyArray<OHLCDataPoint>);
@@ -3000,7 +3007,7 @@ export function createRenderCoordinator(
       return;
     }
     const pointCount =
-      s.type === 'candlestick'
+      s.type === 'candlestick' || s.type === 'ohlc'
         ? (newPoints as ReadonlyArray<OHLCDataPoint>).length
         : s.type === 'band'
           ? getBandLength(newPoints as BandSeriesData)
@@ -3233,7 +3240,7 @@ export function createRenderCoordinator(
       );
       if (priceSeriesIndex != null) {
         const priceSeriesItem = currentOptions.series[priceSeriesIndex];
-        if (priceSeriesItem?.type === 'candlestick') {
+        if (priceSeriesItem.type === 'candlestick' || priceSeriesItem.type === 'ohlc') {
           const candle = priceSeriesItem as ResolvedCandlestickSeriesConfig;
           const pl = candle.priceLabel;
           // showLine only when badge is shown (resolvePriceLabel already forces showLine false if !show)
@@ -3358,6 +3365,10 @@ export function createRenderCoordinator(
       const candles = pool.candlestickRenderers;
       for (let ci = 0; ci < candles.length; ci++) {
         candles[ci]!.invalidateGeometry();
+      }
+      const ohlcs = pool.ohlcRenderers;
+      for (let oi = 0; oi < ohlcs.length; oi++) {
+        ohlcs[oi]!.invalidateGeometry();
       }
       const bands = pool.bandRenderers;
       for (let bi = 0; bi < bands.length; bi++) {

@@ -46,6 +46,7 @@ export type AnySeriesConfig =
   | { readonly type: 'bar'; readonly data: ReadonlyArray<DataPoint> }
   | { readonly type: 'scatter'; readonly data: ReadonlyArray<DataPoint> }
   | { readonly type: 'candlestick'; readonly data: ReadonlyArray<any> }
+  | { readonly type: 'ohlc'; readonly data: ReadonlyArray<any> }
   | {
       readonly type: 'heatmap';
       readonly data: {
@@ -189,7 +190,8 @@ function hasDrawableMarks(series: AnySeriesConfig): boolean {
     case 'scatter': {
       return getPointCount(series.data as CartesianSeriesData) > 0;
     }
-    case 'candlestick': {
+    case 'candlestick':
+    case 'ohlc': {
       return Array.isArray(series.data)
         ? series.data.length > 0
         : getPointCount(series.data as CartesianSeriesData) > 0;

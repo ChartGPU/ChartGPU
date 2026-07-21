@@ -51,6 +51,7 @@ export type {
   CandlestickPriceLabelConfig,
   CandlestickSeriesConfig,
   CandlestickStyle,
+  OhlcSeriesConfig,
   ChartGPUOptions,
   DataZoomConfig,
   DataPoint,
@@ -108,6 +109,7 @@ export type {
 // Options defaults + resolution
 export {
   candlestickDefaults,
+  ohlcDefaults,
   defaultOptions,
   heatmapDefaults,
   pointCloud3dDefaults,
@@ -118,14 +120,18 @@ export {
 } from './config/defaults';
 export {
   isCandlePrimaryChart,
+  isFinanceOhlcSeriesType,
+  isFinanceOhlcSeries,
   OptionResolver,
   resolveOptions,
   resolvePriceLabel,
   isResolvedSeries2D,
 } from './config/OptionResolver';
 export type {
+  FinanceOhlcSeriesType,
   ResolvedCandlestickPriceLabel,
   ResolvedCandlestickSeriesConfig,
+  ResolvedOhlcSeriesConfig,
   ResolvedChartGPUOptions,
   ResolvedAreaSeriesConfig,
   ResolvedAreaStyleConfig,

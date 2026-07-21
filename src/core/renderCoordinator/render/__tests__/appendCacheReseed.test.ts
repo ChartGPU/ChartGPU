@@ -179,6 +179,7 @@ describe('append cache re-seed / ring guard (issue 0.2)', () => {
         pieRenderers: [],
         heatmapRenderers: [],
         candlestickRenderers: [],
+        ohlcRenderers: [],
         decimationComputes: [mockDecimation() as any],
       },
       prepareCtx({
@@ -231,6 +232,7 @@ describe('append cache re-seed / ring guard (issue 0.2)', () => {
         pieRenderers: [],
         heatmapRenderers: [],
         candlestickRenderers: [],
+        ohlcRenderers: [],
         decimationComputes: [mockDecimation() as any],
       },
       prepareCtx({
@@ -283,6 +285,7 @@ describe('append cache re-seed / ring guard (issue 0.2)', () => {
         pieRenderers: [],
         heatmapRenderers: [],
         candlestickRenderers: [],
+        ohlcRenderers: [],
         decimationComputes: [mockDecimation() as any],
       },
       prepareCtx({

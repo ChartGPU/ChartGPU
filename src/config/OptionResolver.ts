@@ -9,6 +9,7 @@ import type {
   CandlestickItemStyleConfig,
   CandlestickSeriesConfig,
   CandlestickStyle,
+  OhlcSeriesConfig,
   ChartGPUOptions,
   DataZoomConfig,
   GridConfig,
@@ -46,6 +47,7 @@ import type {
 import {
   candlePrimaryGridDefaults,
   candlestickDefaults,
+  ohlcDefaults,
   defaultAreaStyle,
   defaultGridLines,
   defaultLineStyle,
@@ -82,7 +84,8 @@ import { bandBounds, cheapBandContentStamp, getBandLength, hasBandNullGaps, samp
 
 export type { ResolvedCandlestickPriceLabel } from './resolvePriceLabel';
 export { resolvePriceLabel } from './resolvePriceLabel';
-export { isCandlePrimaryChart } from './isCandlePrimaryChart';
+export { isCandlePrimaryChart, isFinanceOhlcSeriesType, isFinanceOhlcSeries } from './isCandlePrimaryChart';
+export type { FinanceOhlcSeriesType } from './isCandlePrimaryChart';
 import { cheapCartesianContentStamp, cheapOHLCContentStamp } from '../data/seriesContentHash';
 import {
   classifyEqualNYOnlyRewrite,
@@ -352,6 +355,40 @@ export type ResolvedCandlestickSeriesConfig = Readonly<
   }
 >;
 
+/** Resolved thin OHLC bar series (shared itemStyle / sampling / priceLabel with candlestick). */
+export type ResolvedOhlcSeriesConfig = Readonly<
+  Omit<
+    OhlcSeriesConfig,
+    | 'color'
+    | 'itemStyle'
+    | 'barWidth'
+    | 'barMinWidth'
+    | 'barMaxWidth'
+    | 'stemWidth'
+    | 'tickLength'
+    | 'sampling'
+    | 'samplingThreshold'
+    | 'data'
+    | 'priceLabel'
+  > & {
+    readonly color: string;
+    readonly itemStyle: ResolvedCandlestickItemStyleConfig;
+    readonly barWidth: number | string;
+    readonly barMinWidth: number;
+    readonly barMaxWidth: number;
+    readonly stemWidth: number;
+    readonly tickLength: number | string;
+    readonly sampling: 'none' | 'ohlc';
+    readonly samplingThreshold: number;
+    readonly priceLabel: ResolvedCandlestickPriceLabel;
+    readonly rawData: Readonly<OhlcSeriesConfig['data']>;
+    readonly data: Readonly<OhlcSeriesConfig['data']>;
+    readonly yAxis: string;
+    readonly rawBounds?: RawBounds;
+    readonly rawBoundsMode?: RawBoundsMode;
+  }
+>;
+
 export type ResolvedPointCloud3DSeriesConfig = Readonly<{
   readonly type: 'pointCloud3d';
   readonly name?: string;
@@ -396,6 +433,7 @@ export type ResolvedSeriesConfig2D =
   | ResolvedScatterSeriesConfig
   | ResolvedPieSeriesConfig
   | ResolvedCandlestickSeriesConfig
+  | ResolvedOhlcSeriesConfig
   | ResolvedHeatmapSeriesConfig
   | ResolvedBandSeriesConfig;
 
@@ -504,6 +542,7 @@ const SERIES_2D_TYPES = new Set<SeriesType>([
   'scatter',
   'pie',
   'candlestick',
+  'ohlc',
   'heatmap',
   'band',
 ]);
@@ -2449,6 +2488,89 @@ export function resolveOptions(
                 barWidth: s.barWidth ?? candlestickDefaults.barWidth,
                 barMinWidth: s.barMinWidth ?? candlestickDefaults.barMinWidth,
                 barMaxWidth: s.barMaxWidth ?? candlestickDefaults.barMaxWidth,
+                sampling: resolvedSampling,
+                samplingThreshold: resolvedSamplingThreshold,
+                priceLabel: resolvedPriceLabel,
+                rawBounds,
+                yAxis,
+                contentHash,
+              };
+            }
+            case 'ohlc': {
+              const ohlcSeries = s as OhlcSeriesConfig;
+              const resolvedSampling: 'none' | 'ohlc' =
+                normalizeCandlestickSampling((ohlcSeries as unknown as { sampling?: unknown }).sampling) ??
+                ohlcDefaults.sampling;
+
+              const resolvedSamplingThreshold: number =
+                normalizeSamplingThreshold(
+                  (ohlcSeries as unknown as { samplingThreshold?: unknown }).samplingThreshold
+                ) ?? ohlcDefaults.samplingThreshold;
+
+              const resolvedItemStyle: ResolvedCandlestickItemStyleConfig = {
+                upColor: normalizeOptionalColor(ohlcSeries.itemStyle?.upColor) ?? ohlcDefaults.itemStyle.upColor,
+                downColor: normalizeOptionalColor(ohlcSeries.itemStyle?.downColor) ?? ohlcDefaults.itemStyle.downColor,
+                upBorderColor:
+                  normalizeOptionalColor(ohlcSeries.itemStyle?.upBorderColor) ?? ohlcDefaults.itemStyle.upBorderColor,
+                downBorderColor:
+                  normalizeOptionalColor(ohlcSeries.itemStyle?.downBorderColor) ??
+                  ohlcDefaults.itemStyle.downBorderColor,
+                borderWidth:
+                  typeof ohlcSeries.itemStyle?.borderWidth === 'number' &&
+                  Number.isFinite(ohlcSeries.itemStyle.borderWidth)
+                    ? ohlcSeries.itemStyle.borderWidth
+                    : ohlcDefaults.itemStyle.borderWidth,
+              };
+
+              const contentHash = resolveSeriesContentHash(prevResolved, 'ohlc', ohlcSeries.data, () =>
+                cheapOHLCContentStamp(ohlcSeries.data)
+              );
+              const reuseOhlc = canReuseResolvedSeriesSample(
+                prevResolved,
+                'ohlc',
+                ohlcSeries.data,
+                resolvedSampling,
+                resolvedSamplingThreshold,
+                undefined,
+                contentHash
+              );
+              const prevOhlc = reuseOhlc
+                ? (prevResolved as ResolvedOhlcSeriesConfig & {
+                    contentHash?: number;
+                  })
+                : null;
+              const rawBounds = prevOhlc?.rawBounds ?? computeRawBoundsFromOHLC(ohlcSeries.data);
+
+              const sampledData = prevOhlc
+                ? prevOhlc.data
+                : resolvedSampling === 'ohlc' && ohlcSeries.data.length > resolvedSamplingThreshold
+                  ? ohlcSample(ohlcSeries.data, resolvedSamplingThreshold)
+                  : ohlcSeries.data;
+
+              const resolvedPriceLabel = resolvePriceLabel(ohlcSeries.priceLabel, { candlePrimary });
+
+              const stemWidth =
+                typeof ohlcSeries.stemWidth === 'number' &&
+                Number.isFinite(ohlcSeries.stemWidth) &&
+                ohlcSeries.stemWidth > 0
+                  ? ohlcSeries.stemWidth
+                  : ohlcDefaults.stemWidth;
+
+              const tickLength = ohlcSeries.tickLength ?? ohlcDefaults.tickLength;
+
+              return {
+                type: 'ohlc' as const,
+                name: ohlcSeries.name,
+                visible,
+                rawData: ohlcSeries.data,
+                data: sampledData,
+                color,
+                itemStyle: resolvedItemStyle,
+                barWidth: ohlcSeries.barWidth ?? ohlcDefaults.barWidth,
+                barMinWidth: ohlcSeries.barMinWidth ?? ohlcDefaults.barMinWidth,
+                barMaxWidth: ohlcSeries.barMaxWidth ?? ohlcDefaults.barMaxWidth,
+                stemWidth,
+                tickLength,
                 sampling: resolvedSampling,
                 samplingThreshold: resolvedSamplingThreshold,
                 priceLabel: resolvedPriceLabel,

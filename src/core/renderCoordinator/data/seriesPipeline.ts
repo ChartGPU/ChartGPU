@@ -77,7 +77,7 @@ function resolveBaselineSeriesEntry(
     } as ResolvedSeriesConfig;
   }
 
-  if (s.type === 'candlestick') {
+  if (s.type === 'candlestick' || s.type === 'ohlc') {
     const anyS = s as ResolvedSeriesConfig & {
       rawData?: unknown;
       rawBounds?: RawBoundsSlot;
@@ -156,7 +156,7 @@ function resolveSetOptionsReuseSeriesEntry(
     rawBounds?: RawBoundsSlot;
     data?: unknown;
   };
-  if (s.type === 'candlestick') {
+  if (s.type === 'candlestick' || s.type === 'ohlc') {
     const rawOHLC =
       (rawSlot as ReadonlyArray<OHLCDataPoint> | null | undefined) ??
       ((anyS.rawData ?? anyS.data) as ReadonlyArray<OHLCDataPoint>);
@@ -243,7 +243,7 @@ export function resolveZoomedSeriesEntry(input: {
   };
   const target = computeZoomSampleTarget(anyS.samplingThreshold ?? 0, input.spanFraction);
 
-  if (s.type === 'candlestick') {
+  if (s.type === 'candlestick' || s.type === 'ohlc') {
     const rawOHLC =
       (input.rawSlot as ReadonlyArray<OHLCDataPoint> | null | undefined) ??
       ((anyS.rawData ?? anyS.data) as ReadonlyArray<OHLCDataPoint>);

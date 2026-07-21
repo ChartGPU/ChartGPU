@@ -21,6 +21,13 @@ const getSeriesColor = (series: LegendSeriesInput, index: number, theme: ThemeCo
   const explicit = series.color?.trim();
   if (explicit) return explicit;
 
+  // Finance series: prefer upColor for the legend swatch when series.color is unset
+  // (plan D11: solid swatch = up color or series color).
+  if (series.type === 'candlestick' || series.type === 'ohlc') {
+    const up = (series as { itemStyle?: { upColor?: string } }).itemStyle?.upColor?.trim();
+    if (up) return up;
+  }
+
   const palette = theme.colorPalette;
   if (palette.length > 0) return palette[index % palette.length] ?? '#000000';
   return '#000000';

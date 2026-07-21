@@ -649,6 +649,7 @@ export function findNearestPoint(
     if (
       seriesCfg.type === 'pie' ||
       seriesCfg.type === 'candlestick' ||
+      seriesCfg.type === 'ohlc' ||
       seriesCfg.type === 'heatmap' ||
       seriesCfg.type === 'band'
     ) {

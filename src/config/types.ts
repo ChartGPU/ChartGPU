@@ -12,6 +12,7 @@ export type SeriesType =
   | 'scatter'
   | 'pie'
   | 'candlestick'
+  | 'ohlc'
   | 'heatmap'
   | 'band'
   | 'pointCloud3d'
@@ -539,11 +540,54 @@ export interface CandlestickSeriesConfig extends Omit<SeriesConfigBase, 'data'> 
   readonly sampling?: 'none' | 'ohlc';
   /**
    * Exchange-style last-price badge and optional horizontal price line.
-   * - `undefined`: auto-enable when the chart is candle-primary (`series[0].type === 'candlestick'`)
+   * - `undefined`: auto-enable when the chart is candle-primary (`series[0].type === 'candlestick'` or `'ohlc'`)
    * - `true` / `false`: force on/off with field defaults
    * - object: enable unless `show: false`; see {@link CandlestickPriceLabelConfig}
    *
    * Changing this option requires a **new series element identity** (immutable `setOption` pattern).
+   */
+  readonly priceLabel?: boolean | CandlestickPriceLabelConfig;
+}
+
+/**
+ * OHLC bar series — thin open / high / low / close bars (center stem + open/close ticks).
+ * Data layout is identical to {@link CandlestickSeriesConfig} (`OHLCDataPoint`, ECharts order).
+ */
+export interface OhlcSeriesConfig extends Omit<SeriesConfigBase, 'data'> {
+  readonly type: 'ohlc';
+  readonly data: ReadonlyArray<OHLCDataPoint>;
+
+  /**
+   * Category width for open/close tick length scale and hit-test box.
+   * Same contract as candlestick `barWidth` (CSS px number or percentage string).
+   */
+  readonly barWidth?: number | string;
+  readonly barMinWidth?: number;
+  readonly barMaxWidth?: number;
+
+  /**
+   * Stroke width of the vertical high–low stem in CSS px.
+   * Default: 1.
+   */
+  readonly stemWidth?: number;
+
+  /**
+   * Length of open/close ticks as a fraction of category body width, or CSS px.
+   * Default: 45% of resolved body width (half-category arms).
+   */
+  readonly tickLength?: number | string;
+
+  /** Up/down fill colors (border fields ignored for stroke-only OHLC bars). */
+  readonly itemStyle?: CandlestickItemStyleConfig;
+
+  /**
+   * Only `'none' | 'ohlc'` (same as candlestick).
+   */
+  readonly sampling?: 'none' | 'ohlc';
+
+  /**
+   * Same sugar as candlestick priceLabel.
+   * Auto-enable when chart is finance-primary (`series[0].type === 'ohlc'` or `'candlestick'`).
    */
   readonly priceLabel?: boolean | CandlestickPriceLabelConfig;
 }
@@ -828,6 +872,7 @@ export type SeriesConfig =
   | ScatterSeriesConfig
   | PieSeriesConfig
   | CandlestickSeriesConfig
+  | OhlcSeriesConfig
   | HeatmapSeriesConfig
   | BandSeriesConfig
   | PointCloud3DSeriesConfig

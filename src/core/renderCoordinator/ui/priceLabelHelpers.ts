@@ -133,7 +133,7 @@ export function resolveLastCandleState(args: {
 }
 
 function seriesShowPriceLabel(s: PriceLabelOwnershipSeries, candlePrimary: boolean): boolean {
-  if (s.type !== 'candlestick') return false;
+  if (!(s.type === 'candlestick' || s.type === 'ohlc')) return false;
   if (s.visible === false) return false;
 
   const pl = s.priceLabel;

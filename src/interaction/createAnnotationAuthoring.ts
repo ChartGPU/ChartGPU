@@ -372,7 +372,7 @@ export function createAnnotationAuthoring(
       for (const s of series) {
         if (s.type === 'pie') continue;
 
-        if (s.type === 'candlestick') {
+        if (s.type === 'candlestick' || s.type === 'ohlc') {
           // Candlestick uses timestamp (first element)
           const data = s.data;
           for (const p of data) {
@@ -425,7 +425,7 @@ export function createAnnotationAuthoring(
       for (const s of series) {
         if (s.type === 'pie') continue;
 
-        if (s.type === 'candlestick') {
+        if (s.type === 'candlestick' || s.type === 'ohlc') {
           // Candlestick uses low/high
           const data = s.data;
           for (const p of data) {

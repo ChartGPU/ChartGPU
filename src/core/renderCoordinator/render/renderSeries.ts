@@ -17,6 +17,7 @@ import type {
   ResolvedPieSeriesConfig,
   ResolvedHeatmapSeriesConfig,
   ResolvedBandSeriesConfig,
+  ResolvedOhlcSeriesConfig,
 } from '../../../config/OptionResolver';
 import type { DataPoint } from '../../../config/types';
 import type { LinearScale } from '../../../utils/scales';
@@ -29,6 +30,7 @@ import type { ScatterDensityRenderer } from '../../../renderers/createScatterDen
 import type { PieRenderer } from '../../../renderers/createPieRenderer';
 import type { HeatmapRenderer } from '../../../renderers/createHeatmapRenderer';
 import type { CandlestickRenderer } from '../../../renderers/createCandlestickRenderer';
+import type { OhlcRenderer } from '../../../renderers/createOhlcRenderer';
 import type { BandRenderer } from '../../../renderers/createBandRenderer';
 import type { ReferenceLineRenderer } from '../../../renderers/createReferenceLineRenderer';
 import type { AnnotationMarkerRenderer } from '../../../renderers/createAnnotationMarkerRenderer';
@@ -62,6 +64,7 @@ export interface SeriesRenderers {
   readonly heatmapRenderers: ReadonlyArray<HeatmapRenderer>;
   readonly bandRenderers: ReadonlyArray<BandRenderer>;
   readonly candlestickRenderers: ReadonlyArray<CandlestickRenderer>;
+  readonly ohlcRenderers: ReadonlyArray<OhlcRenderer>;
   /** 1:1 with lineRenderers; unused slots are no-ops until prepared. */
   readonly decimationComputes: ReadonlyArray<DecimationCompute>;
 }
@@ -720,6 +723,12 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
         );
         break;
       }
+      case 'ohlc': {
+        const ohlc = s as ResolvedOhlcSeriesConfig;
+        // Hard access after ensureRendererPoolsForSeries (same contract as candlestick).
+        renderers.ohlcRenderers[i].prepare(ohlc, ohlc.data, xScale, getYScale(s), gridArea);
+        break;
+      }
       case 'pointCloud3d':
       case 'surface3d': {
         // 3D series are rendered only by createRenderCoordinator3D — never on 2D path.
@@ -942,11 +951,13 @@ export function renderSeries(
     mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
   }
 
-  // Render candlesticks
+  // Render candlesticks and OHLC bars (same main-pass layer)
   for (let idx = 0; idx < visibleSeriesForRender.length; idx++) {
     const { series, originalIndex } = visibleSeriesForRender[idx];
     if (series.type === 'candlestick') {
       renderers.candlestickRenderers[originalIndex].render(mainPass);
+    } else if (series.type === 'ohlc') {
+      renderers.ohlcRenderers[originalIndex].render(mainPass);
     }
   }
 

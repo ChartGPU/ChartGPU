@@ -69,7 +69,7 @@ export function createAnnotationDragHandler(
       for (const s of series) {
         if (s.type === 'pie') continue;
 
-        if (s.type === 'candlestick') {
+        if (s.type === 'candlestick' || s.type === 'ohlc') {
           const data = s.data;
           for (const p of data) {
             const timestamp = getOHLCTimestamp(p);
@@ -118,7 +118,7 @@ export function createAnnotationDragHandler(
       for (const s of series) {
         if (s.type === 'pie') continue;
 
-        if (s.type === 'candlestick') {
+        if (s.type === 'candlestick' || s.type === 'ohlc') {
           const data = s.data;
           for (const p of data) {
             const high = getOHLCHigh(p);
