@@ -302,11 +302,14 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
   // Used only for hairline segment budget and multi-series prepare inputs
   // (equal-N approximation); see `MULTI_SERIES_HAIRLINE_SEGMENT_BUDGET`.
   // Each line renderer has its own VS uniform buffer (no device-global shared VS).
+  // Also gates dense scatter post-resolve deferral: any visible line keeps scatter
+  // on main so markers stay under strokes (main order is scatter then lines).
   let lineSeriesCount = 0;
   for (let li = 0; li < seriesForRender.length; li++) {
     const ls = seriesForRender[li]!;
     if (ls.type === 'line' && ls.visible !== false) lineSeriesCount++;
   }
+  const allowScatterPostResolveDense = lineSeriesCount === 0;
 
   // Stacked mountain: pure baselines with per-chart cache (D5 / dirty gate).
   // Fingerprint includes stack id, yAxis, point count, connectNulls, visibility.
@@ -839,7 +842,15 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
           gpuSeriesKindByIndex[i] = 'other';
         } else {
           const animated = introP < 1 ? ({ ...s, color: withAlpha(s.color, introP) } as const) : s;
-          renderers.scatterRenderers[i].prepare(animated, s.data, xScale, getYScale(s), gridArea, forceStandardDrawLod);
+          renderers.scatterRenderers[i].prepare(
+            animated,
+            s.data,
+            xScale,
+            getYScale(s),
+            gridArea,
+            forceStandardDrawLod,
+            allowScatterPostResolveDense
+          );
         }
         break;
       }
@@ -1197,7 +1208,8 @@ export function renderSeries(
     }
   }
 
-  // Render scatter points
+  // Render scatter points (dense-compact const-radius may no-op here and draw
+  // in the post-resolve sampleCount:1 pass — see renderDenseDeferredScatter).
   for (let idx = 0; idx < visibleSeriesForRender.length; idx++) {
     const { series, originalIndex } = visibleSeriesForRender[idx];
     if (series.type !== 'scatter') continue;
@@ -1252,6 +1264,26 @@ export function hasDenseHairlineLines(renderers: SeriesRenderers, seriesPreparat
 }
 
 /**
+ * True when any visible const-radius scatter series deferred denseCompact draws
+ * out of the 4× MSAA main pass (group 2 ≥250k fill cliff).
+ */
+export function hasDenseDeferredScatter(
+  renderers: SeriesRenderers,
+  seriesPreparation: SeriesPreparationResult
+): boolean {
+  const { visibleSeriesForRender } = seriesPreparation;
+  for (let idx = 0; idx < visibleSeriesForRender.length; idx++) {
+    const { series, originalIndex } = visibleSeriesForRender[idx]!;
+    if (series.type !== 'scatter') continue;
+    // Density mode uses its own compute path — never post-resolve point markers.
+    if (series.mode === 'density') continue;
+    const sr = renderers.scatterRenderers[originalIndex];
+    if (sr?.isDenseDeferred()) return true;
+  }
+  return false;
+}
+
+/**
  * Draw deferred dense hairline lines into a **sampleCount:1** pass on the
  * resolved main color (loadOp: load). Avoids 4× MSAA overdraw on high-N
  * unsorted full rewrites (group 3 @ 50k DoD).
@@ -1298,6 +1330,51 @@ export function renderDenseHairlineLines(
     hairlinePass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
     drawHairlineBatch(hairlinePass);
     hairlinePass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+  }
+}
+
+/**
+ * Draw deferred dense-compact scatter into a **sampleCount:1** pass on the
+ * resolved main color (loadOp: load). Avoids 4× MSAA overdraw on high-N
+ * Brownian full rewrites (group 2 @ 500k hard gate).
+ */
+export function renderDenseDeferredScatter(
+  renderers: SeriesRenderers,
+  context: {
+    readonly gridArea: GridArea;
+    readonly densePass: GPURenderPassEncoder;
+    readonly plotScissor: { x: number; y: number; w: number; h: number };
+    readonly introPhase: 'pending' | 'running' | 'done';
+    readonly introProgress01: number;
+  },
+  seriesPreparation: SeriesPreparationResult
+): void {
+  const { gridArea, densePass, plotScissor, introPhase, introProgress01 } = context;
+  const { visibleSeriesForRender } = seriesPreparation;
+  const introP = introPhase === 'running' ? clamp01(introProgress01) : 1;
+
+  const drawDenseScatterBatch = (pass: GPURenderPassEncoder): void => {
+    for (let idx = 0; idx < visibleSeriesForRender.length; idx++) {
+      const { series, originalIndex } = visibleSeriesForRender[idx]!;
+      if (series.type !== 'scatter') continue;
+      if (series.mode === 'density') continue;
+      const sr = renderers.scatterRenderers[originalIndex];
+      if (!sr?.isDenseDeferred()) continue;
+      sr.renderDense(pass);
+    }
+  };
+
+  if (introP < 1) {
+    const w = clampInt(Math.floor(plotScissor.w * introP), 0, plotScissor.w);
+    if (w > 0 && plotScissor.h > 0) {
+      densePass.setScissorRect(plotScissor.x, plotScissor.y, w, plotScissor.h);
+      drawDenseScatterBatch(densePass);
+      densePass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+    }
+  } else if (plotScissor.w > 0 && plotScissor.h > 0) {
+    densePass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+    drawDenseScatterBatch(densePass);
+    densePass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
   }
 }
 

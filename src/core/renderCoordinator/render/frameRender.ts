@@ -12,7 +12,9 @@
 import {
   prepareSeries,
   hasDenseHairlineLines,
+  hasDenseDeferredScatter,
   renderDenseHairlineLines,
+  renderDenseDeferredScatter,
   renderSeries,
   encodeDecimationCompute,
   encodeScatterDensityCompute,
@@ -33,7 +35,9 @@ import {
 export {
   prepareSeries,
   hasDenseHairlineLines,
+  hasDenseDeferredScatter,
   renderDenseHairlineLines,
+  renderDenseDeferredScatter,
   renderAboveSeriesAnnotations,
   createStackedMountainCache,
   invalidateStackedMountainCache,
@@ -44,12 +48,14 @@ export {
 // StackedMountainCache type is used only via create/invalidate at coordinator call sites.
 
 /**
- * Order of optional dense-hairline pass relative to main resolve and overlay.
+ * Order of optional post-resolve dense pass relative to main resolve and overlay.
+ * Pass id remains `denseHairline` for backward-compatible plan consumers; the pass
+ * also hosts dense-compact scatter (sampleCount:1) when deferred.
  */
 type FramePassId = 'main' | 'denseHairline' | 'annotationOverlay';
 
-function resolveFramePassOrder(hasDenseHairline: boolean): FramePassId[] {
-  if (hasDenseHairline) {
+function resolveFramePassOrder(needsPostResolveDensePass: boolean): FramePassId[] {
+  if (needsPostResolveDensePass) {
     return ['main', 'denseHairline', 'annotationOverlay'];
   }
   return ['main', 'annotationOverlay'];
@@ -57,13 +63,13 @@ function resolveFramePassOrder(hasDenseHairline: boolean): FramePassId[] {
 
 /**
  * Whether UI overlays share the main pass (direct swapchain resolve) when there is
- * no dense hairline and resolve+overlay can collapse.
+ * no post-resolve dense content and resolve+overlay can collapse.
  */
 function shouldUseDirectSwapchainResolve(input: {
-  readonly hasDenseHairline: boolean;
+  readonly needsPostResolveDensePass: boolean;
   readonly preferDirectResolve: boolean;
 }): boolean {
-  return input.preferDirectResolve && !input.hasDenseHairline;
+  return input.preferDirectResolve && !input.needsPostResolveDensePass;
 }
 
 /**
@@ -71,6 +77,7 @@ function shouldUseDirectSwapchainResolve(input: {
  */
 type GpuFramePlan = {
   readonly passOrder: readonly FramePassId[];
+  /** True when a post-resolve sampleCount:1 pass runs (dense hairline and/or dense scatter). */
   readonly needsDenseHairlinePass: boolean;
   readonly useDirectSwapchainResolve: boolean;
   readonly useSwapchainAsMainView: boolean;
@@ -79,18 +86,21 @@ type GpuFramePlan = {
 };
 
 /**
- * Plan the GPU pass graph from MSAA sample count and dense-hairline eligibility.
+ * Plan the GPU pass graph from MSAA sample count and post-resolve dense eligibility
+ * (dense hairline lines and/or dense-compact scatter).
  * Callers must use the returned flags for ensureTextures / beginRenderPass — not re-derive.
  */
 export function planGpuFrame(input: {
   readonly msaaSampleCount: 1 | 4;
   readonly hasDenseHairline: boolean;
+  /** Dense-compact scatter deferred out of 4× MSAA main (group 2 ≥250k). */
+  readonly hasDenseScatter?: boolean;
 }): GpuFramePlan {
-  // Dense hairline only helps when main is 4× MSAA.
-  const needsDenseHairlinePass = input.msaaSampleCount > 1 && input.hasDenseHairline;
+  // Post-resolve dense pass only helps when main is 4× MSAA.
+  const needsDenseHairlinePass = input.msaaSampleCount > 1 && (input.hasDenseHairline || !!input.hasDenseScatter);
   const passOrder = resolveFramePassOrder(needsDenseHairlinePass);
   const useDirectSwapchainResolve = shouldUseDirectSwapchainResolve({
-    hasDenseHairline: needsDenseHairlinePass,
+    needsPostResolveDensePass: needsDenseHairlinePass,
     preferDirectResolve: true,
   });
   const useSwapchainAsMainView = useDirectSwapchainResolve && input.msaaSampleCount === 1;

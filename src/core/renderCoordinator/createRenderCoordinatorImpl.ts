@@ -81,7 +81,9 @@ import {
   invalidateStepExpandCache,
   renderAboveSeriesAnnotations,
   hasDenseHairlineLines,
+  hasDenseDeferredScatter,
   renderDenseHairlineLines,
+  renderDenseDeferredScatter,
   planGpuFrame,
   encodeFrameComputePasses,
   encodeMainSeriesPass,
@@ -4315,20 +4317,21 @@ export function createRenderCoordinator(
       });
     }
 
-    // Dense hairline (group 3 ≥25k) must draw sampleCount:1 on the resolved main
-    // color *before* axes. That forces the 2-pass path (main→resolve→hairline→
-    // overlay blit+UI). When no dense hairline is deferred, collapse to a single
-    // 4× MSAA main pass that resolves straight to the swapchain and draws
-    // above-series annotations + axes/crosshair/highlight in-pass.
-    // Multi-chart dashboards (no hairline) avoid a full-screen blit + second
-    // 4× MSAA target every frame — large FPS/memory win at high chart counts.
+    // Dense hairline (group 3 ≥25k) and dense-compact scatter (group 2 ≥250k)
+    // must draw sampleCount:1 on the resolved main color *before* axes. That
+    // forces the 2-pass path (main→resolve→dense→overlay blit+UI). When neither
+    // is deferred, collapse to a single 4× MSAA main pass that resolves straight
+    // to the swapchain and draws above-series annotations + axes/crosshair/
+    // highlight in-pass. Multi-chart dashboards (no dense content) avoid a
+    // full-screen blit + second 4× MSAA target every frame.
     // Legal sample counts remain 1|4 only (never 2).
-    // Dense hairline only helps when main is 4× MSAA (avoids overdraw). With
-    // sampleCount 1 (`antialias: false`), lines already draw in the main pass.
+    // Post-resolve dense only helps when main is 4× MSAA. With sampleCount 1
+    // (`antialias: false`), content already draws in the main pass.
     // GPU pass graph owned by frameRender.planGpuFrame (not re-derived ad hoc).
     const framePlan = planGpuFrame({
       msaaSampleCount,
       hasDenseHairline: hasDenseHairlineLines(poolState, seriesPreparation),
+      hasDenseScatter: hasDenseDeferredScatter(poolState, seriesPreparation),
     });
     const { useDirectSwapchainResolve, useSwapchainAsMainView, needResolveAndOverlay, needMainColor } = framePlan;
     // passOrder drives which optional passes run (dense hairline / overlay).
@@ -4440,7 +4443,8 @@ export function createRenderCoordinator(
     // Optional passes follow framePlan.passOrder (denseHairline → annotationOverlay).
     if (runDenseHairlinePass || runAnnotationOverlayPass) {
       if (runDenseHairlinePass) {
-        // Dense hairline lines (group 3 ≥25k): after main resolve, sampleCount:1 load-pass.
+        // Post-resolve sampleCount:1 load-pass: dense hairline lines (group 3)
+        // and/or dense-compact scatter (group 2 ≥250k). Same pass hosts both.
         const hairlinePass = encoder.beginRenderPass({
           label: 'renderCoordinator/denseHairlinePass',
           colorAttachments: [
@@ -4451,6 +4455,20 @@ export function createRenderCoordinator(
             },
           ],
         });
+        // Layering matches main pass (scatter under lines): dense scatter first,
+        // then dense hairline strokes. Pure-scatter charts only typically defer
+        // scatter; mixed charts with lines keep scatter on main (see prepare).
+        renderDenseDeferredScatter(
+          poolState,
+          {
+            gridArea,
+            densePass: hairlinePass,
+            plotScissor,
+            introPhase,
+            introProgress01,
+          },
+          seriesPreparation
+        );
         renderDenseHairlineLines(
           poolState,
           {

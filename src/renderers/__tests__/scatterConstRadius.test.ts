@@ -34,6 +34,7 @@ vi.mock('../rendererUtils', () => ({
 }));
 
 import { createScatterRenderer } from '../createScatterRenderer';
+import { createRenderPipeline } from '../rendererUtils';
 
 function createMockDevice() {
   return {
@@ -306,6 +307,224 @@ describe('scatter geometry identity cache (issue 1.2)', () => {
     // Full dual-buffer rewrite after invalidate: 2 × N*4.
     const sizes = writeBuffer.mock.calls.map((c) => c[4]).filter((s): s is number => typeof s === 'number');
     expect(sizes.filter((s) => s === 2 * 4)).toHaveLength(2);
+    renderer.dispose();
+  });
+});
+
+describe('scatter denseCompact sampleCount:1 deferral (group 2)', () => {
+  const denseGrid = {
+    ...gridArea,
+    // Small plot so even modest N exceeds density LO; point-count floor is 250k.
+    canvasWidth: 200,
+    canvasHeight: 100,
+    plotWidth: 200,
+    plotHeight: 100,
+  } as unknown as GridArea;
+
+  const suiteGrid = {
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    canvasWidth: 1412,
+    canvasHeight: 1064,
+    devicePixelRatio: 1,
+    plotWidth: 1412,
+    plotHeight: 1064,
+  } as unknown as GridArea;
+
+  const mockPass = () =>
+    ({
+      setPipeline: vi.fn(),
+      setBindGroup: vi.fn(),
+      setVertexBuffer: vi.fn(),
+      draw: vi.fn(),
+      setScissorRect: vi.fn(),
+    }) as unknown as GPURenderPassEncoder & {
+      setPipeline: ReturnType<typeof vi.fn>;
+      draw: ReturnType<typeof vi.fn>;
+    };
+
+  it('sampleCount 4 + N≥250k defers main render to renderDense (isDenseDeferred)', () => {
+    const device = createMockDevice();
+    const createPipe = createRenderPipeline as ReturnType<typeof vi.fn>;
+    createPipe.mockClear();
+    const renderer = createScatterRenderer(device, { sampleCount: 4 });
+    // Main const-radius (sampleCount 4) + dense SS1 (sampleCount 1) both created.
+    const pipelineDescs = createPipe.mock.calls.map((c) => c[1] as { label?: string; multisample?: { count: number } });
+    const densePipe = pipelineDescs.find((d) => d?.label === 'scatterRenderer/pipelineConstRadiusDenseSS1');
+    const mainConst = pipelineDescs.find((d) => d?.label === 'scatterRenderer/pipelineConstRadiusSplit');
+    expect(densePipe?.multisample?.count).toBe(1);
+    expect(mainConst?.multisample?.count).toBe(4);
+
+    const n = 250_000;
+    const x = new Float32Array(n);
+    const y = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      x[i] = i * 0.001;
+      y[i] = i * 0.0005;
+    }
+    renderer.prepare(baseSeries(5), { x, y } as unknown as never, identityScale, identityScale, denseGrid);
+    expect(renderer.isDenseDeferred()).toBe(true);
+
+    const pass = mockPass();
+    renderer.render(pass);
+    expect(pass.draw).not.toHaveBeenCalled();
+
+    renderer.renderDense(pass);
+    expect(pass.draw).toHaveBeenCalledWith(6, n);
+    // Dense path binds the SS1 pipeline object returned for dense label.
+    expect(pass.setPipeline).toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('sampleCount 1 never creates SS1 pipeline and never defers', () => {
+    const device = createMockDevice();
+    const createPipe = createRenderPipeline as ReturnType<typeof vi.fn>;
+    createPipe.mockClear();
+    const renderer = createScatterRenderer(device, { sampleCount: 1 });
+    const labels = createPipe.mock.calls.map((c) => (c[1] as { label?: string })?.label);
+    expect(labels).not.toContain('scatterRenderer/pipelineConstRadiusDenseSS1');
+
+    const n = 250_000;
+    const x = new Float32Array(n);
+    const y = new Float32Array(n);
+    renderer.prepare(baseSeries(5), { x, y } as unknown as never, identityScale, identityScale, denseGrid);
+    expect(renderer.isDenseDeferred()).toBe(false);
+
+    const pass = mockPass();
+    renderer.render(pass);
+    expect(pass.draw).toHaveBeenCalledWith(6, n);
+    renderer.renderDense(pass);
+    expect(pass.draw).toHaveBeenCalledTimes(1);
+    renderer.dispose();
+  });
+
+  it('partial-blend density (suite 200k) does not defer — main draws with reduced radius', () => {
+    const device = createMockDevice();
+    const renderer = createScatterRenderer(device, { sampleCount: 4 });
+    const n = 200_000; // density blend on suite plot; fullyCompact false
+    const x = new Float32Array(n);
+    const y = new Float32Array(n);
+    renderer.prepare(baseSeries(5), { x, y } as unknown as never, identityScale, identityScale, suiteGrid);
+    expect(renderer.isDenseDeferred()).toBe(false);
+    const pass = mockPass();
+    renderer.render(pass);
+    expect(pass.draw).toHaveBeenCalledWith(6, n);
+    renderer.renderDense(pass);
+    expect(pass.draw).toHaveBeenCalledTimes(1);
+    renderer.dispose();
+  });
+
+  it('density-driven fullyCompact (N < 250k floor, density ≥ HI) defers at sampleCount 4', () => {
+    // 100×100 device plot → area 10k; HI 0.30 → need ≥3000 pts for full compact,
+    // well under DENSE_SCATTER_POINT_COUNT_FULL_COMPACT (250k).
+    const densityGrid = {
+      left: 0,
+      right: 0,
+      top: 0,
+      bottom: 0,
+      canvasWidth: 100,
+      canvasHeight: 100,
+      devicePixelRatio: 1,
+      plotWidth: 100,
+      plotHeight: 100,
+    } as unknown as GridArea;
+    const n = 3_500; // density 0.35 ≥ HI 0.30; N ≪ 250k
+    expect(n).toBeLessThan(250_000);
+    expect(n / (100 * 100)).toBeGreaterThanOrEqual(0.3);
+
+    const device = createMockDevice();
+    const renderer = createScatterRenderer(device, { sampleCount: 4 });
+    const x = new Float32Array(n);
+    const y = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      x[i] = i * 0.01;
+      y[i] = i * 0.005;
+    }
+    renderer.prepare(baseSeries(5), { x, y } as unknown as never, identityScale, identityScale, densityGrid);
+    expect(renderer.isDenseDeferred()).toBe(true);
+
+    const pass = mockPass();
+    renderer.render(pass);
+    expect(pass.draw).not.toHaveBeenCalled();
+    renderer.renderDense(pass);
+    expect(pass.draw).toHaveBeenCalledWith(6, n);
+    renderer.dispose();
+  });
+
+  it('allowPostResolveDense false keeps fully-compact on main (line-chart z-order)', () => {
+    const device = createMockDevice();
+    const renderer = createScatterRenderer(device, { sampleCount: 4 });
+    const n = 500_000;
+    const x = new Float32Array(n);
+    const y = new Float32Array(n);
+    renderer.prepare(
+      baseSeries(5),
+      { x, y } as unknown as never,
+      identityScale,
+      identityScale,
+      denseGrid,
+      false,
+      false // allowPostResolveDense
+    );
+    expect(renderer.isDenseDeferred()).toBe(false);
+    const pass = mockPass();
+    renderer.render(pass);
+    expect(pass.draw).toHaveBeenCalledWith(6, n);
+    renderer.dispose();
+  });
+
+  it('low N (≤100k suite protection) stays standard — main render draws', () => {
+    const device = createMockDevice();
+    const renderer = createScatterRenderer(device, { sampleCount: 4 });
+    const n = 100_000;
+    const x = new Float32Array(n);
+    const y = new Float32Array(n);
+    renderer.prepare(baseSeries(5), { x, y } as unknown as never, identityScale, identityScale, suiteGrid);
+    expect(renderer.isDenseDeferred()).toBe(false);
+
+    const pass = mockPass();
+    renderer.render(pass);
+    expect(pass.draw).toHaveBeenCalledWith(6, n);
+    renderer.dispose();
+  });
+
+  it('forceStandardDraw disables deferral and draws on main; renderDense no-op', () => {
+    const device = createMockDevice();
+    const renderer = createScatterRenderer(device, { sampleCount: 4 });
+    const n = 500_000;
+    const x = new Float32Array(n);
+    const y = new Float32Array(n);
+    renderer.prepare(
+      baseSeries(5),
+      { x, y } as unknown as never,
+      identityScale,
+      identityScale,
+      denseGrid,
+      true // forceStandardDraw
+    );
+    expect(renderer.isDenseDeferred()).toBe(false);
+    const pass = mockPass();
+    renderer.render(pass);
+    expect(pass.draw).toHaveBeenCalledWith(6, n);
+    renderer.renderDense(pass);
+    expect(pass.draw).toHaveBeenCalledTimes(1);
+    renderer.dispose();
+  });
+
+  it('variable-radius path never defers even with sampleCount 4', () => {
+    const device = createMockDevice();
+    const renderer = createScatterRenderer(device, { sampleCount: 4 });
+    // Per-point size → variable-radius interleaved path (policy constRadius false)
+    const data = Array.from({ length: 500 }, (_, i) => [i, i * 0.5, 5] as const);
+    renderer.prepare(baseSeries(5), data as unknown as never, identityScale, identityScale, denseGrid);
+    expect(renderer.isDenseDeferred()).toBe(false);
+    const pass = mockPass();
+    renderer.render(pass);
+    expect(pass.draw).toHaveBeenCalledWith(6, 500);
+    renderer.renderDense(pass);
+    expect(pass.draw).toHaveBeenCalledTimes(1);
     renderer.dispose();
   });
 });

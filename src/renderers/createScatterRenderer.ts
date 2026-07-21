@@ -23,7 +23,13 @@ export interface ScatterRenderer {
      * When true (`performance.lod: 'strict'`), disable dense radius compaction
      * and honor configured marker size.
      */
-    forceStandardDraw?: boolean
+    forceStandardDraw?: boolean,
+    /**
+     * When false, fully-compact dense still shrinks radius but draws on the main
+     * MSAA pass (preserves z-order under standard main-pass line strokes).
+     * Default true. Coordinator sets false when any visible line series is present.
+     */
+    allowPostResolveDense?: boolean
   ): void;
   /**
    * Drop cached instance geometry so the next `prepare` re-packs.
@@ -31,7 +37,24 @@ export interface ScatterRenderer {
    * (update-transition interpolation — same rule as bar/area).
    */
   invalidateGeometry(): void;
+  /**
+   * Draw into the **main** MSAA pass. Dense-compact series with main sampleCount 4
+   * are deferred ({@link isDenseDeferred}) and must be drawn with {@link renderDense}
+   * into a sampleCount:1 load-pass on the resolved main texture.
+   */
   render(passEncoder: GPURenderPassEncoder): void;
+  /**
+   * True when the last prepare selected **fully compact** denseCompact and deferred
+   * draws out of the 4× MSAA main pass (group 2 ≥250k fill cliff). Main-pass
+   * `render` is a no-op; draw via {@link renderDense}. Partial blends stay on main.
+   */
+  isDenseDeferred(): boolean;
+  /**
+   * Draw fully-compact dense const-radius markers into a **single-sample** pass
+   * (sampleCount 1) on the resolved main color. No-op when the last prepare did
+   * not defer (partial blend, sampleCount 1 main, forceStandard, or lines present).
+   */
+  renderDense(passEncoder: GPURenderPassEncoder): void;
   dispose(): void;
 }
 
@@ -250,6 +273,47 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     pipelineCache
   );
 
+  // Fully-compact dense path: same dual-buffer layout but sampleCount **1**.
+  // Drawn in a post-resolve single-sample pass so 500k AA quads do not pay 4×
+  // MSAA overdraw. Skip allocation when main is already sampleCount 1 (unused).
+  // Analytic FS AA still softens edges without multisampling.
+  const pipelineConstRadiusDenseSS1 =
+    sampleCount > 1
+      ? createRenderPipeline(
+          device,
+          {
+            label: 'scatterRenderer/pipelineConstRadiusDenseSS1',
+            bindGroupLayouts: [bindGroupLayout],
+            vertex: {
+              code: scatterWgsl,
+              label: 'scatter.wgsl',
+              entryPoint: 'vsMainConstRadiusSplit',
+              buffers: [
+                {
+                  arrayStride: CONST_CHANNEL_STRIDE_BYTES,
+                  stepMode: 'instance',
+                  attributes: [{ shaderLocation: 0, format: 'float32', offset: 0 }],
+                },
+                {
+                  arrayStride: CONST_CHANNEL_STRIDE_BYTES,
+                  stepMode: 'instance',
+                  attributes: [{ shaderLocation: 1, format: 'float32', offset: 0 }],
+                },
+              ],
+            },
+            fragment: {
+              code: scatterWgsl,
+              label: 'scatter.wgsl',
+              formats: targetFormat,
+              blend: blendState,
+            },
+            primitive: { topology: 'triangle-list', cullMode: 'none' },
+            multisample: { count: 1 },
+          },
+          pipelineCache
+        )
+      : null;
+
   /** Variable-radius interleaved instance buffer (x,y,r,pad). */
   let instanceBuffer: GPUBuffer | null = null;
   /** Const-radius dual buffers. */
@@ -259,6 +323,11 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
   /** True when the last prepare used the constant-radius (dual-buffer) path. */
   let useConstRadiusPipeline = false;
   let lastConstRadiusDevicePx = 0;
+  /**
+   * When true, main-pass `render` is a no-op and draws go through `renderDense`
+   * (sampleCount:1 post-resolve). Only when denseCompact + main sampleCount > 1.
+   */
+  let deferDenseToPostResolve = false;
   let cpuInstanceStagingBuffer = new ArrayBuffer(0);
   let cpuInstanceStagingF32 = new Float32Array(cpuInstanceStagingBuffer);
   let cpuXStagingBuffer = new ArrayBuffer(0);
@@ -373,7 +442,15 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     lastViewportPx = [w, h];
   };
 
-  const prepare: ScatterRenderer['prepare'] = (seriesConfig, data, xScale, yScale, gridArea, forceStandardDraw) => {
+  const prepare: ScatterRenderer['prepare'] = (
+    seriesConfig,
+    data,
+    xScale,
+    yScale,
+    gridArea,
+    forceStandardDraw,
+    allowPostResolveDense
+  ) => {
     assertNotDisposed();
 
     // Continuous scales: linear samples (0,1); log solves affine in log space.
@@ -432,7 +509,10 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     }
     // Dense-const draw policy (group 2 residual): shrink drawn radius when
     // points-per-pixel is high. Upload path unchanged; sampling stays 'none'.
+    // Post-resolve SS1 only when fully compact + main is 4× MSAA + allowed
+    // (coordinator disables when visible lines would break scatter-under-lines z-order).
     let drawRadiusDevicePx = lastConstRadiusDevicePx;
+    deferDenseToPostResolve = false;
     if (useConstRadius && lastConstRadiusDevicePx > 0) {
       const plotW = lastScissor?.w ?? viewportW;
       const plotH = lastScissor?.h ?? viewportH;
@@ -445,6 +525,9 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
         forceStandard: forceStandardDraw === true,
       });
       drawRadiusDevicePx = drawPol.effectiveRadiusDevicePx;
+      // Partial blends keep main 4×; only full compact pays SS1 defer.
+      // sampleCount 1 already draws in main (multi-chart antialias:false).
+      deferDenseToPostResolve = drawPol.fullyCompact && sampleCount > 1 && allowPostResolveDense !== false;
     }
     writeVsUniforms(ax, bx, ay, by, viewportW, viewportH, drawRadiusDevicePx, logFlags, logBaseX, logBaseY);
 
@@ -723,33 +806,71 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     boundConstPointCount = 0;
   };
 
+  const isDenseDeferred: ScatterRenderer['isDenseDeferred'] = () => {
+    assertNotDisposed();
+    return (
+      deferDenseToPostResolve &&
+      useConstRadiusPipeline &&
+      instanceCount > 0 &&
+      xInstanceBuffer != null &&
+      yInstanceBuffer != null
+    );
+  };
+
+  const drawConstRadiusInstances = (
+    passEncoder: GPURenderPassEncoder,
+    pipeline: GPURenderPipeline,
+    options?: Readonly<{ manageScissor?: boolean }>
+  ): void => {
+    if (!xInstanceBuffer || !yInstanceBuffer || instanceCount === 0) return;
+
+    // Main-pass self-scissors; post-resolve dense path lets the coordinator set
+    // intro/plot scissor around the batch (mirrors dense hairline).
+    const manageScissor = options?.manageScissor !== false;
+    if (manageScissor && lastScissor && lastCanvasWidth > 0 && lastCanvasHeight > 0) {
+      passEncoder.setScissorRect(lastScissor.x, lastScissor.y, lastScissor.w, lastScissor.h);
+    }
+
+    passEncoder.setPipeline(pipeline);
+    passEncoder.setBindGroup(0, bindGroup);
+    passEncoder.setVertexBuffer(0, xInstanceBuffer);
+    passEncoder.setVertexBuffer(1, yInstanceBuffer);
+    passEncoder.draw(6, instanceCount);
+
+    if (manageScissor && lastScissor && lastCanvasWidth > 0 && lastCanvasHeight > 0) {
+      passEncoder.setScissorRect(0, 0, lastCanvasWidth, lastCanvasHeight);
+    }
+  };
+
   const render: ScatterRenderer['render'] = (passEncoder) => {
     assertNotDisposed();
     if (instanceCount === 0) return;
+    // Dense-compact const-radius is deferred to the single-sample post-resolve pass.
+    if (deferDenseToPostResolve && useConstRadiusPipeline) return;
 
+    if (useConstRadiusPipeline) {
+      drawConstRadiusInstances(passEncoder, pipelineConstRadius);
+      return;
+    }
+
+    if (!instanceBuffer) return;
     // Clip to plot area when available.
     if (lastScissor && lastCanvasWidth > 0 && lastCanvasHeight > 0) {
       passEncoder.setScissorRect(lastScissor.x, lastScissor.y, lastScissor.w, lastScissor.h);
     }
-
-    if (useConstRadiusPipeline) {
-      if (!xInstanceBuffer || !yInstanceBuffer) return;
-      passEncoder.setPipeline(pipelineConstRadius);
-      passEncoder.setBindGroup(0, bindGroup);
-      passEncoder.setVertexBuffer(0, xInstanceBuffer);
-      passEncoder.setVertexBuffer(1, yInstanceBuffer);
-    } else {
-      if (!instanceBuffer) return;
-      passEncoder.setPipeline(pipeline);
-      passEncoder.setBindGroup(0, bindGroup);
-      passEncoder.setVertexBuffer(0, instanceBuffer);
-    }
+    passEncoder.setPipeline(pipeline);
+    passEncoder.setBindGroup(0, bindGroup);
+    passEncoder.setVertexBuffer(0, instanceBuffer);
     passEncoder.draw(6, instanceCount);
-
-    // Reset scissor to full canvas to avoid impacting later renderers.
     if (lastScissor && lastCanvasWidth > 0 && lastCanvasHeight > 0) {
       passEncoder.setScissorRect(0, 0, lastCanvasWidth, lastCanvasHeight);
     }
+  };
+
+  const renderDense: ScatterRenderer['renderDense'] = (passEncoder) => {
+    assertNotDisposed();
+    if (!isDenseDeferred() || !pipelineConstRadiusDenseSS1) return;
+    drawConstRadiusInstances(passEncoder, pipelineConstRadiusDenseSS1, { manageScissor: false });
   };
 
   const dispose: ScatterRenderer['dispose'] = () => {
@@ -802,7 +923,8 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     boundConstRadiusCss = null;
     boundDpr = Number.NaN;
     boundConstPointCount = 0;
+    deferDenseToPostResolve = false;
   };
 
-  return { prepare, invalidateGeometry, render, dispose };
+  return { prepare, invalidateGeometry, render, isDenseDeferred, renderDense, dispose };
 }

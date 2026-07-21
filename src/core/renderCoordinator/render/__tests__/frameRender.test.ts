@@ -40,4 +40,33 @@ describe('frameRender pass graph', () => {
     expect(sample1.useSwapchainAsMainView).toBe(true);
     expect(sample1.needMainColor).toBe(false);
   });
+
+  it('dense-compact scatter alone opens post-resolve dense pass (group 2)', () => {
+    const withScatter = planGpuFrame({
+      msaaSampleCount: 4,
+      hasDenseHairline: false,
+      hasDenseScatter: true,
+    });
+    expect(withScatter.needsDenseHairlinePass).toBe(true);
+    expect(withScatter.passOrder).toEqual(['main', 'denseHairline', 'annotationOverlay']);
+    expect(withScatter.useDirectSwapchainResolve).toBe(false);
+
+    const sample1Scatter = planGpuFrame({
+      msaaSampleCount: 1,
+      hasDenseHairline: false,
+      hasDenseScatter: true,
+    });
+    expect(sample1Scatter.needsDenseHairlinePass).toBe(false);
+  });
+
+  it('both dense hairline and dense scatter still need post-resolve pass', () => {
+    const both = planGpuFrame({
+      msaaSampleCount: 4,
+      hasDenseHairline: true,
+      hasDenseScatter: true,
+    });
+    expect(both.needsDenseHairlinePass).toBe(true);
+    expect(both.passOrder).toEqual(['main', 'denseHairline', 'annotationOverlay']);
+    expect(both.useDirectSwapchainResolve).toBe(false);
+  });
 });
