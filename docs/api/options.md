@@ -131,6 +131,7 @@ series: [{
 ### LineSeriesConfig
 
 - **`lineStyle?: { width?, opacity?, color? }`** (default width 2). **`areaStyle?`** for fill under line. Color precedence: `lineStyle.color` → `series.color` → palette.
+- **`stack?: string`**: stack group id for **mountain fill composition** (multi-series stacked area). Non-empty + `areaStyle` → this series stacks with peers sharing the same id **and the same `yAxis`**. Stroke-only lines (no `areaStyle`) ignore `stack` for fill (dev warning once). Same string semantics as bar `stack`. Series array order within the stack = **bottom → top**. Omitted / empty / whitespace → unstacked single-series mountain (suite group 8 path).
 - **High-N hairline topology**: Under **`performance.lod: 'auto'`** (default), at ≥ ~25k displayed points **or** multi-series total-segment budget ≥ ~500k, the GPU may draw with `line-list` hairline topology (1 device px) regardless of `lineStyle.width` — draw-only LOD; does not change sampling or uploaded point count. Under **`performance.lod: 'strict'`**, configured width + AA quads are always honored. See **Dense line draw (hairline)** / **`performance.lod`** above and [performance.md](../performance.md#adaptive-draw-lod-performancelod).
 
 #### Null Gaps (Line Segmentation)
@@ -152,6 +153,37 @@ series: [{
 ### AreaSeriesConfig
 
 - **`baseline?: number`** (default: y-axis min). **`areaStyle?: { opacity?, color? }`**.
+- **`stack?: string`**: stack group id (same as line mountain / bar). Non-empty → stacked with peers of the same id and `yAxis`. When stacked, per-series `baseline` is **ignored** for layout (cumulative floor from 0; dev warning once if both set).
+
+### Stacked mountain / area (`stack` on line mountain or area)
+
+Multi-series **composition** fill — each layer’s floor is the sum of layers below (SciChart stacked mountain parity). **Not** single-series mountain (already: `line` + `areaStyle` / `type: 'area'` without `stack`; performance suite group 8 is 1-series only). **Not** `type: 'band'` (dual-curve envelope on one series). **Not** a new `type: 'stackedArea'`.
+
+```ts
+series: [
+  { type: 'line', stack: 'traffic', data: { x: t, y: organic }, areaStyle: { opacity: 0.85 }, color: '#38bdf8' },
+  { type: 'line', stack: 'traffic', data: { x: t, y: paid }, areaStyle: { opacity: 0.85 }, color: '#a78bfa' },
+  { type: 'line', stack: 'traffic', data: { x: t, y: referral }, areaStyle: { opacity: 0.85 }, color: '#34d399' },
+  // Unstacked guide line (no stack / no areaStyle)
+  { type: 'line', data: { x: t, y: target }, lineStyle: { width: 2, color: '#f472b6' } },
+]
+```
+
+| Topic | Behavior |
+|-------|----------|
+| **Order** | Within a stack id, ascending `series[]` index = bottom → top (first drawn near 0). |
+| **Pos / neg** | Positive y stack upward from 0; negative stack downward independently (bar parity). |
+| **X alignment** | Equal length + equal x[i] → index align (fast). Sparse / unequal → align by x-value key; missing peer at x contributes **0**. No linear interpolation of missing peers in v1. |
+| **Auto Y** | Includes stacked tops/bottoms (composition totals), not raw per-layer max alone. |
+| **Stroke** | Optional line stroke draws at **layer top** (baseline + y), not raw unstacked y. |
+| **Tooltip** | `value[1]` = **layer contribution**; optional `stack` + `stackTotal` on `TooltipParams`. Hit prefers topmost layer under the cursor. |
+| **Sampling** | Prefer `sampling: 'none'` or identical thresholds for stack peers; independent LTTB per series is imperfect after stack. Non-empty `stack` **with mountain fill** (`isStackedMountainSeries`) → **not** GPU line-decimation eligible. Stroke-only lines with inert `stack` (no `areaStyle`) remain eligible. |
+| **connectNulls** | Stack baselines use the **same** view as pack (gaps filtered when `connectNulls: true`) so indices stay aligned. Prefer identical gap patterns across peers. |
+| **Visibility** | Legend-hidden layers (`visible: false`) do **not** participate in composition, auto-Y, or hit-test (toggle recompute). |
+| **Multi-axis** | Same `stack` string on different `yAxis` ids → independent stacks; hit-test uses per-axis Y scale. |
+| **Streaming** | `appendData` / equal-N `setOption` recompute stack baselines for the group (caller data never mutated to cumulative y). Ranged GPU append is disabled for stacked mountain (kind `other`). |
+
+Example: [`examples/stacked-mountain/`](../../examples/stacked-mountain/). Pure math: [`src/data/stackedArea.ts`](../../src/data/stackedArea.ts). Stacked fill shader: [`src/shaders/areaStacked.wgsl`](../../src/shaders/areaStacked.wgsl).
 
 ### BarSeriesConfig
 

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stacked Mountain — ChartGPU</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #0a0a0a;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    }
+    .page {
+      min-height: 100%;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 16px;
+      padding: 20px;
+      box-sizing: border-box;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.4rem;
+      color: #fff;
+    }
+    header p {
+      margin: 8px 0 0;
+      color: #aaa;
+      line-height: 1.4;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 20px;
+      align-items: center;
+      margin-top: 12px;
+      font-size: 0.9rem;
+      color: #ccc;
+    }
+    .controls label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .chart-shell {
+      border: 1px solid #333;
+      border-radius: 12px;
+      background: #0f0f14;
+      overflow: hidden;
+      min-height: 420px;
+      height: min(70vh, 720px);
+    }
+    .chart { width: 100%; height: 100%; }
+    .error {
+      display: none;
+      padding: 16px;
+      color: #ffb4b4;
+      white-space: pre-wrap;
+    }
+    .back {
+      display: inline-block;
+      margin-top: 10px;
+      color: #aaa;
+      text-decoration: none;
+    }
+    .back:hover { color: #fff; }
+    header { position: relative; }
+    .github-link {
+      position: absolute;
+      top: 0;
+      right: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      background-color: #1a1a2e;
+      color: #e0e0e0;
+      text-decoration: none;
+      border-radius: 6px;
+      border: 1px solid #333;
+      font-size: 0.9rem;
+    }
+    .github-link:hover {
+      background-color: #2a2a3e;
+      border-color: #555;
+    }
+    .note {
+      margin-top: 8px;
+      font-size: 0.85rem;
+      color: #888;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <a href="https://github.com/ChartGPU/ChartGPU" class="github-link" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <h1>Stacked Mountain / Area</h1>
+      <p>
+        Multi-series composition fill via <code>stack</code> on <code>line</code>+<code>areaStyle</code>
+        (or <code>type: 'area'</code>). Layers sit on the cumulative sum of peers below — not single-series mountain
+        and not <code>type: 'band'</code>.
+      </p>
+      <div class="controls">
+        <label>
+          <input type="checkbox" id="enableStack" checked />
+          Stack layers (same id)
+        </label>
+        <label>
+          <input type="checkbox" id="showTarget" checked />
+          Unstacked target line
+        </label>
+      </div>
+      <p class="note">
+        Performance suite group 8 (Mountain) remains <strong>1-series</strong> only.
+        This demo is the multi-series product path.
+      </p>
+      <a class="back" href="../index.html">← Examples</a>
+    </header>
+    <div class="chart-shell">
+      <div id="chart" class="chart"></div>
+      <div id="error" class="error"></div>
+    </div>
+  </div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

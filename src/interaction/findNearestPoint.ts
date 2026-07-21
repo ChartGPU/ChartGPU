@@ -15,6 +15,12 @@ import { bucketStackedXKey } from '../utils/barStackKey';
 import { getPointCount, getX, getY, getSize } from '../data/cartesianData';
 import { getBandLength, getBandPoint } from '../data/bandData';
 import { isMonotonicNonDecreasingFiniteX } from '../core/renderCoordinator/data/computeVisibleSlice';
+import {
+  computeStackedAreaBaselines,
+  findStackedMountainHit,
+  groupStackedMountainLayers,
+  resolveStackedMountainDataView,
+} from '../data/stackedArea';
 
 const DEFAULT_MAX_DISTANCE_PX = 20;
 const DEFAULT_BAR_GAP = 0.01; // Minimal gap between bars within a group (was 0.1)
@@ -40,9 +46,26 @@ function lowerBoundX(data: CartesianSeriesData, xTarget: number): number {
 export type NearestPointMatch = Readonly<{
   seriesIndex: number;
   dataIndex: number;
+  /**
+   * Domain data point for tooltips / APIs.
+   * Stacked mountain: `[x, contributionY]` (layer’s own y, not cumulative top).
+   */
   point: DataPoint;
   /** Euclidean distance in range units. */
   distance: number;
+  /** Stack group id when the hit is a stacked mountain/area layer. */
+  stack?: string;
+  /**
+   * Stacked mountain: composition total at hit x.
+   * `point.y` / contribution remains the layer’s own y.
+   */
+  stackTotal?: number;
+  /**
+   * Domain Y for the hover highlight marker when it must not equal `point.y`.
+   * Stacked mountain: layer **yTop** (where the stroke is drawn), so the ring
+   * sits on the visible layer surface rather than at contribution y near 0.
+   */
+  highlightY?: number;
 }>;
 
 export type BarBounds = {
@@ -399,7 +422,13 @@ export function findNearestPoint(
   y: number,
   xScale: LinearScale,
   yScale: LinearScale,
-  maxDistance: number = DEFAULT_MAX_DISTANCE_PX
+  maxDistance: number = DEFAULT_MAX_DISTANCE_PX,
+  /**
+   * Optional per-axis Y scales for multi-axis charts. When provided, stacked
+   * mountain hits invert cursor Y with the group's yAxis scale (issue 6).
+   * Other series still use the primary `yScale` (caller usually primary left).
+   */
+  yScalesByAxis?: ReadonlyMap<string, LinearScale>
 ): NearestPointMatch | null {
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
 
@@ -408,6 +437,13 @@ export function findNearestPoint(
 
   const xTarget = xScale.invert(x);
   if (!Number.isFinite(xTarget)) return null;
+
+  const resolveYScaleForSeries = (seriesIndex: number): LinearScale => {
+    if (!yScalesByAxis || yScalesByAxis.size === 0) return yScale;
+    const s = series[seriesIndex] as { yAxis?: string } | undefined;
+    const axisId = s?.yAxis ?? 'y';
+    return yScalesByAxis.get(axisId) ?? yScale;
+  };
 
   let bestSeriesIndex = -1;
   let bestDataIndex = -1;
@@ -426,6 +462,69 @@ export function findNearestPoint(
     if (cfg?.type === 'bar' && cfg.visible !== false) {
       barSeriesConfigs.push(cfg);
       barSeriesIndexByBar.push(s);
+    }
+  }
+
+  // Stacked mountain/area: hit prefers topmost layer under cursor between yBottom and yTop (D8).
+  // Runs before generic cartesian nearest-point so fill hits win over stroke distance.
+  {
+    const groups = groupStackedMountainLayers(series, { includeHidden: false });
+    if (groups.size > 0) {
+      // Domain x tolerance from maxDistance CSS px near cursor.
+      const xLeft = xScale.invert(x - md);
+      const xRight = xScale.invert(x + md);
+      const xTol = Number.isFinite(xLeft) && Number.isFinite(xRight) ? Math.abs(xRight - xLeft) / 2 : 0;
+
+      let bestStack: NearestPointMatch | null = null;
+      for (const members of groups.values()) {
+        if (members.length === 0) continue;
+        // Per-group yAxis scale (multi-axis stacks — issue 6).
+        const groupYScale = resolveYScaleForSeries(members[0]!.seriesIndex);
+        const yTarget = groupYScale.invert(y);
+        if (!Number.isFinite(yTarget)) continue;
+
+        // Same data view as prepare pack: connectNulls → filterGaps; sampling none → raw.
+        const layers = members.map((m) => ({
+          seriesIndex: m.seriesIndex,
+          data: resolveStackedMountainDataView(
+            m.series as {
+              sampling?: string;
+              connectNulls?: boolean;
+              data?: CartesianSeriesData;
+              rawData?: CartesianSeriesData;
+            }
+          ),
+        }));
+        const geometries = computeStackedAreaBaselines(layers);
+        const hit = findStackedMountainHit({
+          layers,
+          geometries,
+          xTarget,
+          yTarget,
+          xTolerance: xTol,
+        });
+        if (!hit) continue;
+        const stackId = normalizeStackId((series[hit.seriesIndex] as { stack?: unknown } | undefined)?.stack);
+        const cand: NearestPointMatch = {
+          seriesIndex: hit.seriesIndex,
+          dataIndex: hit.dataIndex,
+          // Tooltip / API: layer contribution. Highlight: cumulative yTop (stroke surface).
+          point: [hit.x, hit.contributionY],
+          distance: 0,
+          highlightY: hit.yTop,
+          ...(stackId !== '' ? { stack: stackId } : {}),
+          stackTotal: hit.stackTotal,
+        };
+        // Prefer higher seriesIndex (topmost in array order among hits).
+        if (
+          bestStack === null ||
+          cand.seriesIndex > bestStack.seriesIndex ||
+          (cand.seriesIndex === bestStack.seriesIndex && cand.dataIndex < bestStack.dataIndex)
+        ) {
+          bestStack = cand;
+        }
+      }
+      if (bestStack) return bestStack;
     }
   }
 

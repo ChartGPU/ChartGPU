@@ -1,4 +1,5 @@
 import areaWgsl from '../shaders/area.wgsl?raw';
+import areaStackedWgsl from '../shaders/areaStacked.wgsl?raw';
 import type { ResolvedAreaSeriesConfig } from '../config/OptionResolver';
 import type { CartesianSeriesData } from '../config/types';
 import type { ContinuousScale } from '../utils/scales';
@@ -20,6 +21,21 @@ import {
   resolveLogProjection,
 } from './packedXAffine';
 
+/**
+ * Optional stacked mountain geometry: per-point floor (yBottom) and ceiling (yTop).
+ * When set, AreaRenderer private-packs AreaPoint stride-4 and ignores shared storageBuffer
+ * (composition baselines cannot share the line vec2 layout).
+ */
+export type AreaStackGeometry = Readonly<{
+  /** Per-point floor in data space. Length must equal point count. */
+  yBottom: ArrayLike<number>;
+  /**
+   * Per-point top in data space. When omitted, uses series y as top
+   * (yTop = yBottom + contribution already applied by caller into data.y).
+   */
+  yTop?: ArrayLike<number>;
+}>;
+
 export interface AreaRenderer {
   prepare(
     seriesConfig: ResolvedAreaSeriesConfig,
@@ -30,6 +46,7 @@ export interface AreaRenderer {
     /**
      * Optional shared storage buffer (line / GPU decimation output). When set,
      * skips private pack+upload and binds this buffer (issue 1.4 step 3).
+     * Ignored when `stackGeometry` is provided (stacked path always private-packs).
      */
     storageBuffer?: GPUBuffer,
     /**
@@ -41,7 +58,11 @@ export interface AreaRenderer {
      * X-origin subtracted during packing (time-axis Float32). Clip affine
      * samples near this origin: clipX = ax * x' + scale(xOffset).
      */
-    xOffset?: number
+    xOffset?: number,
+    /**
+     * Stacked mountain per-point yBottom / yTop. Forces private pack + stacked pipeline.
+     */
+    stackGeometry?: AreaStackGeometry
   ): void;
   /**
    * Drop cached domain-space geometry so the next `prepare` re-packs vertices.
@@ -129,6 +150,34 @@ function packAreaPointsInto(out: Float32Array, data: CartesianSeriesData, pointC
   }
 }
 
+/** Pack AreaPoint {x, yTop, yBottom, pad} stride-4 for stacked mountain fill. */
+function packStackedAreaPointsInto(
+  out: Float32Array,
+  data: CartesianSeriesData,
+  pointCount: number,
+  yBottom: ArrayLike<number>,
+  yTop: ArrayLike<number> | undefined
+): void {
+  for (let i = 0; i < pointCount; i++) {
+    const x = getX(data, i);
+    const yRaw = getY(data, i);
+    const top = yTop != null ? yTop[i]! : yRaw;
+    const bot = yBottom[i]!;
+    const base = i * 4;
+    if (!Number.isFinite(x) || !Number.isFinite(top) || !Number.isFinite(bot)) {
+      out[base] = Number.NaN;
+      out[base + 1] = Number.NaN;
+      out[base + 2] = Number.NaN;
+      out[base + 3] = 0;
+    } else {
+      out[base] = x;
+      out[base + 1] = top;
+      out[base + 2] = bot;
+      out[base + 3] = 0;
+    }
+  }
+}
+
 export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOptions): AreaRenderer {
   let disposed = false;
   const targetFormat = options?.targetFormat ?? DEFAULT_TARGET_FORMAT;
@@ -168,6 +217,19 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
   const vsUniformScratchF32 = new Float32Array(vsUniformScratchBuffer);
   const fsUniformScratchF32 = new Float32Array(4);
 
+  const blendState = {
+    color: {
+      operation: 'add' as const,
+      srcFactor: 'src-alpha' as const,
+      dstFactor: 'one-minus-src-alpha' as const,
+    },
+    alpha: {
+      operation: 'add' as const,
+      srcFactor: 'one' as const,
+      dstFactor: 'one-minus-src-alpha' as const,
+    },
+  };
+
   const pipeline = createRenderPipeline(
     device,
     {
@@ -182,21 +244,31 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
         code: areaWgsl,
         label: 'area.wgsl',
         formats: targetFormat,
-        blend: {
-          color: {
-            operation: 'add',
-            srcFactor: 'src-alpha',
-            dstFactor: 'one-minus-src-alpha',
-          },
-          alpha: {
-            operation: 'add',
-            srcFactor: 'one',
-            dstFactor: 'one-minus-src-alpha',
-          },
-        },
+        blend: blendState,
       },
       // Instanced triangle-list: 6 verts × (N-1) segments (matches line AA path).
       // Per-segment topology allows dual-endpoint NaN discard without strip fans (#153).
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      multisample: { count: sampleCount },
+    },
+    pipelineCache
+  );
+
+  const pipelineStacked = createRenderPipeline(
+    device,
+    {
+      label: 'areaRenderer/pipelineStacked',
+      bindGroupLayouts: [bindGroupLayout],
+      vertex: {
+        code: areaStackedWgsl,
+        label: 'areaStacked.wgsl',
+      },
+      fragment: {
+        code: areaStackedWgsl,
+        label: 'areaStacked.wgsl',
+        formats: targetFormat,
+        blend: blendState,
+      },
       primitive: { topology: 'triangle-list', cullMode: 'none' },
       multisample: { count: sampleCount },
     },
@@ -212,6 +284,10 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
   let pointCount = 0;
   // Geometry identity: reuse private pack when data ref stable (axes-only).
   let boundDataRef: CartesianSeriesData | null = null;
+  /** Stack geometry identity — invalidate when peer baselines change under same data ref. */
+  let boundStackYBottomRef: ArrayLike<number> | null = null;
+  let boundStackYTopRef: ArrayLike<number> | null = null;
+  let useStackedPipeline = false;
   let cachedBounds: {
     readonly xMin: number;
     readonly xMax: number;
@@ -322,11 +398,91 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     baseline,
     storageBuffer,
     pointCountOverride,
-    xOffset = 0
+    xOffset = 0,
+    stackGeometry
   ) => {
     assertNotDisposed();
 
-    if (storageBuffer) {
+    // Stacked mountain: always private-pack AreaPoint {x,yTop,yBottom,pad}; never share line buffer.
+    if (stackGeometry) {
+      useStackedPipeline = true;
+      const n = getPointCount(data);
+      const ringOrStaging = isStagingRingView(data) || isRingXYColumns(data);
+      const stackDirty =
+        boundDataRef !== data ||
+        n !== pointCount ||
+        ringOrStaging ||
+        boundStackYBottomRef !== stackGeometry.yBottom ||
+        boundStackYTopRef !== (stackGeometry.yTop ?? null);
+      if (stackDirty) {
+        ensureCpuStaging(n * 4);
+        packStackedAreaPointsInto(cpuStaging, data, n, stackGeometry.yBottom, stackGeometry.yTop);
+        const requiredBytes = Math.max(4, n * 16);
+        ensurePrivateBuffer(requiredBytes);
+        if (n > 0 && privateBuffer) {
+          device.queue.writeBuffer(privateBuffer, 0, cpuStaging.buffer, cpuStaging.byteOffset, n * 16);
+        }
+        pointCount = n;
+        boundDataRef = data;
+        boundStackYBottomRef = stackGeometry.yBottom;
+        boundStackYTopRef = stackGeometry.yTop ?? null;
+
+        // Bounds: include yBottom + yTop extremes for affine (prefer series rawBounds when present).
+        const fromSeries = (seriesConfig as { readonly rawBounds?: typeof cachedBounds }).rawBounds;
+        if (fromSeries) {
+          cachedBounds = fromSeries;
+        } else {
+          let xMin = Number.POSITIVE_INFINITY;
+          let xMax = Number.NEGATIVE_INFINITY;
+          let yMin = Number.POSITIVE_INFINITY;
+          let yMax = Number.NEGATIVE_INFINITY;
+          for (let i = 0; i < n; i++) {
+            const x = getX(data, i);
+            const top = stackGeometry.yTop != null ? stackGeometry.yTop[i]! : getY(data, i);
+            const bot = stackGeometry.yBottom[i]!;
+            if (!Number.isFinite(x) || !Number.isFinite(top) || !Number.isFinite(bot)) continue;
+            if (x < xMin) xMin = x;
+            if (x > xMax) xMax = x;
+            const lo = Math.min(bot, top);
+            const hi = Math.max(bot, top);
+            if (lo < yMin) yMin = lo;
+            if (hi > yMax) yMax = hi;
+          }
+          if (Number.isFinite(xMin) && Number.isFinite(yMin)) {
+            if (xMin === xMax) xMax = xMin + 1;
+            if (yMin === yMax) yMax = yMin + 1;
+            cachedBounds = { xMin, xMax, yMin, yMax };
+          } else {
+            cachedBounds = null;
+          }
+        }
+      }
+
+      if (privateBuffer) {
+        bindStorage(privateBuffer);
+      }
+
+      const { xMin, xMax, yMin, yMax } = cachedBounds ?? {
+        xMin: 0,
+        xMax: 1,
+        yMin: 0,
+        yMax: 1,
+      };
+      const { a: ax, b: bx } =
+        xScale.kind === 'log'
+          ? computeClipAffineFromContinuousScale(xScale)
+          : computeClipAffineFromScale(xScale, xMin, xMax);
+      const { a: ay, b: by } =
+        yScale.kind === 'log'
+          ? computeClipAffineFromContinuousScale(yScale)
+          : computeClipAffineFromScale(yScale, yMin, yMax);
+      const { logFlags, logBaseX, logBaseY } = resolveLogProjection(xScale, yScale);
+      // Scalar baseline unused in stacked VS; keep uniform slot filled for dirty gate.
+      writeVsUniforms(ax, bx, ay, by, 0, logFlags, logBaseX, logBaseY);
+    } else if (storageBuffer) {
+      useStackedPipeline = false;
+      boundStackYBottomRef = null;
+      boundStackYTopRef = null;
       // Shared line / decimation path — no private pack (issue 1.4 step 3).
       // Require explicit point count: drawing raw N from a shorter decimation
       // buffer is undefined (review issue 8).
@@ -356,6 +512,9 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
             : defaultBaseline;
       writeVsUniforms(ax, bxPacked, ay, by, baselineValue, logFlags, logBaseX, logBaseY);
     } else {
+      useStackedPipeline = false;
+      boundStackYBottomRef = null;
+      boundStackYTopRef = null;
       // Private pack path with identity cache + pow2 growth.
       // Also re-pack when length changes under a stable ref (streaming append grows
       // owned XY columns in place; modular-ring fallback path uses this branch).
@@ -429,6 +588,8 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
 
   const invalidateGeometry: AreaRenderer['invalidateGeometry'] = () => {
     boundDataRef = null;
+    boundStackYBottomRef = null;
+    boundStackYTopRef = null;
     cachedBounds = null;
   };
 
@@ -438,7 +599,7 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     if (!currentBindGroup || pointCount < 2) return;
 
     const segments = pointCount - 1;
-    passEncoder.setPipeline(pipeline);
+    passEncoder.setPipeline(useStackedPipeline ? pipelineStacked : pipeline);
     passEncoder.setBindGroup(0, currentBindGroup);
     // 6 vertices per instance (trapezoid), (pointCount - 1) instances (segments).
     passEncoder.draw(6, segments);
@@ -448,6 +609,8 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     if (disposed) return;
     disposed = true;
     boundDataRef = null;
+    boundStackYBottomRef = null;
+    boundStackYTopRef = null;
     cachedBounds = null;
     currentBindGroup = null;
     boundDataBuffer = null;

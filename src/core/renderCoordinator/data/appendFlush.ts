@@ -68,6 +68,11 @@ export interface AppendFlushDeps {
   gpuSeriesKindByIndex: DataStoreBufferKind[];
   lastSetSeriesCache: Map<number, { data: unknown; xOffset: number }>;
   filterGapsCache: { delete: (index: number) => void; clear?: () => void };
+  /**
+   * Invalidate stacked mountain prepare cache (and similar peer caches) when
+   * append mutates data under stable refs / grows columns.
+   */
+  invalidateStackedMountainCache?: () => void;
   lastSampledData: unknown[];
   warnedSamplingDefeatsFastPath: Set<number>;
   recomputeRuntimeBaseSeries: () => void;
@@ -137,6 +142,10 @@ function flushPendingAppendsImplInner(d: any): boolean {
   if (d.pendingAppendByIndex.size === 0) return false;
 
   d.appendedGpuThisFrame.clear();
+  // Append grows / mutates peer data under stable refs — stack baselines must recompute.
+  if (typeof d.invalidateStackedMountainCache === 'function') {
+    d.invalidateStackedMountainCache();
+  }
 
   const zoomRangeBefore = d.zoomState?.getRange() ?? null;
   const canAutoScroll =

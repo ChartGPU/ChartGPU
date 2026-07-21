@@ -172,6 +172,12 @@ export function formatTooltipItem(params: TooltipParams): string {
     const hi = formatNumber(Math.max(a, b));
     return formatRowHtml(params, `${lo} … ${hi}`);
   }
+  if (typeof params.stackTotal === 'number' && Number.isFinite(params.stackTotal)) {
+    // Stacked mountain: layer contribution primary, stack total muted secondary.
+    const y = formatNumber(params.value[1]);
+    const total = formatNumber(params.stackTotal);
+    return formatRowHtml(params, `${y} (total ${total})`, `${escapeHtml(y)} ${mutedSecondaryHtml(`total ${total}`)}`);
+  }
   if (typeof params.high === 'number' && typeof params.low === 'number') {
     // Error bar: center with high/low whiskers.
     const y = formatNumber(params.value[1]);
@@ -212,6 +218,11 @@ export function formatTooltipAxis(params: TooltipParams[]): string {
         const lo = formatNumber(Math.min(a, b));
         const hi = formatNumber(Math.max(a, b));
         return formatRowHtml(p, `${lo} … ${hi}`);
+      }
+      if (typeof p.stackTotal === 'number' && Number.isFinite(p.stackTotal)) {
+        const y = formatNumber(p.value[1]);
+        const total = formatNumber(p.stackTotal);
+        return formatRowHtml(p, `${y} (total ${total})`, `${escapeHtml(y)} ${mutedSecondaryHtml(`total ${total}`)}`);
       }
       if (typeof p.high === 'number' && typeof p.low === 'number') {
         const y = formatNumber(p.value[1]);

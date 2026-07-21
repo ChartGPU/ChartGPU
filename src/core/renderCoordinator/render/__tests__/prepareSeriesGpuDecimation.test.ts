@@ -27,6 +27,7 @@ beforeAll(() => {
 
 import { prepareSeries } from '../renderSeries';
 import type { SeriesPrepareContext, SeriesRenderers } from '../renderSeries';
+import { createStackedMountainCache } from '../stackedMountainCache';
 import type { ResolvedSeriesConfig } from '../../../../config/OptionResolver';
 import type { DataStore } from '../../../../data/createDataStore';
 import type { LinearScale } from '../../../../utils/scales';
@@ -162,6 +163,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
       maxRadiusCss: 4,
       lastSetSeriesCache: new Map(),
       filterGapsCache: createFilterGapsCache(),
+      stackedMountainCache: createStackedMountainCache(),
     };
 
     prepareSeries(renderers, context);
@@ -256,6 +258,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
       maxRadiusCss: 4,
       lastSetSeriesCache: new Map(),
       filterGapsCache: createFilterGapsCache(),
+      stackedMountainCache: createStackedMountainCache(),
     });
 
     const xOffsetArg = linePrepare.mock.calls[0]![4] as number;
@@ -344,6 +347,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         maxRadiusCss: 4,
         lastSetSeriesCache: new Map(),
         filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
       }
     );
 
@@ -450,6 +454,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         maxRadiusCss: 4,
         lastSetSeriesCache: new Map(),
         filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
       }
     );
 
@@ -568,6 +573,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         maxRadiusCss: 4,
         lastSetSeriesCache: new Map(),
         filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
       }
     );
 
@@ -691,6 +697,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         maxRadiusCss: 4,
         lastSetSeriesCache: new Map(),
         filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
       }
     );
 
@@ -786,6 +793,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         maxRadiusCss: 4,
         lastSetSeriesCache: new Map(),
         filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
       }
     );
 
@@ -873,6 +881,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         maxRadiusCss: 4,
         lastSetSeriesCache: new Map(),
         filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
       }
     );
 
@@ -962,6 +971,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         maxRadiusCss: 4,
         lastSetSeriesCache: new Map(),
         filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
       }
     );
 
@@ -1049,6 +1059,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         maxRadiusCss: 4,
         lastSetSeriesCache: new Map(),
         filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
       }
     );
 
@@ -1146,6 +1157,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         maxRadiusCss: 4,
         lastSetSeriesCache: new Map(),
         filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
       }
     );
 
@@ -1314,6 +1326,7 @@ describe('prepareSeries modular ring → line prepare (issue 0.1 / review 8)', (
         maxRadiusCss: 4,
         lastSetSeriesCache: new Map(),
         filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
       }
     );
 
@@ -1394,6 +1407,7 @@ describe('prepareSeries modular ring → line prepare (issue 0.1 / review 8)', (
         maxRadiusCss: 4,
         lastSetSeriesCache: new Map(),
         filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
       }
     );
 
@@ -1402,5 +1416,137 @@ describe('prepareSeries modular ring → line prepare (issue 0.1 / review 8)', (
     expect(args[1]).toBe(decimatedBuffer);
     // Decimation output is chronological linear — ringLayout arg is undefined.
     expect(args[10]).toBeUndefined();
+  });
+});
+
+describe('prepareSeries stacked mountain D9', () => {
+  it('stacked line+areaStyle with lttb is not GPU-decimation path (kind other)', () => {
+    const data: any = [
+      [0, 1],
+      [1, 2],
+      [2, 3],
+      [3, 4],
+      [4, 5],
+    ];
+    const series = [
+      {
+        type: 'line',
+        name: 's0',
+        data,
+        rawData: data,
+        color: '#0af',
+        visible: true,
+        connectNulls: false,
+        sampling: 'lttb',
+        samplingThreshold: 2,
+        yAxis: 'y',
+        stack: 'traffic',
+        areaStyle: { color: '#0af', opacity: 0.85 },
+        lineStyle: { width: 1, opacity: 1, color: '#0af' },
+      },
+      {
+        type: 'line',
+        name: 's1',
+        data: data.map((p: number[]) => [p[0], (p[1] ?? 0) + 1]),
+        rawData: data.map((p: number[]) => [p[0], (p[1] ?? 0) + 1]),
+        color: '#f0a',
+        visible: true,
+        connectNulls: false,
+        sampling: 'lttb',
+        samplingThreshold: 2,
+        yAxis: 'y',
+        stack: 'traffic',
+        areaStyle: { color: '#f0a', opacity: 0.85 },
+        lineStyle: { width: 1, opacity: 1, color: '#f0a' },
+      },
+    ] as any;
+
+    const decimationPrepare = vi.fn(() => 2);
+    const renderers = {
+      lineRenderers: [
+        { prepare: vi.fn(), render: vi.fn(), dispose: vi.fn() },
+        { prepare: vi.fn(), render: vi.fn(), dispose: vi.fn() },
+      ],
+      areaRenderers: [
+        { prepare: vi.fn(), render: vi.fn(), dispose: vi.fn(), invalidateGeometry: vi.fn() },
+        { prepare: vi.fn(), render: vi.fn(), dispose: vi.fn(), invalidateGeometry: vi.fn() },
+      ],
+      barRenderer: { prepare: vi.fn(), render: vi.fn(), dispose: vi.fn(), invalidateGeometry: vi.fn() },
+      scatterRenderers: [],
+      scatterDensityRenderers: [],
+      pieRenderers: [],
+      heatmapRenderers: [],
+      bandRenderers: [],
+      candlestickRenderers: [],
+      ohlcRenderers: [],
+      errorBarRenderers: [],
+      decimationComputes: [
+        {
+          prepare: decimationPrepare,
+          getOutputBuffer: vi.fn(),
+          encode: vi.fn(),
+          dispose: vi.fn(),
+        },
+        {
+          prepare: decimationPrepare,
+          getOutputBuffer: vi.fn(),
+          encode: vi.fn(),
+          dispose: vi.fn(),
+        },
+      ],
+    } as any;
+
+    const gpuSeriesKindByIndex: any[] = ['unknown', 'unknown'];
+    const dataStore = {
+      setSeries: vi.fn(),
+      getSeriesBuffer: vi.fn(() => ({})),
+      getSeriesPointCount: vi.fn(() => 5),
+      getSeriesRingLayout: vi.fn(() => ({ start: 0, capacity: 0 })),
+      getSeriesContentHash: vi.fn(() => 1),
+      isSeriesRingMode: vi.fn(() => false),
+    } as any;
+
+    prepareSeries(renderers, {
+      currentOptions: {
+        series,
+        xAxis: { type: 'value' },
+        yAxes: [{ id: 'y', type: 'value' }],
+        performance: { lod: 'auto' },
+      } as any,
+      seriesForRender: series,
+      xScale: makeScale(0, 4),
+      yScales: new Map([['y', makeScale(0, 20)]]),
+      gridArea: {
+        left: 0,
+        right: 0,
+        top: 0,
+        bottom: 0,
+        canvasWidth: 800,
+        canvasHeight: 600,
+        devicePixelRatio: 1,
+      } as any,
+      dataStore,
+      appendedGpuThisFrame: new Set(),
+      gpuSeriesKindByIndex,
+      zoomState: { getRange: () => null },
+      visibleXDomain: { min: 0, max: 4 },
+      introPhase: 'done',
+      introProgress01: 1,
+      withAlpha: (c: string) => c,
+      maxRadiusCss: 0,
+      lastSetSeriesCache: new Map(),
+      filterGapsCache: createFilterGapsCache(),
+      stackedMountainCache: createStackedMountainCache(),
+    });
+
+    expect(decimationPrepare).not.toHaveBeenCalled();
+    expect(gpuSeriesKindByIndex[0]).toBe('other');
+    expect(gpuSeriesKindByIndex[1]).toBe('other');
+    // Area prepare got stackGeometry (9th arg)
+    expect(renderers.areaRenderers[0].prepare).toHaveBeenCalled();
+    const areaArgs = renderers.areaRenderers[0].prepare.mock.calls[0];
+    expect(areaArgs[8]).toBeDefined();
+    expect(areaArgs[8].yBottom).toBeDefined();
+    expect(areaArgs[8].yTop).toBeDefined();
   });
 });

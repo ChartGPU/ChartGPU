@@ -86,6 +86,13 @@ import {
   getPointCount,
   hasNullGaps,
 } from '../data/cartesianData';
+import {
+  computeStackedAreaBaselines,
+  computeStackedYExtents,
+  groupStackedMountainLayers,
+  isStackedMountainSeries,
+  normalizeStackId,
+} from '../data/stackedArea';
 import { bandBounds, cheapBandContentStamp, getBandLength, hasBandNullGaps, sampleBandSeries } from '../data/bandData';
 import {
   cheapErrorBarContentStamp,
@@ -1352,6 +1359,70 @@ const assertUnreachable = (value: never): never => {
 };
 
 let candlestickWarned = false;
+const warnedStackedAreaBaseline = new Set<number>();
+const warnStackedAreaBaselineIgnored = (seriesIndex: number): void => {
+  if (warnedStackedAreaBaseline.has(seriesIndex)) return;
+  warnedStackedAreaBaseline.add(seriesIndex);
+  console.warn(
+    `ChartGPU: series[${seriesIndex}] has both stack and baseline; baseline is ignored for stacked mountain/area layout (cumulative floor from 0).`
+  );
+};
+
+const warnedLineStackNoArea = new Set<number>();
+const warnLineStackWithoutAreaStyle = (seriesIndex: number): void => {
+  if (warnedLineStackNoArea.has(seriesIndex)) return;
+  warnedLineStackNoArea.add(seriesIndex);
+  console.warn(
+    `ChartGPU: series[${seriesIndex}] has stack without areaStyle; stack has no fill effect on stroke-only lines.`
+  );
+};
+
+/**
+ * Expand per-series rawBounds y extents so auto Y includes stacked composition totals
+ * (not raw per-layer max alone). Mutates resolved series objects in place (resolver-owned).
+ */
+function applyStackedMountainBounds(series: ResolvedSeriesConfig[]): void {
+  // Visible peers only — legend-hidden layers do not lift auto Y (issue 9).
+  const groups = groupStackedMountainLayers(series, { includeHidden: false });
+  if (groups.size === 0) return;
+
+  for (const members of groups.values()) {
+    if (members.length === 0) continue;
+    const layers = members.map((m) => ({
+      seriesIndex: m.seriesIndex,
+      data: ((m.series as { data?: CartesianSeriesData }).data ?? []) as CartesianSeriesData,
+    }));
+    const geometries = computeStackedAreaBaselines(layers);
+    const ext = computeStackedYExtents(geometries);
+    if (!ext) continue;
+
+    for (const m of members) {
+      const s = series[m.seriesIndex] as ResolvedSeriesConfig & {
+        rawBounds?: RawBounds;
+      };
+      if (!s) continue;
+      const prev = s.rawBounds;
+      // Y is composition-authoritative (do not keep zero-span contribution yMax+1).
+      // X still comes from per-series data extents when available.
+      if (!prev) {
+        (s as { rawBounds?: RawBounds }).rawBounds = {
+          xMin: 0,
+          xMax: 1,
+          yMin: ext.yMin,
+          yMax: ext.yMax,
+        };
+        continue;
+      }
+      (s as { rawBounds?: RawBounds }).rawBounds = {
+        xMin: prev.xMin,
+        xMax: prev.xMax,
+        yMin: ext.yMin,
+        yMax: ext.yMax,
+      };
+    }
+  }
+}
+
 const warnCandlestickNotImplemented = (): void => {
   if (!candlestickWarned) {
     console.warn('ChartGPU: Candlestick series rendering is not yet implemented. Series will be skipped.');
@@ -2047,6 +2118,11 @@ export function resolveOptions(
                 color: effectiveColor,
               };
 
+              const stack = normalizeStackId(s.stack);
+              if (stack !== '' && s.baseline !== undefined && Number.isFinite(s.baseline)) {
+                warnStackedAreaBaselineIgnored(i);
+              }
+
               const connectNulls = s.connectNulls ?? false;
               const contentHash = resolveSeriesContentHash(prevResolved, 'area', s.data, () =>
                 cheapCartesianContentStamp(s.data)
@@ -2088,6 +2164,8 @@ export function resolveOptions(
                 connectNulls,
                 yAxis,
                 contentHash,
+                // Normalized stack id (empty → omitted / unstacked).
+                ...(stack !== '' ? { stack } : { stack: undefined }),
               };
             }
             case 'line': {
@@ -2102,7 +2180,11 @@ export function resolveOptions(
               };
 
               // Avoid leaking the unresolved (user) areaStyle shape via object spread.
-              const { areaStyle: _userAreaStyle, ...rest } = s;
+              const { areaStyle: _userAreaStyle, stack: _userStack, ...rest } = s;
+              const stack = normalizeStackId(s.stack);
+              if (stack !== '' && s.areaStyle == null) {
+                warnLineStackWithoutAreaStyle(i);
+              }
               const connectNulls = s.connectNulls ?? false;
               const contentHash = resolveSeriesContentHash(prevResolved, 'line', s.data, () =>
                 cheapCartesianContentStamp(s.data)
@@ -2154,6 +2236,7 @@ export function resolveOptions(
                 connectNulls,
                 yAxis,
                 contentHash,
+                ...(stack !== '' ? { stack } : { stack: undefined }),
               };
             }
             case 'bar': {
@@ -2732,6 +2815,12 @@ export function resolveOptions(
           }
         })
         .filter((s) => s != null) as ResolvedSeriesConfig[]);
+
+  // Stacked mountain/area: expand rawBounds so auto Y includes composition totals.
+  // Skip when reusing entire series array (bounds already expanded on prior resolve).
+  if (!canReuseEntireSeriesArray && series.some((s) => isStackedMountainSeries(s))) {
+    applyStackedMountainBounds(series as ResolvedSeriesConfig[]);
+  }
 
   return {
     coordinateSystem,

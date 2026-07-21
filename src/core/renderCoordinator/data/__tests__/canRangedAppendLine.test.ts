@@ -139,3 +139,45 @@ describe('canRangedAppendLine', () => {
     ).toBe(false);
   });
 });
+
+it('rejects stacked mountain line+areaStyle even when sampling none / fullRawLine', () => {
+  const stacked = {
+    type: 'line' as const,
+    sampling: 'none' as const,
+    stack: 'traffic',
+    areaStyle: { opacity: 0.85 },
+  };
+  expect(
+    canRangedAppendLine({
+      seriesType: 'line',
+      sampling: 'none',
+      kind: 'fullRawLine',
+      rawData: raw,
+      series: stacked as any,
+    })
+  ).toBe(false);
+});
+
+it('rejects stacked pure area', () => {
+  expect(
+    canRangedAppendLine({
+      seriesType: 'area',
+      sampling: 'none',
+      kind: 'unknown',
+      rawData: raw,
+      series: { type: 'area', sampling: 'none', stack: 'm' } as any,
+    })
+  ).toBe(false);
+});
+
+it('allows stroke-only line with inert stack (no areaStyle)', () => {
+  expect(
+    canRangedAppendLine({
+      seriesType: 'line',
+      sampling: 'none',
+      kind: 'fullRawLine',
+      rawData: raw,
+      series: { type: 'line', sampling: 'none', stack: 'm' } as any,
+    })
+  ).toBe(true);
+});

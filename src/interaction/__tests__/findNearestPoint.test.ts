@@ -525,4 +525,204 @@ describe('findNearestPoint', () => {
       expect(bandHit!.point).toEqual([2, 0]);
     });
   });
+
+  describe('stacked mountain hit-test', () => {
+    const mountainLayer = (name: string, data: DataPoint[], color: string): ResolvedSeriesConfig =>
+      ({
+        type: 'line',
+        name,
+        data,
+        rawData: data,
+        color,
+        visible: true,
+        connectNulls: false,
+        sampling: 'none',
+        samplingThreshold: 5000,
+        yAxis: 'y',
+        stack: 'traffic',
+        areaStyle: { color, opacity: 0.85 },
+        lineStyle: { width: 1, opacity: 1, color },
+      }) as any;
+
+    it('hits topmost layer under cursor and reports contribution y + stackTotal', () => {
+      // Layer0: y=1 → band [0,1]; Layer1: y=2 → band [1,3]; Layer2: y=3 → band [3,6]
+      const s0 = mountainLayer(
+        'Organic',
+        [
+          [0, 1],
+          [1, 1],
+          [2, 1],
+        ],
+        '#38bdf8'
+      );
+      const s1 = mountainLayer(
+        'Paid',
+        [
+          [0, 2],
+          [1, 2],
+          [2, 2],
+        ],
+        '#a78bfa'
+      );
+      const s2 = mountainLayer(
+        'Referral',
+        [
+          [0, 3],
+          [1, 3],
+          [2, 3],
+        ],
+        '#34d399'
+      );
+      const series = [s0, s1, s2];
+      const xScale = createLinearScale().domain(0, 2).range(0, 200);
+      const yScale = createLinearScale().domain(0, 8).range(400, 0);
+
+      // y=4 is inside top layer [3,6]
+      const top = findNearestPoint(series, xScale.scale(1), yScale.scale(4), xScale, yScale, 50);
+      expect(top).not.toBeNull();
+      expect(top!.seriesIndex).toBe(2);
+      expect(top!.dataIndex).toBe(1);
+      expect(top!.point).toEqual([1, 3]); // contribution for tooltip, not cumulative top
+      expect(top!.highlightY).toBe(6); // stroke / fill surface for highlight marker
+      expect(top!.stack).toBe('traffic');
+      expect(top!.stackTotal).toBe(6);
+
+      // y=1.5 is inside middle layer [1,3]
+      const mid = findNearestPoint(series, xScale.scale(1), yScale.scale(1.5), xScale, yScale, 50);
+      expect(mid).not.toBeNull();
+      expect(mid!.seriesIndex).toBe(1);
+      expect(mid!.point).toEqual([1, 2]);
+      expect(mid!.highlightY).toBe(3);
+      expect(mid!.stackTotal).toBe(6);
+
+      // y=0.5 is inside bottom layer [0,1]
+      const bot = findNearestPoint(series, xScale.scale(1), yScale.scale(0.5), xScale, yScale, 50);
+      expect(bot).not.toBeNull();
+      expect(bot!.seriesIndex).toBe(0);
+      expect(bot!.point).toEqual([1, 1]);
+      expect(bot!.highlightY).toBe(1);
+    });
+
+    it('cursor above stack with tiny maxDistance does not claim stackTotal fill hit', () => {
+      const series = [
+        mountainLayer(
+          'A',
+          [
+            [0, 1],
+            [1, 1],
+          ],
+          '#0af'
+        ),
+        mountainLayer(
+          'B',
+          [
+            [0, 1],
+            [1, 1],
+          ],
+          '#f0a'
+        ),
+      ];
+      const xScale = createLinearScale().domain(0, 1).range(0, 100);
+      const yScale = createLinearScale().domain(0, 10).range(100, 0);
+      // Stack tops at 2; y=9 is outside all layers — maxDistance 1 px so stroke also misses
+      const miss = findNearestPoint(series, xScale.scale(0.5), yScale.scale(9), xScale, yScale, 1);
+      expect(miss).toBeNull();
+      // Hard assert: y=1.5 must hit top layer (seriesIndex 1)
+      const mustHit = findNearestPoint(series, xScale.scale(0.5), yScale.scale(1.5), xScale, yScale, 50);
+      expect(mustHit).not.toBeNull();
+      expect(mustHit!.seriesIndex).toBe(1);
+      expect(mustHit!.point[1]).toBe(1); // contribution
+      expect(mustHit!.highlightY).toBe(2); // cumulative yTop for highlight
+      expect(mustHit!.stackTotal).toBe(2);
+    });
+
+    it('uses per-group yScale for multi-axis stacks', () => {
+      const left = mountainLayer(
+        'L0',
+        [
+          [0, 1],
+          [1, 1],
+        ],
+        '#0af'
+      );
+      const left2 = mountainLayer(
+        'L1',
+        [
+          [0, 1],
+          [1, 1],
+        ],
+        '#0f0'
+      );
+      (left as any).yAxis = 'y';
+      (left2 as any).yAxis = 'y';
+      const right = mountainLayer(
+        'R0',
+        [
+          [0, 100],
+          [1, 100],
+        ],
+        '#f00'
+      );
+      const right2 = mountainLayer(
+        'R1',
+        [
+          [0, 100],
+          [1, 100],
+        ],
+        '#ff0'
+      );
+      (right as any).yAxis = 'y2';
+      (right2 as any).yAxis = 'y2';
+      const series = [left, left2, right, right2];
+      const xScale = createLinearScale().domain(0, 1).range(0, 100);
+      const yLeft = createLinearScale().domain(0, 4).range(100, 0);
+      const yRight = createLinearScale().domain(0, 400).range(100, 0);
+      const yScales = new Map([
+        ['y', yLeft],
+        ['y2', yRight],
+      ]);
+      // Cursor at right-axis mid-stack (~150 domain on y2 → between 100 and 200)
+      const hit = findNearestPoint(series, xScale.scale(0.5), yRight.scale(150), xScale, yLeft, 50, yScales);
+      expect(hit).not.toBeNull();
+      expect(hit!.seriesIndex).toBe(3); // top right layer
+      expect(hit!.stackTotal).toBe(200);
+      expect(hit!.point[1]).toBe(100);
+    });
+
+    it('connectNulls uses filterGaps stack view so hit matches prepare pack baselines', () => {
+      // Shared null gaps; connectNulls bridges so pack/hit see dense [0,1],[2,3] only.
+      // Layer0 y=1 → [0,1]; Layer1 y=2 → [1,3] after stack on filtered view.
+      const withGaps0: DataPoint[] = [[0, 1], null as unknown as DataPoint, [2, 1]];
+      const withGaps1: DataPoint[] = [[0, 2], null as unknown as DataPoint, [2, 2]];
+      const s0 = mountainLayer('A', withGaps0, '#0af');
+      const s1 = mountainLayer('B', withGaps1, '#f0a');
+      (s0 as any).connectNulls = true;
+      (s1 as any).connectNulls = true;
+      const series = [s0, s1];
+      const xScale = createLinearScale().domain(0, 2).range(0, 200);
+      const yScale = createLinearScale().domain(0, 4).range(400, 0);
+
+      // Mid-stack at x=0 (y=1.5 inside top layer [1,3] on filtered baselines)
+      const hit0 = findNearestPoint(series, xScale.scale(0), yScale.scale(1.5), xScale, yScale, 50);
+      expect(hit0).not.toBeNull();
+      expect(hit0!.seriesIndex).toBe(1);
+      expect(hit0!.stackTotal).toBe(3);
+      expect(hit0!.point).toEqual([0, 2]);
+      // dataIndex is into filtered view (first dense sample), not raw index 0-only coincidence
+      expect(hit0!.dataIndex).toBe(0);
+
+      // At x=2 (filtered index 1): same composition
+      const hit2 = findNearestPoint(series, xScale.scale(2), yScale.scale(1.5), xScale, yScale, 50);
+      expect(hit2).not.toBeNull();
+      expect(hit2!.seriesIndex).toBe(1);
+      expect(hit2!.dataIndex).toBe(1);
+      expect(hit2!.stackTotal).toBe(3);
+
+      // Bottom layer band [0,1]
+      const bot = findNearestPoint(series, xScale.scale(2), yScale.scale(0.5), xScale, yScale, 50);
+      expect(bot).not.toBeNull();
+      expect(bot!.seriesIndex).toBe(0);
+      expect(bot!.point).toEqual([2, 1]);
+    });
+  });
 });
