@@ -160,6 +160,35 @@ export function findPointsAtX(
     // Skip invisible series.
     if (seriesConfig.visible === false) continue;
 
+    // Impulse: nearest sample by domain x (axis rollover); value is stem tip y.
+    if (seriesConfig.type === 'impulse') {
+      const data = seriesConfig.data as CartesianSeriesData;
+      const n = getPointCount(data);
+      if (n === 0) continue;
+      let bestI = -1;
+      let bestDx = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < n; i++) {
+        const px = getX(data, i);
+        if (!Number.isFinite(px)) continue;
+        const sx = xScale.scale(px);
+        if (!Number.isFinite(sx)) continue;
+        const dx = Math.abs(sx - xValue);
+        if (dx < bestDx || (dx === bestDx && (bestI < 0 || i < bestI))) {
+          if (dx > maxDx) continue;
+          bestDx = dx;
+          bestI = i;
+        }
+      }
+      if (bestI >= 0) {
+        matches.push({
+          seriesIndex: s,
+          dataIndex: bestI,
+          point: [getX(data, bestI), getY(data, bestI)],
+        });
+      }
+      continue;
+    }
+
     // Error bar: nearest sample by domain x (axis rollover); value is center y.
     if (seriesConfig.type === 'errorBar') {
       const ebData = seriesConfig.data as ErrorBarSeriesData;

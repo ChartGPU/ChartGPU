@@ -16,8 +16,23 @@ export type SeriesType =
   | 'heatmap'
   | 'band'
   | 'errorBar'
+  | 'impulse'
   | 'pointCloud3d'
   | 'surface3d';
+
+/**
+ * Step (digital) connection mode for line / area mountain.
+ *
+ * - `'after'`  — hold y_i until x_{i+1}, then vertical to y_{i+1}
+ *                (SciChart `isDigitalLine` default; D3 `curveStepAfter`)
+ * - `'before'` — vertical first at x_i to y_{i+1}, then horizontal to x_{i+1}
+ *                (D3 `curveStepBefore`)
+ * - `'middle'` — horizontal to midpoint, vertical, horizontal to next
+ *                (D3 `curveStep`)
+ *
+ * Boolean `true` on series config resolves to `'after'`. Omitted / `false` → linear.
+ */
+export type StepMode = 'before' | 'middle' | 'after';
 
 /**
  * Chart coordinate modality.
@@ -372,6 +387,12 @@ export interface LineSeriesConfig extends SeriesConfigBase {
    * the stack = bottom → top. Omitted / empty → unstacked single-series mountain.
    */
   readonly stack?: string;
+  /**
+   * When set, connect samples with stairs instead of diagonals (digital / step line).
+   * Applies to stroke and to mountain fill when `areaStyle` is present.
+   * `true` ≡ `'after'` (SciChart `isDigitalLine`). See {@link StepMode}.
+   */
+  readonly step?: boolean | StepMode;
 }
 
 export interface AreaSeriesConfig extends SeriesConfigBase {
@@ -395,6 +416,11 @@ export interface AreaSeriesConfig extends SeriesConfigBase {
    * When stacked, per-series `baseline` is ignored for geometry.
    */
   readonly stack?: string;
+  /**
+   * When set, the area top edge (and any stroke overlay) uses step geometry.
+   * `true` ≡ `'after'`. See {@link StepMode}.
+   */
+  readonly step?: boolean | StepMode;
 }
 
 export interface BarItemStyleConfig {
@@ -1033,6 +1059,30 @@ export interface ErrorBarSeriesConfig {
   readonly sampling?: 'none';
 }
 
+/**
+ * Impulse / stem series — one vertical stem per sample from baseline to y.
+ * SciChart FastImpulseRenderableSeries parity. XY data only (not HLC).
+ */
+export interface ImpulseSeriesConfig extends SeriesConfigBase {
+  readonly type: 'impulse';
+  /** Data-space y of stem floor. Default 0. */
+  readonly baseline?: number;
+  /** Stem stroke. Width default ~1.5–2 CSS px; color falls back to series color. */
+  readonly lineStyle?: LineStyleConfig;
+  /**
+   * Draw a marker at (x, y) (lollipop head). Default true to match SciChart demos;
+   * set false for pure stems.
+   */
+  readonly showMarker?: boolean;
+  /** Marker size (CSS px diameter-ish, same spirit as scatter symbolSize). Default ~6. */
+  readonly symbolSize?: number;
+  /**
+   * Sampling: `'none'` only (sparse event series). Other modes warn + ignore.
+   * GPU line decimation is **not** used for impulse (stem topology).
+   */
+  readonly sampling?: 'none';
+}
+
 export type SeriesConfig =
   | LineSeriesConfig
   | AreaSeriesConfig
@@ -1044,6 +1094,7 @@ export type SeriesConfig =
   | HeatmapSeriesConfig
   | BandSeriesConfig
   | ErrorBarSeriesConfig
+  | ImpulseSeriesConfig
   | PointCloud3DSeriesConfig
   | Surface3DSeriesConfig;
 
@@ -1062,6 +1113,7 @@ export interface TooltipParams {
    * - Candlestick series: [timestamp, open, close, low, high]
    * - Heatmap: [cellCenterX, cellCenterY] (see also optional `z`)
    * - Error bar: [x, y] center; see optional `high` / `low` / `yErrorHigh` / `yErrorLow`
+   * - Impulse: [x, y] tip of stem; see optional `baseline`
    */
   readonly value: readonly [number, number] | readonly [number, number, number, number, number];
   readonly color: string;
@@ -1087,6 +1139,8 @@ export interface TooltipParams {
   readonly yErrorHigh?: number;
   /** Error bar: derived `y - low` when both finite. */
   readonly yErrorLow?: number;
+  /** Impulse series: stem floor in data space. */
+  readonly baseline?: number;
   /**
    * Stack group id when the hit is a stacked mountain/area layer
    * (`stack` on line+`areaStyle` or `type: 'area'`).

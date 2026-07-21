@@ -36,6 +36,7 @@ export function resolveCartesianDisplayData(input: {
     series.type === 'heatmap' ||
     series.type === 'band' ||
     series.type === 'errorBar' ||
+    series.type === 'impulse' ||
     series.type === 'pointCloud3d' ||
     series.type === 'surface3d'
   ) {

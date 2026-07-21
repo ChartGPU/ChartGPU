@@ -19,6 +19,7 @@ import { createOhlcRenderer } from '../../../renderers/createOhlcRenderer';
 import { createBarRenderer } from '../../../renderers/createBarRenderer';
 import { createBandRenderer } from '../../../renderers/createBandRenderer';
 import { createErrorBarRenderer } from '../../../renderers/createErrorBarRenderer';
+import { createImpulseRenderer } from '../../../renderers/createImpulseRenderer';
 import { createDecimationCompute } from '../../../renderers/createDecimationCompute';
 import type { PipelineCache } from '../../PipelineCache';
 import type { ResolvedSeriesConfig } from '../../../config/OptionResolver';
@@ -54,6 +55,7 @@ interface RendererPoolState {
   readonly ohlcRenderers: ReadonlyArray<ReturnType<typeof createOhlcRenderer>>;
   readonly bandRenderers: ReadonlyArray<ReturnType<typeof createBandRenderer>>;
   readonly errorBarRenderers: ReadonlyArray<ReturnType<typeof createErrorBarRenderer>>;
+  readonly impulseRenderers: ReadonlyArray<ReturnType<typeof createImpulseRenderer>>;
   /**
    * Per-line-series GPU decimation compute instances. Sized 1:1 with
    * `lineRenderers`. Ineligible series simply never call `.prepare()`.
@@ -141,6 +143,11 @@ interface RendererPool {
   ensureErrorBarRendererCount(count: number): void;
 
   /**
+   * Ensures impulse / stem renderer count matches the given count.
+   */
+  ensureImpulseRendererCount(count: number): void;
+
+  /**
    * Ensures decimation compute count matches the given count. Kept in lock-step
    * with `ensureLineRendererCount` so `decimationComputes[i]` pairs with
    * `lineRenderers[i]`.
@@ -183,6 +190,7 @@ type RendererPoolNeeds = Readonly<{
   readonly candlestick: number;
   readonly ohlc: number;
   readonly errorBar: number;
+  readonly impulse: number;
   readonly decimation: number;
 }>;
 
@@ -205,6 +213,7 @@ function computeRendererPoolNeeds(series: ReadonlyArray<ResolvedSeriesConfig>): 
   let anyCandle = false;
   let anyOhlc = false;
   let anyErrorBar = false;
+  let anyImpulse = false;
   let anyDecimation = false;
 
   for (let i = 0; i < n; i++) {
@@ -215,6 +224,8 @@ function computeRendererPoolNeeds(series: ReadonlyArray<ResolvedSeriesConfig>): 
         if (s.areaStyle) anyArea = true;
         // Pool sizing is cheap — do not scan for null gaps; over-allocating
         // decimation when gaps force CPU path is rare vs under-alloc crash.
+        // Step series are never GPU-decimation eligible, but pool sizing may still
+        // allocate a no-op slot when sampling is lttb/min/max (safe; prepare skips).
         if (GPU_DECIMATION_SAMPLING_MODES.has(s.sampling)) anyDecimation = true;
         break;
       }
@@ -243,6 +254,9 @@ function computeRendererPoolNeeds(series: ReadonlyArray<ResolvedSeriesConfig>): 
       case 'errorBar':
         anyErrorBar = true;
         break;
+      case 'impulse':
+        anyImpulse = true;
+        break;
       case 'bar':
         // Singleton bar renderer — no pool growth.
         break;
@@ -263,6 +277,7 @@ function computeRendererPoolNeeds(series: ReadonlyArray<ResolvedSeriesConfig>): 
     candlestick: anyCandle ? n : 0,
     ohlc: anyOhlc ? n : 0,
     errorBar: anyErrorBar ? n : 0,
+    impulse: anyImpulse ? n : 0,
     decimation: anyDecimation ? n : 0,
   };
 }
@@ -286,6 +301,7 @@ export function ensureRendererPoolsForSeries(
   pool.ensureCandlestickRendererCount(needs.candlestick);
   pool.ensureOhlcRendererCount(needs.ohlc);
   pool.ensureErrorBarRendererCount(needs.errorBar);
+  pool.ensureImpulseRendererCount(needs.impulse);
   return needs;
 }
 
@@ -320,6 +336,7 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
   const candlestickRenderers: Array<ReturnType<typeof createCandlestickRenderer>> = [];
   const ohlcRenderers: Array<ReturnType<typeof createOhlcRenderer>> = [];
   const errorBarRenderers: Array<ReturnType<typeof createErrorBarRenderer>> = [];
+  const impulseRenderers: Array<ReturnType<typeof createImpulseRenderer>> = [];
   const decimationComputes: Array<ReturnType<typeof createDecimationCompute>> = [];
 
   // Bar renderer is a singleton (one instance handles all bar series)
@@ -501,6 +518,22 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
     }
   }
 
+  function ensureImpulseRendererCount(count: number): void {
+    while (impulseRenderers.length > count) {
+      const r = impulseRenderers.pop();
+      r?.dispose();
+    }
+    while (impulseRenderers.length < count) {
+      impulseRenderers.push(
+        createImpulseRenderer(device, {
+          targetFormat,
+          pipelineCache,
+          sampleCount,
+        })
+      );
+    }
+  }
+
   /**
    * Ensures decimation compute count matches the given count.
    * Every line series gets a paired slot so decimationComputes[i] ↔ lineRenderers[i].
@@ -539,6 +572,7 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
         candlestickRenderers,
         ohlcRenderers,
         errorBarRenderers,
+        impulseRenderers,
         decimationComputes,
         barRenderer,
       };
@@ -611,6 +645,12 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
     }
     errorBarRenderers.length = 0;
 
+    // Dispose impulse / stem renderers
+    for (let i = 0; i < impulseRenderers.length; i++) {
+      impulseRenderers[i].dispose();
+    }
+    impulseRenderers.length = 0;
+
     // Dispose decimation compute instances
     for (let i = 0; i < decimationComputes.length; i++) {
       decimationComputes[i].dispose();
@@ -632,6 +672,7 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
     ensureCandlestickRendererCount,
     ensureOhlcRendererCount,
     ensureErrorBarRendererCount,
+    ensureImpulseRendererCount,
     ensureDecimationComputeCount,
     getState,
     dispose,

@@ -7,6 +7,7 @@ import {
   didSeriesDataLikelyChange,
   shouldRecomputeBaselineSampling,
   patchSeriesPresentationKeepingSampledData,
+  syncRuntimeBoundsForImpulseBaselineChange,
 } from '../samplingDirty';
 import {
   resolveOptions,
@@ -152,6 +153,87 @@ describe('samplingDirty predicates (P1-7)', () => {
     expect(patched).not.toBe(a.series);
     expect(patched[0]).toBe(a.series[0]); // identity reuse per-slot
     expect(patched[1]).not.toBe(a.series[1]);
+  });
+
+  it('patchSeriesPresentationKeepingSampledData prefers next.rawBounds when impulse baseline changes', () => {
+    const data = { x: [0, 1], y: [2, 3] };
+    const prev = resolveOptions({
+      series: [{ type: 'impulse', data, baseline: 0 }],
+    }).series;
+    const next = resolveOptions({
+      series: [{ type: 'impulse', data, baseline: -5 }],
+    }).series;
+    // Simulate presentation-only patch path (same data identity, different baseline).
+    const patched = patchSeriesPresentationKeepingSampledData(next, prev);
+    const s = patched[0]!;
+    expect(s.type).toBe('impulse');
+    if (s.type !== 'impulse') throw new Error('expected impulse');
+    expect(s.baseline).toBe(-5);
+    // Must take next.rawBounds (includes baseline -5), not sticky prev yMin=0.
+    expect(s.rawBounds?.yMin).toBe(-5);
+  });
+
+  it('syncRuntimeBoundsForImpulseBaselineChange updates runtime store (auto-Y)', () => {
+    const data = { x: [0, 1], y: [2, 3] };
+    const prev = resolveOptions({
+      series: [{ type: 'impulse', data, baseline: 0 }],
+    }).series;
+    const next = resolveOptions({
+      series: [{ type: 'impulse', data, baseline: -5 }],
+    }).series;
+    // Stale runtime store: yMin from samples only (forgot previous baseline fold)
+    const runtimeRawBoundsByIndex: Array<{ xMin: number; xMax: number; yMin: number; yMax: number } | null> = [
+      { xMin: 0, xMax: 1, yMin: 2, yMax: 3 },
+    ];
+    const changed = syncRuntimeBoundsForImpulseBaselineChange({
+      prev,
+      next,
+      runtimeRawDataByIndex: [data],
+      runtimeRawBoundsByIndex,
+    });
+    expect(changed).toBe(true);
+    expect(runtimeRawBoundsByIndex[0]!.yMin).toBe(-5);
+    expect(runtimeRawBoundsByIndex[0]!.yMax).toBe(3);
+
+    // No-op when baseline unchanged
+    const unchanged = syncRuntimeBoundsForImpulseBaselineChange({
+      prev: next,
+      next,
+      runtimeRawDataByIndex: [data],
+      runtimeRawBoundsByIndex,
+    });
+    expect(unchanged).toBe(false);
+  });
+
+  it('syncRuntimeBounds prefers runtime columns over seed rawBounds (keeps append peak)', () => {
+    // Seed resolver data: y max 3. Runtime after append: y max 10.
+    const seed = { x: [0, 1], y: [2, 3] };
+    const runtimeAppended = { x: [0, 1, 2, 3], y: [2, 3, 8, 10] };
+    const prev = resolveOptions({
+      series: [{ type: 'impulse', data: seed, baseline: 0 }],
+    }).series;
+    // next.rawBounds is seed-only (yMax=3) + baseline −5 — must NOT win over runtime.
+    const next = resolveOptions({
+      series: [{ type: 'impulse', data: seed, baseline: -5 }],
+    }).series;
+    expect(next[0]!.type).toBe('impulse');
+    if (next[0]!.type !== 'impulse') throw new Error('expected impulse');
+    expect(next[0]!.rawBounds?.yMax).toBe(3); // seed-only resolver bounds
+
+    const runtimeRawBoundsByIndex: Array<{ xMin: number; xMax: number; yMin: number; yMax: number } | null> = [
+      { xMin: 0, xMax: 3, yMin: 0, yMax: 10 }, // prior runtime including appends
+    ];
+    const changed = syncRuntimeBoundsForImpulseBaselineChange({
+      prev,
+      next,
+      runtimeRawDataByIndex: [runtimeAppended],
+      runtimeRawBoundsByIndex,
+    });
+    expect(changed).toBe(true);
+    // yMin includes new baseline; yMax retains append peak (not seed yMax=3)
+    expect(runtimeRawBoundsByIndex[0]!.yMin).toBe(-5);
+    expect(runtimeRawBoundsByIndex[0]!.yMax).toBe(10);
+    expect(runtimeRawBoundsByIndex[0]!.xMax).toBe(3);
   });
 
   it('patchSeriesPresentationKeepingSampledData reuses sampled data ref', () => {

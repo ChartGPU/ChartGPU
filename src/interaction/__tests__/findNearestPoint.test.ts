@@ -10,6 +10,48 @@ import type { ResolvedSeriesConfig } from '../../config/OptionResolver';
 import type { DataPoint, CartesianSeriesData } from '../../config/types';
 
 describe('findNearestPoint', () => {
+  describe('step series uses source samples (not densified corners)', () => {
+    it('reports source y values only — never densified stair corners as dataIndex', () => {
+      // Source samples (0,1) and (2,3); after-step densified corner is (2,1) — not a sample.
+      // findNearestPoint uses source series data only (step expand is prepare-only).
+      const data: DataPoint[] = [
+        [0, 1],
+        [2, 3],
+      ];
+      const series: ResolvedSeriesConfig[] = [
+        {
+          type: 'line',
+          data,
+          step: 'after',
+          color: '#ec4899',
+          visible: true,
+          connectNulls: false,
+          sampling: 'none',
+          samplingThreshold: 5000,
+          yAxis: 'y',
+          rawData: data,
+          lineStyle: { width: 2, opacity: 1, color: '#ec4899' },
+        } as any,
+      ];
+      const xScale = createLinearScale().domain(-1, 3).range(0, 400);
+      const yScale = createLinearScale().domain(0, 4).range(400, 0);
+      // Hover at source sample (2, 3)
+      const hitTip = findNearestPoint(series, xScale.scale(2), yScale.scale(3), xScale, yScale, 100);
+      expect(hitTip).not.toBeNull();
+      expect(hitTip!.dataIndex).toBe(1);
+      const yTip = Array.isArray(hitTip!.point) ? hitTip!.point[1] : (hitTip!.point as { y: number }).y;
+      expect(yTip).toBe(3);
+
+      // Hover near densified corner domain (2, 1) — still maps to a source sample (0 or 1), never a fake index
+      const hitCorner = findNearestPoint(series, xScale.scale(2), yScale.scale(1), xScale, yScale, 200);
+      expect(hitCorner).not.toBeNull();
+      expect(hitCorner!.dataIndex === 0 || hitCorner!.dataIndex === 1).toBe(true);
+      expect(hitCorner!.dataIndex).toBeLessThan(data.length);
+      const yCorner = Array.isArray(hitCorner!.point) ? hitCorner!.point[1] : (hitCorner!.point as { y: number }).y;
+      expect(yCorner === 1 || yCorner === 3).toBe(true);
+    });
+  });
+
   describe('Binary search optimization with monotonic data', () => {
     it('finds nearest point in monotonic DataPoint[] array (tuple format)', () => {
       const data: DataPoint[] = [

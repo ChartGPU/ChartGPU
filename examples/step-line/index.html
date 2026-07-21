@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Step / Digital Line + Mountain - ChartGPU</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #0a0a0a;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    }
+    .page {
+      min-height: 100%;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 14px;
+      padding: 20px;
+      box-sizing: border-box;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    header h1 { margin: 0; font-size: 1.4rem; color: #fff; }
+    header p { margin: 8px 0 0; color: #aaa; line-height: 1.45; }
+    .back { display: inline-block; margin-top: 10px; color: #aaa; text-decoration: none; }
+    .back:hover { color: #fff; }
+    .note {
+      font-size: 0.85rem;
+      color: #9aa0aa;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: #12121a;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 18px;
+      align-items: center;
+      padding: 12px 14px;
+      border: 1px solid #333;
+      border-radius: 10px;
+      background: #0f0f14;
+    }
+    .controls label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.9rem;
+      color: #ccc;
+    }
+    select, input[type="checkbox"] { accent-color: #ec4899; }
+    .chart-shell {
+      position: relative;
+      border: 1px solid #333;
+      border-radius: 12px;
+      background: #0f0f14;
+      overflow: hidden;
+      min-height: 420px;
+      height: clamp(420px, 60vh, 640px);
+    }
+    #chart { width: 100%; height: 100%; }
+    .error { padding: 16px; color: #ffb4b4; white-space: pre-wrap; }
+    code { color: #f9a8d4; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1>Step / Digital Line + Mountain</h1>
+      <p>
+        Stairs instead of diagonals via <code>step</code> on <code>type: 'line'</code> / <code>type: 'area'</code>
+        (SciChart <code>isDigitalLine</code>). <code>true</code> ≡ <code>'after'</code>.
+        Mountain fill follows the stepped top edge when <code>areaStyle</code> is set.
+      </p>
+      <a class="back" href="../index.html">← Back to examples</a>
+    </header>
+
+    <div class="note">
+      Modes: <strong>after</strong> (hold y until next x), <strong>before</strong> (vertical first),
+      <strong>middle</strong> (half-step). Linear = omit / <code>false</code>. Hit-test reports source samples, not densified corners.
+    </div>
+
+    <div class="controls">
+      <label>
+        Step mode
+        <select id="stepMode">
+          <option value="after" selected>after (digital default)</option>
+          <option value="before">before</option>
+          <option value="middle">middle</option>
+          <option value="off">off (linear)</option>
+        </select>
+      </label>
+      <label>
+        <input type="checkbox" id="showMountain" checked />
+        Mountain fill
+      </label>
+      <label>
+        <input type="checkbox" id="showLinear" checked />
+        Overlay linear reference
+      </label>
+    </div>
+
+    <div class="chart-shell">
+      <div id="chart"></div>
+      <div id="error" class="error" style="display:none"></div>
+    </div>
+  </div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

@@ -40,6 +40,8 @@ import type {
   ErrorBarHlcArraysData,
   ErrorBarMode,
   ErrorBarDirection,
+  ImpulseSeriesConfig,
+  StepMode,
   CoordinateSystem,
   Chart3DCameraOptions,
   Interaction3DOptions,
@@ -54,6 +56,7 @@ import {
   candlestickDefaults,
   ohlcDefaults,
   errorBarDefaults,
+  impulseDefaults,
   defaultAreaStyle,
   defaultGridLines,
   defaultLineStyle,
@@ -100,6 +103,8 @@ import {
   getErrorBarLength,
   resolveErrorBarToHlc,
 } from '../data/errorBarData';
+import { impulseBounds } from '../data/impulseGeometry';
+import { isInvalidStepValue, resolveStepMode } from '../data/stepGeometry';
 
 export type { ResolvedCandlestickPriceLabel } from './resolvePriceLabel';
 export { resolvePriceLabel } from './resolvePriceLabel';
@@ -443,6 +448,25 @@ export type ResolvedErrorBarSeriesConfig = Readonly<{
   readonly rawBoundsMode?: RawBoundsMode;
 }>;
 
+/** Resolved impulse / stem series — XY cartesian + baseline + stem style. */
+export type ResolvedImpulseSeriesConfig = Readonly<{
+  readonly type: 'impulse';
+  readonly name?: string;
+  readonly visible: boolean;
+  readonly color: string;
+  readonly baseline: number;
+  readonly lineStyle: ResolvedLineStyleConfig;
+  readonly showMarker: boolean;
+  readonly symbolSize: number;
+  /** Sampling is `'none'` only (sparse event series). */
+  readonly sampling: 'none';
+  readonly rawData: Readonly<ImpulseSeriesConfig['data']>;
+  readonly data: Readonly<ImpulseSeriesConfig['data']>;
+  readonly yAxis: string;
+  readonly rawBounds?: RawBounds;
+  readonly rawBoundsMode?: RawBoundsMode;
+}>;
+
 export type ResolvedPointCloud3DSeriesConfig = Readonly<{
   readonly type: 'pointCloud3d';
   readonly name?: string;
@@ -490,7 +514,8 @@ export type ResolvedSeriesConfig2D =
   | ResolvedOhlcSeriesConfig
   | ResolvedHeatmapSeriesConfig
   | ResolvedBandSeriesConfig
-  | ResolvedErrorBarSeriesConfig;
+  | ResolvedErrorBarSeriesConfig
+  | ResolvedImpulseSeriesConfig;
 
 export type ResolvedSeriesConfig =
   | ResolvedSeriesConfig2D
@@ -601,6 +626,7 @@ const SERIES_2D_TYPES = new Set<SeriesType>([
   'heatmap',
   'band',
   'errorBar',
+  'impulse',
 ]);
 const SERIES_3D_TYPES = new Set<SeriesType>(['pointCloud3d', 'surface3d']);
 
@@ -1357,6 +1383,45 @@ const assertUnreachable = (value: never): never => {
     `Unhandled series type: ${(value as unknown as { readonly type?: unknown } | null)?.type ?? 'unknown'}`
   );
 };
+
+const warnedInvalidStep = new Set<string>();
+function warnInvalidStepOnce(seriesIndex: number, raw: unknown): void {
+  const key = `${seriesIndex}:${String(raw)}`;
+  if (warnedInvalidStep.has(key)) return;
+  warnedInvalidStep.add(key);
+  console.warn(
+    `ChartGPU: series[${seriesIndex}] step value ${JSON.stringify(raw)} is invalid; using linear geometry. ` +
+      `Valid: true | false | 'before' | 'middle' | 'after'.`
+  );
+}
+
+/**
+ * Normalize public `step` to resolved StepMode | undefined (linear when omitted).
+ * `true` → `'after'`; invalid strings warn once and treat as linear.
+ */
+export function normalizeSeriesStep(
+  step: boolean | StepMode | string | undefined | null,
+  seriesIndex: number
+): StepMode | undefined {
+  if (step == null || step === false) return undefined;
+  if (isInvalidStepValue(step)) {
+    warnInvalidStepOnce(seriesIndex, step);
+    return undefined;
+  }
+  const mode = resolveStepMode(step as boolean | StepMode);
+  return mode ?? undefined;
+}
+
+const warnedStepSampling = new Set<number>();
+/** Prefer sampling:'none' for exact digital edges; LTTB-then-step is approximate. */
+function warnStepWithSamplingOnce(seriesIndex: number, sampling: SeriesSampling): void {
+  if (sampling === 'none' || warnedStepSampling.has(seriesIndex)) return;
+  warnedStepSampling.add(seriesIndex);
+  console.warn(
+    `ChartGPU: series[${seriesIndex}] has step + sampling '${sampling}'; ` +
+      `step is applied after sampling and is approximate for digital signals — prefer sampling: 'none'.`
+  );
+}
 
 let candlestickWarned = false;
 const warnedStackedAreaBaseline = new Set<number>();
@@ -2150,6 +2215,8 @@ export function resolveOptions(
                 : sampling === 'none' || hasNullGaps(s.data)
                   ? s.data
                   : sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
+              const step = normalizeSeriesStep(s.step, i);
+              if (step != null) warnStepWithSamplingOnce(i, sampling);
               return {
                 ...s,
                 visible,
@@ -2166,6 +2233,8 @@ export function resolveOptions(
                 contentHash,
                 // Normalized stack id (empty → omitted / unstacked).
                 ...(stack !== '' ? { stack } : { stack: undefined }),
+                // Normalized step mode (true → 'after'); omit when linear.
+                ...(step != null ? { step } : { step: undefined }),
               };
             }
             case 'line': {
@@ -2179,13 +2248,15 @@ export function resolveOptions(
                 color: effectiveStrokeColor,
               };
 
-              // Avoid leaking the unresolved (user) areaStyle shape via object spread.
-              const { areaStyle: _userAreaStyle, stack: _userStack, ...rest } = s;
+              // Avoid leaking the unresolved (user) areaStyle / step shape via object spread.
+              const { areaStyle: _userAreaStyle, stack: _userStack, step: _userStep, ...rest } = s;
               const stack = normalizeStackId(s.stack);
               if (stack !== '' && s.areaStyle == null) {
                 warnLineStackWithoutAreaStyle(i);
               }
               const connectNulls = s.connectNulls ?? false;
+              const step = normalizeSeriesStep(s.step, i);
+              if (step != null) warnStepWithSamplingOnce(i, sampling);
               const contentHash = resolveSeriesContentHash(prevResolved, 'line', s.data, () =>
                 cheapCartesianContentStamp(s.data)
               );
@@ -2237,6 +2308,7 @@ export function resolveOptions(
                 yAxis,
                 contentHash,
                 ...(stack !== '' ? { stack } : { stack: undefined }),
+                ...(step != null ? { step } : { step: undefined }),
               };
             }
             case 'bar': {
@@ -2803,6 +2875,101 @@ export function resolveOptions(
                 sampling: 'none' as const,
                 rawData: eb.data,
                 data: hlcData,
+                rawBounds,
+                rawBoundsMode,
+                yAxis,
+                contentHash,
+              };
+            }
+            case 'impulse': {
+              const imp = s as ImpulseSeriesConfig;
+              const lineStyleColor = normalizeOptionalColor(imp.lineStyle?.color);
+              const effectiveStrokeColor = lineStyleColor ?? explicitColor ?? inheritedColor;
+              const widthRaw = imp.lineStyle?.width;
+              const width =
+                typeof widthRaw === 'number' && Number.isFinite(widthRaw) && widthRaw > 0
+                  ? widthRaw
+                  : impulseDefaults.lineStyle.width;
+              // Clamp non-positive resolved widths to minimum 1 (CSS px).
+              const stemWidth = width > 0 ? width : 1;
+              const opacity =
+                typeof imp.lineStyle?.opacity === 'number' && Number.isFinite(imp.lineStyle.opacity)
+                  ? Math.min(1, Math.max(0, imp.lineStyle.opacity))
+                  : impulseDefaults.lineStyle.opacity;
+
+              let baseline: number = impulseDefaults.baseline;
+              if (imp.baseline !== undefined) {
+                if (Number.isFinite(imp.baseline)) {
+                  baseline = imp.baseline as number;
+                } else {
+                  console.warn(`ChartGPU impulse series[${i}]: non-finite baseline; using 0.`);
+                  baseline = 0;
+                }
+              }
+
+              const showMarker = imp.showMarker !== false;
+              const symbolSize =
+                typeof imp.symbolSize === 'number' && Number.isFinite(imp.symbolSize) && imp.symbolSize > 0
+                  ? imp.symbolSize
+                  : impulseDefaults.symbolSize;
+
+              // Sampling: 'none' only — sparse event stems; other modes warn + ignore (errorBar parity).
+              const rawSampling = (imp as unknown as { sampling?: unknown }).sampling;
+              if (rawSampling != null && rawSampling !== 'none') {
+                console.warn(
+                  `ChartGPU impulse series[${i}]: sampling '${String(rawSampling)}' is not supported; using 'none'.`
+                );
+              }
+
+              const contentHash = resolveSeriesContentHash(prevResolved, 'impulse', imp.data, () =>
+                cheapCartesianContentStamp(imp.data)
+              );
+              // samplingThreshold is undefined on ResolvedImpulseSeriesConfig when none-only —
+              // pass undefined so canReuse matches prev (0 would never equal undefined).
+              const reuseSample = canReuseResolvedSeriesSample(
+                prevResolved,
+                'impulse',
+                imp.data,
+                'none',
+                undefined,
+                undefined,
+                contentHash
+              );
+              const prevImp = reuseSample
+                ? (prevResolved as ResolvedImpulseSeriesConfig & {
+                    contentHash?: number;
+                    rawBoundsMode?: RawBoundsMode;
+                    baseline?: number;
+                  })
+                : null;
+
+              // Bounds include baseline — recompute when baseline changes even if data reuses.
+              let rawBounds: RawBounds | undefined;
+              let rawBoundsMode: RawBoundsMode;
+              if (prevImp?.rawBounds && prevImp.rawBoundsMode === 'data' && prevImp.baseline === baseline) {
+                rawBounds = prevImp.rawBounds;
+                rawBoundsMode = 'data';
+              } else {
+                rawBounds = impulseBounds(imp.data, baseline) ?? undefined;
+                rawBoundsMode = rawBounds ? 'data' : 'synthetic';
+              }
+
+              return {
+                type: 'impulse' as const,
+                name: imp.name,
+                visible,
+                color: effectiveStrokeColor,
+                baseline,
+                lineStyle: {
+                  width: stemWidth,
+                  opacity,
+                  color: effectiveStrokeColor,
+                } satisfies ResolvedLineStyleConfig,
+                showMarker,
+                symbolSize,
+                sampling: 'none' as const,
+                rawData: imp.data,
+                data: prevImp ? prevImp.data : imp.data,
                 rawBounds,
                 rawBoundsMode,
                 yAxis,

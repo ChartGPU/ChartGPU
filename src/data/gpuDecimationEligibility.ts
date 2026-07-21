@@ -66,6 +66,9 @@ export function isGpuDecimationEligible(series: ResolvedSeriesConfig, rawData: C
   // Stacked mountain composition requires full peer alignment — not GPU-decimation eligible (D9).
   // Stroke-only lines with inert stack (no areaStyle) remain eligible.
   if (isStackedMountainSeries(series)) return false;
+  // Step (digital) connection: expand on CPU after sampling; GPU LTTB then linear draw is wrong (D6).
+  const step = (series as { readonly step?: unknown }).step;
+  if (step != null && step !== false) return false;
   // Line+areaStyle shares the stroke storage / decimation output (issue 1.4).
   if (!GPU_DECIMATION_SAMPLING_MODES.has(series.sampling)) return false;
   if (hasNullGaps(rawData)) return false;

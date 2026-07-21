@@ -114,6 +114,7 @@ describe('heatmap multi-series prepare/render dispatch', () => {
       candlestickRenderers: [],
       ohlcRenderers: [],
       errorBarRenderers: [],
+      impulseRenderers: [],
       decimationComputes: [],
     };
 
@@ -200,6 +201,7 @@ describe('heatmap multi-series prepare/render dispatch', () => {
       candlestickRenderers: [],
       ohlcRenderers: [],
       errorBarRenderers: [],
+      impulseRenderers: [],
       decimationComputes: [],
     };
 
