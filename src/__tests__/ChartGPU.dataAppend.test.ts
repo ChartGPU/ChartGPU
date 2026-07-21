@@ -1127,6 +1127,7 @@ describe('ChartGPU - dataAppend event', () => {
       const msg = String(warn.mock.calls[0]?.[0] ?? '');
       expect(msg).toMatch(/heatmap/i);
       expect(msg).toMatch(/not supported/i);
+      expect(msg).toMatch(/updateHeatmap/i);
 
       await chart.dispose();
       warn.mockRestore();

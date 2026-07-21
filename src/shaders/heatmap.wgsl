@@ -4,6 +4,7 @@
 // UV (0,0) always maps to cell (0,0) even when xStep/yStep are negative (matches
 // heatmapCellIndex / heatmapHitTest on CPU).
 // FS: textureLoad raw z (r32float) → normalize → sample 1D LUT.
+// ringStart: modular column ring for spectrogram streaming (strategy C).
 
 struct VSUniforms {
   transform  : mat4x4<f32>, // (log-)data-coord → clip-space
@@ -28,10 +29,15 @@ struct FSUniforms {
   nullHandling : u32,
   columns      : u32,
   rows         : u32,
+  // Oldest logical column lives at this texel X (modular ring). 0 = linear.
+  ringStart    : u32,
   // UV inset for cellGap (0 = none)
   gapTexels    : f32,
+  _pad1        : f32,
+  _pad2        : f32,
+  _pad3        : f32,
 };
-// 32 bytes
+// 48 bytes
 
 @group(0) @binding(0) var<uniform> vsUniforms : VSUniforms;
 @group(0) @binding(1) var<uniform> fsUniforms : FSUniforms;
@@ -132,7 +138,7 @@ fn fsMain(in : VSOut) -> @location(0) vec4f {
     return vec4f(0.0);
   }
 
-  // UV → texel: u=0 → column 0, v=0 → row 0 (matches heatmapCellIndex).
+  // UV → logical texel: u=0 → column 0, v=0 → row 0 (matches heatmapCellIndex).
   let u = in.uv.x;
   let v = in.uv.y;
 
@@ -149,10 +155,12 @@ fn fsMain(in : VSOut) -> @location(0) vec4f {
     }
   }
 
-  let ix = i32(clamp(floor(u * f32(cols)), 0.0, f32(cols - 1u)));
+  let logicalIx = u32(clamp(floor(u * f32(cols)), 0.0, f32(cols - 1u)));
   let iy = i32(clamp(floor(v * f32(rows)), 0.0, f32(rows - 1u)));
+  // Modular ring: logical col 0 (oldest after scroll) is at texture ringStart.
+  let texIx = i32((logicalIx + fsUniforms.ringStart) % cols);
 
-  let zSample = textureLoad(zTex, vec2<i32>(ix, iy), 0).r;
+  let zSample = textureLoad(zTex, vec2<i32>(texIx, iy), 0).r;
 
   // Non-finite detection: compare with self (NaN != NaN).
   if (zSample != zSample) {

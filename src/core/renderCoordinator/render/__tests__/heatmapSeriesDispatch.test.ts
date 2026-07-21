@@ -21,7 +21,12 @@ function mockHeatmap(): HeatmapRenderer {
     prepare: vi.fn(),
     render: vi.fn(),
     dispose: vi.fn(),
+    uploadColumnStrip: vi.fn(() => false),
+    resetRing: vi.fn(),
+    getRingStart: () => 0,
     getZUploadCount: () => 0,
+    getZStripUploadCount: () => 0,
+    getZStripUploadFloats: () => 0,
     getLutUploadCount: () => 0,
     hasZTexture: () => false,
   };
@@ -42,6 +47,7 @@ function hmConfig(i: number): ResolvedHeatmapSeriesConfig {
   return {
     type: 'heatmap',
     name: `h${i}`,
+    zDomainExplicit: false,
     data: {
       xStart: 0,
       xStep: 1,

@@ -1323,8 +1323,34 @@ describe('OptionResolver - heatmap', () => {
     expect(s.cellCount).toBe(6);
     expect(s.zMin).toBe(0);
     expect(s.zMax).toBe(5);
+    expect(s.zDomainExplicit).toBe(false);
     expect(s.rawBounds).toEqual({ xMin: 0, xMax: 3, yMin: 0, yMax: 4 });
     expect(s.yAxis).toBe('y');
+  });
+
+  it('sets zDomainExplicit when both user zMin and zMax provided', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'heatmap',
+          data: {
+            xStart: 0,
+            xStep: 1,
+            yStart: 0,
+            yStep: 1,
+            columns: 3,
+            rows: 2,
+            z,
+          },
+          zMin: -100,
+          zMax: 0,
+        },
+      ],
+    });
+    const s = asHeatmap(resolved.series[0]!);
+    expect(s.zDomainExplicit).toBe(true);
+    expect(s.zMin).toBe(-100);
+    expect(s.zMax).toBe(0);
   });
 
   it('warns and clamps when z length mismatches', () => {

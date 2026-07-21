@@ -198,6 +198,13 @@ export interface ChartGPUInstance {
    */
   updateSurface3D?(seriesIndex: number, update: import('./config/types').Surface3DUpdate): void;
   /**
+   * 2D only: streaming / partial update for a `heatmap` series (resolved index).
+   * Modes: `replaceZ`, `appendColumns` (+scrollX), `appendRows` (+scrollY).
+   * Full field is row-major `z[j * columns + i]`; appendColumns strips are column-major
+   * `z[c * rows + r]`. No-op / omitted on 3D charts (use updateSurface3D for surfaces).
+   */
+  updateHeatmap?(seriesIndex: number, update: import('./config/types').HeatmapUpdate): void;
+  /**
    * @internal Test/debug: how many times the hit-test columnar store was fully rebuilt.
    */
   getHitTestStoreRebuildCount(): number;
@@ -2362,7 +2369,7 @@ export async function createChartGPU(
           console.warn(
             `ChartGPU.appendData(${seriesIndex}, ...): ${s.type} series are not supported by streaming append. ` +
               (s.type === 'heatmap'
-                ? 'Use setOption(...) to replace heatmap data.z (equal-size updates are efficient).'
+                ? 'Use updateHeatmap(...) for replaceZ / appendColumns / appendRows (or equal-size setOption z replace).'
                 : 'Use setOption(...) to replace pie data.')
           );
         }
@@ -2804,6 +2811,28 @@ export async function createChartGPU(
         dataAppendPayload.xExtent.max = appendXMax;
         emit('dataAppend', dataAppendPayload as ChartGPUDataAppendPayload);
       }
+    },
+    updateHeatmap(seriesIndex, update) {
+      if (disposed) return;
+      if (!Number.isFinite(seriesIndex)) return;
+      if (seriesIndex < 0 || seriesIndex >= resolvedOptions.series.length) return;
+      if (!coordinator) return;
+      const ok = coordinator.updateHeatmap(seriesIndex, update);
+      if (!ok) return;
+      // Stream field (z / xStart / dims) is coordinator-owned. Only refresh chart-level
+      // rawBounds so axis auto / global bounds track scrolled grid extent.
+      const s = resolvedOptions.series[seriesIndex];
+      if (s?.type === 'heatmap') {
+        const b = coordinator.getRuntimeSeriesBounds(seriesIndex);
+        if (b) {
+          const nextSeries = resolvedOptions.series.slice();
+          nextSeries[seriesIndex] = { ...s, rawBounds: b } as typeof s;
+          resolvedOptions = { ...resolvedOptions, series: nextSeries };
+          cachedGlobalBounds = computeGlobalBounds(resolvedOptions.series, null);
+          interactionScalesCache = null;
+        }
+      }
+      requestRender();
     },
     renderFrame() {
       if (disposed) return false;

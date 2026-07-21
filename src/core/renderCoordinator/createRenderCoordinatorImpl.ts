@@ -5,7 +5,14 @@ import type {
   ResolvedSeriesConfig,
 } from '../../config/OptionResolver';
 import { isResolvedSeries2D } from '../../config/OptionResolver';
-import type { AnnotationConfig, BandSeriesData, DataPoint, OHLCDataPoint } from '../../config/types';
+import type {
+  AnnotationConfig,
+  BandSeriesData,
+  DataPoint,
+  HeatmapData,
+  HeatmapUpdate,
+  OHLCDataPoint,
+} from '../../config/types';
 import {
   sliceBandByX,
   scanBandVisibleYBounds,
@@ -18,6 +25,12 @@ import {
   bandDataToMutableXYY,
   isBandShapedPayload,
 } from '../../data/bandData';
+import {
+  applyHeatmapUpdate,
+  resolveHeatmapStreamDomainOverride,
+  shouldClearHeatmapStream,
+} from '../../data/heatmapStream';
+import { heatmapGridBounds } from '../../utils/heatmapLayout';
 import { GPUContext, isHTMLCanvasElement as isHTMLCanvasElementGPU } from '../GPUContext';
 import { createDataStore } from '../../data/createDataStore';
 import { isGpuDecimationEligible } from '../../data/gpuDecimationEligibility';
@@ -228,6 +241,12 @@ export interface RenderCoordinator {
     newPoints: CartesianSeriesData | ReadonlyArray<OHLCDataPoint>,
     options?: Readonly<{ maxPoints?: number }>
   ): void;
+  /**
+   * Streaming / partial update for a `heatmap` series (resolved index).
+   * Modes: `replaceZ`, `appendColumns` (+scrollX), `appendRows` (+scrollY).
+   * Returns false when index/type invalid.
+   */
+  updateHeatmap(seriesIndex: number, update: HeatmapUpdate): boolean;
   /**
    * Snapshot of coordinator-owned runtime series data for dual-store hit-test
    * resync (e.g. after tooltip re-enable following maxPoints dual-store skip).
@@ -1300,6 +1319,7 @@ export function createRenderCoordinator(
   // Prevent spamming console.warn for repeated misuse.
   const warnedPieAppendSeries = new Set<number>();
   const warnedSamplingDefeatsFastPath = new Set<number>();
+  const warnedHeatmapUpdateSeries = new Set<number>();
 
   // Coordinator runtime series store.
   // - Cartesian: branded MutableXYColumns (owned), RingXYColumns (FIFO), or a raw
@@ -1310,6 +1330,15 @@ export function createRenderCoordinator(
     options.series.length
   ).fill(null);
   let runtimeRawBoundsByIndex: Array<Bounds | null> = new Array(options.series.length).fill(null);
+
+  /** Stream override for heatmap (updateHeatmap); mirrors surface3d stream fields. */
+  const heatmapStreamDataByIndex: Array<HeatmapData | null> = new Array(options.series.length).fill(null);
+  /** Last user-provided heatmap `data` identity from setOption. */
+  const heatmapUserDataByIndex: Array<HeatmapData | null> = new Array(options.series.length).fill(null);
+  /** Colormap domain overrides from updateHeatmap. */
+  const heatmapDomainByIndex: Array<{ zMin: number; zMax: number } | null> = new Array(options.series.length).fill(
+    null
+  );
 
   // Baseline sampled series from runtime raw (the "full span" baseline).
   // Zoom-visible resampling is derived from this baseline + runtime raw as needed.
@@ -2666,6 +2695,30 @@ export function createRenderCoordinator(
     // and other label-affecting options may have changed (functions not in sig).
     axisLabelContentEpoch++;
 
+    // Heatmap stream vs setOption identity policy (shouldClearHeatmapStream).
+    ensureHeatmapStreamSlots(resolvedOptions.series.length);
+    for (let i = 0; i < resolvedOptions.series.length; i++) {
+      const s = resolvedOptions.series[i]!;
+      if (s.type !== 'heatmap') {
+        heatmapStreamDataByIndex[i] = null;
+        heatmapUserDataByIndex[i] = null;
+        heatmapDomainByIndex[i] = null;
+        continue;
+      }
+      const prevUser = heatmapUserDataByIndex[i];
+      if (shouldClearHeatmapStream(prevUser, s.data)) {
+        heatmapStreamDataByIndex[i] = null;
+        heatmapDomainByIndex[i] = null;
+        rendererPool.getState().heatmapRenderers[i]?.resetRing();
+      }
+      heatmapUserDataByIndex[i] = s.data;
+    }
+    for (let i = resolvedOptions.series.length; i < heatmapStreamDataByIndex.length; i++) {
+      heatmapStreamDataByIndex[i] = null;
+      heatmapUserDataByIndex[i] = null;
+      heatmapDomainByIndex[i] = null;
+    }
+
     if (likelyDataChanged) {
       // Series data or structure changed — full reset of runtime data state.
       runtimeBaseSeries = resolvedOptions.series;
@@ -2785,6 +2838,35 @@ export function createRenderCoordinator(
         // Owned array mutated in place (same ref as renderSeries.data). Refresh
         // y-bounds so auto domain tracks the forming bar high/low.
         recomputeCachedVisibleYBoundsIfNeeded();
+      }
+    }
+
+    // Re-apply heatmap stream overrides onto resolved style (colormap/opacity/zMin/zMax…).
+    // Identity policy already ran; kept streams replace data + bounds.
+    // Domain: prefer style-resolved zMin/zMax (and zDomainExplicit). Stream domain
+    // overrides only apply for auto-domain (non-explicit) expand/recompute cases.
+    {
+      let anyHeatmapStream = false;
+      const nextSeries = currentOptions.series.slice();
+      for (let i = 0; i < nextSeries.length; i++) {
+        const s = nextSeries[i]!;
+        if (s.type !== 'heatmap') continue;
+        const hm = s as ResolvedHeatmapSeriesConfig;
+        const streamed = heatmapStreamDataByIndex[i];
+        // Style setOption with explicit domain wins over prior auto-expand override.
+        if (hm.zDomainExplicit) {
+          heatmapDomainByIndex[i] = null;
+        }
+        const domain = hm.zDomainExplicit ? null : heatmapDomainByIndex[i];
+        if (!streamed && !domain) continue;
+        anyHeatmapStream = true;
+        nextSeries[i] = patchHeatmapResolved(hm, streamed ?? hm.data, domain);
+        runtimeRawBoundsByIndex[i] = (nextSeries[i] as ResolvedHeatmapSeriesConfig).rawBounds ?? null;
+      }
+      if (anyHeatmapStream) {
+        currentOptions = { ...currentOptions, series: nextSeries };
+        runtimeBaseSeries = runtimeBaseSeries.map((s, i) => (nextSeries[i]?.type === 'heatmap' ? nextSeries[i]! : s));
+        renderSeries = renderSeries.map((s, i) => (nextSeries[i]?.type === 'heatmap' ? nextSeries[i]! : s));
       }
     }
 
@@ -2979,6 +3061,122 @@ export function createRenderCoordinator(
     return runtimeRawBoundsByIndex[seriesIndex] ?? null;
   };
 
+  const ensureHeatmapStreamSlots = (n: number): void => {
+    while (heatmapStreamDataByIndex.length < n) {
+      heatmapStreamDataByIndex.push(null);
+      heatmapUserDataByIndex.push(null);
+      heatmapDomainByIndex.push(null);
+    }
+    if (heatmapStreamDataByIndex.length > n) {
+      heatmapStreamDataByIndex.length = n;
+      heatmapUserDataByIndex.length = n;
+      heatmapDomainByIndex.length = n;
+    }
+  };
+
+  const patchHeatmapResolved = (
+    base: ResolvedHeatmapSeriesConfig,
+    data: HeatmapData,
+    domain: { zMin: number; zMax: number } | null
+  ): ResolvedHeatmapSeriesConfig => {
+    const bounds = heatmapGridBounds(data, base.cellAnchor);
+    const zMin = domain?.zMin ?? base.zMin;
+    const zMax = domain?.zMax ?? base.zMax;
+    return {
+      ...base,
+      data,
+      rawBounds: bounds,
+      zMin,
+      zMax: zMax > zMin ? zMax : zMin + 1,
+      cellCount: data.columns * data.rows,
+      drawable: data.columns >= 1 && data.rows >= 1 && base.visible !== false,
+    };
+  };
+
+  const writeHeatmapSeriesSlot = (seriesIndex: number, next: ResolvedHeatmapSeriesConfig): void => {
+    const patchList = (list: ResolvedChartGPUOptions['series']): ResolvedChartGPUOptions['series'] => {
+      if (seriesIndex < 0 || seriesIndex >= list.length) return list;
+      const copy = list.slice();
+      copy[seriesIndex] = next;
+      return copy;
+    };
+    currentOptions = { ...currentOptions, series: patchList(currentOptions.series) };
+    runtimeBaseSeries = patchList(runtimeBaseSeries);
+    renderSeries = patchList(renderSeries);
+    runtimeRawBoundsByIndex[seriesIndex] = next.rawBounds ?? null;
+  };
+
+  const updateHeatmap: RenderCoordinator['updateHeatmap'] = (seriesIndex, update) => {
+    assertNotDisposed();
+    if (!Number.isFinite(seriesIndex)) return false;
+    if (seriesIndex < 0 || seriesIndex >= currentOptions.series.length) return false;
+
+    ensureHeatmapStreamSlots(currentOptions.series.length);
+    const s = currentOptions.series[seriesIndex]!;
+    if (!s || s.type !== 'heatmap') {
+      if (!warnedHeatmapUpdateSeries.has(seriesIndex)) {
+        warnedHeatmapUpdateSeries.add(seriesIndex);
+        console.warn(
+          `ChartGPU.updateHeatmap(${seriesIndex}, ...): series is not heatmap (got ${s?.type ?? 'missing'}).`
+        );
+      }
+      return false;
+    }
+
+    const hm = s as ResolvedHeatmapSeriesConfig;
+    // Seed user-data identity so subsequent style setOption can keep the stream.
+    if (heatmapUserDataByIndex[seriesIndex] == null) {
+      heatmapUserDataByIndex[seriesIndex] = hm.data;
+    }
+
+    const base = heatmapStreamDataByIndex[seriesIndex] ?? hm.data;
+    const result = applyHeatmapUpdate(base, update);
+    heatmapStreamDataByIndex[seriesIndex] = result.data;
+
+    heatmapDomainByIndex[seriesIndex] = resolveHeatmapStreamDomainOverride({
+      zDomainExplicit: hm.zDomainExplicit === true,
+      seriesZMin: hm.zMin,
+      seriesZMax: hm.zMax,
+      prevOverride: heatmapDomainByIndex[seriesIndex],
+      result,
+      update,
+    });
+
+    const domain = heatmapDomainByIndex[seriesIndex];
+    const patched = patchHeatmapResolved(hm, result.data, domain);
+    writeHeatmapSeriesSlot(seriesIndex, patched);
+
+    // GPU strip path (strategy C): single-column scroll only.
+    const pool = rendererPool.getState();
+    const renderer = pool.heatmapRenderers[seriesIndex];
+    if (renderer) {
+      if (
+        update.mode === 'appendColumns' &&
+        update.scrollX !== false &&
+        result.ringAdvanceCols === 1 &&
+        !result.dimsChanged &&
+        renderer.hasZTexture()
+      ) {
+        const ok = renderer.uploadColumnStrip(update.z, 1, result.data.rows, result.data.columns, result.data.z);
+        if (!ok) {
+          renderer.resetRing();
+        }
+      } else {
+        // replaceZ / grow / multi-col / appendRows → full upload on next prepare
+        renderer.resetRing();
+      }
+    }
+
+    // Axis auto-bounds: stream changed grid extent
+    stickyAutoXDomain = null;
+    stickyAutoYDomainByAxis.clear();
+    cachedVisibleYBoundsByAxis.clear();
+    cachedVisibleYBoundsXWindow = null;
+
+    // Render request is owned by ChartGPU.updateHeatmap → requestRender (single owner).
+    return true;
+  };
+
   const appendData: RenderCoordinator['appendData'] = (seriesIndex, newPoints, options) => {
     assertNotDisposed();
     if (!Number.isFinite(seriesIndex)) return;
@@ -2987,12 +3185,12 @@ export function createRenderCoordinator(
 
     const s = currentOptions.series[seriesIndex]!;
     if (s.type === 'pie' || s.type === 'heatmap') {
-      // Pie / heatmap are not supported by streaming append (heatmap: use setOption z replace).
+      // Pie / heatmap are not supported by cartesian append (heatmap: use updateHeatmap).
       if (!warnedPieAppendSeries.has(seriesIndex)) {
         warnedPieAppendSeries.add(seriesIndex);
         console.warn(
           `RenderCoordinator.appendData(${seriesIndex}, ...): ${s.type} series are not supported by streaming append.` +
-            (s.type === 'heatmap' ? ' Use setOption to replace heatmap data.z (equal-size updates are efficient).' : '')
+            (s.type === 'heatmap' ? ' Use chart.updateHeatmap(...) for replaceZ / appendColumns / appendRows.' : '')
         );
       }
       return;
@@ -4217,6 +4415,9 @@ export function createRenderCoordinator(
     clearOverlayPrepareMemo(overlayPrepareMemo);
     stickyAutoXDomain = null;
     stickyAutoYDomainByAxis.clear();
+    heatmapStreamDataByIndex.length = 0;
+    heatmapUserDataByIndex.length = 0;
+    heatmapDomainByIndex.length = 0;
 
     insideZoom?.dispose();
     insideZoom = null;
@@ -4308,6 +4509,7 @@ export function createRenderCoordinator(
   return {
     setOptions,
     appendData,
+    updateHeatmap,
     getRuntimeSeriesData,
     getRuntimeSeriesBounds,
     getInteractionX,

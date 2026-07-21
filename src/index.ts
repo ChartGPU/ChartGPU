@@ -73,6 +73,7 @@ export type {
   PieSeriesConfig,
   HeatmapSeriesConfig,
   HeatmapData,
+  HeatmapUpdate,
   HeatmapColormap,
   HeatmapNullHandling,
   BandSeriesConfig,

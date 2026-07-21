@@ -266,6 +266,11 @@ export type ResolvedHeatmapSeriesConfig = Readonly<
     readonly colormap: HeatmapColormap;
     readonly zMin: number;
     readonly zMax: number;
+    /**
+     * True when the user supplied **both** finite `zMin` and `zMax` on the series config.
+     * Stream append must keep this fixed colormap domain (no auto expand-from-strip).
+     */
+    readonly zDomainExplicit: boolean;
     readonly zScale: 'linear' | 'log';
     readonly opacity: number;
     readonly cellAnchor: HeatmapCellAnchor;
@@ -1542,6 +1547,7 @@ function resolveHeatmapSeries(
       colormap,
       zMin: 0,
       zMax: 1,
+      zDomainExplicit: false,
       zScale,
       opacity,
       cellAnchor,
@@ -1561,22 +1567,17 @@ function resolveHeatmapSeries(
   }
 
   // Resolve zMin/zMax: explicit pair, one + data extremum, or full auto.
+  const userZMin = typeof s.zMin === 'number' && Number.isFinite(s.zMin) ? s.zMin : undefined;
+  const userZMax = typeof s.zMax === 'number' && Number.isFinite(s.zMax) ? s.zMax : undefined;
+  const zDomainExplicit = userZMin != null && userZMax != null;
   const auto = computeHeatmapZExtent(s.data.z, expected, zScale);
-  let zMin = typeof s.zMin === 'number' && Number.isFinite(s.zMin) ? s.zMin : auto.zMin;
-  let zMax = typeof s.zMax === 'number' && Number.isFinite(s.zMax) ? s.zMax : auto.zMax;
-  if (
-    typeof s.zMin === 'number' &&
-    Number.isFinite(s.zMin) &&
-    !(typeof s.zMax === 'number' && Number.isFinite(s.zMax))
-  ) {
-    zMax = Math.max(s.zMin, auto.zMax);
+  let zMin = userZMin ?? auto.zMin;
+  let zMax = userZMax ?? auto.zMax;
+  if (userZMin != null && userZMax == null) {
+    zMax = Math.max(userZMin, auto.zMax);
   }
-  if (
-    typeof s.zMax === 'number' &&
-    Number.isFinite(s.zMax) &&
-    !(typeof s.zMin === 'number' && Number.isFinite(s.zMin))
-  ) {
-    zMin = Math.min(s.zMax, auto.zMin);
+  if (userZMax != null && userZMin == null) {
+    zMin = Math.min(userZMax, auto.zMin);
   }
   if (zMin === zMax) {
     const eps = zMin === 0 ? 1e-6 : Math.abs(zMin) * 1e-6;
@@ -1616,6 +1617,7 @@ function resolveHeatmapSeries(
     colormap,
     zMin,
     zMax,
+    zDomainExplicit,
     zScale,
     opacity,
     cellAnchor,
