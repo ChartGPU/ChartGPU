@@ -89,6 +89,23 @@ export const ohlcDefaults = {
   samplingThreshold: 5000,
 } as const;
 
+/** Defaults for error bar series (`type: 'errorBar'`). */
+export const errorBarDefaults = {
+  itemStyle: {
+    borderWidth: 1.5,
+    opacity: 1,
+  } as const,
+  /** Cap full width as fraction of category step when percent omitted. */
+  capWidth: '40%' as const,
+  errorMode: 'both' as const,
+  direction: 'vertical' as const,
+  drawWhiskers: true,
+  drawConnector: true,
+  showCenter: false,
+  symbolSize: 6,
+  sampling: 'none' as const,
+} as const;
+
 export const scatterDefaults = {
   mode: 'points' as const,
   // Bin size in CSS pixels for density mode. Must be > 0.

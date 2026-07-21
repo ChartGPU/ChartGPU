@@ -70,8 +70,21 @@ import {
   extendBoundsWithBandData,
   isBandShapedPayload,
 } from './data/bandData';
-import type { BandSeriesData } from './config/types';
+import {
+  appendErrorBarIntoHlcColumns,
+  asErrorBarHlcArrays,
+  errorBarBounds,
+  errorBarDataToMutableHlc,
+  extendBoundsWithErrorBarData,
+  getErrorBarLength,
+  getErrorBarPoint,
+  isErrorBarShapedPayload,
+  type MutableErrorBarHlcColumns,
+} from './data/errorBarData';
+import type { BandSeriesData, ErrorBarSeriesData } from './config/types';
 import { pointerClientToLayoutCss } from './core/renderCoordinator/utils/canvasUtils';
+import { findErrorBarAtPointer } from './interaction/findErrorBar';
+import type { ResolvedErrorBarSeriesConfig } from './config/OptionResolver';
 
 // --- Instance registry for auto-dispose on page unload (CGPU-OOM-139) ---
 const activeInstances = new Set<{ dispose(): void; disposed: boolean }>();
@@ -140,13 +153,14 @@ export type ZoomChangeSourceKind = 'user' | 'auto-scroll' | 'api';
  * Hit-test match for a chart element.
  */
 export type ChartGPUHitTestMatch = Readonly<{
-  readonly kind: 'cartesian' | 'candlestick' | 'ohlc' | 'pie' | 'pointCloud3d' | 'surface3d';
+  readonly kind: 'cartesian' | 'candlestick' | 'ohlc' | 'pie' | 'errorBar' | 'pointCloud3d' | 'surface3d';
   readonly seriesIndex: number;
   readonly dataIndex: number;
   /**
    * - cartesian: [x, y]
    * - candlestick / ohlc: still reported as [timestamp, close] at the ChartGPU wrapper (see hitTest)
    * - pie: [slice index proxy via value] (see pie hit path)
+   * - errorBar: [x, y] center (see also high/low on TooltipParams)
    * - pointCloud3d: [x, y, z]
    * - surface3d: [x, y, z] world hit (height along Y)
    */
@@ -708,6 +722,20 @@ const computeGlobalBounds = (
       continue;
     }
 
+    if (seriesConfig.type === 'errorBar') {
+      const direction =
+        (seriesConfig as { direction?: 'vertical' | 'horizontal' }).direction === 'horizontal'
+          ? 'horizontal'
+          : 'vertical';
+      const eb = errorBarBounds((seriesConfig.rawData ?? seriesConfig.data) as ErrorBarSeriesData, direction);
+      if (!eb) continue;
+      if (eb.xMin < xMin) xMin = eb.xMin;
+      if (eb.xMax > xMax) xMax = eb.xMax;
+      if (eb.yMin < yMin) yMin = eb.yMin;
+      if (eb.yMax > yMax) yMax = eb.yMax;
+      continue;
+    }
+
     const b = computeRawBoundsFromCartesianData(seriesConfig.data as CartesianSeriesData);
     if (!b) continue;
     if (b.xMin < xMin) xMin = b.xMin;
@@ -768,7 +796,14 @@ type CandlestickHitTestMatch = Readonly<{
   point: OHLCDataPoint;
 }>;
 
-type HitTestMatch = CartesianHitTestMatch | PieHitTestMatch | CandlestickHitTestMatch;
+type ErrorBarHitTestMatch = Readonly<{
+  kind: 'errorBar';
+  seriesIndex: number;
+  dataIndex: number;
+  point: { readonly x: number; readonly y: number; readonly high: number; readonly low: number };
+}>;
+
+type HitTestMatch = CartesianHitTestMatch | PieHitTestMatch | CandlestickHitTestMatch | ErrorBarHitTestMatch;
 
 const parseNumberOrPercent = (value: number | string, basis: number): number | null => {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
@@ -1023,6 +1058,13 @@ export async function createChartGPU(
           const band = (s.data as BandSeriesData) ?? { x: [], y: [], y1: [] };
           nextData[i] = asBandXYYArrays(bandDataToMutableXYY(band)) as unknown as MutableXYColumns;
           nextBounds[i] = (s as unknown as { rawBounds?: Bounds | null }).rawBounds ?? bandBounds(band) ?? null;
+        } else if (s.type === 'errorBar') {
+          const eb = (s.data as ErrorBarSeriesData) ?? { x: [], y: [], high: [], low: [] };
+          nextData[i] = asErrorBarHlcArrays(errorBarDataToMutableHlc(eb)) as unknown as MutableXYColumns;
+          const direction =
+            (s as { direction?: 'vertical' | 'horizontal' }).direction === 'horizontal' ? 'horizontal' : 'vertical';
+          nextBounds[i] =
+            (s as unknown as { rawBounds?: Bounds | null }).rawBounds ?? errorBarBounds(eb, direction) ?? null;
         } else {
           const cart = (s.data as CartesianSeriesData) ?? [];
           nextData[i] = cartesianDataToMutableColumns(cart);
@@ -1037,6 +1079,10 @@ export async function createChartGPU(
         nextData[i] = ohlc.length === 0 ? [] : ohlc.slice();
       } else if (s.type === 'band') {
         nextData[i] = asBandXYYArrays(bandDataToMutableXYY(raw as BandSeriesData)) as unknown as MutableXYColumns;
+      } else if (s.type === 'errorBar') {
+        nextData[i] = asErrorBarHlcArrays(
+          errorBarDataToMutableHlc(raw as ErrorBarSeriesData)
+        ) as unknown as MutableXYColumns;
       } else if (isRingXYColumns(raw)) {
         // Private ring copy (chronological at start=0) for O(append) hit-test.
         // Preserve per-point size when coordinator ring has a size channel (issue 1.4).
@@ -1067,6 +1113,13 @@ export async function createChartGPU(
         // Dual-Y envelope — never cartesian scan (would drop y1 extrema).
         nextBounds[i] =
           bandBounds(nextData[i] as unknown as BandSeriesData) ??
+          (s as unknown as { rawBounds?: Bounds | null }).rawBounds ??
+          null;
+      } else if (s.type === 'errorBar') {
+        const direction =
+          (s as { direction?: 'vertical' | 'horizontal' }).direction === 'horizontal' ? 'horizontal' : 'vertical';
+        nextBounds[i] =
+          errorBarBounds(nextData[i] as unknown as ErrorBarSeriesData, direction) ??
           (s as unknown as { rawBounds?: Bounds | null }).rawBounds ??
           null;
       } else if (s.type === 'candlestick' || s.type === 'ohlc') {
@@ -1135,6 +1188,44 @@ export async function createChartGPU(
         nextSource[i] = null;
         nextModes[i] = null;
         nextOptionsRaw[i] = null;
+        continue;
+      }
+
+      if (s.type === 'errorBar') {
+        const raw = ((s as unknown as { rawData?: ErrorBarSeriesData }).rawData ?? s.data) as ErrorBarSeriesData;
+        const rawBounds = (s as unknown as { rawBounds?: Bounds | null }).rawBounds ?? null;
+        const direction =
+          (s as { direction?: 'vertical' | 'horizontal' }).direction === 'horizontal' ? 'horizontal' : 'vertical';
+        const prevOwned = i < prevCount ? prevData[i] : null;
+        const prevIsOwnedToken = i < prevCount && prevSource[i] === HIT_TEST_OWNED_TOKEN;
+        const optionsRawUnchanged = i < prevCount && prevOptionsRaw[i] === raw;
+        const prevHasHlc =
+          prevOwned != null &&
+          typeof prevOwned === 'object' &&
+          !Array.isArray(prevOwned) &&
+          'high' in (prevOwned as object) &&
+          'low' in (prevOwned as object);
+        const reuseOwnedHistory = prevIsOwnedToken && prevHasHlc && optionsRawUnchanged && !hitTestStoreNeedsResync;
+        const reuseSeedIdentity = i < prevCount && prevSource[i] === raw && prevHasHlc && !hitTestStoreNeedsResync;
+        if (reuseOwnedHistory || reuseSeedIdentity) {
+          nextData[i] = prevData[i]!;
+          nextSource[i] = prevIsOwnedToken ? HIT_TEST_OWNED_TOKEN : raw;
+          nextOptionsRaw[i] = raw;
+          const modeChanged = mode != null && prevModes[i] != null && mode !== prevModes[i];
+          if (modeChanged) {
+            nextBounds[i] =
+              errorBarBounds(prevData[i] as unknown as ErrorBarSeriesData, direction) ?? rawBounds ?? null;
+          } else {
+            nextBounds[i] = prevBounds[i] ?? rawBounds ?? null;
+          }
+          nextModes[i] = mode;
+          continue;
+        }
+        nextData[i] = asErrorBarHlcArrays(errorBarDataToMutableHlc(raw)) as unknown as MutableXYColumns;
+        nextBounds[i] = rawBounds ?? errorBarBounds(raw, direction) ?? null;
+        nextSource[i] = raw;
+        nextOptionsRaw[i] = raw;
+        nextModes[i] = mode;
         continue;
       }
 
@@ -1301,6 +1392,19 @@ export async function createChartGPU(
           return { ...s, data: runtimeData as unknown as BandSeriesData };
         }
         return { ...s, data: (s.rawData ?? s.data) as BandSeriesData };
+      }
+      if (s.type === 'errorBar') {
+        const runtimeData = runtimeRawDataByIndex[i];
+        if (
+          runtimeData != null &&
+          typeof runtimeData === 'object' &&
+          !Array.isArray(runtimeData) &&
+          'high' in (runtimeData as object) &&
+          'low' in (runtimeData as object)
+        ) {
+          return { ...s, data: runtimeData as unknown as ErrorBarSeriesData };
+        }
+        return { ...s, data: (s.rawData ?? s.data) as ErrorBarSeriesData };
       }
       // Cartesian series: MutableXYColumns or RingXYColumns.
       const runtimeData = runtimeRawDataByIndex[i] as MutableXYColumns | RingXYColumns;
@@ -1768,6 +1872,76 @@ export async function createChartGPU(
 
   const resize = (): void => resizeInternal(true);
 
+  /**
+   * Y scale for a named axis id (multi-axis hit-test).
+   * Primary axis reuses the cached primary yScale; secondary axes use axis min/max
+   * when set, else the **union of runtime bounds of all series bound to that axis**
+   * (not a single series' envelope), matching coordinator interaction scales intent.
+   */
+  const resolveYScaleForAxisId = (axisId: string, primaryYScale: LinearScale, plotHeightCss: number): LinearScale => {
+    const primaryYId = resolvedOptions.yAxes[0]?.id ?? 'y';
+    if (axisId === primaryYId) return primaryYScale;
+
+    const yAxisCfg = resolvedOptions.yAxes.find((a) => (a.id ?? 'y') === axisId) ??
+      resolvedOptions.yAxes[0] ?? { type: 'value' as const };
+
+    let yMin = Number.POSITIVE_INFINITY;
+    let yMax = Number.NEGATIVE_INFINITY;
+    const hitSeries = getRuntimeHitTestSeries();
+    for (let i = 0; i < hitSeries.length; i++) {
+      const s = hitSeries[i]!;
+      if (s.visible === false) continue;
+      const sAxis = (s as { yAxis?: string }).yAxis || 'y';
+      if (sAxis !== axisId) continue;
+      const b = runtimeRawBoundsByIndex[i] ?? (s as { rawBounds?: Bounds | null }).rawBounds ?? null;
+      if (!b) continue;
+      if (Number.isFinite(b.yMin) && b.yMin < yMin) yMin = b.yMin;
+      if (Number.isFinite(b.yMax) && b.yMax > yMax) yMax = b.yMax;
+    }
+    if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) {
+      yMin = cachedGlobalBounds.yMin;
+      yMax = cachedGlobalBounds.yMax;
+    }
+    if (typeof yAxisCfg.min === 'number' && Number.isFinite(yAxisCfg.min)) yMin = yAxisCfg.min;
+    if (typeof yAxisCfg.max === 'number' && Number.isFinite(yAxisCfg.max)) yMax = yAxisCfg.max;
+    const d = normalizeDomain(yMin, yMax);
+    return createAxisScale(yAxisCfg).domain(d.min, d.max).range(plotHeightCss, 0);
+  };
+
+  /**
+   * Error-bar stem/cap hit under grid CSS coords. Shared by pointer events and public hitTest.
+   * Prefer later series indices; multi-axis yScale from {@link resolveYScaleForAxisId}.
+   */
+  const findErrorBarHitAtGrid = (
+    gridX: number,
+    gridY: number,
+    xScale: LinearScale,
+    primaryYScale: LinearScale,
+    plotWidthCss: number,
+    plotHeightCss: number
+  ): ErrorBarHitTestMatch | null => {
+    const hitSeries = getRuntimeHitTestSeries();
+    for (let i = hitSeries.length - 1; i >= 0; i--) {
+      const s = hitSeries[i]!;
+      if (s.type !== 'errorBar' || s.visible === false) continue;
+      const eb = s as ResolvedErrorBarSeriesConfig;
+      const axisId = eb.yAxis || 'y';
+      const yScaleSeries = resolveYScaleForAxisId(axisId, primaryYScale, plotHeightCss);
+      const m = findErrorBarAtPointer([{ seriesIndex: i, series: eb }], gridX, gridY, xScale, yScaleSeries, {
+        width: plotWidthCss,
+        height: plotHeightCss,
+      });
+      if (!m) continue;
+      return {
+        kind: 'errorBar',
+        seriesIndex: m.seriesIndex,
+        dataIndex: m.dataIndex,
+        point: m.point,
+      };
+    }
+    return null;
+  };
+
   const getNearestPointFromPointerEvent = (
     e: PointerEvent
   ): { readonly match: HitTestMatch | null; readonly isInGrid: boolean } => {
@@ -1901,6 +2075,12 @@ export async function createChartGPU(
         },
         isInGrid: true,
       };
+    }
+
+    // Error bars (stem + caps) — shared helper used by public hitTest too.
+    {
+      const ebHit = findErrorBarHitAtGrid(gridX, gridY, scales.xScale, scales.yScale, plotWidthCss, plotHeightCss);
+      if (ebHit) return { match: ebHit, isInGrid: true };
     }
 
     const cartesianMatch = findNearestPoint(getRuntimeHitTestSeries(), gridX, gridY, scales.xScale, scales.yScale);
@@ -2059,6 +2239,16 @@ export async function createChartGPU(
         seriesIndex,
         dataIndex,
         value: [timestamp, close],
+        seriesName,
+        event,
+      };
+    }
+
+    if (match.kind === 'errorBar') {
+      return {
+        seriesIndex,
+        dataIndex,
+        value: [match.point.x, match.point.y],
         seriesName,
         event,
       };
@@ -2391,6 +2581,15 @@ export async function createChartGPU(
           return;
         }
         pointCount = getBandLength(newPoints as BandSeriesData);
+      } else if (s.type === 'errorBar') {
+        if (!isErrorBarShapedPayload(newPoints)) {
+          console.warn(
+            `ChartGPU.appendData(${seriesIndex}, ...): errorBar series requires HLC or relative-error payloads ` +
+              `({x,y,high,low}, {x,y,yError}, tuples/objects). Skipping batch.`
+          );
+          return;
+        }
+        pointCount = getErrorBarLength(newPoints as ErrorBarSeriesData);
       } else {
         pointCount = getCartesianPointCount(newPoints as CartesianSeriesData);
       }
@@ -2537,6 +2736,54 @@ export async function createChartGPU(
           runtimeRawBoundsByIndex[seriesIndex] = bandBounds(asBandXYYArrays(cols));
         }
         runtimeRawDataByIndex[seriesIndex] = asBandXYYArrays(cols) as unknown as MutableXYColumns;
+      } else if (maintainHitTestStore && s.type === 'errorBar') {
+        let cols = runtimeRawDataByIndex[seriesIndex] as MutableErrorBarHlcColumns | null;
+        const direction =
+          (s as { direction?: 'vertical' | 'horizontal' }).direction === 'horizontal' ? 'horizontal' : 'vertical';
+        if (!cols || !('high' in (cols as object)) || !('low' in (cols as object))) {
+          const seed =
+            (s as { rawData?: ErrorBarSeriesData; data: ErrorBarSeriesData }).rawData ??
+            ((s as { data: ErrorBarSeriesData }).data as ErrorBarSeriesData);
+          cols = errorBarDataToMutableHlc(seed);
+        } else {
+          cols = {
+            x: Array.isArray(cols.x) ? cols.x : Array.from(cols.x as ArrayLike<number>),
+            y: Array.isArray(cols.y) ? cols.y : Array.from(cols.y as ArrayLike<number>),
+            high: Array.isArray(cols.high) ? cols.high : Array.from(cols.high as ArrayLike<number>),
+            low: Array.isArray(cols.low) ? cols.low : Array.from(cols.low as ArrayLike<number>),
+          };
+        }
+        const ebAppend = newPoints as ErrorBarSeriesData;
+        if (hasDataAppendListeners) {
+          for (let i = 0; i < pointCount; i++) {
+            const p = getErrorBarPoint(ebAppend, i);
+            if (p && Number.isFinite(p.x)) {
+              if (p.x < appendXMin) appendXMin = p.x;
+              if (p.x > appendXMax) appendXMax = p.x;
+            }
+          }
+        }
+        const plan = planMaxPointsWindow(cols.x.length, pointCount, maxPoints);
+        if (plan.dropPrevCount > 0) {
+          cols.x.splice(0, plan.dropPrevCount);
+          cols.y.splice(0, plan.dropPrevCount);
+          cols.high.splice(0, plan.dropPrevCount);
+          cols.low.splice(0, plan.dropPrevCount);
+        }
+        appendErrorBarIntoHlcColumns(cols, ebAppend, {
+          newSrcOffset: plan.newSrcOffset,
+          keepNewCount: plan.keepNewCount,
+        });
+        if (!plan.didWindow) {
+          runtimeRawBoundsByIndex[seriesIndex] = extendBoundsWithErrorBarData(
+            runtimeRawBoundsByIndex[seriesIndex],
+            ebAppend,
+            direction
+          );
+        } else {
+          runtimeRawBoundsByIndex[seriesIndex] = errorBarBounds(asErrorBarHlcArrays(cols), direction);
+        }
+        runtimeRawDataByIndex[seriesIndex] = asErrorBarHlcArrays(cols) as unknown as MutableXYColumns;
       } else if (maintainHitTestStore) {
         // Handle other cartesian series (line, area, bar, scatter) with columnar append.
         // Prefer RingXY when maxPoints is set (matches coordinator O(append) policy).
@@ -2770,6 +3017,15 @@ export async function createChartGPU(
             if (Number.isFinite(x)) {
               if (x < appendXMin) appendXMin = x;
               if (x > appendXMax) appendXMax = x;
+            }
+          }
+        } else if (s.type === 'errorBar') {
+          const ebAppend = newPoints as ErrorBarSeriesData;
+          for (let i = 0; i < pointCount; i++) {
+            const p = getErrorBarPoint(ebAppend, i);
+            if (p && Number.isFinite(p.x)) {
+              if (p.x < appendXMin) appendXMin = p.x;
+              if (p.x > appendXMax) appendXMax = p.x;
             }
           }
         } else {
@@ -3133,6 +3389,26 @@ export async function createChartGPU(
             value: [timestamp, close],
           },
         };
+      }
+
+      // Error bars (stem + caps) — same multi-axis path as pointer events (Issue 1).
+      {
+        const ebHit = findErrorBarHitAtGrid(gridX, gridY, scales.xScale, scales.yScale, plotWidthCss, plotHeightCss);
+        if (ebHit) {
+          return {
+            isInGrid: true,
+            canvasX,
+            canvasY,
+            gridX,
+            gridY,
+            match: {
+              kind: 'errorBar',
+              seriesIndex: ebHit.seriesIndex,
+              dataIndex: ebHit.dataIndex,
+              value: [ebHit.point.x, ebHit.point.y],
+            },
+          };
+        }
       }
 
       // Cartesian nearest-point hit-testing

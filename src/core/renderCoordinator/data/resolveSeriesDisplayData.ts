@@ -34,6 +34,8 @@ export function resolveCartesianDisplayData(input: {
     series.type === 'candlestick' ||
     series.type === 'ohlc' ||
     series.type === 'heatmap' ||
+    series.type === 'band' ||
+    series.type === 'errorBar' ||
     series.type === 'pointCloud3d' ||
     series.type === 'surface3d'
   ) {
@@ -49,12 +51,14 @@ export function resolveCartesianDisplayData(input: {
   // Mirror OptionResolver: bypass sampling when null gap markers are present so
   // LTTB/min/max do not filter nulls and join line segments (zoom path issue #150).
   // sampling:'none' already returns data as-is inside sampleSeriesDataPoints.
-  if (series.sampling !== 'none' && hasNullGaps(raw)) {
+  const sampling = 'sampling' in series ? series.sampling : 'none';
+  const samplingThreshold = 'samplingThreshold' in series ? series.samplingThreshold : 5000;
+  if (sampling !== 'none' && hasNullGaps(raw)) {
     return raw;
   }
   const threshold =
-    sampleTarget != null && Number.isFinite(sampleTarget) ? Math.max(2, sampleTarget | 0) : series.samplingThreshold;
-  return sampleSeriesDataPoints(raw, series.sampling, threshold);
+    sampleTarget != null && Number.isFinite(sampleTarget) ? Math.max(2, sampleTarget | 0) : samplingThreshold;
+  return sampleSeriesDataPoints(raw, sampling, threshold);
 }
 
 /**

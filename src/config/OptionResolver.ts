@@ -35,6 +35,11 @@ import type {
   HeatmapNullHandling,
   BandSeriesConfig,
   BandSeriesData,
+  ErrorBarSeriesConfig,
+  ErrorBarSeriesData,
+  ErrorBarHlcArraysData,
+  ErrorBarMode,
+  ErrorBarDirection,
   CoordinateSystem,
   Chart3DCameraOptions,
   Interaction3DOptions,
@@ -48,6 +53,7 @@ import {
   candlePrimaryGridDefaults,
   candlestickDefaults,
   ohlcDefaults,
+  errorBarDefaults,
   defaultAreaStyle,
   defaultGridLines,
   defaultLineStyle,
@@ -81,6 +87,12 @@ import {
   hasNullGaps,
 } from '../data/cartesianData';
 import { bandBounds, cheapBandContentStamp, getBandLength, hasBandNullGaps, sampleBandSeries } from '../data/bandData';
+import {
+  cheapErrorBarContentStamp,
+  errorBarBounds,
+  getErrorBarLength,
+  resolveErrorBarToHlc,
+} from '../data/errorBarData';
 
 export type { ResolvedCandlestickPriceLabel } from './resolvePriceLabel';
 export { resolvePriceLabel } from './resolvePriceLabel';
@@ -394,6 +406,36 @@ export type ResolvedOhlcSeriesConfig = Readonly<
   }
 >;
 
+export type ResolvedErrorBarItemStyleConfig = Readonly<{
+  readonly color: string;
+  readonly borderWidth: number;
+  readonly opacity: number;
+}>;
+
+/** Resolved error-bar series — data is always owned absolute HLC columns. */
+export type ResolvedErrorBarSeriesConfig = Readonly<{
+  readonly type: 'errorBar';
+  readonly name?: string;
+  readonly visible: boolean;
+  readonly color: string;
+  readonly itemStyle: ResolvedErrorBarItemStyleConfig;
+  readonly capWidth: number | string;
+  readonly errorMode: ErrorBarMode;
+  readonly direction: ErrorBarDirection;
+  readonly drawWhiskers: boolean;
+  readonly drawConnector: boolean;
+  readonly showCenter: boolean;
+  readonly symbolSize: number;
+  readonly sampling: 'none';
+  /** Original user payload (may be relative). */
+  readonly rawData: ErrorBarSeriesData;
+  /** Owned absolute HLC columns after relative→absolute resolve. */
+  readonly data: ErrorBarHlcArraysData;
+  readonly yAxis: string;
+  readonly rawBounds?: RawBounds;
+  readonly rawBoundsMode?: RawBoundsMode;
+}>;
+
 export type ResolvedPointCloud3DSeriesConfig = Readonly<{
   readonly type: 'pointCloud3d';
   readonly name?: string;
@@ -440,7 +482,8 @@ export type ResolvedSeriesConfig2D =
   | ResolvedCandlestickSeriesConfig
   | ResolvedOhlcSeriesConfig
   | ResolvedHeatmapSeriesConfig
-  | ResolvedBandSeriesConfig;
+  | ResolvedBandSeriesConfig
+  | ResolvedErrorBarSeriesConfig;
 
 export type ResolvedSeriesConfig =
   | ResolvedSeriesConfig2D
@@ -550,6 +593,7 @@ const SERIES_2D_TYPES = new Set<SeriesType>([
   'ohlc',
   'heatmap',
   'band',
+  'errorBar',
 ]);
 const SERIES_3D_TYPES = new Set<SeriesType>(['pointCloud3d', 'surface3d']);
 
@@ -2577,6 +2621,107 @@ export function resolveOptions(
                 samplingThreshold: resolvedSamplingThreshold,
                 priceLabel: resolvedPriceLabel,
                 rawBounds,
+                yAxis,
+                contentHash,
+              };
+            }
+            case 'errorBar': {
+              const eb = s as ErrorBarSeriesConfig;
+              // Sampling: 'none' only — warn + ignore other modes (D10).
+              const rawSampling = (eb as unknown as { sampling?: unknown }).sampling;
+              if (rawSampling != null && rawSampling !== 'none') {
+                console.warn(
+                  `ChartGPU errorBar series[${i}]: sampling '${String(rawSampling)}' is not supported; using 'none'.`
+                );
+              }
+
+              const itemColor = normalizeOptionalColor(eb.itemStyle?.color) ?? explicitColor ?? inheritedColor;
+              const borderWidth =
+                typeof eb.itemStyle?.borderWidth === 'number' && Number.isFinite(eb.itemStyle.borderWidth)
+                  ? eb.itemStyle.borderWidth
+                  : errorBarDefaults.itemStyle.borderWidth;
+              const opacity =
+                typeof eb.itemStyle?.opacity === 'number' && Number.isFinite(eb.itemStyle.opacity)
+                  ? Math.min(1, Math.max(0, eb.itemStyle.opacity))
+                  : errorBarDefaults.itemStyle.opacity;
+
+              const errorMode: ErrorBarMode =
+                eb.errorMode === 'high' || eb.errorMode === 'low' || eb.errorMode === 'both'
+                  ? eb.errorMode
+                  : errorBarDefaults.errorMode;
+              const direction: ErrorBarDirection =
+                eb.direction === 'horizontal' || eb.direction === 'vertical'
+                  ? eb.direction
+                  : errorBarDefaults.direction;
+
+              const contentHash = resolveSeriesContentHash(prevResolved, 'errorBar', eb.data, () =>
+                cheapErrorBarContentStamp(eb.data)
+              );
+              // samplingThreshold is undefined on ResolvedErrorBarSeriesConfig (no threshold field).
+              // Pass undefined so canReuseResolvedSeriesSample matches prev (0 would never equal undefined).
+              const reuseEb = canReuseResolvedSeriesSample(
+                prevResolved,
+                'errorBar',
+                eb.data,
+                'none',
+                undefined,
+                undefined,
+                contentHash
+              );
+              const prevEb = reuseEb
+                ? (prevResolved as ResolvedErrorBarSeriesConfig & {
+                    contentHash?: number;
+                    rawBoundsMode?: RawBoundsMode;
+                  })
+                : null;
+
+              // Touch length for mismatch warnings.
+              getErrorBarLength(eb.data);
+
+              const hlcData: ErrorBarHlcArraysData = prevEb ? prevEb.data : resolveErrorBarToHlc(eb.data);
+
+              let rawBounds: RawBounds | undefined;
+              let rawBoundsMode: RawBoundsMode;
+              // Bounds depend on direction (vertical vs horizontal extents) — do not reuse across toggles.
+              if (prevEb?.rawBounds && prevEb.rawBoundsMode === 'data' && prevEb.direction === direction) {
+                rawBounds = prevEb.rawBounds;
+                rawBoundsMode = 'data';
+              } else {
+                rawBounds = errorBarBounds(hlcData, direction) ?? undefined;
+                rawBoundsMode = rawBounds ? 'data' : 'synthetic';
+              }
+
+              const capWidth = eb.capWidth ?? errorBarDefaults.capWidth;
+              const drawWhiskers = eb.drawWhiskers !== false;
+              const drawConnector = eb.drawConnector !== false;
+              const showCenter = eb.showCenter === true;
+              const symbolSize =
+                typeof eb.symbolSize === 'number' && Number.isFinite(eb.symbolSize) && eb.symbolSize > 0
+                  ? eb.symbolSize
+                  : errorBarDefaults.symbolSize;
+
+              return {
+                type: 'errorBar' as const,
+                name: eb.name,
+                visible,
+                color: itemColor,
+                itemStyle: {
+                  color: itemColor,
+                  borderWidth,
+                  opacity,
+                } satisfies ResolvedErrorBarItemStyleConfig,
+                capWidth,
+                errorMode,
+                direction,
+                drawWhiskers,
+                drawConnector,
+                showCenter,
+                symbolSize,
+                sampling: 'none' as const,
+                rawData: eb.data,
+                data: hlcData,
+                rawBounds,
+                rawBoundsMode,
                 yAxis,
                 contentHash,
               };

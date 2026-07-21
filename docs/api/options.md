@@ -16,7 +16,7 @@ Chart configuration. Full types: [`types.ts`](../../src/config/types.ts).
 
 ## Series Configuration
 
-- **`SeriesType`**: `'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick' | 'ohlc' | 'heatmap' | 'band' | 'pointCloud3d' | 'surface3d'`. See [`types.ts`](../../src/config/types.ts).
+- **`SeriesType`**: `'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick' | 'ohlc' | 'heatmap' | 'band' | 'errorBar' | 'pointCloud3d' | 'surface3d'`. See [`types.ts`](../../src/config/types.ts).
 - **`coordinateSystem`**: `'cartesian2d'` (default) | `'cartesian3d'`. 3D charts use a separate depth + camera path; only `pointCloud3d` / `surface3d` are valid there. Full 3D API: [`docs/api/3d.md`](./3d.md).
 - **Sampling (cartesian)**: `sampling?: 'none' | 'lttb' | 'average' | 'max' | 'min'`, `samplingThreshold?: number` (default 5000). Zoom-aware resampling when data zoom enabled.
 - **`visible?: boolean`**: hide series from rendering and interaction. Legend toggle updates both.
@@ -316,6 +316,73 @@ Band / range series (`type: 'band'`) fills the region **between two curves that 
 - **Log axes**: same log projection as area/line; non-positive y/y1 on log Y discard that segment endpoint. Log auto-bounds scan **both** y channels for strictly positive values.
 
 Example: [`examples/band-range/`](../../examples/band-range/). Implementation: [`createBandRenderer.ts`](../../src/renderers/createBandRenderer.ts), [`band.wgsl`](../../src/shaders/band.wgsl), [`bandData.ts`](../../src/data/bandData.ts).
+
+### ErrorBarSeriesConfig
+
+Error bars (`type: 'errorBar'`) draw **per-point high/low whiskers around a measured center** — SciChart **HLC** style for scientific uncertainty, SEM/CI, and assay plots.
+
+**Not** the same as:
+
+| | `type: 'band'` | `type: 'ohlc'` | `type: 'errorBar'` |
+|--|----------------|----------------|---------------------|
+| Geometry | Continuous **fill** between two curves | Finance stem + open/close ticks | Discrete stem + whisker caps per sample |
+| Data | `{x,y,y1}` | OHLC open/close/high/low | Center `y` + absolute `high`/`low` (or relative `yError`) |
+| Use | Confidence envelope | Candles / OHLC bars | Per-x measurement uncertainty |
+
+- **`data`**: one of:
+  - Absolute HLC columns `{ x, y, high, low }` (preferred for streaming)
+  - Relative columns: `{ x, y, yError }` (symmetric) or `{ x, y, yErrorHigh, yErrorLow }` (asymmetric offsets; abs applied → `high = y + |eH|`, `low = y - |eL|`)
+  - `ReadonlyArray` of:
+    - tuples `[x, y, high, low]`
+    - absolute objects `{ x, y, high, low }`
+    - relative objects `{ x, y, yError }` or `{ x, y, yErrorHigh, yErrorLow }` (resolved to absolute at resolve time)
+    - `null` gaps
+  - Length = min of channels; mismatch warns. Relative forms resolve to **owned** absolute HLC (caller arrays never mutated).
+- **`errorMode?: 'both' | 'high' | 'low'`** (default `'both'`):
+  - `both` — stem low→high, both caps
+  - `high` — stem y→high, high cap only
+  - `low` — stem low→y, low cap only
+- **`direction?: 'vertical' | 'horizontal'`** (default `'vertical'`). Horizontal reinterprets `high`/`low` as absolute **X** extents (stem along X at `y`; category/sample axis is **Y**). Remap data when switching direction (centers on Y, whiskers on X).
+- **`capWidth?: number | string`**: whisker tip-to-tip length.
+  - **number**: CSS px (converted to domain along the **cap** axis — X when vertical, Y when horizontal)
+  - **percent string** (e.g. `'40%'`): fraction of **category step** — min positive **Δx** for vertical, min positive **Δy** for horizontal
+  - Default `'40%'`. Pure zoom recomputes domain length into uniforms without re-uploading instances.
+- **`itemStyle?: { color?, borderWidth?, opacity? }`**: stem + whisker stroke. `borderWidth` is CSS px (default **1.5**). Color falls back to `series.color` → palette.
+- **`drawWhiskers?: boolean`** (default `true`), **`drawConnector?: boolean`** (default `true` — the stem).
+- **`showCenter?: boolean`** (default `false`) + **`symbolSize?: number`** (default 6): optional center marker. Prefer overlaying a separate scatter/line for the SciChart dual-series pattern.
+- **`sampling`**: **`'none'` only**. Other modes warn and are ignored (error bars are sparse science series; no LTTB / GPU line decimation).
+- **Null / NaN**: skip sample if `y` non-finite, or if required ends are non-finite for the active `errorMode` (`both` needs both ends; `high` needs high; `low` needs low). `low > high` swaps with a one-shot warn.
+- **Axis auto-bounds**: vertical — X from finite `x`, Y from finite `y`/`high`/`low`. Horizontal — X from `x`/`high`/`low`, Y from `y`. Bounds reuse on `setOption` is direction-keyed (vertical↔horizontal toggles recompute).
+- **Tooltip / hit-test**: stem + caps (CSS-px pad). `TooltipParams`: `value: [x, y]` plus `high`, `low`, optional `yErrorHigh`/`yErrorLow`. Hit priority: pie → candle/ohlc → **errorBar** → nearest cartesian → heatmap. Multi-axis: hit uses the series `yAxis` scale.
+- **`appendData`**: supported with the same HLC / relative / tuple / relative-object shapes. FIFO `maxPoints` works like band.
+- **Draw order**: respects `series[]` order among peers; typical pattern places `errorBar` **before** a mean `line`/`scatter` so markers sit on top.
+- **GPU**: instanced stem + caps (+ optional center) via `errorBar.wgsl`. Domain pack + affine uniforms; zoom/pan without re-upload when data identity is stable. **Horizontal** packs `high`/`low` relative to the same packing origin as `x`. **Stem thickness** is domain **X** (vertical) / **Y** (horizontal); **cap thickness** uses the opposite axis (OHLC lesson — never reuse domain-X as Y thickness).
+
+```ts
+// Absolute HLC + companion mean line (recommended dual-series pattern)
+series: [
+  {
+    type: 'errorBar',
+    name: 'Assay ±SEM',
+    data: { x: doses, y: means, high: highs, low: lows },
+    itemStyle: { color: '#38bdf8', borderWidth: 2 },
+    capWidth: '40%',
+    errorMode: 'both',
+    showCenter: true,
+    symbolSize: 8,
+  },
+  {
+    type: 'line',
+    name: 'Mean',
+    data: { x: doses, y: means },
+    lineStyle: { color: '#38bdf8', width: 2 },
+    sampling: 'none',
+  },
+]
+// Relative SEM: data: { x, y: means, yError: sems }
+```
+
+Example: [`examples/error-bars/`](../../examples/error-bars/). Implementation: [`createErrorBarRenderer.ts`](../../src/renderers/createErrorBarRenderer.ts), [`errorBar.wgsl`](../../src/shaders/errorBar.wgsl), [`errorBarData.ts`](../../src/data/errorBarData.ts), [`errorBarGeometry.ts`](../../src/renderers/errorBarGeometry.ts).
 
 ### PieSeriesConfig
 

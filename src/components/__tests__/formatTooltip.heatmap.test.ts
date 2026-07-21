@@ -17,6 +17,9 @@ describe('formatTooltip heatmap z', () => {
     expect(html).toMatch(/-42\.5|-42\.50/);
     expect(html).toContain('x=');
     expect(html).toContain('y=');
+    // Trusted secondary span must be real HTML, not escaped entities.
+    expect(html).toContain('<span style="opacity:0.7">');
+    expect(html).not.toContain('&lt;span');
   });
 
   it('formatTooltipAxis shows z for heatmap rows mixed with line', () => {
@@ -42,6 +45,48 @@ describe('formatTooltip heatmap z', () => {
     expect(html).toContain('Heat');
     expect(html).toMatch(/\b12\b/);
     expect(html).toContain('x=');
+    expect(html).toContain('<span style="opacity:0.7">');
+    expect(html).not.toContain('&lt;span');
+  });
+});
+
+describe('formatTooltip errorBar high/low', () => {
+  it('formatTooltipItem shows center with muted high/low span (real HTML)', () => {
+    const params: TooltipParams = {
+      seriesName: 'Assay ±SEM',
+      seriesIndex: 0,
+      dataIndex: 1,
+      value: [2, 5.45],
+      color: '#38bdf8',
+      high: 5.74,
+      low: 5.16,
+    };
+    const html = formatTooltipItem(params);
+    expect(html).toContain('Assay');
+    expect(html).toContain('5.45');
+    expect(html).toContain('5.74');
+    expect(html).toContain('5.16');
+    expect(html).toContain('<span style="opacity:0.7">');
+    expect(html).not.toContain('&lt;span');
+  });
+
+  it('formatTooltipAxis includes errorBar high/low muted span', () => {
+    const params: TooltipParams[] = [
+      {
+        seriesName: 'EB',
+        seriesIndex: 0,
+        dataIndex: 0,
+        value: [0, 10],
+        color: '#fff',
+        high: 12,
+        low: 8,
+      },
+    ];
+    const html = formatTooltipAxis(params);
+    expect(html).toContain('EB');
+    expect(html).toContain('10');
+    expect(html).toContain('<span style="opacity:0.7">');
+    expect(html).not.toContain('&lt;span');
   });
 });
 

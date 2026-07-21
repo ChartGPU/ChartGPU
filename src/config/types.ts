@@ -15,6 +15,7 @@ export type SeriesType =
   | 'ohlc'
   | 'heatmap'
   | 'band'
+  | 'errorBar'
   | 'pointCloud3d'
   | 'surface3d';
 
@@ -900,6 +901,122 @@ export interface Surface3DSeriesConfig {
   readonly contours?: Surface3DContourOptions;
 }
 
+/**
+ * Absolute HLC sample (SciChart HlcDataSeries parity).
+ * `high` / `low` are data-space endpoints (resolver swaps if low > high).
+ */
+export type ErrorBarPointTuple = readonly [x: number, y: number, high: number, low: number];
+
+export type ErrorBarPointObject = Readonly<{
+  readonly x: number;
+  readonly y: number;
+  readonly high: number;
+  readonly low: number;
+}>;
+
+/**
+ * Columnar absolute HLC (preferred for streaming).
+ * Length = min(x, y, high, low); mismatch warns.
+ */
+export type ErrorBarHlcArraysData = Readonly<{
+  readonly x: ArrayLike<number>;
+  readonly y: ArrayLike<number>;
+  readonly high: ArrayLike<number>;
+  readonly low: ArrayLike<number>;
+}>;
+
+/**
+ * Relative error convenience forms — resolved to absolute high/low:
+ * - yError: symmetric → high = y + |e|, low = y - |e|
+ * - yErrorHigh / yErrorLow: asymmetric offsets (abs applied)
+ */
+export type ErrorBarRelativeArraysData =
+  | Readonly<{
+      readonly x: ArrayLike<number>;
+      readonly y: ArrayLike<number>;
+      readonly yError: ArrayLike<number> | number;
+    }>
+  | Readonly<{
+      readonly x: ArrayLike<number>;
+      readonly y: ArrayLike<number>;
+      readonly yErrorHigh: ArrayLike<number> | number;
+      readonly yErrorLow: ArrayLike<number> | number;
+    }>;
+
+/** Accepted error-bar data formats. */
+export type ErrorBarSeriesData =
+  | ReadonlyArray<ErrorBarPointTuple | ErrorBarPointObject | null>
+  | ErrorBarHlcArraysData
+  | ErrorBarRelativeArraysData;
+
+export type ErrorBarMode = 'both' | 'high' | 'low';
+export type ErrorBarDirection = 'vertical' | 'horizontal';
+
+export interface ErrorBarItemStyleConfig {
+  /** Stem + whisker stroke color (CSS). Default: series color / theme palette. */
+  readonly color?: string;
+  /** Stroke width in CSS px. Default 1.5. */
+  readonly borderWidth?: number;
+  readonly opacity?: number;
+}
+
+/**
+ * Error bar series — per-point high/low whiskers around a center value.
+ * SciChart HLC-style; not band fill and not OHLC open/close ticks.
+ *
+ * Sampling is `'none'` only (sparse science series). Other modes warn + ignore.
+ */
+export interface ErrorBarSeriesConfig {
+  readonly type: 'errorBar';
+  readonly name?: string;
+  readonly yAxis?: string;
+  readonly visible?: boolean;
+  readonly data: ErrorBarSeriesData;
+
+  /** Shared color fallback when itemStyle.color omitted. */
+  readonly color?: string;
+
+  readonly itemStyle?: ErrorBarItemStyleConfig;
+
+  /**
+   * Whisker cap length.
+   * - number: CSS px
+   * - percent string: fraction of category spacing / mean Δx (vertical bars)
+   * Default: 40% of category step.
+   */
+  readonly capWidth?: number | string;
+
+  /** Which ends to draw. Default `'both'`. */
+  readonly errorMode?: ErrorBarMode;
+
+  /**
+   * `'vertical'` (default): high/low along Y at x.
+   * `'horizontal'`: high/low along X at y (SciChart EErrorDirection.Horizontal).
+   */
+  readonly direction?: ErrorBarDirection;
+
+  /** Draw end caps (whiskers). Default true. */
+  readonly drawWhiskers?: boolean;
+
+  /**
+   * Draw the stem connecting low↔high (SciChart drawConnector).
+   * Default true. If false and drawWhiskers true, only caps are drawn.
+   */
+  readonly drawConnector?: boolean;
+
+  /**
+   * Draw a center marker at (x, y). Default false.
+   * When true, uses a circle-like square marker with `symbolSize`.
+   */
+  readonly showCenter?: boolean;
+  readonly symbolSize?: number;
+
+  /**
+   * Sampling: `'none'` only. LTTB / ohlc / average not applicable — warn + ignore other modes.
+   */
+  readonly sampling?: 'none';
+}
+
 export type SeriesConfig =
   | LineSeriesConfig
   | AreaSeriesConfig
@@ -910,6 +1027,7 @@ export type SeriesConfig =
   | OhlcSeriesConfig
   | HeatmapSeriesConfig
   | BandSeriesConfig
+  | ErrorBarSeriesConfig
   | PointCloud3DSeriesConfig
   | Surface3DSeriesConfig;
 
@@ -926,6 +1044,7 @@ export interface TooltipParams {
    * - Band series: [x, y] (lower/first curve); see also optional `y1` / `yMid` / `yRange`
    * - Candlestick series: [timestamp, open, close, low, high]
    * - Heatmap: [cellCenterX, cellCenterY] (see also optional `z`)
+   * - Error bar: [x, y] center; see optional `high` / `low` / `yErrorHigh` / `yErrorLow`
    */
   readonly value: readonly [number, number] | readonly [number, number, number, number, number];
   readonly color: string;
@@ -943,6 +1062,14 @@ export interface TooltipParams {
   readonly yMid?: number;
   /** Band series: absolute range `|y1 - y|` when both are finite. */
   readonly yRange?: number;
+  /** Error bar: absolute high endpoint. */
+  readonly high?: number;
+  /** Error bar: absolute low endpoint. */
+  readonly low?: number;
+  /** Error bar: derived `high - y` when both finite. */
+  readonly yErrorHigh?: number;
+  /** Error bar: derived `y - low` when both finite. */
+  readonly yErrorLow?: number;
 }
 
 /**

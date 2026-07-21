@@ -18,6 +18,7 @@ import { createCandlestickRenderer } from '../../../renderers/createCandlestickR
 import { createOhlcRenderer } from '../../../renderers/createOhlcRenderer';
 import { createBarRenderer } from '../../../renderers/createBarRenderer';
 import { createBandRenderer } from '../../../renderers/createBandRenderer';
+import { createErrorBarRenderer } from '../../../renderers/createErrorBarRenderer';
 import { createDecimationCompute } from '../../../renderers/createDecimationCompute';
 import type { PipelineCache } from '../../PipelineCache';
 import type { ResolvedSeriesConfig } from '../../../config/OptionResolver';
@@ -52,6 +53,7 @@ interface RendererPoolState {
   readonly candlestickRenderers: ReadonlyArray<ReturnType<typeof createCandlestickRenderer>>;
   readonly ohlcRenderers: ReadonlyArray<ReturnType<typeof createOhlcRenderer>>;
   readonly bandRenderers: ReadonlyArray<ReturnType<typeof createBandRenderer>>;
+  readonly errorBarRenderers: ReadonlyArray<ReturnType<typeof createErrorBarRenderer>>;
   /**
    * Per-line-series GPU decimation compute instances. Sized 1:1 with
    * `lineRenderers`. Ineligible series simply never call `.prepare()`.
@@ -134,6 +136,11 @@ interface RendererPool {
   ensureOhlcRendererCount(count: number): void;
 
   /**
+   * Ensures error-bar renderer count matches the given count.
+   */
+  ensureErrorBarRendererCount(count: number): void;
+
+  /**
    * Ensures decimation compute count matches the given count. Kept in lock-step
    * with `ensureLineRendererCount` so `decimationComputes[i]` pairs with
    * `lineRenderers[i]`.
@@ -175,6 +182,7 @@ type RendererPoolNeeds = Readonly<{
   readonly band: number;
   readonly candlestick: number;
   readonly ohlc: number;
+  readonly errorBar: number;
   readonly decimation: number;
 }>;
 
@@ -196,6 +204,7 @@ function computeRendererPoolNeeds(series: ReadonlyArray<ResolvedSeriesConfig>): 
   let anyBand = false;
   let anyCandle = false;
   let anyOhlc = false;
+  let anyErrorBar = false;
   let anyDecimation = false;
 
   for (let i = 0; i < n; i++) {
@@ -231,6 +240,9 @@ function computeRendererPoolNeeds(series: ReadonlyArray<ResolvedSeriesConfig>): 
       case 'ohlc':
         anyOhlc = true;
         break;
+      case 'errorBar':
+        anyErrorBar = true;
+        break;
       case 'bar':
         // Singleton bar renderer — no pool growth.
         break;
@@ -250,6 +262,7 @@ function computeRendererPoolNeeds(series: ReadonlyArray<ResolvedSeriesConfig>): 
     band: anyBand ? n : 0,
     candlestick: anyCandle ? n : 0,
     ohlc: anyOhlc ? n : 0,
+    errorBar: anyErrorBar ? n : 0,
     decimation: anyDecimation ? n : 0,
   };
 }
@@ -272,6 +285,7 @@ export function ensureRendererPoolsForSeries(
   pool.ensureBandRendererCount(needs.band);
   pool.ensureCandlestickRendererCount(needs.candlestick);
   pool.ensureOhlcRendererCount(needs.ohlc);
+  pool.ensureErrorBarRendererCount(needs.errorBar);
   return needs;
 }
 
@@ -305,6 +319,7 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
   const bandRenderers: Array<ReturnType<typeof createBandRenderer>> = [];
   const candlestickRenderers: Array<ReturnType<typeof createCandlestickRenderer>> = [];
   const ohlcRenderers: Array<ReturnType<typeof createOhlcRenderer>> = [];
+  const errorBarRenderers: Array<ReturnType<typeof createErrorBarRenderer>> = [];
   const decimationComputes: Array<ReturnType<typeof createDecimationCompute>> = [];
 
   // Bar renderer is a singleton (one instance handles all bar series)
@@ -470,6 +485,22 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
     }
   }
 
+  function ensureErrorBarRendererCount(count: number): void {
+    while (errorBarRenderers.length > count) {
+      const r = errorBarRenderers.pop();
+      r?.dispose();
+    }
+    while (errorBarRenderers.length < count) {
+      errorBarRenderers.push(
+        createErrorBarRenderer(device, {
+          targetFormat,
+          pipelineCache,
+          sampleCount,
+        })
+      );
+    }
+  }
+
   /**
    * Ensures decimation compute count matches the given count.
    * Every line series gets a paired slot so decimationComputes[i] ↔ lineRenderers[i].
@@ -507,6 +538,7 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
         bandRenderers,
         candlestickRenderers,
         ohlcRenderers,
+        errorBarRenderers,
         decimationComputes,
         barRenderer,
       };
@@ -573,6 +605,12 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
     }
     ohlcRenderers.length = 0;
 
+    // Dispose error-bar renderers
+    for (let i = 0; i < errorBarRenderers.length; i++) {
+      errorBarRenderers[i].dispose();
+    }
+    errorBarRenderers.length = 0;
+
     // Dispose decimation compute instances
     for (let i = 0; i < decimationComputes.length; i++) {
       decimationComputes[i].dispose();
@@ -593,6 +631,7 @@ export function createRendererPool(config: RendererPoolConfig): RendererPool {
     ensureBandRendererCount,
     ensureCandlestickRendererCount,
     ensureOhlcRendererCount,
+    ensureErrorBarRendererCount,
     ensureDecimationComputeCount,
     getState,
     dispose,

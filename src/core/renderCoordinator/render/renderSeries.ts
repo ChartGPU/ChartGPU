@@ -18,6 +18,7 @@ import type {
   ResolvedHeatmapSeriesConfig,
   ResolvedBandSeriesConfig,
   ResolvedOhlcSeriesConfig,
+  ResolvedErrorBarSeriesConfig,
 } from '../../../config/OptionResolver';
 import type { DataPoint } from '../../../config/types';
 import type { LinearScale } from '../../../utils/scales';
@@ -32,6 +33,7 @@ import type { HeatmapRenderer } from '../../../renderers/createHeatmapRenderer';
 import type { CandlestickRenderer } from '../../../renderers/createCandlestickRenderer';
 import type { OhlcRenderer } from '../../../renderers/createOhlcRenderer';
 import type { BandRenderer } from '../../../renderers/createBandRenderer';
+import type { ErrorBarRenderer } from '../../../renderers/createErrorBarRenderer';
 import type { ReferenceLineRenderer } from '../../../renderers/createReferenceLineRenderer';
 import type { AnnotationMarkerRenderer } from '../../../renderers/createAnnotationMarkerRenderer';
 import type { DecimationCompute } from '../../../renderers/createDecimationCompute';
@@ -65,6 +67,7 @@ export interface SeriesRenderers {
   readonly bandRenderers: ReadonlyArray<BandRenderer>;
   readonly candlestickRenderers: ReadonlyArray<CandlestickRenderer>;
   readonly ohlcRenderers: ReadonlyArray<OhlcRenderer>;
+  readonly errorBarRenderers: ReadonlyArray<ErrorBarRenderer>;
   /** 1:1 with lineRenderers; unused slots are no-ops until prepared. */
   readonly decimationComputes: ReadonlyArray<DecimationCompute>;
 }
@@ -729,6 +732,13 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
         renderers.ohlcRenderers[i].prepare(ohlc, ohlc.data, xScale, getYScale(s), gridArea);
         break;
       }
+      case 'errorBar': {
+        // Private instance pack — not GPU-decimation eligible (D10).
+        const eb = s as ResolvedErrorBarSeriesConfig;
+        renderers.errorBarRenderers[i]?.prepare(eb, eb.data, xScale, getYScale(s), gridArea);
+        gpuSeriesKindByIndex[i] = 'other';
+        break;
+      }
       case 'pointCloud3d':
       case 'surface3d': {
         // 3D series are rendered only by createRenderCoordinator3D — never on 2D path.
@@ -918,6 +928,28 @@ export function renderSeries(
           } else {
             renderers.bandRenderers[originalIndex]?.render(mainPass);
           }
+        }
+      }
+      mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+    }
+  }
+
+  // Error bars — typically under lines/scatter (D9: respect series order among peers;
+  // draw after band/heatmap underlays, before line strokes so dual-series mean line sits on top).
+  if (plotScissor.w > 0 && plotScissor.h > 0) {
+    let anyErrorBar = false;
+    for (let idx = 0; idx < visibleSeriesForRender.length; idx++) {
+      if (visibleSeriesForRender[idx]!.series.type === 'errorBar') {
+        anyErrorBar = true;
+        break;
+      }
+    }
+    if (anyErrorBar) {
+      mainPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+      for (let idx = 0; idx < visibleSeriesForRender.length; idx++) {
+        const { series, originalIndex } = visibleSeriesForRender[idx]!;
+        if (series.type === 'errorBar') {
+          renderers.errorBarRenderers[originalIndex]?.render(mainPass);
         }
       }
       mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);

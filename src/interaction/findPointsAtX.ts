@@ -1,9 +1,10 @@
-import type { BandSeriesData, DataPoint, CartesianSeriesData } from '../config/types';
+import type { BandSeriesData, DataPoint, CartesianSeriesData, ErrorBarSeriesData } from '../config/types';
 import type { ResolvedBarSeriesConfig, ResolvedSeriesConfig } from '../config/OptionResolver';
 import type { LinearScale } from '../utils/scales';
 import { computeBarLayoutPx } from './findNearestPoint';
 import { getPointCount, getX, getY, getSize } from '../data/cartesianData';
 import { getBandLength, getBandPoint } from '../data/bandData';
+import { getErrorBarLength, getErrorBarPoint } from '../data/errorBarData';
 
 export type PointsAtXMatch = Readonly<{
   seriesIndex: number;
@@ -158,6 +159,36 @@ export function findPointsAtX(
 
     // Skip invisible series.
     if (seriesConfig.visible === false) continue;
+
+    // Error bar: nearest sample by domain x (axis rollover); value is center y.
+    if (seriesConfig.type === 'errorBar') {
+      const ebData = seriesConfig.data as ErrorBarSeriesData;
+      const en = getErrorBarLength(ebData);
+      if (en === 0) continue;
+      let bestI = -1;
+      let bestDx = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < en; i++) {
+        const p = getErrorBarPoint(ebData, i);
+        if (!p || !Number.isFinite(p.x)) continue;
+        const sx = xScale.scale(p.x);
+        if (!Number.isFinite(sx)) continue;
+        const dx = Math.abs(sx - xValue);
+        if (dx < bestDx || (dx === bestDx && (bestI < 0 || i < bestI))) {
+          if (dx > maxDx) continue;
+          bestDx = dx;
+          bestI = i;
+        }
+      }
+      if (bestI >= 0) {
+        const p = getErrorBarPoint(ebData, bestI)!;
+        matches.push({
+          seriesIndex: s,
+          dataIndex: bestI,
+          point: [p.x, p.y],
+        });
+      }
+      continue;
+    }
 
     // Band: nearest sample by domain x (axis rollover).
     if (seriesConfig.type === 'band') {

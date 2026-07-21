@@ -125,6 +125,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
       heatmapRenderers: [],
       candlestickRenderers: [],
       ohlcRenderers: [],
+      errorBarRenderers: [],
       decimationComputes: [
         {
           prepare: decimationPrepare,
@@ -221,6 +222,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
       heatmapRenderers: [],
       candlestickRenderers: [],
       ohlcRenderers: [],
+      errorBarRenderers: [],
       decimationComputes: [
         {
           prepare: decimationPrepare,
@@ -308,6 +310,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         heatmapRenderers: [],
         candlestickRenderers: [],
         ohlcRenderers: [],
+        errorBarRenderers: [],
         decimationComputes: [
           {
             prepare: decimationPrepare,
@@ -414,6 +417,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         heatmapRenderers: [],
         candlestickRenderers: [],
         ohlcRenderers: [],
+        errorBarRenderers: [],
         decimationComputes: [
           {
             prepare: decimationPrepare,
@@ -530,6 +534,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         heatmapRenderers: [],
         candlestickRenderers: [],
         ohlcRenderers: [],
+        errorBarRenderers: [],
         decimationComputes: [
           {
             prepare: decimationPrepare,
@@ -650,6 +655,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         heatmapRenderers: [],
         candlestickRenderers: [],
         ohlcRenderers: [],
+        errorBarRenderers: [],
         decimationComputes: [
           {
             prepare: decimationPrepare,
@@ -730,6 +736,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         heatmapRenderers: [],
         candlestickRenderers: [],
         ohlcRenderers: [],
+        errorBarRenderers: [],
         decimationComputes: [
           {
             prepare: vi.fn(() => 8),
@@ -820,6 +827,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         heatmapRenderers: [],
         candlestickRenderers: [],
         ohlcRenderers: [],
+        errorBarRenderers: [],
         decimationComputes: [
           {
             prepare: decimationPrepare,
@@ -907,6 +915,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         heatmapRenderers: [],
         candlestickRenderers: [],
         ohlcRenderers: [],
+        errorBarRenderers: [],
         decimationComputes: [
           {
             prepare: vi.fn(),
@@ -1003,6 +1012,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         heatmapRenderers: [],
         candlestickRenderers: [],
         ohlcRenderers: [],
+        errorBarRenderers: [],
         decimationComputes: [],
       },
       {
@@ -1090,6 +1100,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         heatmapRenderers: [],
         candlestickRenderers: [],
         ohlcRenderers: [],
+        errorBarRenderers: [],
         decimationComputes: [
           {
             prepare: decimationPrepare,
@@ -1278,6 +1289,7 @@ describe('prepareSeries modular ring → line prepare (issue 0.1 / review 8)', (
         heatmapRenderers: [],
         candlestickRenderers: [],
         ohlcRenderers: [],
+        errorBarRenderers: [],
         decimationComputes: [],
       },
       {
@@ -1348,6 +1360,7 @@ describe('prepareSeries modular ring → line prepare (issue 0.1 / review 8)', (
         heatmapRenderers: [],
         candlestickRenderers: [],
         ohlcRenderers: [],
+        errorBarRenderers: [],
         decimationComputes: [
           {
             prepare: decimationPrepare,

@@ -22,11 +22,12 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 
 ### Configuration
 - **Options overview**: [options.md](options.md#chartgpuoptions)
-- **Series configuration** (line, area, bar, scatter, pie, candlestick, ohlc, heatmap, band): [options.md](options.md#series-configuration)
+- **Series configuration** (line, area, bar, scatter, pie, candlestick, ohlc, heatmap, band, errorBar): [options.md](options.md#series-configuration)
 - **OHLC bars** (`type: 'ohlc'`, thin stem + open/close ticks; same `OHLCDataPoint` as candlestick): [options.md](options.md#ohlcseriesconfig), [`examples/ohlc-bars/`](../../examples/ohlc-bars/)
 - **Scatter density mode** (scatter series `mode: 'density'` — screen-space point-cloud bins, **not** a data-grid heatmap): [src/config/types.ts](../../src/config/types.ts), [src/renderers/createScatterDensityRenderer.ts](../../src/renderers/createScatterDensityRenderer.ts), [`examples/scatter-density-1m/`](../../examples/scatter-density-1m/)
 - **Uniform heatmap / spectrogram** (`type: 'heatmap'`): [options.md](options.md#heatmapseriesconfig), streaming via `chart.updateHeatmap` ([heatmapStream.ts](../../src/data/heatmapStream.ts)), [src/renderers/createHeatmapRenderer.ts](../../src/renderers/createHeatmapRenderer.ts), [src/shaders/heatmap.wgsl](../../src/shaders/heatmap.wgsl), [src/utils/heatmapLayout.ts](../../src/utils/heatmapLayout.ts), [src/utils/colormap.ts](../../src/utils/colormap.ts), [`examples/heatmap-spectrogram/`](../../examples/heatmap-spectrogram/)
 - **Band / range series** (`type: 'band'`, fill between `y` and `y1`): [options.md](options.md#bandseriesconfig), [src/renderers/createBandRenderer.ts](../../src/renderers/createBandRenderer.ts), [src/shaders/band.wgsl](../../src/shaders/band.wgsl), [src/data/bandData.ts](../../src/data/bandData.ts), [`examples/band-range/`](../../examples/band-range/)
+- **Error bars** (`type: 'errorBar'`, HLC whiskers around center; not band fill / not OHLC): [options.md](options.md#errorbarseriesconfig), [src/renderers/createErrorBarRenderer.ts](../../src/renderers/createErrorBarRenderer.ts), [src/shaders/errorBar.wgsl](../../src/shaders/errorBar.wgsl), [src/data/errorBarData.ts](../../src/data/errorBarData.ts), [`examples/error-bars/`](../../examples/error-bars/)
 - **Axis configuration**: [options.md](options.md#axis-configuration)
 - **Grid lines configuration**: [options.md](options.md#grid-lines-configuration)
 - **Data zoom (pan/zoom)**: [options.md](options.md#data-zoom-configuration)

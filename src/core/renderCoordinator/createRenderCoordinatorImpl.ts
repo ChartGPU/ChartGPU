@@ -121,6 +121,8 @@ import {
 } from '../../interaction/findCandlestick';
 import { findPieSlice } from '../../interaction/findPieSlice';
 import { resolveHeatmapTooltipParams } from '../../interaction/heatmapTooltip';
+import { findErrorBarAtPointer } from '../../interaction/findErrorBar';
+import { getErrorBarPoint } from '../../data/errorBarData';
 import { createAxisScale } from '../../utils/scales';
 import type { ContinuousScale, LinearScale } from '../../utils/scales';
 import { parseCssColorToGPUColor } from '../../utils/colors';
@@ -1984,6 +1986,25 @@ export function createRenderCoordinator(
         ...(yRange !== undefined ? { yRange } : {}),
       };
     }
+    if (s?.type === 'errorBar') {
+      const ep = getErrorBarPoint(s.data, dataIndex);
+      const y0 = ep && Number.isFinite(ep.y) ? ep.y : y;
+      const high = ep && Number.isFinite(ep.high) ? ep.high : undefined;
+      const low = ep && Number.isFinite(ep.low) ? ep.low : undefined;
+      const yErrorHigh = high !== undefined && Number.isFinite(y0) ? high - y0 : undefined;
+      const yErrorLow = low !== undefined && Number.isFinite(y0) ? y0 - low : undefined;
+      return {
+        seriesName: s?.name ?? '',
+        seriesIndex,
+        dataIndex,
+        value: [ep && Number.isFinite(ep.x) ? ep.x : x, y0],
+        color: s.itemStyle?.color ?? s.color ?? '#888',
+        ...(high !== undefined ? { high } : {}),
+        ...(low !== undefined ? { low } : {}),
+        ...(yErrorHigh !== undefined ? { yErrorHigh } : {}),
+        ...(yErrorLow !== undefined ? { yErrorLow } : {}),
+      };
+    }
     return {
       seriesName: s?.name ?? '',
       seriesIndex,
@@ -1991,6 +2012,53 @@ export function createRenderCoordinator(
       value: [x, y],
       color: s?.color ?? '#888',
     };
+  };
+
+  const buildErrorBarTooltipParams = (
+    seriesIndex: number,
+    dataIndex: number,
+    point: { readonly x: number; readonly y: number; readonly high: number; readonly low: number }
+  ): TooltipParams => {
+    const s = currentOptions.series[seriesIndex];
+    const yErrorHigh = Number.isFinite(point.high) && Number.isFinite(point.y) ? point.high - point.y : undefined;
+    const yErrorLow = Number.isFinite(point.low) && Number.isFinite(point.y) ? point.y - point.low : undefined;
+    const color = s && s.type === 'errorBar' ? (s.itemStyle?.color ?? s.color ?? '#888') : (s?.color ?? '#888');
+    return {
+      seriesName: s?.name ?? '',
+      seriesIndex,
+      dataIndex,
+      value: [point.x, point.y],
+      color,
+      high: point.high,
+      low: point.low,
+      ...(yErrorHigh !== undefined ? { yErrorHigh } : {}),
+      ...(yErrorLow !== undefined ? { yErrorLow } : {}),
+    };
+  };
+
+  const findErrorBarAtPointerTooltip = (
+    series: ResolvedChartGPUOptions['series'],
+    gridX: number,
+    gridY: number,
+    interactionScales: NonNullable<ReturnType<typeof computeInteractionScalesGridCssPx>>
+  ): { params: TooltipParams; seriesIndex: number } | null => {
+    // Prefer later series (z-order); use each series' yAxis scale for multi-axis.
+    for (let i = series.length - 1; i >= 0; i--) {
+      const s = series[i]!;
+      if (s.type !== 'errorBar' || s.visible === false) continue;
+      const yScale = interactionScales.yScales.get(s.yAxis || 'y') ?? interactionScales.yScales.values().next().value;
+      if (!yScale) continue;
+      const m = findErrorBarAtPointer([{ seriesIndex: i, series: s }], gridX, gridY, interactionScales.xScale, yScale, {
+        width: interactionScales.plotWidthCss,
+        height: interactionScales.plotHeightCss,
+      });
+      if (!m) continue;
+      return {
+        params: buildErrorBarTooltipParams(m.seriesIndex, m.dataIndex, m.point),
+        seriesIndex: m.seriesIndex,
+      };
+    }
+    return null;
   };
 
   const buildCandlestickTooltipParams = (
@@ -2503,6 +2571,9 @@ export function createRenderCoordinator(
             ...baseline,
             data: sliceBandByX(cache.data as BandSeriesData, visibleX.min, visibleX.max),
           };
+        } else if (baseline.type === 'errorBar') {
+          // sampling 'none' only — keep full HLC; zoom via scales.
+          next[i] = baseline;
         } else {
           next[i] = {
             ...baseline,
@@ -2523,6 +2594,8 @@ export function createRenderCoordinator(
           ...baseline,
           data: sliceBandByX(baseline.data, visibleX.min, visibleX.max),
         };
+      } else if (baseline.type === 'errorBar') {
+        next[i] = baseline;
       } else {
         next[i] = {
           ...baseline,
@@ -3572,6 +3645,10 @@ export function createRenderCoordinator(
       for (let bi = 0; bi < bands.length; bi++) {
         bands[bi]!.invalidateGeometry();
       }
+      const errorBars = pool.errorBarRenderers;
+      for (let ei = 0; ei < errorBars.length; ei++) {
+        errorBars[ei]!.invalidateGeometry();
+      }
     }
 
     // Keep `interactionX` in sync with real pointer movement (domain units).
@@ -3897,6 +3974,25 @@ export function createRenderCoordinator(
                     showTooltipInternal(tooltipX, tooltipY, content, candlestickResult.params);
                   }
                 } else {
+                  hideTooltip();
+                }
+                return;
+              }
+
+              const errorBarResult = findErrorBarAtPointerTooltip(
+                seriesForRender,
+                effectivePointer.gridX,
+                effectivePointer.gridY,
+                interactionScales
+              );
+              if (errorBarResult) {
+                const content = formatter
+                  ? (formatter as (p: TooltipParams) => string)(errorBarResult.params)
+                  : formatTooltipItem(errorBarResult.params);
+                if (content && shouldUpdateTooltip(tooltipCache, content, containerX, containerY)) {
+                  updateTooltipCache(tooltipCache, content, containerX, containerY);
+                  showTooltipInternal(containerX, containerY, content, errorBarResult.params);
+                } else if (!content) {
                   hideTooltip();
                 }
                 return;

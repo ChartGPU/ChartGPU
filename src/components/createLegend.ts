@@ -28,6 +28,12 @@ const getSeriesColor = (series: LegendSeriesInput, index: number, theme: ThemeCo
     if (up) return up;
   }
 
+  // Error bars: itemStyle.color when series.color omitted.
+  if (series.type === 'errorBar') {
+    const c = (series as { itemStyle?: { color?: string } }).itemStyle?.color?.trim();
+    if (c) return c;
+  }
+
   const palette = theme.colorPalette;
   if (palette.length > 0) return palette[index % palette.length] ?? '#000000';
   return '#000000';
