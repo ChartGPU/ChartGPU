@@ -152,6 +152,95 @@ describe('appendFlush module ownership', () => {
     expect(recomputeRuntimeBaseSeries).toHaveBeenCalled();
   });
 
+  it('ohlc append + maxPoints FIFO grows runtime OHLC, windows, and updates last close (multi-layer finance)', () => {
+    const recomputeRuntimeBaseSeries = vi.fn();
+    const extendBoundsWithOHLCDataPoints = vi.fn((_b: unknown, points: ReadonlyArray<unknown>) => ({
+      xMin: 0,
+      xMax: points.length,
+      yMin: 0,
+      yMax: 200,
+    }));
+    // Seed three bars; append two more with maxPoints=4 → drop 1 prefix, keep last 4.
+    const owned: Array<[number, number, number, number, number]> = [
+      [0, 10, 11, 9, 12],
+      [1, 11, 12, 10, 13],
+      [2, 12, 13, 11, 14],
+    ];
+    const deps = baseDeps({
+      recomputeRuntimeBaseSeries,
+      extendBoundsWithOHLCDataPoints: extendBoundsWithOHLCDataPoints as any,
+      gpuSeriesKindByIndex: ['other'],
+      runtimeRawDataByIndex: [owned],
+      runtimeRawBoundsByIndex: [{ xMin: 0, xMax: 2, yMin: 9, yMax: 14 }],
+      normalizeMaxPoints: (v) => (typeof v === 'number' ? v : null),
+      planMaxPointsWindow: (prevLen: number, newCount: number, maxPoints: number | null | undefined) => {
+        const max = maxPoints ?? 1000;
+        const total = prevLen + newCount;
+        if (total <= max) {
+          return {
+            didWindow: false,
+            dropPrevCount: 0,
+            keepNewCount: newCount,
+            newSrcOffset: 0,
+            isRing: false,
+            ringCapacity: 0,
+          };
+        }
+        const drop = total - max;
+        const dropPrev = Math.min(prevLen, drop);
+        const keepNew = newCount - Math.max(0, drop - prevLen);
+        return {
+          didWindow: true,
+          dropPrevCount: dropPrev,
+          keepNewCount: Math.max(0, keepNew),
+          newSrcOffset: Math.max(0, newCount - keepNew),
+          isRing: false,
+          ringCapacity: 0,
+        };
+      },
+      currentOptions: {
+        series: [
+          {
+            type: 'ohlc',
+            sampling: 'none',
+            samplingThreshold: 0,
+            data: owned,
+            rawData: owned,
+            rawBounds: { xMin: 0, xMax: 2, yMin: 9, yMax: 14 },
+            itemStyle: { upColor: '#0f0', downColor: '#f00' },
+            priceLabel: { show: true, showLine: true },
+            yAxis: 'y',
+          } as any,
+        ],
+        autoScroll: false,
+        xAxis: {},
+      } as any,
+    });
+    deps.pendingAppendByIndex.set(0, [
+      {
+        points: [
+          [3, 13, 14, 12, 15],
+          [4, 14, 100, 13, 101], // last close = 100 for priceLabel
+        ] as any,
+        maxPoints: 4,
+      },
+    ]);
+    deps.runtimeBaseSeries = deps.currentOptions.series as any;
+    deps.renderSeries = deps.currentOptions.series as any;
+
+    const flush = createAppendFlush(() => deps);
+    expect(flush()).toBe(true);
+
+    // FIFO windowed to 4 bars
+    expect(owned.length).toBe(4);
+    // Dropped first seed bar (t=0); last close is new bar close
+    expect(owned[0]![0]).toBe(1);
+    expect(owned[owned.length - 1]![2]).toBe(100);
+    // OHLC path always recomputes base (not GPU-decimation in-place patch)
+    expect(recomputeRuntimeBaseSeries).toHaveBeenCalled();
+    expect(extendBoundsWithOHLCDataPoints).toHaveBeenCalled();
+  });
+
   it('band maxPoints FIFO drops aligned x/y/y1 triples', () => {
     const recomputeRuntimeBaseSeries = vi.fn();
     const cols = {

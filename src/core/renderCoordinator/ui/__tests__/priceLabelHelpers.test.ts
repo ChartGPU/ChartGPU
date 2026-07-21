@@ -201,6 +201,14 @@ describe('selectPriceLabelSeries', () => {
     expect(selectPriceLabelSeries(series)).toBe(1);
   });
 
+  it('accepts ohlc series for priceLabel ownership', () => {
+    const series: PriceLabelOwnershipSeries[] = [
+      { type: 'line', priceLabel: true },
+      { type: 'ohlc', priceLabel: { show: true } },
+    ];
+    expect(selectPriceLabelSeries(series)).toBe(1);
+  });
+
   it('skips visible: false and may pick later candle', () => {
     const series: PriceLabelOwnershipSeries[] = [
       { type: 'candlestick', visible: false, priceLabel: { show: true } },

@@ -52,6 +52,7 @@ function emptyRenderers(lines: LineRenderer[]): SeriesRenderers {
     pieRenderers: [],
     heatmapRenderers: [],
     candlestickRenderers: [],
+    ohlcRenderers: [],
     decimationComputes: [],
   };
 }

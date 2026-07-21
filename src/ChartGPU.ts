@@ -2,11 +2,7 @@ import { GPUContext } from './core/GPUContext';
 import { createRenderCoordinator } from './core/createRenderCoordinator';
 import type { RenderCoordinator, RenderCoordinatorCallbacks } from './core/createRenderCoordinator';
 import { resolveOptionsForChart } from './config/OptionResolver';
-import type {
-  ResolvedCandlestickSeriesConfig,
-  ResolvedChartGPUOptions,
-  ResolvedPieSeriesConfig,
-} from './config/OptionResolver';
+import type { ResolvedChartGPUOptions, ResolvedPieSeriesConfig } from './config/OptionResolver';
 import type {
   CartesianSeriesData,
   ChartGPUOptions,
@@ -23,7 +19,11 @@ import type { DataZoomSlider } from './components/createDataZoomSlider';
 import { createZoomResetButton } from './components/createZoomResetButton';
 import type { ZoomResetButton } from './components/createZoomResetButton';
 import type { ZoomRange, ZoomState } from './interaction/createZoomState';
-import { computeCandlestickBodyWidthRange, findCandlestick } from './interaction/findCandlestick';
+import {
+  computeCandlestickBodyWidthRange,
+  findCandlestick,
+  type FinanceOhlcHitSeriesConfig,
+} from './interaction/findCandlestick';
 import { findNearestPoint } from './interaction/findNearestPoint';
 import type { NearestPointMatch } from './interaction/findNearestPoint';
 import { findPieSlice } from './interaction/findPieSlice';
@@ -140,12 +140,12 @@ export type ZoomChangeSourceKind = 'user' | 'auto-scroll' | 'api';
  * Hit-test match for a chart element.
  */
 export type ChartGPUHitTestMatch = Readonly<{
-  readonly kind: 'cartesian' | 'candlestick' | 'pie' | 'pointCloud3d' | 'surface3d';
+  readonly kind: 'cartesian' | 'candlestick' | 'ohlc' | 'pie' | 'pointCloud3d' | 'surface3d';
   readonly seriesIndex: number;
   readonly dataIndex: number;
   /**
    * - cartesian: [x, y]
-   * - candlestick: still reported as [timestamp, open] at the ChartGPU wrapper (see hitTest)
+   * - candlestick / ohlc: still reported as [timestamp, close] at the ChartGPU wrapper (see hitTest)
    * - pie: [slice index proxy via value] (see pie hit path)
    * - pointCloud3d: [x, y, z]
    * - surface3d: [x, y, z] world hit (height along Y)
@@ -213,7 +213,7 @@ export interface ChartGPUInstance {
    * - `DataPoint[]`: Traditional array of point objects/tuples (existing behavior)
    * - `XYArraysData`: Separate x/y/size arrays (`{x: ArrayLike<number>, y: ArrayLike<number>, size?: ArrayLike<number>}`)
    * - `InterleavedXYData`: Typed array with [x0,y0,x1,y1,...] layout (e.g. `Float32Array`)
-   * - `OHLCDataPoint[]`: For candlestick series only
+   * - `OHLCDataPoint[]`: For candlestick and ohlc series
    *
    * Point count is derived via `getPointCount()` from `cartesianData.ts`:
    * - `XYArraysData`: min(x.length, y.length)
@@ -673,7 +673,7 @@ const computeGlobalBounds = (
       }
     }
 
-    if (seriesConfig.type === 'candlestick') {
+    if (seriesConfig.type === 'candlestick' || seriesConfig.type === 'ohlc') {
       // Fallback scan when resolver-provided bounds aren't present.
       const data = seriesConfig.data as ReadonlyArray<OHLCDataPoint>;
       for (let i = 0; i < data.length; i++) {
@@ -755,7 +755,7 @@ type PieHitTestMatch = Readonly<{
 }>;
 
 type CandlestickHitTestMatch = Readonly<{
-  kind: 'candlestick';
+  kind: 'candlestick' | 'ohlc';
   seriesIndex: number;
   dataIndex: number;
   point: OHLCDataPoint;
@@ -1008,7 +1008,7 @@ export async function createChartGPU(
       const bounds = coordinator.getRuntimeSeriesBounds(i);
       if (raw == null) {
         // New series or coordinator not yet seeded — fall back to options data.
-        if (s.type === 'candlestick') {
+        if (s.type === 'candlestick' || s.type === 'ohlc') {
           const ohlc = (s.data as ReadonlyArray<OHLCDataPoint>) ?? [];
           nextData[i] = ohlc.length === 0 ? [] : ohlc.slice();
           nextBounds[i] = (s as unknown as { rawBounds?: Bounds | null }).rawBounds ?? null;
@@ -1025,7 +1025,7 @@ export async function createChartGPU(
         nextOptionsRaw[i] = optionsRaw;
         continue;
       }
-      if (s.type === 'candlestick') {
+      if (s.type === 'candlestick' || s.type === 'ohlc') {
         const ohlc = raw as ReadonlyArray<OHLCDataPoint>;
         nextData[i] = ohlc.length === 0 ? [] : ohlc.slice();
       } else if (s.type === 'band') {
@@ -1062,7 +1062,7 @@ export async function createChartGPU(
           bandBounds(nextData[i] as unknown as BandSeriesData) ??
           (s as unknown as { rawBounds?: Bounds | null }).rawBounds ??
           null;
-      } else if (s.type === 'candlestick') {
+      } else if (s.type === 'candlestick' || s.type === 'ohlc') {
         nextBounds[i] =
           extendBoundsWithOHLCDataPoints(null, nextData[i] as ReadonlyArray<OHLCDataPoint>) ??
           (s as unknown as { rawBounds?: Bounds | null }).rawBounds ??
@@ -1177,7 +1177,7 @@ export async function createChartGPU(
         continue;
       }
 
-      if (s.type === 'candlestick') {
+      if (s.type === 'candlestick' || s.type === 'ohlc') {
         const raw = ((s as unknown as { rawData?: ReadonlyArray<OHLCDataPoint> }).rawData ??
           s.data) as ReadonlyArray<OHLCDataPoint>;
         const rawBounds = (s as unknown as { rawBounds?: Bounds | null }).rawBounds ?? null;
@@ -1276,7 +1276,7 @@ export async function createChartGPU(
     // Replace series `data` with chart-owned runtime data (pie / heatmap unchanged).
     runtimeHitTestSeriesCache = resolvedOptions.series.map((s, i) => {
       if (s.type === 'pie' || s.type === 'heatmap') return s;
-      if (s.type === 'candlestick') {
+      if (s.type === 'candlestick' || s.type === 'ohlc') {
         return {
           ...s,
           data: runtimeRawDataByIndex[i] ?? (s.data as ReadonlyArray<OHLCDataPoint>),
@@ -1870,22 +1870,24 @@ export async function createChartGPU(
 
     if (pieMatch) return { match: pieMatch, isInGrid: true };
 
-    // Candlestick body hit-testing (grid-local CSS px), prefer later series indices.
+    // Finance OHLC body/stem hit-testing (grid-local CSS px), prefer later series indices.
     for (let i = resolvedOptions.series.length - 1; i >= 0; i--) {
       const s = resolvedOptions.series[i];
-      if (s?.type !== 'candlestick') continue;
+      if (!(s.type === 'candlestick' || s.type === 'ohlc')) continue;
 
       // Skip invisible series.
       if (s.visible === false) continue;
 
-      const seriesCfg = s as ResolvedCandlestickSeriesConfig;
+      const seriesCfg = s as FinanceOhlcHitSeriesConfig;
       const barWidthRange = computeCandlestickBodyWidthRange(seriesCfg, seriesCfg.data, scales.xScale, plotWidthCss);
-      const m = findCandlestick([seriesCfg], gridX, gridY, scales.xScale, scales.yScale, barWidthRange);
+      const m = findCandlestick([seriesCfg], gridX, gridY, scales.xScale, scales.yScale, barWidthRange, {
+        yHitMode: s.type === 'ohlc' ? 'lowHigh' : 'openClose',
+      });
       if (!m) continue;
 
       return {
         match: {
-          kind: 'candlestick',
+          kind: s.type === 'ohlc' ? 'ohlc' : 'candlestick',
           seriesIndex: i,
           dataIndex: m.dataIndex,
           point: m.point,
@@ -2043,13 +2045,24 @@ export async function createChartGPU(
       };
     }
 
-    if (match.kind === 'candlestick') {
+    if (match.kind === 'candlestick' || match.kind === 'ohlc') {
       const timestamp = getOHLCTimestamp(match.point);
       const close = getOHLCClose(match.point);
       return {
         seriesIndex,
         dataIndex,
         value: [timestamp, close],
+        seriesName,
+        event,
+      };
+    }
+
+    // Remaining: cartesian nearest-point hit.
+    if (match.kind !== 'cartesian') {
+      return {
+        seriesIndex,
+        dataIndex,
+        value: null,
         seriesName,
         event,
       };
@@ -2359,7 +2372,7 @@ export async function createChartGPU(
       // Early validation: compute append count in a format-aware way.
       // Disambiguate by series type (avoid heuristics on the data payload).
       let pointCount = 0;
-      if (s.type === 'candlestick') {
+      if (s.type === 'candlestick' || s.type === 'ohlc') {
         if (!Array.isArray(newPoints)) return;
         pointCount = newPoints.length;
       } else if (s.type === 'band') {
@@ -2404,7 +2417,7 @@ export async function createChartGPU(
       const prevHitLenForCap = (() => {
         if (!maintainHitTestStore) return 0;
         const owned = runtimeRawDataByIndex[seriesIndex];
-        if (s.type === 'candlestick') {
+        if (s.type === 'candlestick' || s.type === 'ohlc') {
           return Array.isArray(owned) ? owned.length : 0;
         }
         if (isRingXYColumns(owned)) return owned.count;
@@ -2426,7 +2439,7 @@ export async function createChartGPU(
       let appendXMin = Number.POSITIVE_INFINITY;
       let appendXMax = Number.NEGATIVE_INFINITY;
 
-      if (maintainHitTestStore && s.type === 'candlestick') {
+      if (maintainHitTestStore && (s.type === 'candlestick' || s.type === 'ohlc')) {
         // Handle candlestick series with OHLC data points.
         const existing = runtimeRawDataByIndex[seriesIndex];
         const owned = (Array.isArray(existing) ? existing : []) as OHLCDataPoint[];
@@ -2734,7 +2747,7 @@ export async function createChartGPU(
         }
       } else if (hasDataAppendListeners) {
         // Hit-test store skipped; still compute xExtent for dataAppend listeners.
-        if (s.type === 'candlestick') {
+        if (s.type === 'candlestick' || s.type === 'ohlc') {
           const ohlcPoints = newPoints as OHLCDataPoint[];
           for (let i = 0; i < pointCount; i++) {
             const x = getOHLCTimestamp(ohlcPoints[i]!);
@@ -3060,17 +3073,19 @@ export async function createChartGPU(
         };
       }
 
-      // Candlestick body hit-testing
+      // Finance OHLC body/stem hit-testing
       for (let i = resolvedOptions.series.length - 1; i >= 0; i--) {
         const s = resolvedOptions.series[i];
-        if (s?.type !== 'candlestick') continue;
+        if (!(s.type === 'candlestick' || s.type === 'ohlc')) continue;
 
         // Skip invisible series
         if (s.visible === false) continue;
 
-        const seriesCfg = s as ResolvedCandlestickSeriesConfig;
+        const seriesCfg = s as FinanceOhlcHitSeriesConfig;
         const barWidthRange = computeCandlestickBodyWidthRange(seriesCfg, seriesCfg.data, scales.xScale, plotWidthCss);
-        const m = findCandlestick([seriesCfg], gridX, gridY, scales.xScale, scales.yScale, barWidthRange);
+        const m = findCandlestick([seriesCfg], gridX, gridY, scales.xScale, scales.yScale, barWidthRange, {
+          yHitMode: s.type === 'ohlc' ? 'lowHigh' : 'openClose',
+        });
         if (!m) continue;
 
         const timestamp = getOHLCTimestamp(m.point);
@@ -3083,7 +3098,7 @@ export async function createChartGPU(
           gridX,
           gridY,
           match: {
-            kind: 'candlestick',
+            kind: s.type === 'ohlc' ? 'ohlc' : 'candlestick',
             seriesIndex: i,
             dataIndex: m.dataIndex,
             value: [timestamp, close],

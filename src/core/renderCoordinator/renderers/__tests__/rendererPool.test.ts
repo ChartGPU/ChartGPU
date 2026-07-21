@@ -357,6 +357,32 @@ describe('RendererPool', () => {
     });
   });
 
+  describe('OHLC Renderers', () => {
+    it('grows ohlc renderer pool', () => {
+      const pool = createRendererPool(config);
+      pool.ensureOhlcRendererCount(3);
+      expect(pool.getState().ohlcRenderers).toHaveLength(3);
+    });
+
+    it('shrinks ohlc renderer pool and disposes excess', () => {
+      const pool = createRendererPool(config);
+      pool.ensureOhlcRendererCount(4);
+      expect(pool.getState().ohlcRenderers).toHaveLength(4);
+      pool.ensureOhlcRendererCount(2);
+      expect(pool.getState().ohlcRenderers).toHaveLength(2);
+    });
+
+    it('ensureRendererPoolsForSeries sizes mixed candle + ohlc to series length', () => {
+      const pool = createRendererPool(config);
+      const series = [{ type: 'candlestick' }, { type: 'ohlc' }, { type: 'line' }] as unknown as ResolvedSeriesConfig[];
+      ensureRendererPoolsForSeries(pool, series);
+      const state = pool.getState();
+      expect(state.candlestickRenderers).toHaveLength(3);
+      expect(state.ohlcRenderers).toHaveLength(3);
+      expect(state.lineRenderers).toHaveLength(3);
+    });
+  });
+
   describe('Pool Disposal', () => {
     it('disposes all renderers and clears arrays', () => {
       const pool = createRendererPool(config);
@@ -370,6 +396,7 @@ describe('RendererPool', () => {
       pool.ensureHeatmapRendererCount(2);
       pool.ensureBandRendererCount(2);
       pool.ensureCandlestickRendererCount(2);
+      pool.ensureOhlcRendererCount(2);
 
       // Dispose pool
       pool.dispose();
@@ -384,6 +411,7 @@ describe('RendererPool', () => {
       expect(stateAfter.heatmapRenderers).toHaveLength(0);
       expect(stateAfter.bandRenderers).toHaveLength(0);
       expect(stateAfter.candlestickRenderers).toHaveLength(0);
+      expect(stateAfter.ohlcRenderers).toHaveLength(0);
     });
 
     it('disposes scatter density renderers (bugfix)', () => {

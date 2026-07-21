@@ -62,6 +62,26 @@ describe('createLegend identity skip', () => {
     legend.dispose();
   });
 
+  it('uses itemStyle.upColor for ohlc/candlestick swatch when series.color is unset', () => {
+    const legend = createLegend(container);
+    const series: SeriesConfig[] = [
+      {
+        type: 'ohlc',
+        name: 'OHLC',
+        data: [[0, 1, 2, 0.5, 2.5]],
+        itemStyle: { upColor: '#26a69a', downColor: '#ef5350' },
+      },
+    ];
+    legend.update(series, theme);
+    const item = getList(container).children[0] as HTMLElement;
+    // First child is the swatch <div> (label is a <span>)
+    const swatch = item.children[0] as HTMLElement;
+    // jsdom may keep the raw hex on style.background
+    const bg = swatch.style.background || swatch.style.backgroundColor;
+    expect(bg.toLowerCase()).toMatch(/#26a69a|rgb\(38,\s*166,\s*154\)/);
+    legend.dispose();
+  });
+
   it('sets z-index above axis text overlay so legend masks labels (issue #149)', () => {
     const legend = createLegend(container);
     legend.update(lineSeries(2), theme);

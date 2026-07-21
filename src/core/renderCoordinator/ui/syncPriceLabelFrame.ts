@@ -139,7 +139,7 @@ export function resolvePriceLabelCountdownDesired(
     return COUNTDOWN_OFF.countdownDesired;
   }
   const seriesItem = series[seriesIndex];
-  if (!seriesItem || seriesItem.type !== 'candlestick') {
+  if (!seriesItem || !(seriesItem.type === 'candlestick' || seriesItem.type === 'ohlc')) {
     return COUNTDOWN_OFF.countdownDesired;
   }
   const candle = seriesItem as ResolvedCandlestickSeriesConfig;
@@ -202,7 +202,7 @@ export function syncPriceLabelFrame(args: SyncPriceLabelFrameArgs): SyncPriceLab
   }
 
   const seriesItem = series[seriesIndex];
-  if (!seriesItem || seriesItem.type !== 'candlestick') {
+  if (!seriesItem || !(seriesItem.type === 'candlestick' || seriesItem.type === 'ohlc')) {
     hideBadge(ui);
     return COUNTDOWN_OFF;
   }

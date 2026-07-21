@@ -147,7 +147,7 @@ function flushPendingAppendsImplInner(d: any): boolean {
     if (!s || s.type === 'pie' || s.type === 'heatmap') continue;
     didAppendAny = true;
 
-    if (s.type === 'candlestick') {
+    if (s.type === 'candlestick' || s.type === 'ohlc') {
       // Handle candlestick OHLC data.
       let raw = d.runtimeRawDataByIndex[seriesIndex] as OHLCDataPoint[] | null;
       if (!raw) {
@@ -715,7 +715,7 @@ function flushPendingAppendsImplInner(d: any): boolean {
       const cfg = d.currentOptions.series[i]!;
       if (base.type === 'pie' || cfg.type === 'pie') continue;
       if (base.type === 'heatmap' || cfg.type === 'heatmap') continue;
-      if (base.type === 'candlestick' || cfg.type === 'candlestick') {
+      if (base.type === 'candlestick' || base.type === 'ohlc' || cfg.type === 'candlestick' || cfg.type === 'ohlc') {
         patchedInPlace = false;
         break;
       }

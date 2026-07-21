@@ -66,6 +66,29 @@ export const candlestickDefaults = {
   samplingThreshold: 5000,
 } as const;
 
+/** Defaults for thin OHLC bars (`type: 'ohlc'`). Sampling matches candlestick. */
+export const ohlcDefaults = {
+  itemStyle: {
+    upColor: '#22c55e',
+    downColor: '#ef4444',
+    upBorderColor: '#22c55e',
+    downBorderColor: '#ef4444',
+    borderWidth: 1,
+  } as const satisfies Required<CandlestickItemStyleConfig>,
+  barWidth: '60%' as const,
+  barMinWidth: 1,
+  barMaxWidth: 50,
+  /** Stem thickness in CSS px. */
+  stemWidth: 1,
+  /**
+   * Open/close tick length as fraction of resolved body width when a percent string,
+   * or absolute CSS px when a number. Default ~half-category arms.
+   */
+  tickLength: '45%' as const,
+  sampling: 'ohlc' as const,
+  samplingThreshold: 5000,
+} as const;
+
 export const scatterDefaults = {
   mode: 'points' as const,
   // Bin size in CSS pixels for density mode. Must be > 0.

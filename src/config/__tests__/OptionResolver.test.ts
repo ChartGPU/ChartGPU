@@ -1058,6 +1058,48 @@ describe('isCandlePrimaryChart', () => {
       })
     ).toBe(false);
   });
+
+  it('returns true when first series is ohlc (finance-primary includes OHLC bars)', () => {
+    expect(
+      isCandlePrimaryChart({
+        series: [{ type: 'ohlc', data: [[0, 1, 1, 1, 1]] }],
+      })
+    ).toBe(true);
+  });
+});
+
+describe('OptionResolver ohlc series', () => {
+  it('resolves type ohlc with defaults and priceLabel when finance-primary', () => {
+    const data: OHLCDataPoint[] = [[0, 1, 2, 0.5, 2.5]];
+    const resolved = resolveOptions({
+      series: [{ type: 'ohlc', data }],
+    });
+    expect(resolved.series).toHaveLength(1);
+    const s = resolved.series[0]!;
+    expect(s.type).toBe('ohlc');
+    if (s.type === 'ohlc') {
+      expect(s.sampling).toBe('ohlc');
+      expect(s.stemWidth).toBe(1);
+      expect(s.tickLength).toBe('45%');
+      expect(s.barWidth).toBe('60%');
+      expect(s.priceLabel.show).toBe(true);
+      expect(s.itemStyle.upColor).toBeTruthy();
+      expect(s.rawData).toBe(data);
+    }
+    expect(resolved.yAxes[0]!.position).toBe('right');
+    expect(resolved.grid.right).toBe(70);
+  });
+
+  it('falls back sampling to default when invalid mode provided', () => {
+    const resolved = resolveOptions({
+      series: [{ type: 'ohlc', data: [[0, 1, 1, 1, 1]], sampling: 'lttb' as 'none' }],
+    });
+    const s = resolved.series[0]!;
+    expect(s.type).toBe('ohlc');
+    if (s.type === 'ohlc') {
+      expect(s.sampling).toBe('ohlc');
+    }
+  });
 });
 
 describe('OptionResolver - candle-primary Y-axis and grid defaults', () => {

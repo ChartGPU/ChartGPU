@@ -16,7 +16,7 @@ Chart configuration. Full types: [`types.ts`](../../src/config/types.ts).
 
 ## Series Configuration
 
-- **`SeriesType`**: `'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick' | 'heatmap' | 'band' | 'pointCloud3d' | 'surface3d'`. See [`types.ts`](../../src/config/types.ts).
+- **`SeriesType`**: `'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick' | 'ohlc' | 'heatmap' | 'band' | 'pointCloud3d' | 'surface3d'`. See [`types.ts`](../../src/config/types.ts).
 - **`coordinateSystem`**: `'cartesian2d'` (default) | `'cartesian3d'`. 3D charts use a separate depth + camera path; only `pointCloud3d` / `surface3d` are valid there. Full 3D API: [`docs/api/3d.md`](./3d.md).
 - **Sampling (cartesian)**: `sampling?: 'none' | 'lttb' | 'average' | 'max' | 'min'`, `samplingThreshold?: number` (default 5000). Zoom-aware resampling when data zoom enabled.
 - **`visible?: boolean`**: hide series from rendering and interaction. Legend toggle updates both.
@@ -35,9 +35,9 @@ Chart configuration. Full types: [`types.ts`](../../src/config/types.ts).
 
 - **Data**: `OHLCDataPoint` — tuple `[timestamp, open, close, low, high]` or object.
 - **`style?: 'classic' | 'hollow'`**. **`sampling?: 'none' | 'ohlc'`** for bucket aggregation. Body-only hit-testing. Demos: [`candlestick/`](../../examples/candlestick/), [`candlestick-streaming/`](../../examples/candlestick-streaming/).
-- **`priceLabel?: boolean | CandlestickPriceLabelConfig`**: exchange-style **last-price badge** (DOM) and optional **horizontal price line** (GPU) on the series Y-axis rail. v1: **one badge + one line per chart** — first visible candlestick series with resolved `priceLabel.show` wins.
+- **`priceLabel?: boolean | CandlestickPriceLabelConfig`**: exchange-style **last-price badge** (DOM) and optional **horizontal price line** (GPU) on the series Y-axis rail. v1: **one badge + one line per chart** — first visible candlestick **or** ohlc series with resolved `priceLabel.show` wins.
   - **Sugar**: `true` / `false` force on/off with field defaults; object form enables unless `show: false`.
-  - **`undefined` (default)**: auto-enables when the chart is **candle-primary** (`series[0].type === 'candlestick'`); off when candlestick is not first. See **Migration (P1 default badge)** under Axis Configuration.
+  - **`undefined` (default)**: auto-enables when the chart is **finance-primary** (`series[0].type === 'candlestick'` or `'ohlc'`); off when neither is first. See **Migration (P1 default badge)** under Axis Configuration.
   - **Full options** (`CandlestickPriceLabelConfig`):
 
     | Field | Default | Notes |
@@ -88,6 +88,45 @@ series: [{
 }]
 ```
 - **Acceptance**: OHLC sampling — [`examples/acceptance/ohlc-sample.ts`](../../examples/acceptance/ohlc-sample.ts). Candle-primary layout + `priceLabel` resolve — [`examples/acceptance/candle-price-axis.ts`](../../examples/acceptance/candle-price-axis.ts).
+
+### OhlcSeriesConfig
+
+Thin **open / high / low / close** bars (not filled candle bodies). Same data contract as candlestick.
+
+```
+          high
+           │
+  open ────┤
+           │
+           ├──── close
+           │
+          low
+```
+
+- **Data**: identical `OHLCDataPoint` / ECharts tuple order `[timestamp, open, close, low, high]`.
+- **Geometry**: vertical stem `low`→`high` at the bar timestamp; **left** horizontal tick at `open`; **right** tick at `close`. Color: `close > open` → `itemStyle.upColor`, else `downColor` (doji uses down; same as candlestick body fill). Stroke-only in v1 — `itemStyle.border*` fields are accepted on the shared style type but do not change OHLC stroke geometry.
+- **`barWidth` / `barMinWidth` / `barMaxWidth`**: category slot width (same resolve as candlestick); drives default tick length scale.
+- **`stemWidth?: number`**: stroke thickness in CSS px (default `1`). Stem uses **domain X** conversion; open/close tick thickness uses the same CSS px via **domain Y** (must not share the X conversion — time-scale widths are huge in price space). Updated via uniforms on zoom without re-packing.
+- **`tickLength?: number | string`**: open/close arm **length** (horizontal) — CSS px number or percent of resolved body width (default `'45%'`). Not vertical thickness.
+- **`sampling?: 'none' | 'ohlc'`** only (default `'ohlc'`); other modes fall back like candlestick. Invalid modes are ignored (default applied).
+- **`priceLabel`**: same sugar as candlestick; auto when finance-primary (`series[0].type === 'ohlc'`).
+- **Hit-test**: `kind: 'ohlc'`; category-width box with Y over `[low, high]` (stem range) for **both** `ChartGPU.hitTest` and tooltip/hover (`findCandlestick` `yHitMode: 'lowHigh'`). Candlestick remains body-only (`openClose`). Tooltip / events still surface timestamp + close at the ChartGPU wrapper (same as candlestick).
+- **Streaming**: `appendData` / `maxPoints` FIFO parity with candlestick.
+- **Demo**: [`examples/ohlc-bars/`](../../examples/ohlc-bars/) — toggle candlestick ↔ ohlc on the same data.
+
+```ts
+series: [{
+  type: 'ohlc',
+  name: 'BTC-USD',
+  data: ohlcBars, // same OHLCDataPoint[] as candlestick
+  barWidth: '60%',
+  stemWidth: 1,
+  tickLength: '45%',
+  itemStyle: { upColor: '#22c55e', downColor: '#ef4444' },
+  sampling: 'ohlc',
+  // priceLabel auto when series[0]
+}]
+```
 
 ### LineSeriesConfig
 
@@ -261,7 +300,7 @@ Example: [`examples/band-range/`](../../examples/band-range/). Implementation: [
   - Series map to a specific axis via `yAxis` id in their config.
   - Axes can be positioned on the right using `position: "right"`. Default position is `"left"`, except for **candle-primary** charts (see below).
   - Dual Y may mix log + linear (e.g. log pressure + linear temperature). Horizontal grid follows the **primary** (first) Y axis ticks when that axis is log.
-- **Candle-primary layout defaults** (when `series[0].type === 'candlestick'`):
+- **Finance-primary layout defaults** (when `series[0].type === 'candlestick'` or `'ohlc'`):
   - **Predicate**: only the first series type matters. Overlay lines as `series[0]` mean the chart is **not** candle-primary (set `position: 'right'` explicitly if needed). Helper: `isCandlePrimaryChart(userOptions)`.
   - **Y position**: the **first** Y axis defaults to `position: 'right'` when the user leaves `position` unset (`yAxis` or `axes.y[0]`). Secondary Y axes still default to `'left'`. Explicit `position` always wins.
   - **Soft grid gutters** (per-key only — each of `grid.left` / `grid.right` is set only when that key is `undefined` on user options; `0` is preserved):

@@ -92,7 +92,7 @@ See [Annotations Documentation](https://github.com/chartgpu/chartgpu/blob/main/d
 ## Highlights
 
 - 🚀 WebGPU-accelerated rendering for high FPS with large datasets
-- 📈 Multiple series types: line, area, bar, scatter, pie, candlestick, heatmap, **band**, plus **3D** `pointCloud3d` / `surface3d`
+- 📈 Multiple series types: line, area, bar, scatter, pie, candlestick, **ohlc** bars, heatmap, **band**, plus **3D** `pointCloud3d` / `surface3d`
 - 🧊 **3D modality** (`coordinateSystem: 'cartesian3d'`) — world XYZ point clouds + uniform height-field surfaces with depth, orbit camera, labeled axes/grids, pick, cloud `maxPoints` FIFO, surface streaming + contours — see [`docs/api/3d.md`](docs/api/3d.md), hero demo [`examples/3d-showcase/`](examples/3d-showcase/), thin samples [`examples/point-cloud-3d/`](examples/point-cloud-3d/), [`examples/surface-3d/`](examples/surface-3d/)
 - 🌡️ Scatter density mode (`mode: 'density'`) for large **2D** scatters (screen-space bins, not world XYZ) — see [`docs/api/options.md#scatterseriesconfig`](docs/api/options.md#scatterseriesconfig) and [`examples/scatter-density-1m/`](examples/scatter-density-1m/)
 - 🗺️ Uniform heatmap / spectrogram (`type: 'heatmap'`) for **data grids** (FFT waterfall, matrices) — not scatter density; see [`docs/api/options.md#heatmapseriesconfig`](docs/api/options.md#heatmapseriesconfig) and [`examples/heatmap-spectrogram/`](examples/heatmap-spectrogram/)
@@ -109,7 +109,7 @@ See [Annotations Documentation](https://github.com/chartgpu/chartgpu/blob/main/d
 
 ### Candlestick Charts
 
-Financial OHLC (open-high-low-close) candlestick rendering with classic/hollow style toggle and color customization. The live streaming demo renders **5 million candlesticks at over 100 FPS** with real-time updates.
+Financial OHLC (open-high-low-close) **candlestick** rendering with classic/hollow style toggle, plus thin **`type: 'ohlc'`** bars (stem + open/close ticks) on the same data — see `examples/ohlc-bars/`. The live streaming demo renders **5 million candlesticks at over 100 FPS** with real-time updates.
 
 ![Candlestick chart example](docs/assets/candle-stick-example.png)
 

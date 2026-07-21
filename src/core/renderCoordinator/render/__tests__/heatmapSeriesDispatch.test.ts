@@ -105,6 +105,7 @@ describe('heatmap multi-series prepare/render dispatch', () => {
       pieRenderers: [pie as any, pie as any, pie as any],
       heatmapRenderers: [h0, h1, h2],
       candlestickRenderers: [],
+      ohlcRenderers: [],
       decimationComputes: [],
     };
 
@@ -188,6 +189,7 @@ describe('heatmap multi-series prepare/render dispatch', () => {
       pieRenderers: [],
       heatmapRenderers: [h0, mockHeatmap(), h2],
       candlestickRenderers: [],
+      ohlcRenderers: [],
       decimationComputes: [],
     };
 

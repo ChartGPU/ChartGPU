@@ -68,7 +68,7 @@ export function syncCandlestickOwnedFromUserSeries(input: {
 
   for (let i = 0; i < series.length; i++) {
     const s = series[i]!;
-    if (s.type !== 'candlestick') continue;
+    if (!(s.type === 'candlestick' || s.type === 'ohlc')) continue;
 
     const user = ((s as { rawData?: unknown; data?: unknown }).rawData ?? (s as { data?: unknown }).data) as
       | ReadonlyArray<OHLCDataPoint>

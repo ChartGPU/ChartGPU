@@ -147,7 +147,12 @@ export function findPointsAtX(
   for (let s = 0; s < series.length; s++) {
     const seriesConfig = series[s];
     // Pie / candlestick / heatmap are non-cartesian for x-rollover.
-    if (seriesConfig.type === 'pie' || seriesConfig.type === 'candlestick' || seriesConfig.type === 'heatmap') {
+    if (
+      seriesConfig.type === 'pie' ||
+      seriesConfig.type === 'candlestick' ||
+      seriesConfig.type === 'ohlc' ||
+      seriesConfig.type === 'heatmap'
+    ) {
       continue;
     }
 

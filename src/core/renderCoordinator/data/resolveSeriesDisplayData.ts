@@ -32,6 +32,7 @@ export function resolveCartesianDisplayData(input: {
   if (
     series.type === 'pie' ||
     series.type === 'candlestick' ||
+    series.type === 'ohlc' ||
     series.type === 'heatmap' ||
     series.type === 'pointCloud3d' ||
     series.type === 'surface3d'
