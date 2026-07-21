@@ -1,6 +1,7 @@
 import { createChart, type ChartGPUInstance, type OHLCDataPoint } from '../../src/index';
 import { generateHistoricalData } from './generateHistoricalData';
 import { createTickSimulator, createCandleAggregator, type Tick } from './tickSimulator';
+import { mountLogoGpu } from './logoGpu';
 
 // Timeframe intervals in milliseconds
 const TIMEFRAME_INTERVALS: Record<string, number> = {
@@ -111,6 +112,12 @@ function getMaxCandles(candleCount: number): number {
 
 async function init() {
   const container = document.getElementById('chart')!;
+
+  // Brand wordmark via pure WebGPU blit (PNG is exact; procedural glyphs would not be)
+  const logoHost = document.getElementById('ticker-logo-host');
+  if (logoHost) {
+    void mountLogoGpu(logoHost);
+  }
 
   // Generate impressive historical data
   console.log(`Generating ${currentCandleCount.toLocaleString()} historical candles...`);

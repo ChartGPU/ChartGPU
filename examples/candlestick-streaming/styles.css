@@ -94,30 +94,41 @@ body {
   border-bottom: 1px solid var(--color-rule);
 }
 
-/* Stock ticker: $ChartGPU + last price */
+/* Stock ticker: $ + WebGPU wordmark + last price */
 .ticker {
   display: flex;
-  align-items: baseline;
-  gap: 0.65rem;
+  align-items: center;
+  gap: 0.55rem;
   flex-shrink: 0;
   min-width: 0;
   line-height: 1;
 }
 
-.ticker-symbol {
+.ticker-cash {
   font-family: var(--font-display);
-  font-size: 1.05rem;
-  font-weight: 600;
+  font-size: 1.1rem;
+  font-weight: 700;
   font-style: normal;
-  letter-spacing: -0.03em;
-  color: var(--color-ink);
-  white-space: nowrap;
+  color: var(--color-accent);
+  line-height: 1;
+  flex-shrink: 0;
 }
 
-.ticker-cash {
-  color: var(--color-accent);
-  font-weight: 700;
-  margin-right: 0.02em;
+.ticker-logo-host {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  line-height: 0;
+}
+
+.ticker-logo {
+  display: block;
+  height: 22px;
+  width: auto;
+  /* ~809/247 aspect locked by logoGpu */
+  object-fit: contain;
+  /* Avoid subpixel blur on the gold edge */
+  image-rendering: auto;
 }
 
 .ticker-price {
@@ -422,7 +433,6 @@ body {
     display: none;
   }
 
-  .ticker-symbol,
   .ticker-price {
     font-size: var(--text-md);
   }
