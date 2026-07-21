@@ -79,9 +79,10 @@ function ohlcSeries(data: ResolvedOhlcSeriesConfig['data']): ResolvedOhlcSeriesC
     data,
     rawData: data,
     color: '#0f0',
+    // Percent-only body width (no CSS min/max clamp) so pure zoom keeps bodyWidthDomain stable.
     barWidth: '60%',
-    barMinWidth: 1,
-    barMaxWidth: 50,
+    barMinWidth: 0,
+    barMaxWidth: 1e9,
     stemWidth: 1,
     tickLength: '45%',
     itemStyle: {
