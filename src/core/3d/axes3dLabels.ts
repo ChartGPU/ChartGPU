@@ -1,13 +1,14 @@
 /**
- * DOM-projected 3D axis tick labels + titles.
+ * DOM-projected 3D axis tick labels + titles (`labelMode: 'dom'`, and fallback).
  * Host must be (or becomes) `position: relative|absolute|fixed` so absolute labels lay out correctly.
  * If we set `relative` on a previously static host, dispose restores the prior inline position.
+ * GPU path: see createAxes3DGpuLabelsRenderer — exclusive with this overlay.
  */
 
 import type { Mat4 } from './mat4';
 import type { AABB } from './aabb';
 import { projectWorldToCss } from './projectWorldToCss';
-import { formatAxisTick3D } from './axisTicks3d';
+import { buildAxes3DLabelItems } from './axes3dLabelItems';
 import type { Axes3DTickPlan } from '../../renderers/createAxisBox3DRenderer';
 import type { ResolvedAxes3D } from '../../config/OptionResolver';
 
@@ -87,51 +88,8 @@ export function createAxes3DLabels(): Axes3DLabels {
   return {
     update(host, aabb, plan, axes, viewProj, viewportCssW, viewportCssH, textColor) {
       if (disposed) return;
-      // labelMode 'gpu' is currently DOM fallback (no SDF atlas).
       const el = ensureRoot(host);
-
-      const [x0, y0, z0] = aabb.min;
-      const [x1, y1, z1] = aabb.max;
-
-      type Item = { x: number; y: number; z: number; text: string; title: boolean };
-      const items: Item[] = [];
-
-      if (axes.x.visible) {
-        for (const xv of plan.xTicks) {
-          items.push({ x: xv, y: y0, z: z0, text: formatAxisTick3D(xv), title: false });
-        }
-        items.push({
-          x: (x0 + x1) * 0.5,
-          y: y0,
-          z: z0 - Math.abs(z1 - z0) * 0.08,
-          text: axes.x.name,
-          title: true,
-        });
-      }
-      if (axes.y.visible) {
-        for (const yv of plan.yTicks) {
-          items.push({ x: x0, y: yv, z: z0, text: formatAxisTick3D(yv), title: false });
-        }
-        items.push({
-          x: x0 - Math.abs(x1 - x0) * 0.08,
-          y: (y0 + y1) * 0.5,
-          z: z0,
-          text: axes.y.name,
-          title: true,
-        });
-      }
-      if (axes.z.visible) {
-        for (const zv of plan.zTicks) {
-          items.push({ x: x0, y: y0, z: zv, text: formatAxisTick3D(zv), title: false });
-        }
-        items.push({
-          x: x0 - Math.abs(x1 - x0) * 0.08,
-          y: y0,
-          z: (z0 + z1) * 0.5,
-          text: axes.z.name,
-          title: true,
-        });
-      }
+      const items = buildAxes3DLabelItems(aabb, plan, axes);
 
       const placed: { x: number; y: number }[] = [];
       let used = 0;
@@ -166,11 +124,25 @@ export function createAxes3DLabels(): Axes3DLabels {
         if (spare) spare.style.display = 'none';
       }
     },
+    /**
+     * Hide labels and detach the overlay root (e.g. when switching to GPU mode).
+     * Restores host `position` if we had forced `relative`. Safe to call every frame
+     * but coordinator should call once on transition into GPU mode.
+     */
     clear() {
-      for (const span of spanPool) span.style.display = 'none';
+      if (root?.parentElement) root.parentElement.removeChild(root);
+      root = null;
+      spanPool = [];
+      if (hostEl && didSetRelative) {
+        hostEl.style.position = previousInlinePosition ?? '';
+      }
+      hostEl = null;
+      didSetRelative = false;
+      previousInlinePosition = null;
     },
     dispose() {
       disposed = true;
+      // Detach root + restore host (same as clear).
       if (root?.parentElement) root.parentElement.removeChild(root);
       root = null;
       spanPool = [];

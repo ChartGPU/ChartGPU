@@ -1,9 +1,9 @@
 /**
  * 3D render coordinator — separate from the 2D RenderCoordinator.
- * Frame graph: clear color+depth → surface meshes → contours → point clouds → axes (box/grid/ticks).
+ * Frame graph: clear color+depth → surface meshes → contours → point clouds → axes (box/grid/ticks) → GPU labels.
  * sampleCount 1 (depth path; MSAA deferred).
  *
- * P6: labeled axes, surface+cloud pick, cloud maxPoints FIFO, surface stream, contours, pointer events.
+ * Labeled axes: GPU box/grid/ticks; tick numbers/titles via GPU atlas (`labelMode: 'gpu'|'auto'`) or DOM (`'dom'`).
  */
 
 import type {
@@ -42,6 +42,8 @@ import {
 } from '../3d/pickPointCloudGrid';
 import { pickSurface3D } from '../3d/pickSurface3d';
 import { createAxes3DLabels } from '../3d/axes3dLabels';
+import { resolveAxes3DLabelMode } from '../3d/axes3dLabelItems';
+import { createAxes3DGpuLabelsRenderer } from '../../renderers/createAxes3DGpuLabelsRenderer';
 import { resolveCloudValueChannelIdentity, shouldInvalidateCloudPack, type CloudPackSeed } from '../3d/cloudPackPolicy';
 import { packPointCloud3D, appendPackedPointCloud3D, type PackedPointCloud3D } from '../../data/pointCloud3dData';
 import { computeSurface3DAABB, shiftSurface3DAABBColumnScroll } from '../../data/surface3dData';
@@ -203,7 +205,16 @@ export function createRenderCoordinator3D(
     sampleCount: SAMPLE_COUNT,
     pipelineCache,
   });
-  const axesLabels = createAxes3DLabels();
+  const axesLabelsDom = createAxes3DLabels();
+  const axesLabelsGpu = createAxes3DGpuLabelsRenderer(device, {
+    targetFormat,
+    sampleCount: SAMPLE_COUNT,
+    pipelineCache,
+  });
+  /** Warn once per chart when auto/gpu falls back to DOM after atlas init failure. */
+  let gpuLabelsFallbackWarned = false;
+  /** Last exclusive paint path — detach DOM root only on transition into GPU. */
+  let lastLabelPaint: 'gpu' | 'dom' | null = null;
   let lastTickPlan: Axes3DTickPlan | null = null;
 
   let legend: Legend | null = null;
@@ -794,19 +805,30 @@ export function createRenderCoordinator3D(
     ];
     lastTickPlan = axisBox.prepare(sceneAabb, viewProj, edge, axes, grid);
 
-    // Labels: labelMode 'gpu' falls back to DOM until an SDF atlas ships (auto/dom/gpu all update).
-    if (canvas?.parentElement && lastTickPlan) {
-      const textColor = currentOptions.theme.textColor ?? 'rgba(224,224,224,0.9)';
-      axesLabels.update(
-        canvas.parentElement,
-        sceneAabb,
-        lastTickPlan,
-        axes,
-        viewProj,
-        cssW,
-        cssH,
-        typeof textColor === 'string' ? textColor : '#e0e0e0'
+    // Exclusive label path: GPU atlas quads or DOM spans (never both).
+    const labelModeResolved = resolveAxes3DLabelMode(axes.labelMode, {
+      atlasReady: axesLabelsGpu.ready,
+    });
+    if (!axesLabelsGpu.ready && (axes.labelMode === 'gpu' || axes.labelMode === 'auto') && !gpuLabelsFallbackWarned) {
+      gpuLabelsFallbackWarned = true;
+      console.warn(
+        "ChartGPU 3D: axes3d GPU label atlas failed to init; falling back to labelMode 'dom' for this chart instance."
       );
+    }
+
+    const textColorRaw = currentOptions.theme.textColor ?? 'rgba(224,224,224,0.9)';
+    const textColorStr = typeof textColorRaw === 'string' ? textColorRaw : '#e0e0e0';
+    const textRgba = parseCssColorToRgba01(textColorStr) ?? ([0.88, 0.88, 0.88, 0.92] as const);
+
+    if (labelModeResolved === 'gpu' && lastTickPlan) {
+      if (lastLabelPaint !== 'gpu') {
+        axesLabelsDom.clear(); // detach data-chartgpu-axes3d-labels root on enter GPU
+      }
+      lastLabelPaint = 'gpu';
+      axesLabelsGpu.prepare(sceneAabb, lastTickPlan, axes, viewProj, cssW, cssH, textRgba);
+    } else if (canvas?.parentElement && lastTickPlan) {
+      lastLabelPaint = 'dom';
+      axesLabelsDom.update(canvas.parentElement, sceneAabb, lastTickPlan, axes, viewProj, cssW, cssH, textColorStr);
     }
 
     const encoder = device.createCommandEncoder({ label: 'coordinator3d/frame' });
@@ -828,7 +850,7 @@ export function createRenderCoordinator3D(
       },
     });
 
-    // Surfaces → contours → clouds → axes
+    // Surfaces → contours → clouds → axes lines → GPU labels
     for (let i = 0; i < currentOptions.series.length; i++) {
       const s = currentOptions.series[i]!;
       if (!s.visible || s.type !== 'surface3d') continue;
@@ -846,6 +868,9 @@ export function createRenderCoordinator3D(
     }
     // Draw whenever prepare produced geometry (box, grid, and/or ticks-only).
     axisBox.render(pass);
+    if (labelModeResolved === 'gpu') {
+      axesLabelsGpu.render(pass);
+    }
     pass.end();
     enqueueDeviceSubmit(device, encoder.finish());
   };
@@ -877,7 +902,8 @@ export function createRenderCoordinator3D(
       for (const r of surfaceRenderers) r?.dispose();
       for (const r of contourRenderers) r?.dispose();
       axisBox.dispose();
-      axesLabels.dispose();
+      axesLabelsDom.dispose();
+      axesLabelsGpu.dispose();
       depthTexture?.destroy();
       legend?.dispose();
       tooltip?.dispose();

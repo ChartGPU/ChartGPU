@@ -1,7 +1,7 @@
 /**
- * 3D Showcase — stable inspect-first demo of labeled axes, pick, contours;
- * optional slow cloud FIFO + surface strip (camera can follow scroll).
- * Profile with production dist (build + preview), not Vite dev.
+ * 3D Showcase — stable inspect-first demo of labeled axes (labelMode: 'auto' → GPU atlas),
+ * pick, contours; optional slow cloud FIFO + surface strip (camera can follow scroll).
+ * Profile with production dist (build + preview), not Vite dev — dev masks GPU cost.
  */
 import { ChartGPU, darkTheme } from '../../src/index';
 import type {

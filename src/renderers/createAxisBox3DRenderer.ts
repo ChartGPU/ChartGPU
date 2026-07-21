@@ -1,6 +1,6 @@
 /**
  * 3D axes: AABB edge box + wall/floor grids + tick marks (line-list GPU).
- * Numeric labels / titles are DOM-projected separately (see axes3dLabels).
+ * Numeric labels / titles: GPU atlas or DOM (see createAxes3DGpuLabelsRenderer / axes3dLabels).
  */
 
 import axisBoxWgsl from '../shaders/axisBox3d.wgsl?raw';
@@ -23,7 +23,7 @@ export type Axes3DTickPlan = Readonly<{
 export interface AxisBox3DRenderer {
   /**
    * Prepare box / grid / ticks for the scene AABB and axes options.
-   * Returns the tick plan used (for DOM labels).
+   * Returns the tick plan used for GPU/DOM axis labels.
    */
   prepare(
     aabb: AABB,

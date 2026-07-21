@@ -78,10 +78,10 @@ export interface Axes3DOptions {
   /** Wall/floor major grid lines. Default true. */
   readonly showGrid?: boolean;
   /**
-   * Label placement:
-   * - `'auto'` (default): DOM-projected numeric labels + titles
-   * - `'dom'`: force DOM overlay
-   * - `'gpu'`: reserved; falls back to DOM in this release (no SDF atlas)
+   * Where to draw axis tick numbers + titles:
+   * - `'auto'` (default): prefer WebGPU glyph atlas when atlas init succeeds; else DOM
+   * - `'dom'`: DOM-projected spans (maximum font fidelity / always available)
+   * - `'gpu'`: WebGPU billboard quads from a canvas-baked atlas (falls back to DOM + warn on atlas failure)
    */
   readonly labelMode?: 'auto' | 'dom' | 'gpu';
 }
