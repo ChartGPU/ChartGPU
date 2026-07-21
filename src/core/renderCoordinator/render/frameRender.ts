@@ -12,8 +12,11 @@
 import {
   prepareSeries,
   hasDenseHairlineLines,
+  hasDenseDeferredArea,
   hasDenseDeferredScatter,
+  hasNonDeferredMainSeriesContent,
   renderDenseHairlineLines,
+  renderDenseDeferredArea,
   renderDenseDeferredScatter,
   renderSeries,
   encodeDecimationCompute,
@@ -35,8 +38,11 @@ import {
 export {
   prepareSeries,
   hasDenseHairlineLines,
+  hasDenseDeferredArea,
   hasDenseDeferredScatter,
+  hasNonDeferredMainSeriesContent,
   renderDenseHairlineLines,
+  renderDenseDeferredArea,
   renderDenseDeferredScatter,
   renderAboveSeriesAnnotations,
   createStackedMountainCache,
@@ -95,9 +101,12 @@ export function planGpuFrame(input: {
   readonly hasDenseHairline: boolean;
   /** Dense-compact scatter deferred out of 4× MSAA main (group 2 ≥250k). */
   readonly hasDenseScatter?: boolean;
+  /** Dense mountain/area fill deferred out of 4× MSAA main (group 8 multi-M). */
+  readonly hasDenseArea?: boolean;
 }): GpuFramePlan {
   // Post-resolve dense pass only helps when main is 4× MSAA.
-  const needsDenseHairlinePass = input.msaaSampleCount > 1 && (input.hasDenseHairline || !!input.hasDenseScatter);
+  const needsDenseHairlinePass =
+    input.msaaSampleCount > 1 && (input.hasDenseHairline || !!input.hasDenseScatter || !!input.hasDenseArea);
   const passOrder = resolveFramePassOrder(needsDenseHairlinePass);
   const useDirectSwapchainResolve = shouldUseDirectSwapchainResolve({
     needsPostResolveDensePass: needsDenseHairlinePass,

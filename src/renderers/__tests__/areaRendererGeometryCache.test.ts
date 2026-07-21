@@ -274,7 +274,7 @@ describe('createAreaRenderer geometry cache', () => {
     // Area VS uniforms: mat4 + baseline/log (80 bytes).
     const vsWrites = writeUniformBufferMock.mock.calls.filter((c) => {
       const dataArg = c[2];
-      return dataArg instanceof ArrayBuffer && dataArg.byteLength === 80;
+      return dataArg instanceof ArrayBuffer && dataArg.byteLength === 96;
     });
     expect(vsWrites.length).toBeGreaterThan(0);
     const f32 = new Float32Array(vsWrites[0]![2] as ArrayBuffer);
@@ -565,8 +565,9 @@ describe('area.wgsl gap contract (issue #153)', () => {
     expect(vsStart).toBeGreaterThan(-1);
     const vsBody = src.slice(vsStart, src.indexOf('fn fsMain'));
     // Per-segment endpoints (instanced), not vertex_index/2 continuous strip.
-    expect(vsBody).toMatch(/points\[instanceIndex\]/);
-    expect(vsBody).toMatch(/points\[instanceIndex \+ 1u\]/);
+    // Dense LOD: points[i0]/points[i1] (stride 1 ≡ instanceIndex / +1).
+    expect(vsBody).toMatch(/points\[i0\]|points\[instanceIndex\]/);
+    expect(vsBody).toMatch(/points\[i1\]|points\[instanceIndex \+ 1u\]/);
     expect(vsBody).toMatch(/pA\.x != pA\.x/);
     expect(vsBody).toMatch(/pA\.y != pA\.y/);
     expect(vsBody).toMatch(/pB\.x != pB\.x/);
@@ -587,7 +588,7 @@ describe('area.wgsl gap contract (issue #153)', () => {
     expect(shader).toMatch(/pA\.x != pA\.x/);
     expect(shader).toMatch(/pB\.x != pB\.x/);
     expect(rendererSrc).toMatch(/topology:\s*['"]triangle-list['"]/);
-    expect(rendererSrc).toMatch(/draw\(6,\s*segments\)/);
+    expect(rendererSrc).toMatch(/draw\(6,\s*drawSegmentCount\)|draw\(6,\s*segments\)/);
     // Legacy continuous strip path must stay gone.
     expect(rendererSrc).not.toMatch(/draw\(pointCount \* 2\)/);
   });

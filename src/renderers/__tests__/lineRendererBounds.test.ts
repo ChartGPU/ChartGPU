@@ -629,6 +629,187 @@ describe('createLineRenderer bounds (P2-5)', () => {
   });
 });
 
+describe('createLineRenderer dense compact LOD (mountain multi-M)', () => {
+  const makeXyCols = (n: number): { x: Float64Array; y: Float64Array } => {
+    const x = new Float64Array(n);
+    const y = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      x[i] = i;
+      y[i] = (i % 7) + 1;
+    }
+    return { x, y };
+  };
+
+  it('forceStandardDraw keeps full N−1 (strict lod) — no dense stride compact', () => {
+    const device = createMockDevice();
+    const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
+    const renderer = createLineRenderer(device, { sampleCount: 4 });
+    const n = 300_000;
+    const cols = makeXyCols(n);
+    const series = makeSeries(cols as any);
+    const xScale = createLinearScale()
+      .domain(0, n - 1)
+      .range(-1, 1);
+    const yScale = createLinearScale().domain(0, 10).range(1, -1);
+    const dataBuffer = { label: 'data', size: n * 8 } as GPUBuffer;
+
+    // forceStandardDraw = true → standard AA, full segments; no compact pack.
+    renderer.prepare(series, dataBuffer, xScale, yScale, 0, 1, 1400, 800, n, 1, undefined, true, 1400);
+    expect(renderer.isDenseHairline()).toBe(false);
+    expect(writeBuffer).not.toHaveBeenCalled();
+
+    const draws: Array<{ v: number; i: number }> = [];
+    const pass = {
+      setPipeline: vi.fn(),
+      setBindGroup: vi.fn(),
+      draw: vi.fn((v: number, i: number) => {
+        draws.push({ v, i });
+      }),
+    } as unknown as GPURenderPassEncoder;
+    renderer.render(pass);
+    expect(draws).toEqual([{ v: 6, i: n - 1 }]);
+    renderer.dispose();
+  });
+
+  it('refuses compact pack for RingXYColumns (keeps full buffer; no writeBuffer)', () => {
+    const device = createMockDevice();
+    const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
+    const renderer = createLineRenderer(device, { sampleCount: 4 });
+    const n = 300_000;
+    const cols = makeXyCols(n);
+    const ring = {
+      __ring: true as const,
+      x: cols.x,
+      y: cols.y,
+      start: 0,
+      count: n,
+      capacity: n,
+    };
+    const series = makeSeries(ring as any);
+    const xScale = createLinearScale()
+      .domain(0, n - 1)
+      .range(-1, 1);
+    const yScale = createLinearScale().domain(0, 10).range(1, -1);
+    const dataBuffer = { label: 'data', size: n * 8 } as GPUBuffer;
+
+    // ringLayout capacity 0 so prepare still attempts compact when data is ring columns.
+    renderer.prepare(series, dataBuffer, xScale, yScale, 0, 1, 1400, 800, n, 1, { start: 0, capacity: 0 }, false, 1400);
+    expect(renderer.isDenseHairline()).toBe(true);
+    // Ring/staging refuse: compact path must not pack a private buffer.
+    expect(writeBuffer).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('refuses compact pack for StagingRingView', () => {
+    const device = createMockDevice();
+    const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
+    const renderer = createLineRenderer(device, { sampleCount: 4 });
+    const n = 300_000;
+    const staging = new Float32Array(n * 2);
+    for (let i = 0; i < n; i++) {
+      staging[i * 2] = i;
+      staging[i * 2 + 1] = 1;
+    }
+    const view = {
+      __stagingRing: true as const,
+      staging,
+      start: 0,
+      count: n,
+      capacity: 0,
+      xOffset: 0,
+    };
+    const series = makeSeries(view as any);
+    const xScale = createLinearScale()
+      .domain(0, n - 1)
+      .range(-1, 1);
+    const yScale = createLinearScale().domain(0, 10).range(1, -1);
+    const dataBuffer = { label: 'data', size: n * 8 } as GPUBuffer;
+
+    renderer.prepare(series, dataBuffer, xScale, yScale, 0, 1, 1400, 800, n, 1, undefined, false, 1400);
+    expect(renderer.isDenseHairline()).toBe(true);
+    expect(writeBuffer).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('re-packs compact LOD after invalidateGeometry under stable data ref', () => {
+    const device = createMockDevice();
+    const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
+    const renderer = createLineRenderer(device, { sampleCount: 4 });
+    const n = 300_000;
+    const cols = makeXyCols(n);
+    const series = makeSeries(cols as any);
+    const xScale = createLinearScale()
+      .domain(0, n - 1)
+      .range(-1, 1);
+    const yScale = createLinearScale().domain(0, 10).range(1, -1);
+    const dataBuffer = { label: 'data', size: n * 8 } as GPUBuffer;
+
+    renderer.prepare(series, dataBuffer, xScale, yScale, 0, 1, 1400, 800, n, 1, undefined, false, 1400);
+    expect(renderer.isDenseHairline()).toBe(true);
+    expect(writeBuffer).toHaveBeenCalledTimes(1);
+
+    // Axes-only / identity-stable: second prepare must not re-pack compact.
+    renderer.prepare(series, dataBuffer, xScale, yScale, 0, 1, 1400, 800, n, 1, undefined, false, 1400);
+    expect(writeBuffer).toHaveBeenCalledTimes(1);
+
+    // In-place mutation (animation contract): invalidate forces re-pack.
+    cols.y[0] = 99;
+    renderer.invalidateGeometry();
+    renderer.prepare(series, dataBuffer, xScale, yScale, 0, 1, 1400, 800, n, 1, undefined, false, 1400);
+    expect(writeBuffer).toHaveBeenCalledTimes(2);
+    renderer.dispose();
+  });
+
+  it('uses plotWidthDevicePx for dense stride budget (not full canvas width alone)', () => {
+    const device = createMockDevice();
+    const renderer = createLineRenderer(device, { sampleCount: 4 });
+    const n = 300_000;
+    const cols = makeXyCols(n);
+    const series = makeSeries(cols as any);
+    const xScale = createLinearScale()
+      .domain(0, n - 1)
+      .range(-1, 1);
+    const yScale = createLinearScale().domain(0, 10).range(1, -1);
+    const dataBuffer = { label: 'data', size: n * 8 } as GPUBuffer;
+
+    // Narrow plot width vs wide canvas: budget uses plot width (floor max(2048, plotW)).
+    const canvasW = 4000;
+    const plotW = 1000;
+    renderer.prepare(series, dataBuffer, xScale, yScale, 0, 1, canvasW, 800, n, 1, undefined, false, plotW);
+    expect(renderer.isDenseHairline()).toBe(true);
+
+    const hairDraws: number[] = [];
+    const pass = {
+      setPipeline: vi.fn(),
+      setBindGroup: vi.fn(),
+      draw: vi.fn((_v: number, i: number) => {
+        hairDraws.push(i);
+      }),
+    } as unknown as GPURenderPassEncoder;
+    renderer.renderHairline(pass);
+    // Budget = max(2048, plotW)=2048 when plotW < min floor; not canvasW=4000.
+    expect(hairDraws[0]).toBeLessThanOrEqual(2048 + 64);
+    expect(hairDraws[0]).toBeGreaterThan(0);
+    expect(hairDraws[0]).toBeLessThan(n - 1);
+    // Wider plot alone would still be ≪ full N; verify plot budget wins over canvas.
+    const renderer2 = createLineRenderer(device, { sampleCount: 4 });
+    renderer2.prepare(series, dataBuffer, xScale, yScale, 0, 1, canvasW, 800, n, 1, undefined, false, 3500);
+    const hairDrawsWide: number[] = [];
+    const pass2 = {
+      setPipeline: vi.fn(),
+      setBindGroup: vi.fn(),
+      draw: vi.fn((_v: number, i: number) => {
+        hairDrawsWide.push(i);
+      }),
+    } as unknown as GPURenderPassEncoder;
+    renderer2.renderHairline(pass2);
+    expect(hairDrawsWide[0]).toBeGreaterThan(hairDraws[0]!);
+    expect(hairDrawsWide[0]).toBeLessThanOrEqual(3500 + 64);
+    renderer2.dispose();
+    renderer.dispose();
+  });
+});
+
 describe('line.wgsl hairline gap contract (Issue 1 review)', () => {
   it('vsMainHairline dual-endpoint NaN-checks both segment ends', async () => {
     const fs = await import('node:fs');
@@ -638,9 +819,9 @@ describe('line.wgsl hairline gap contract (Issue 1 review)', () => {
     expect(hairStart).toBeGreaterThan(-1);
     const hairBody = src.slice(hairStart, src.indexOf('fn fsMainHairline'));
     // Must read both endpoints and reject if either is NaN (not only points[iid+vid]).
-    // Endpoints via pointAt (modular ring remap) or legacy points[iid].
-    expect(hairBody).toMatch(/pointAt\(iid\)|points\[iid\]/);
-    expect(hairBody).toMatch(/pointAt\(iid \+ 1u\)|points\[iid \+ 1u\]/);
+    // Dense LOD: pointAt(i0)/pointAt(i1) with i0 = iid * stride (stride 1 ≡ iid/iid+1).
+    expect(hairBody).toMatch(/pointAt\(i0\)|pointAt\(iid\)|points\[iid\]/);
+    expect(hairBody).toMatch(/pointAt\(i1\)|pointAt\(iid \+ 1u\)|points\[iid \+ 1u\]/);
     // Endpoints may be named pA/pB or pA_raw/pB_raw (log-projection path).
     expect(hairBody).toMatch(/pA(_raw)?\.x != pA(_raw)?\.x/);
     expect(hairBody).toMatch(/pB(_raw)?\.x != pB(_raw)?\.x/);

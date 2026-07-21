@@ -1,12 +1,14 @@
 // area.wgsl
 // Area-fill from a storage buffer of domain points (shared with line stroke):
 // - points[i] = vec2(x, y) in data coords (optionally x - xOffset packed)
-// - Draw triangle-list with 6 vertices × (pointCount - 1) instances
-//   (one trapezoid per consecutive pair point[i] → point[i+1])
+// - Draw triangle-list with 6 vertices × drawSegmentCount instances
+//   (one trapezoid per consecutive pair; optional dense LOD stride)
 // - instance_index selects the segment; vertex_index selects the 6 quad corners
 // - Dual-endpoint NaN check collapses gap-spanning segments (matches line.wgsl).
 //   Continuous triangle-strip collapse to clip origin does NOT restart a strip
 //   and incorrectly fans through (0,0,0,0) — see GitHub issue #153.
+// - Dense LOD (performance.lod auto): lodStride > 1 samples every Nth point so
+//   multi-M raw residency still draws ~plot-pixel budget (group 8 mountain).
 
 struct VSUniforms {
   transform: mat4x4<f32>,
@@ -16,6 +18,14 @@ struct VSUniforms {
   logBaseY: f32,
   // bit0 = log X, bit1 = log Y (DataStore stays data-space; log before mat4).
   logFlags: u32,
+  // Dense draw LOD: instance i connects points[i0] → points[i1] where
+  //   i0 = min(i * lodStride, lastPointIndex)
+  //   i1 = min(i0 + lodStride, lastPointIndex)
+  // lodStride == 1 → classic consecutive segments.
+  lodStride: u32,
+  lastPointIndex: u32,
+  _pad0: u32,
+  _pad1: u32,
 };
 
 @group(0) @binding(0) var<uniform> vsUniforms: VSUniforms;
@@ -82,8 +92,17 @@ fn vsMain(
   @builtin(instance_index) instanceIndex: u32,
 ) -> VSOut {
   var out: VSOut;
-  let pA = points[instanceIndex];
-  let pB = points[instanceIndex + 1u];
+  let stride = max(vsUniforms.lodStride, 1u);
+  let last = vsUniforms.lastPointIndex;
+  let i0 = min(instanceIndex * stride, last);
+  let i1 = min(i0 + stride, last);
+  // Degenerate (no advance) — collapse (should not happen with correct draw count).
+  if (i0 == i1) {
+    out.clipPosition = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    return out;
+  }
+  let pA = points[i0];
+  let pB = points[i1];
 
   // Dual-endpoint gap detection (same contract as line.wgsl).
   // Null entries are packed as NaN by the CPU. WGSL has no isnan(); use NaN != NaN.

@@ -60,14 +60,16 @@ Many short line series (e.g. 1000×1000) can exceed a **~500k total-segment** bu
 
 Chart-level option controlling dense draw fidelity:
 
-| Value | Lines | Scatter | Equal-N LTTB |
-|-------|-------|---------|--------------|
-| `'auto'` (default) | ≥25k points or multi-series segment budget ≥500k → 1 device-px hairline | High points/pixel → compact marker radius toward ~1 device px | Index-sorted equal-N rewrites may freeze prior LTTB indices (O(k) y remap) |
-| `'strict'` | Always honor `lineStyle.width` + AA quads | Always honor `symbolSize` | Full LTTB recompute on every y change (honest sampling) |
+| Value | Lines | Scatter | Mountain / area fill | Equal-N LTTB |
+|-------|-------|---------|---------------------|--------------|
+| `'auto'` (default) | ≥25k points or multi-series segment budget ≥500k → 1 device-px hairline; multi-M hairline also caps **drawn** segments toward `max(2048, 1× plotWidth)` | High points/pixel → compact marker radius toward ~1 device px | N ≥ 250k and over pixel budget → draw-stride fill (resident data unchanged; `sampling: 'none'` still full raw); dense fill draws sampleCount:1 post-resolve (or direct SS1 when no annotations/hover) | Index-sorted equal-N rewrites may freeze prior LTTB indices (O(k) y remap) |
+| `'strict'` | Always honor `lineStyle.width` + AA quads + full N segments | Always honor `symbolSize` | Full N−1 fill trapezoids | Full LTTB recompute on every y change (honest sampling) |
 
 **Thresholds (auto only):**
 
 - Dense hairline: `DENSE_HAIRLINE_POINT_THRESHOLD = 25_000` points per series, or multi-series total segments ≥ `500_000`
+- Dense draw stride (mountain fill + multi-M hairline stroke): N ≥ `250_000` and segments over `max(2048, 1× plotWidthDevicePx)` → index stride in VS (`denseDrawLod.ts` / `areaDrawPolicy.ts`); residency and sampling mode unchanged. **May draw ≪ N−1** at 500k / 1M protect rows under auto — use `lod: 'strict'` when full geometry is required
+- Dense mountain under auto may use **sampleCount:1** for dense fill/stroke (post-resolve, or a direct swapchain SS1 path when every series layer is deferred and there are no annotations / pointer overlays). Overlay axes stay correct; main 4× MSAA is skipped only on that narrow dense-only path
 - Dense scatter: density LO `0.08` / HI `0.30` points per plot pixel, plus N ≥ `250_000` full-compact floor; **only fully compact** const-radius draws sampleCount:1 post-resolve (partial blends stay main 4×); deferred only on pure-scatter charts (any visible line keeps scatter on main for z-order — see `scatterDrawPolicy.ts`)
 
 Use `performance: { lod: 'strict' }` for fidelity-sensitive benchmarks or when SciChart harness geometry (width 2 / full markers) must match. Default `'auto'` remains the product FPS path.

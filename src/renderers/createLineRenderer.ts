@@ -3,9 +3,11 @@ import type { ResolvedLineSeriesConfig } from '../config/OptionResolver';
 import type { ContinuousScale } from '../utils/scales';
 import { parseCssColorToRgba01 } from '../utils/colors';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
-import { getPointCount } from '../data/cartesianData';
+import { getPointCount, getX, getY, isStagingRingView, isRingXYColumns } from '../data/cartesianData';
+import type { CartesianSeriesData } from '../config/types';
 import type { PipelineCache } from '../core/PipelineCache';
 import { resolveLineDrawPolicy, type LineDrawPolicy } from './lineDrawPolicy';
+import { resolveDenseDrawStride } from './denseDrawLod';
 import {
   computeClipAffineFromContinuousScale,
   computePackedXAffineFromScale,
@@ -47,8 +49,20 @@ export interface LineRenderer {
      * Force standard AA quads (honor configured line width) when true — used by
      * `performance.lod: 'strict'`. When false/omitted, dense hairline policy applies.
      */
-    forceStandardDraw?: boolean
+    forceStandardDraw?: boolean,
+    /**
+     * Plot width in device pixels for dense multi-M hairline segment budget.
+     * When omitted, falls back to canvas width (slightly more segments).
+     * Share with area fill LOD so mountain stroke/fill stride stay aligned.
+     */
+    plotWidthDevicePx?: number
   ): void;
+  /**
+   * Drop identity-cached dense compact geometry so the next prepare re-packs.
+   * Required when update animation mutates series values under a stable data ref
+   * (same contract as area / scatter `invalidateGeometry`).
+   */
+  invalidateGeometry(): void;
   /**
    * Draw into the **main** MSAA pass. Dense hairline series are deferred
    * ({@link isDenseHairline}) and must be drawn with {@link renderHairline}
@@ -173,7 +187,8 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
   const bindGroupLayout = getLineBindGroupLayout(device);
 
   // VS uniforms: mat4x4 (64) + canvasSize (8) + dpr (4) + lineWidthCssPx (4)
-  // + ringStart/ringCapacity (8) + logBaseX/logBaseY (8) + logFlags/pad (8) = 112.
+  // + ringStart/ringCapacity (8) + logBaseX/logBaseY (8) + logFlags (4)
+  // + lodStride/lastPointIndex/pad (12) = 112.
   const vsUniformBuffer = createUniformBuffer(device, 112, {
     label: 'lineRenderer/vsUniforms',
   });
@@ -216,6 +231,8 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
   let lastLogFlags = 0;
   let lastLogBaseX = Number.NaN;
   let lastLogBaseY = Number.NaN;
+  let lastLodStride = -1;
+  let lastLastPointIndex = -1;
   /** Which VS buffer is currently referenced by currentBindGroup. */
   let boundVsBuffer: GPUBuffer = vsUniformBuffer;
 
@@ -285,9 +302,115 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
 
   let currentPointCount = 0;
   let currentDrawPolicy: LineDrawPolicy = 'standard';
+  /** Drawn segment instances (may be ≪ N−1 under dense hairline LOD). */
+  let currentDrawSegmentCount = 0;
+  let currentLodStride = 1;
+  let currentLastPointIndex = 0;
+
+  // Compact draw buffer for multi-M dense hairline (bind ~plot-width points, not full N).
+  let lodPrivateBuffer: GPUBuffer | null = null;
+  let lodCpuStaging = new Float32Array(0);
+  let lodCompactPointCount = 0;
+  let lodCompactStride = 0;
+  let lodCompactDataRef: unknown = null;
+  let lodCompactSourceN = 0;
+  let lodCompactXOffset = Number.NaN;
 
   const assertNotDisposed = (): void => {
     if (disposed) throw new Error('LineRenderer is disposed.');
+  };
+
+  const ensureLodStaging = (floats: number): void => {
+    if (floats <= lodCpuStaging.length) return;
+    let n = 8;
+    while (n < floats) n *= 2;
+    lodCpuStaging = new Float32Array(n);
+  };
+
+  const ensureLodBuffer = (bytes: number): void => {
+    const need = Math.max(4, bytes);
+    if (lodPrivateBuffer && lodPrivateBuffer.size >= need) return;
+    if (lodPrivateBuffer) {
+      try {
+        lodPrivateBuffer.destroy();
+      } catch {
+        // best-effort
+      }
+    }
+    let grown = 256;
+    while (grown < need) grown *= 2;
+    lodPrivateBuffer = device.createBuffer({
+      label: 'lineRenderer/lodCompactPoints',
+      size: grown,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+  };
+
+  /**
+   * Pack dense-hairline subsample into a compact private buffer and bind it.
+   * Returns the buffer to use for draw (compact or original).
+   */
+  const tryCompactHairlineLod = (
+    seriesData: CartesianSeriesData | undefined,
+    fullBuffer: GPUBuffer,
+    n: number,
+    stride: number,
+    xOffset: number
+  ): GPUBuffer => {
+    if (stride <= 1 || n < 2 || seriesData == null) return fullBuffer;
+    // Ring/staging mutates under stable identity — keep full buffer + VS stride
+    // (mirrors area `tryBindCompactLod`; chronological pack would be stale).
+    if (isStagingRingView(seriesData) || isRingXYColumns(seriesData)) return fullBuffer;
+    const cacheHit =
+      lodCompactDataRef === seriesData &&
+      lodCompactSourceN === n &&
+      lodCompactStride === stride &&
+      lodCompactXOffset === xOffset &&
+      lodCompactPointCount >= 2 &&
+      lodPrivateBuffer != null;
+    if (!cacheHit) {
+      const last = n - 1;
+      const maxPts = Math.ceil(last / stride) + 1;
+      ensureLodStaging(maxPts * 2);
+      let o = 0;
+      for (let i = 0; i < last; i += stride) {
+        const x = getX(seriesData, i);
+        const y = getY(seriesData, i);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+          lodCpuStaging[o * 2] = Number.NaN;
+          lodCpuStaging[o * 2 + 1] = Number.NaN;
+        } else {
+          lodCpuStaging[o * 2] = xOffset !== 0 ? x - xOffset : x;
+          lodCpuStaging[o * 2 + 1] = y;
+        }
+        o++;
+      }
+      const xL = getX(seriesData, last);
+      const yL = getY(seriesData, last);
+      if (!Number.isFinite(xL) || !Number.isFinite(yL)) {
+        lodCpuStaging[o * 2] = Number.NaN;
+        lodCpuStaging[o * 2 + 1] = Number.NaN;
+      } else {
+        lodCpuStaging[o * 2] = xOffset !== 0 ? xL - xOffset : xL;
+        lodCpuStaging[o * 2 + 1] = yL;
+      }
+      o++;
+      ensureLodBuffer(o * 8);
+      if (lodPrivateBuffer && o > 0) {
+        device.queue.writeBuffer(lodPrivateBuffer, 0, lodCpuStaging.buffer, lodCpuStaging.byteOffset, o * 8);
+      }
+      lodCompactPointCount = o;
+      lodCompactStride = stride;
+      lodCompactDataRef = seriesData;
+      lodCompactSourceN = n;
+      lodCompactXOffset = xOffset;
+    }
+    if (!lodPrivateBuffer || lodCompactPointCount < 2) return fullBuffer;
+    // Compact is chronological unit-stride; clear ring remap for this draw.
+    currentLodStride = 1;
+    currentLastPointIndex = lodCompactPointCount - 1;
+    currentDrawSegmentCount = lodCompactPointCount - 1;
+    return lodPrivateBuffer;
   };
 
   const prepare: LineRenderer['prepare'] = (
@@ -302,7 +425,8 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     pointCountOverride,
     lineSeriesCount,
     ringLayout,
-    forceStandardDraw
+    forceStandardDraw,
+    plotWidthDevicePx
   ) => {
     assertNotDisposed();
 
@@ -318,7 +442,7 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     const { logFlags, logBaseX, logBaseY } = resolveLogProjection(xScale, yScale);
 
     // Write VS uniforms: mat4x4 (16 floats) + canvasSize (2 floats) + dpr (1 float)
-    // + lineWidth (1 float) + ringStart/ringCapacity + logBaseX/Y + logFlags/pad.
+    // + lineWidth (1 float) + ringStart/ringCapacity + logBaseX/Y + logFlags + lod.
     writeTransformMat4F32(vsUniformScratchF32, ax, bxPacked, ay, by);
     const dpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
     const canvasW = Number.isFinite(canvasWidthDevicePx) && canvasWidthDevicePx > 0 ? canvasWidthDevicePx : 1;
@@ -340,32 +464,69 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     currentDrawPolicy = drawPolicy.policy;
     const lineWidthCss = drawPolicy.effectiveLineWidthCssPx;
 
+    // Multi-M hairline (mountain stroke / unsorted): cap drawn segments toward a
+    // plot-width budget under lod:auto (shared with area fill). Canvas width is
+    // the fallback when plot width is omitted (slightly more segments).
+    const plotWForLod =
+      Number.isFinite(plotWidthDevicePx) && (plotWidthDevicePx as number) > 0
+        ? Math.floor(plotWidthDevicePx as number)
+        : canvasW;
+    const denseStride = resolveDenseDrawStride({
+      pointCount: currentPointCount,
+      plotWidthDevicePx: plotWForLod,
+      // Only stride when already on the dense hairline path (or forceStandard).
+      forceStandard: forceStandardDraw === true || drawPolicy.policy !== 'denseHairline',
+    });
+    currentLodStride = denseStride.stride;
+    currentDrawSegmentCount = denseStride.drawSegmentCount;
+    currentLastPointIndex = denseStride.lastPointIndex;
+
     // Modular ring: remap when capacity > 0. start may be 0 during pre-wrap fill
     // (identity map) or after wrap (oldest physical index). Match getSeriesRingLayout:
     // capacity 0 → linear; capacity > 0 → floor(start) with start >= 0.
-    const ringCapacity =
+    let ringCapacity =
       ringLayout && Number.isFinite(ringLayout.capacity) && ringLayout.capacity > 0
         ? Math.floor(ringLayout.capacity)
         : 0;
-    const ringStart =
+    let ringStart =
       ringCapacity > 0 && ringLayout && Number.isFinite(ringLayout.start) && ringLayout.start >= 0
         ? Math.floor(ringLayout.start)
         : 0;
+
+    // Dense multi-M hairline: compact private buffer (unit stride, no ring) so the
+    // stroke path does not keep multi-M storage hot (group 8 mountain).
+    let drawDataBuffer = dataBuffer;
+    if (drawPolicy.policy === 'denseHairline' && denseStride.stride > 1 && ringCapacity === 0) {
+      drawDataBuffer = tryCompactHairlineLod(
+        seriesConfig.data as CartesianSeriesData | undefined,
+        dataBuffer,
+        currentPointCount,
+        denseStride.stride,
+        xOffset
+      );
+      if (drawDataBuffer !== dataBuffer) {
+        // Compact buffer is linear chronological — disable ring remap.
+        ringCapacity = 0;
+        ringStart = 0;
+      }
+    }
 
     vsUniformScratchF32[16] = canvasW;
     vsUniformScratchF32[17] = canvasH;
     vsUniformScratchF32[18] = dpr;
     vsUniformScratchF32[19] = lineWidthCss;
-    // u32 ring fields at byte offset 80 (float index 20); log bases + flags follow.
+    // u32 ring fields at byte offset 80 (float index 20); log bases + flags + lod follow.
     vsUniformScratchU32[20] = ringStart >>> 0;
     vsUniformScratchU32[21] = ringCapacity >>> 0;
     vsUniformScratchF32[22] = logBaseX;
     vsUniformScratchF32[23] = logBaseY;
     vsUniformScratchU32[24] = logFlags >>> 0;
-    vsUniformScratchU32[25] = 0;
+    vsUniformScratchU32[25] = currentLodStride >>> 0;
+    vsUniformScratchU32[26] = currentLastPointIndex >>> 0;
+    vsUniformScratchU32[27] = 0;
 
     // Private VS only (multi-chart deferred-submit safe). Dirty-skip when affine /
-    // size / width / ring layout / log projection unchanged (issue 2.5) — covers
+    // size / width / ring layout / log projection / lod unchanged (issue 2.5) — covers
     // axes-only ticks without a device-global shared buffer that multi-chart slots would clobber.
     let vsBufferForBind: GPUBuffer = vsUniformBuffer;
     {
@@ -382,7 +543,9 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
         lastRingCapacity !== ringCapacity ||
         lastLogFlags !== logFlags ||
         lastLogBaseX !== logBaseX ||
-        lastLogBaseY !== logBaseY;
+        lastLogBaseY !== logBaseY ||
+        lastLodStride !== currentLodStride ||
+        lastLastPointIndex !== currentLastPointIndex;
       if (vsDirty) {
         writeUniformBuffer(device, vsUniformBuffer, vsUniformScratchBuffer);
         lastAx = ax;
@@ -398,6 +561,8 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
         lastLogFlags = logFlags;
         lastLogBaseX = logBaseX;
         lastLogBaseY = logBaseY;
+        lastLodStride = currentLodStride;
+        lastLastPointIndex = currentLastPointIndex;
       }
     }
 
@@ -430,34 +595,42 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     }
 
     // Rebuild bind group when data buffer or VS buffer (shared vs private) changes.
-    if (currentBindGroup === null || boundDataBuffer !== dataBuffer || boundVsBuffer !== vsBufferForBind) {
+    if (currentBindGroup === null || boundDataBuffer !== drawDataBuffer || boundVsBuffer !== vsBufferForBind) {
       currentBindGroup = device.createBindGroup({
         layout: bindGroupLayout,
         entries: [
           { binding: 0, resource: { buffer: vsBufferForBind } },
           { binding: 1, resource: { buffer: fsUniformBuffer } },
-          { binding: 2, resource: { buffer: dataBuffer } },
+          { binding: 2, resource: { buffer: drawDataBuffer } },
         ],
       });
-      boundDataBuffer = dataBuffer;
+      boundDataBuffer = drawDataBuffer;
       boundVsBuffer = vsBufferForBind;
     }
   };
 
   const isDenseHairlinePolicy = (): boolean => currentDrawPolicy === 'denseHairline';
 
+  const invalidateGeometry: LineRenderer['invalidateGeometry'] = () => {
+    // Drop compact LOD identity cache so in-place mutation (animation) re-packs.
+    lodCompactPointCount = 0;
+    lodCompactDataRef = null;
+    lodCompactSourceN = 0;
+    lodCompactStride = 0;
+    lodCompactXOffset = Number.NaN;
+  };
+
   const render: LineRenderer['render'] = (passEncoder) => {
     assertNotDisposed();
     // Need at least 2 points to form 1 segment.
-    if (!currentBindGroup || currentPointCount < 2) return;
+    if (!currentBindGroup || currentPointCount < 2 || currentDrawSegmentCount < 1) return;
     // Dense hairline is deferred to the single-sample post-resolve pass.
     if (isDenseHairlinePolicy()) return;
 
-    const segments = currentPointCount - 1;
     passEncoder.setPipeline(pipeline);
     passEncoder.setBindGroup(0, currentBindGroup);
-    // 6 vertices per instance (quad), (pointCount - 1) instances (segments).
-    passEncoder.draw(6, segments);
+    // 6 vertices per instance (quad); standard path keeps stride 1 → N−1 segments.
+    passEncoder.draw(6, currentDrawSegmentCount);
   };
 
   const isDenseHairline: LineRenderer['isDenseHairline'] = () => {
@@ -472,14 +645,16 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
 
   const renderHairline: LineRenderer['renderHairline'] = (passEncoder, options) => {
     assertNotDisposed();
-    if (!isDenseHairlinePolicy() || !currentBindGroup || currentPointCount < 2) return;
-    const segments = currentPointCount - 1;
+    if (!isDenseHairlinePolicy() || !currentBindGroup || currentPointCount < 2 || currentDrawSegmentCount < 1) {
+      return;
+    }
     if (!options?.skipSetPipeline) {
       passEncoder.setPipeline(hairlinePipeline);
     }
     passEncoder.setBindGroup(0, currentBindGroup);
     // Native 1 device-px stroke: 2 verts/instance (line-list), sampleCount 1 pass.
-    passEncoder.draw(2, segments);
+    // Multi-M dense LOD may draw ≪ N−1 instances (pixel-budget stride).
+    passEncoder.draw(2, currentDrawSegmentCount);
   };
 
   const dispose: LineRenderer['dispose'] = () => {
@@ -489,7 +664,24 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     currentBindGroup = null;
     boundDataBuffer = null;
     currentPointCount = 0;
+    currentDrawSegmentCount = 0;
+    currentLodStride = 1;
+    currentLastPointIndex = 0;
     currentDrawPolicy = 'standard';
+    lodCompactPointCount = 0;
+    lodCompactDataRef = null;
+    lodCompactSourceN = 0;
+    lodCompactStride = 0;
+    lodCompactXOffset = Number.NaN;
+    lodCpuStaging = new Float32Array(0);
+    if (lodPrivateBuffer) {
+      try {
+        lodPrivateBuffer.destroy();
+      } catch {
+        // best-effort
+      }
+    }
+    lodPrivateBuffer = null;
 
     try {
       vsUniformBuffer.destroy();
@@ -503,5 +695,5 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     }
   };
 
-  return { prepare, render, isDenseHairline, renderHairline, bindHairlinePipeline, dispose };
+  return { prepare, invalidateGeometry, render, isDenseHairline, renderHairline, bindHairlinePipeline, dispose };
 }

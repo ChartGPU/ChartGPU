@@ -294,9 +294,22 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
 
   const introP = introPhase === 'running' ? clamp01(introProgress01) : 1;
 
-  // performance.lod: 'strict' disables dense hairline / scatter radius compaction.
-  // Step (digital) forces standard AA quads — dense hairline is linear-only (D7).
+  // performance.lod: 'strict' disables dense hairline / scatter radius compaction /
+  // mountain fill draw-stride. Step (digital) forces standard AA quads — dense
+  // hairline is linear-only (D7).
   const forceStandardDrawLod = currentOptions.performance?.lod === 'strict';
+
+  // Plot width (device px) for dense mountain fill LOD (group 8 multi-M).
+  const dprForPlot =
+    Number.isFinite(gridArea.devicePixelRatio) && gridArea.devicePixelRatio > 0 ? gridArea.devicePixelRatio : 1;
+  const plotWidthDevicePx = Math.max(
+    1,
+    Math.floor(gridArea.canvasWidth - (gridArea.left + gridArea.right) * dprForPlot)
+  );
+  const areaDrawLod = {
+    plotWidthDevicePx,
+    forceStandardDraw: forceStandardDrawLod,
+  } as const;
 
   // Multi-series hairline budget (group 1): count **visible** line series once.
   // Used only for hairline segment budget and multi-series prepare inputs
@@ -350,10 +363,21 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
               areaStepMode,
               !!s.connectNulls
             );
-            renderers.areaRenderers[i].prepare(s, stackedPack, xScale, getYScale(s), 0, undefined, undefined, 0, {
-              yBottom: stacked.yBottom,
-              yTop: stacked.yTop,
-            });
+            renderers.areaRenderers[i].prepare(
+              s,
+              stackedPack,
+              xScale,
+              getYScale(s),
+              0,
+              undefined,
+              undefined,
+              0,
+              {
+                yBottom: stacked.yBottom,
+                yTop: stacked.yTop,
+              },
+              areaDrawLod
+            );
           } else {
             renderers.areaRenderers[i].prepare(
               s,
@@ -367,7 +391,8 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
               {
                 yBottom: stackGeom.yBottom,
                 yTop: stackGeom.yTop,
-              }
+              },
+              areaDrawLod
             );
           }
           // Stacked mountain is not GPU-decimation eligible; tag other for append.
@@ -383,7 +408,18 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
             areaStepMode,
             !!s.connectNulls
           );
-          renderers.areaRenderers[i].prepare(s, steppedData, xScale, getYScale(s), baseline);
+          renderers.areaRenderers[i].prepare(
+            s,
+            steppedData,
+            xScale,
+            getYScale(s),
+            baseline,
+            undefined,
+            undefined,
+            0,
+            undefined,
+            areaDrawLod
+          );
           gpuSeriesKindByIndex[i] = 'other';
           break;
         }
@@ -409,10 +445,23 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
             baseline,
             areaBuffer,
             dataStore.getSeriesPointCount(i),
-            xOffset
+            xOffset,
+            undefined,
+            areaDrawLod
           );
         } else {
-          renderers.areaRenderers[i].prepare(s, areaData, xScale, getYScale(s), baseline);
+          renderers.areaRenderers[i].prepare(
+            s,
+            areaData,
+            xScale,
+            getYScale(s),
+            baseline,
+            undefined,
+            undefined,
+            0,
+            undefined,
+            areaDrawLod
+          );
         }
         // sampling:'none' keeps full raw resident → ranged append (mirrors line).
         if (s.sampling === 'none') {
@@ -482,7 +531,8 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
             undefined,
             lineSeriesCount,
             dataStore.getSeriesRingLayout(i),
-            forceStandardDraw
+            forceStandardDraw,
+            plotWidthDevicePx
           );
           const yScaleForArea = getYScale(s);
           const areaLike: ResolvedAreaSeriesConfig = {
@@ -499,10 +549,21 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
             rawBounds: (s as { rawBounds?: ResolvedAreaSeriesConfig['rawBounds'] }).rawBounds,
             stack: (s as { stack?: string }).stack,
           };
-          renderers.areaRenderers[i].prepare(areaLike, packData, xScale, yScaleForArea, 0, undefined, undefined, 0, {
-            yBottom,
-            yTop,
-          });
+          renderers.areaRenderers[i].prepare(
+            areaLike,
+            packData,
+            xScale,
+            yScaleForArea,
+            0,
+            undefined,
+            undefined,
+            0,
+            {
+              yBottom,
+              yTop,
+            },
+            areaDrawLod
+          );
           gpuSeriesKindByIndex[i] = 'other';
           break;
         }
@@ -580,7 +641,8 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
               rawPointCount,
               lineSeriesCount,
               ringLayout,
-              forceStandardDraw
+              forceStandardDraw,
+              plotWidthDevicePx
             );
             gpuSeriesKindByIndex[i] = 'gpuDecimationRaw';
           } else {
@@ -603,7 +665,8 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
                 rawPointCount,
                 lineSeriesCount,
                 ringLayout,
-                forceStandardDraw
+                forceStandardDraw,
+                plotWidthDevicePx
               );
               gpuSeriesKindByIndex[i] = 'gpuDecimationRaw';
               break;
@@ -641,7 +704,8 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
               outputPointCount,
               lineSeriesCount,
               undefined,
-              forceStandardDraw
+              forceStandardDraw,
+              plotWidthDevicePx
             );
             gpuSeriesKindByIndex[i] = 'gpuDecimationRaw';
           }
@@ -678,11 +742,24 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
                 areaBaseline,
                 strokeBuffer,
                 strokePointCount,
-                xOffset
+                xOffset,
+                undefined,
+                areaDrawLod
               );
             } else {
               // Modular ring wrap: private chronological pack from runtime raw.
-              renderers.areaRenderers[i].prepare(areaLike, areaLike.data, xScale, yScaleForArea, areaBaseline);
+              renderers.areaRenderers[i].prepare(
+                areaLike,
+                areaLike.data,
+                xScale,
+                yScaleForArea,
+                areaBaseline,
+                undefined,
+                undefined,
+                0,
+                undefined,
+                areaDrawLod
+              );
             }
           }
 
@@ -746,7 +823,8 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
           undefined,
           lineSeriesCount,
           cpuPathRingLayout,
-          forceStandardDraw
+          forceStandardDraw,
+          plotWidthDevicePx
         );
 
         // Track the GPU buffer kind for future append fast-path decisions.
@@ -791,10 +869,23 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
               areaBaseline,
               buffer,
               dataStore.getSeriesPointCount(i),
-              xOffset
+              xOffset,
+              undefined,
+              areaDrawLod
             );
           } else {
-            renderers.areaRenderers[i].prepare(areaLike, areaLike.data, xScale, yScaleForArea, areaBaseline);
+            renderers.areaRenderers[i].prepare(
+              areaLike,
+              areaLike.data,
+              xScale,
+              yScaleForArea,
+              areaBaseline,
+              undefined,
+              undefined,
+              0,
+              undefined,
+              areaDrawLod
+            );
           }
         }
 
@@ -1264,6 +1355,59 @@ export function hasDenseHairlineLines(renderers: SeriesRenderers, seriesPreparat
 }
 
 /**
+ * True when any visible area / mountain fill deferred dense LOD out of the
+ * 4× MSAA main pass (group 8 multi-M mountain fill cliff).
+ */
+export function hasDenseDeferredArea(renderers: SeriesRenderers, seriesPreparation: SeriesPreparationResult): boolean {
+  const { visibleSeriesForRender } = seriesPreparation;
+  for (let idx = 0; idx < visibleSeriesForRender.length; idx++) {
+    const { series, originalIndex } = visibleSeriesForRender[idx]!;
+    if (!shouldRenderArea(series)) continue;
+    const ar = renderers.areaRenderers[originalIndex];
+    if (ar?.isDenseDeferred?.()) return true;
+  }
+  return false;
+}
+
+/**
+ * True when any visible series will draw into the **main** (typically 4× MSAA) pass.
+ * Used to skip main MSAA entirely when every series layer is deferred to the
+ * post-resolve sampleCount:1 pass (group 8 mountain: dense fill + dense hairline).
+ */
+export function hasNonDeferredMainSeriesContent(
+  renderers: SeriesRenderers,
+  seriesPreparation: SeriesPreparationResult
+): boolean {
+  const { visibleSeriesForRender } = seriesPreparation;
+  for (let idx = 0; idx < visibleSeriesForRender.length; idx++) {
+    const { series, originalIndex } = visibleSeriesForRender[idx]!;
+    const t = series.type;
+    if (t === 'pie' || t === 'heatmap' || t === 'band' || t === 'errorBar' || t === 'impulse') {
+      return true;
+    }
+    if (t === 'bar' || t === 'candlestick' || t === 'ohlc') return true;
+    if (t === 'scatter') {
+      if (series.mode === 'density') return true;
+      const sr = renderers.scatterRenderers[originalIndex];
+      if (!sr?.isDenseDeferred()) return true;
+      continue;
+    }
+    if (shouldRenderArea(series)) {
+      const ar = renderers.areaRenderers[originalIndex];
+      if (!ar?.isDenseDeferred?.()) return true;
+      if (series.type === 'area') continue;
+    }
+    if (t === 'line') {
+      const lr = renderers.lineRenderers[originalIndex];
+      if (!lr?.isDenseHairline()) return true;
+      continue;
+    }
+    if (t !== 'area') return true;
+  }
+  return false;
+}
+
+/**
  * True when any visible const-radius scatter series deferred denseCompact draws
  * out of the 4× MSAA main pass (group 2 ≥250k fill cliff).
  */
@@ -1281,6 +1425,50 @@ export function hasDenseDeferredScatter(
     if (sr?.isDenseDeferred()) return true;
   }
   return false;
+}
+
+/**
+ * Draw deferred dense mountain/area fills into a **sampleCount:1** pass on the
+ * resolved main color (loadOp: load). Must run **before** dense hairline strokes
+ * so fill stays under the stroke (main-pass z-order: area then line).
+ */
+export function renderDenseDeferredArea(
+  renderers: SeriesRenderers,
+  context: {
+    readonly gridArea: GridArea;
+    readonly densePass: GPURenderPassEncoder;
+    readonly plotScissor: { x: number; y: number; w: number; h: number };
+    readonly introPhase: 'pending' | 'running' | 'done';
+    readonly introProgress01: number;
+  },
+  seriesPreparation: SeriesPreparationResult
+): void {
+  const { gridArea, densePass, plotScissor, introPhase, introProgress01 } = context;
+  const { visibleSeriesForRender } = seriesPreparation;
+  const introP = introPhase === 'running' ? clamp01(introProgress01) : 1;
+
+  const drawDenseAreaBatch = (pass: GPURenderPassEncoder): void => {
+    for (let idx = 0; idx < visibleSeriesForRender.length; idx++) {
+      const { series, originalIndex } = visibleSeriesForRender[idx]!;
+      if (!shouldRenderArea(series)) continue;
+      const ar = renderers.areaRenderers[originalIndex];
+      if (!ar?.isDenseDeferred?.()) continue;
+      ar.renderDense(pass);
+    }
+  };
+
+  if (introP < 1) {
+    const w = clampInt(Math.floor(plotScissor.w * introP), 0, plotScissor.w);
+    if (w > 0 && plotScissor.h > 0) {
+      densePass.setScissorRect(plotScissor.x, plotScissor.y, w, plotScissor.h);
+      drawDenseAreaBatch(densePass);
+      densePass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+    }
+  } else if (plotScissor.w > 0 && plotScissor.h > 0) {
+    densePass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+    drawDenseAreaBatch(densePass);
+    densePass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+  }
 }
 
 /**

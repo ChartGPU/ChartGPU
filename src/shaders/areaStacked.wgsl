@@ -1,8 +1,9 @@
 // areaStacked.wgsl
 // Stacked mountain/area fill: per-point yTop and yBottom (composition baselines).
 // - points[i] = AreaPoint { x, y (top), y0 (bottom), _pad }
-// - Triangle-list 6 verts × (pointCount - 1) instances (same topology as area.wgsl)
+// - Triangle-list 6 verts × drawSegmentCount instances (same topology as area.wgsl)
 // - Dual-endpoint NaN discard on x/y/y0
+// - Dense LOD lodStride matches area.wgsl (performance.lod auto multi-M)
 
 struct VSUniforms {
   transform: mat4x4<f32>,
@@ -11,6 +12,10 @@ struct VSUniforms {
   logBaseX: f32,
   logBaseY: f32,
   logFlags: u32,
+  lodStride: u32,
+  lastPointIndex: u32,
+  _pad0: u32,
+  _pad1: u32,
 };
 
 @group(0) @binding(0) var<uniform> vsUniforms: VSUniforms;
@@ -81,8 +86,16 @@ fn vsMain(
   @builtin(instance_index) instanceIndex: u32,
 ) -> VSOut {
   var out: VSOut;
-  let pA = points[instanceIndex];
-  let pB = points[instanceIndex + 1u];
+  let stride = max(vsUniforms.lodStride, 1u);
+  let last = vsUniforms.lastPointIndex;
+  let i0 = min(instanceIndex * stride, last);
+  let i1 = min(i0 + stride, last);
+  if (i0 == i1) {
+    out.clipPosition = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    return out;
+  }
+  let pA = points[i0];
+  let pB = points[i1];
 
   if (
     pA.x != pA.x || pA.y != pA.y || pA.y0 != pA.y0 ||
