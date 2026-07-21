@@ -241,6 +241,119 @@ describe('appendFlush module ownership', () => {
     expect(extendBoundsWithOHLCDataPoints).toHaveBeenCalled();
   });
 
+  it('impulse append folds baseline into runtime bounds (yMin stays at baseline after window)', () => {
+    // All sample y > 0; baseline 0 must remain yMin after FIFO window (not snap to min(y)).
+    const raw = {
+      x: [0, 1, 2] as number[],
+      y: [5, 6, 7] as number[],
+    };
+    const deps = baseDeps({
+      gpuSeriesKindByIndex: ['other'],
+      runtimeRawDataByIndex: [raw],
+      // Stale bounds that already forgot baseline (the regression): yMin = min(y) = 5
+      runtimeRawBoundsByIndex: [{ xMin: 0, xMax: 2, yMin: 5, yMax: 7 }],
+      isOwnedMutableColumns: () => true,
+      ensureMutableRuntimeColumns: () => raw,
+      normalizeMaxPoints: (v) => (typeof v === 'number' ? v : null),
+      planMaxPointsWindow: (prevLen: number, newCount: number, maxPoints: number | null | undefined) => {
+        const max = maxPoints ?? 1000;
+        const total = prevLen + newCount;
+        if (total <= max) {
+          return {
+            didWindow: false,
+            dropPrevCount: 0,
+            keepNewCount: newCount,
+            newSrcOffset: 0,
+            isRing: false,
+            ringCapacity: 0,
+          };
+        }
+        const drop = total - max;
+        const dropPrev = Math.min(prevLen, drop);
+        const keepNew = newCount - Math.max(0, drop - prevLen);
+        return {
+          didWindow: true,
+          dropPrevCount: dropPrev,
+          keepNewCount: Math.max(0, keepNew),
+          newSrcOffset: Math.max(0, newCount - keepNew),
+          isRing: false,
+          ringCapacity: 0,
+        };
+      },
+      dropPrefixXY: (x: number[], y: number[], drop: number) => {
+        x.splice(0, drop);
+        y.splice(0, drop);
+      },
+      computeRawBoundsFromCartesianData: (data: any) => {
+        // Cartesian rescan without baseline — yMin would be min(y) only
+        let yMin = Infinity;
+        let yMax = -Infinity;
+        let xMin = Infinity;
+        let xMax = -Infinity;
+        for (let i = 0; i < data.x.length; i++) {
+          const xv = data.x[i];
+          const yv = data.y[i];
+          if (Number.isFinite(xv)) {
+            if (xv < xMin) xMin = xv;
+            if (xv > xMax) xMax = xv;
+          }
+          if (Number.isFinite(yv)) {
+            if (yv < yMin) yMin = yv;
+            if (yv > yMax) yMax = yv;
+          }
+        }
+        return { xMin, xMax, yMin, yMax };
+      },
+      extendBoundsWithCartesianData: (b: any, d: any) => {
+        const nb = deps.computeRawBoundsFromCartesianData(d) as any;
+        if (!b) return nb;
+        return {
+          xMin: Math.min(b.xMin, nb.xMin),
+          xMax: Math.max(b.xMax, nb.xMax),
+          yMin: Math.min(b.yMin, nb.yMin),
+          yMax: Math.max(b.yMax, nb.yMax),
+        };
+      },
+      currentOptions: {
+        series: [
+          {
+            type: 'impulse',
+            sampling: 'none',
+            baseline: 0,
+            data: raw,
+            rawData: raw,
+            rawBounds: { xMin: 0, xMax: 2, yMin: 0, yMax: 7 },
+            lineStyle: { width: 2, opacity: 1, color: '#a78bfa' },
+            showMarker: true,
+            symbolSize: 6,
+            yAxis: 'y',
+            visible: true,
+          } as any,
+        ],
+        autoScroll: false,
+        xAxis: {},
+      } as any,
+    });
+    // Append with maxPoints=3 → drop 1 prefix, keep last 3 (windowed)
+    deps.pendingAppendByIndex.set(0, [{ points: { x: [3], y: [8] }, maxPoints: 3 }]);
+    deps.runtimeBaseSeries = deps.currentOptions.series as any;
+    deps.renderSeries = deps.currentOptions.series as any;
+
+    const flush = createAppendFlush(() => deps);
+    expect(flush()).toBe(true);
+
+    const bounds = deps.runtimeRawBoundsByIndex[0] as {
+      xMin: number;
+      xMax: number;
+      yMin: number;
+      yMax: number;
+    } | null;
+    expect(bounds).not.toBeNull();
+    // Critical: baseline 0 must survive — not snap to min retained y (6 after drop)
+    expect(bounds!.yMin).toBe(0);
+    expect(bounds!.yMax).toBeGreaterThanOrEqual(8);
+  });
+
   it('band maxPoints FIFO drops aligned x/y/y1 triples', () => {
     const recomputeRuntimeBaseSeries = vi.fn();
     const cols = {

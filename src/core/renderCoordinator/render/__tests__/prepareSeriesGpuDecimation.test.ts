@@ -127,6 +127,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
       candlestickRenderers: [],
       ohlcRenderers: [],
       errorBarRenderers: [],
+      impulseRenderers: [],
       decimationComputes: [
         {
           prepare: decimationPrepare,
@@ -225,6 +226,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
       candlestickRenderers: [],
       ohlcRenderers: [],
       errorBarRenderers: [],
+      impulseRenderers: [],
       decimationComputes: [
         {
           prepare: decimationPrepare,
@@ -314,6 +316,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         candlestickRenderers: [],
         ohlcRenderers: [],
         errorBarRenderers: [],
+        impulseRenderers: [],
         decimationComputes: [
           {
             prepare: decimationPrepare,
@@ -422,6 +425,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         candlestickRenderers: [],
         ohlcRenderers: [],
         errorBarRenderers: [],
+        impulseRenderers: [],
         decimationComputes: [
           {
             prepare: decimationPrepare,
@@ -540,6 +544,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         candlestickRenderers: [],
         ohlcRenderers: [],
         errorBarRenderers: [],
+        impulseRenderers: [],
         decimationComputes: [
           {
             prepare: decimationPrepare,
@@ -662,6 +667,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         candlestickRenderers: [],
         ohlcRenderers: [],
         errorBarRenderers: [],
+        impulseRenderers: [],
         decimationComputes: [
           {
             prepare: decimationPrepare,
@@ -744,6 +750,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         candlestickRenderers: [],
         ohlcRenderers: [],
         errorBarRenderers: [],
+        impulseRenderers: [],
         decimationComputes: [
           {
             prepare: vi.fn(() => 8),
@@ -836,6 +843,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         candlestickRenderers: [],
         ohlcRenderers: [],
         errorBarRenderers: [],
+        impulseRenderers: [],
         decimationComputes: [
           {
             prepare: decimationPrepare,
@@ -925,6 +933,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         candlestickRenderers: [],
         ohlcRenderers: [],
         errorBarRenderers: [],
+        impulseRenderers: [],
         decimationComputes: [
           {
             prepare: vi.fn(),
@@ -1023,6 +1032,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         candlestickRenderers: [],
         ohlcRenderers: [],
         errorBarRenderers: [],
+        impulseRenderers: [],
         decimationComputes: [],
       },
       {
@@ -1112,6 +1122,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         candlestickRenderers: [],
         ohlcRenderers: [],
         errorBarRenderers: [],
+        impulseRenderers: [],
         decimationComputes: [
           {
             prepare: decimationPrepare,
@@ -1302,6 +1313,7 @@ describe('prepareSeries modular ring → line prepare (issue 0.1 / review 8)', (
         candlestickRenderers: [],
         ohlcRenderers: [],
         errorBarRenderers: [],
+        impulseRenderers: [],
         decimationComputes: [],
       },
       {
@@ -1374,6 +1386,7 @@ describe('prepareSeries modular ring → line prepare (issue 0.1 / review 8)', (
         candlestickRenderers: [],
         ohlcRenderers: [],
         errorBarRenderers: [],
+        impulseRenderers: [],
         decimationComputes: [
           {
             prepare: decimationPrepare,
@@ -1480,6 +1493,7 @@ describe('prepareSeries stacked mountain D9', () => {
       candlestickRenderers: [],
       ohlcRenderers: [],
       errorBarRenderers: [],
+      impulseRenderers: [],
       decimationComputes: [
         {
           prepare: decimationPrepare,

@@ -54,6 +54,7 @@ function emptyRenderers(lines: LineRenderer[]): SeriesRenderers {
     candlestickRenderers: [],
     ohlcRenderers: [],
     errorBarRenderers: [],
+    impulseRenderers: [],
     decimationComputes: [],
   };
 }

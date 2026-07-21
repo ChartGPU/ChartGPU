@@ -14,6 +14,9 @@ import type {
   ResolvedSeriesConfig,
 } from '../../../config/OptionResolver';
 import type { DataPoint } from '../../../config/types';
+import type { CartesianSeriesData } from '../../../config/types';
+import { impulseBounds } from '../../../data/impulseGeometry';
+import type { Bounds } from '../../../data/cartesianData';
 
 type WithContentHash = {
   readonly contentHash?: number;
@@ -178,13 +181,22 @@ export function patchSeriesPresentationKeepingSampledData(
       out[i] = prev;
       continue;
     }
-    const prevAny = prev as ResolvedSeriesConfig & WithRawBoundsMeta;
-    const nextAny = next as WithRawBoundsMeta;
+    const prevAny = prev as ResolvedSeriesConfig & WithRawBoundsMeta & { readonly baseline?: number };
+    const nextAny = next as WithRawBoundsMeta & { readonly baseline?: number };
     const modeChanged = nextAny.rawBoundsMode != null && nextAny.rawBoundsMode !== prevAny.rawBoundsMode;
+    // Impulse baseline is presentation state that affects auto-Y bounds without
+    // resampling — prefer next.rawBounds when baseline changes (Issue 3).
+    const impulseBaselineChanged =
+      next.type === 'impulse' &&
+      (typeof nextAny.baseline === 'number' ? nextAny.baseline : 0) !==
+        (typeof prevAny.baseline === 'number' ? prevAny.baseline : 0);
     // When axes explicitness changes, OptionResolver recomputed data-driven or
     // synthetic bounds — must not keep sticky prev.rawBounds (synthetic→auto).
-    const rawBounds = modeChanged ? (nextAny.rawBounds ?? prevAny.rawBounds) : (prevAny.rawBounds ?? nextAny.rawBounds);
-    const rawBoundsMode = modeChanged
+    const preferNextBounds = modeChanged || impulseBaselineChanged;
+    const rawBounds = preferNextBounds
+      ? (nextAny.rawBounds ?? prevAny.rawBounds)
+      : (prevAny.rawBounds ?? nextAny.rawBounds);
+    const rawBoundsMode = preferNextBounds
       ? (nextAny.rawBoundsMode ?? prevAny.rawBoundsMode)
       : (prevAny.rawBoundsMode ?? nextAny.rawBoundsMode);
     out[i] = {
@@ -202,6 +214,51 @@ export function patchSeriesPresentationKeepingSampledData(
     } as ResolvedSeriesConfig;
   }
   return out;
+}
+
+/**
+ * Presentation-only impulse baseline change: update the runtime bounds store so
+ * auto-Y (which prefers runtimeRawBoundsByIndex over series.rawBounds) expands.
+ *
+ * Returns true when any slot was updated. Mutates `runtimeRawBoundsByIndex` in place.
+ */
+export function syncRuntimeBoundsForImpulseBaselineChange(input: {
+  readonly prev: ResolvedChartGPUOptions['series'];
+  readonly next: ResolvedChartGPUOptions['series'];
+  readonly runtimeRawDataByIndex: ReadonlyArray<unknown>;
+  readonly runtimeRawBoundsByIndex: Array<Bounds | null>;
+}): boolean {
+  const { prev, next, runtimeRawDataByIndex, runtimeRawBoundsByIndex } = input;
+  let changed = false;
+  const n = Math.min(prev.length, next.length, runtimeRawBoundsByIndex.length);
+  for (let i = 0; i < n; i++) {
+    const nextS = next[i]!;
+    const prevS = prev[i];
+    if (nextS.type !== 'impulse' || !prevS || prevS.type !== 'impulse') continue;
+    const nextBase =
+      typeof (nextS as { baseline?: number }).baseline === 'number' &&
+      Number.isFinite((nextS as { baseline?: number }).baseline)
+        ? ((nextS as { baseline: number }).baseline as number)
+        : 0;
+    const prevBase =
+      typeof (prevS as { baseline?: number }).baseline === 'number' &&
+      Number.isFinite((prevS as { baseline?: number }).baseline)
+        ? ((prevS as { baseline: number }).baseline as number)
+        : 0;
+    if (nextBase === prevBase) continue;
+    // Prefer runtime columns (includes append extrema) over resolver seed rawBounds.
+    // Using next.rawBounds alone drops post-append peaks when baseline-only setOption runs.
+    const runtime = runtimeRawDataByIndex[i];
+    if (runtime != null) {
+      runtimeRawBoundsByIndex[i] = impulseBounds(runtime as CartesianSeriesData, nextBase);
+    } else {
+      const seed = ((nextS as { rawData?: unknown }).rawData ?? nextS.data) as CartesianSeriesData;
+      runtimeRawBoundsByIndex[i] =
+        impulseBounds(seed, nextBase) ?? (nextS as { rawBounds?: Bounds | null }).rawBounds ?? null;
+    }
+    changed = true;
+  }
+  return changed;
 }
 
 /**

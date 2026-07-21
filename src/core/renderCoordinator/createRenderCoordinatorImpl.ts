@@ -34,6 +34,7 @@ import { heatmapGridBounds } from '../../utils/heatmapLayout';
 import { GPUContext, isHTMLCanvasElement as isHTMLCanvasElementGPU } from '../GPUContext';
 import { createDataStore } from '../../data/createDataStore';
 import { isGpuDecimationEligible } from '../../data/gpuDecimationEligibility';
+import { impulseBounds } from '../../data/impulseGeometry';
 import { computeStackedMountainYExtentsForAxis } from '../../data/stackedArea';
 import { canRangedAppendLine, type DataStoreBufferKind } from './data/canRangedAppendLine';
 import { buildRuntimeBaseSeries, buildSetOptionsReuseSeries, resolveZoomedSeriesEntry } from './data/seriesPipeline';
@@ -68,6 +69,7 @@ import {
   shouldRecomputeBaselineSampling,
   patchSeriesPresentationKeepingSampledData,
   didRawBoundsModeChange,
+  syncRuntimeBoundsForImpulseBaselineChange,
 } from './data/samplingDirty';
 import { syncCandlestickOwnedFromUserSeries } from './data/syncCandlestickRuntime';
 import { processAnnotations } from './annotations/processAnnotations';
@@ -75,6 +77,8 @@ import {
   prepareSeries,
   createStackedMountainCache,
   invalidateStackedMountainCache,
+  createStepExpandCache,
+  invalidateStepExpandCache,
   renderAboveSeriesAnnotations,
   hasDenseHairlineLines,
   renderDenseHairlineLines,
@@ -125,6 +129,7 @@ import {
 import { findPieSlice } from '../../interaction/findPieSlice';
 import { resolveHeatmapTooltipParams } from '../../interaction/heatmapTooltip';
 import { findErrorBarAtPointer } from '../../interaction/findErrorBar';
+import { findImpulseAtPointer } from '../../interaction/findImpulse';
 import { getErrorBarPoint } from '../../data/errorBarData';
 import { createAxisScale } from '../../utils/scales';
 import type { ContinuousScale, LinearScale } from '../../utils/scales';
@@ -1530,6 +1535,8 @@ export function createRenderCoordinator(
   const lastSetSeriesCache: LastSetSeriesCache = new Map();
   /** Per-chart stacked mountain baseline cache (not process-global). */
   const stackedMountainCache = createStackedMountainCache();
+  /** Per-chart step (digital) expand cache (identity-keyed). */
+  const stepExpandCache = createStepExpandCache();
 
   // P2-12: reuse filterGaps output while series data ref is stable (connectNulls).
   // Cleared with lastSetSeriesCache when data mutates under a stable ref.
@@ -1784,6 +1791,7 @@ export function createRenderCoordinator(
         lastSetSeriesCache,
         filterGapsCache,
         invalidateStackedMountainCache: () => invalidateStackedMountainCache(stackedMountainCache),
+        invalidateStepExpandCache: () => invalidateStepExpandCache(stepExpandCache),
         lastSampledData,
         warnedSamplingDefeatsFastPath,
         recomputeRuntimeBaseSeries,
@@ -2036,6 +2044,17 @@ export function createRenderCoordinator(
         ...(yErrorLow !== undefined ? { yErrorLow } : {}),
       };
     }
+    if (s?.type === 'impulse') {
+      const baseline = typeof s.baseline === 'number' && Number.isFinite(s.baseline) ? s.baseline : 0;
+      return {
+        seriesName: s?.name ?? '',
+        seriesIndex,
+        dataIndex,
+        value: [x, y],
+        color: s.lineStyle?.color ?? s.color ?? '#888',
+        baseline,
+      };
+    }
     const stack =
       extras?.stack ??
       (typeof (s as { stack?: unknown } | undefined)?.stack === 'string' ? (s as { stack?: string }).stack : undefined);
@@ -2092,6 +2111,51 @@ export function createRenderCoordinator(
       if (!m) continue;
       return {
         params: buildErrorBarTooltipParams(m.seriesIndex, m.dataIndex, m.point),
+        seriesIndex: m.seriesIndex,
+      };
+    }
+    return null;
+  };
+
+  const buildImpulseTooltipParams = (
+    seriesIndex: number,
+    dataIndex: number,
+    point: { readonly x: number; readonly y: number; readonly baseline: number }
+  ): TooltipParams => {
+    const s = currentOptions.series[seriesIndex];
+    const color = s && s.type === 'impulse' ? (s.lineStyle?.color ?? s.color ?? '#888') : (s?.color ?? '#888');
+    return {
+      seriesName: s?.name ?? '',
+      seriesIndex,
+      dataIndex,
+      value: [point.x, point.y],
+      color,
+      baseline: point.baseline,
+    };
+  };
+
+  const findImpulseAtPointerTooltip = (
+    series: ResolvedChartGPUOptions['series'],
+    gridX: number,
+    gridY: number,
+    interactionScales: NonNullable<ReturnType<typeof computeInteractionScalesGridCssPx>>
+  ): { params: TooltipParams; seriesIndex: number } | null => {
+    for (let i = series.length - 1; i >= 0; i--) {
+      const s = series[i]!;
+      if (s.type !== 'impulse' || s.visible === false) continue;
+      const yScale = interactionScales.yScales.get(s.yAxis || 'y') ?? interactionScales.yScales.values().next().value;
+      if (!yScale) continue;
+      const m = findImpulseAtPointer([{ seriesIndex: i, series: s }], gridX, gridY, interactionScales.xScale, yScale, {
+        width: interactionScales.plotWidthCss,
+        height: interactionScales.plotHeightCss,
+      });
+      if (!m) continue;
+      return {
+        params: buildImpulseTooltipParams(m.seriesIndex, m.dataIndex, {
+          x: m.x,
+          y: m.y,
+          baseline: m.baseline,
+        }),
         seriesIndex: m.seriesIndex,
       };
     }
@@ -2458,6 +2522,7 @@ export function createRenderCoordinator(
     lastSetSeriesCache.clear();
     filterGapsCache.clear();
     invalidateStackedMountainCache(stackedMountainCache);
+    invalidateStepExpandCache(stepExpandCache);
 
     for (let i = 0; i < count; i++) {
       const s = currentOptions.series[i]!;
@@ -2491,9 +2556,24 @@ export function createRenderCoordinator(
         runtimeRawBoundsByIndex[i] = null;
         continue;
       }
-      if (s.type !== 'line' && s.type !== 'area' && s.type !== 'bar' && s.type !== 'scatter') {
+      if (
+        s.type !== 'line' &&
+        s.type !== 'area' &&
+        s.type !== 'bar' &&
+        s.type !== 'scatter' &&
+        s.type !== 'impulse' &&
+        s.type !== 'errorBar'
+      ) {
         runtimeRawDataByIndex[i] = null;
         runtimeRawBoundsByIndex[i] = null;
+        continue;
+      }
+
+      if (s.type === 'errorBar') {
+        // Owned HLC columns — same as append seed path.
+        // (errorBar seed is handled in appendFlush; static frames use resolved data.)
+        runtimeRawDataByIndex[i] = null;
+        runtimeRawBoundsByIndex[i] = s.rawBounds ?? null;
         continue;
       }
 
@@ -2503,7 +2583,16 @@ export function createRenderCoordinator(
       // branded owned columns / ring on the first stream batch — never mutates the
       // caller's {x,y} arrays or DataPoint[] in place.
       runtimeRawDataByIndex[i] = raw;
-      runtimeRawBoundsByIndex[i] = s.rawBounds ?? computeRawBoundsFromCartesianData(raw);
+      if (s.type === 'impulse') {
+        const baseline =
+          typeof (s as { baseline?: number }).baseline === 'number' &&
+          Number.isFinite((s as { baseline?: number }).baseline)
+            ? ((s as { baseline: number }).baseline as number)
+            : 0;
+        runtimeRawBoundsByIndex[i] = s.rawBounds ?? impulseBounds(raw, baseline);
+      } else {
+        runtimeRawBoundsByIndex[i] = s.rawBounds ?? computeRawBoundsFromCartesianData(raw);
+      }
     }
   };
 
@@ -2609,8 +2698,8 @@ export function createRenderCoordinator(
             ...baseline,
             data: sliceBandByX(cache.data as BandSeriesData, visibleX.min, visibleX.max),
           };
-        } else if (baseline.type === 'errorBar') {
-          // sampling 'none' only — keep full HLC; zoom via scales.
+        } else if (baseline.type === 'errorBar' || baseline.type === 'impulse') {
+          // sampling 'none' / sparse stems — keep full raw; zoom via scales.
           next[i] = baseline;
         } else {
           next[i] = {
@@ -2632,7 +2721,7 @@ export function createRenderCoordinator(
           ...baseline,
           data: sliceBandByX(baseline.data, visibleX.min, visibleX.max),
         };
-      } else if (baseline.type === 'errorBar') {
+      } else if (baseline.type === 'errorBar' || baseline.type === 'impulse') {
         next[i] = baseline;
       } else {
         next[i] = {
@@ -2858,6 +2947,7 @@ export function createRenderCoordinator(
         lastSetSeriesCache.clear();
         filterGapsCache.clear();
         invalidateStackedMountainCache(stackedMountainCache);
+        invalidateStepExpandCache(stepExpandCache);
         lastSampledData = new Array(resolvedOptions.series.length).fill(null);
         // Presentation-stable data: re-sample from runtime store (append path
         // also uses this via flush).
@@ -2913,6 +3003,34 @@ export function createRenderCoordinator(
       }
       runtimeBaseSeries = patchSeriesPresentationKeepingSampledData(resolvedOptions.series, runtimeBaseSeries);
       renderSeries = patchSeriesPresentationKeepingSampledData(runtimeBaseSeries, renderSeries);
+
+      // Impulse baseline is presentation-only but drives auto-Y via the runtime
+      // bounds store (computeGlobalYBoundsForAxis prefers runtimeRawBoundsByIndex).
+      // samplingDirty patch updates series.rawBounds; keep the runtime store in sync.
+      const impulseBaselineBoundsChanged = syncRuntimeBoundsForImpulseBaselineChange({
+        prev: prevSeries,
+        next: resolvedOptions.series,
+        runtimeRawDataByIndex,
+        runtimeRawBoundsByIndex,
+      });
+      if (impulseBaselineBoundsChanged) {
+        const stampImpulseBounds = (series: ResolvedChartGPUOptions['series']): ResolvedChartGPUOptions['series'] =>
+          series.map((s, i) => {
+            if (s.type !== 'impulse') return s;
+            const b = runtimeRawBoundsByIndex[i];
+            const nextS = resolvedOptions.series[i] as { baseline?: number } | undefined;
+            return b
+              ? ({
+                  ...s,
+                  rawBounds: b,
+                  baseline: nextS?.baseline ?? 0,
+                } as typeof s)
+              : s;
+          }) as ResolvedChartGPUOptions['series'];
+        runtimeBaseSeries = stampImpulseBounds(runtimeBaseSeries);
+        renderSeries = stampImpulseBounds(renderSeries);
+      }
+
       // Keep series.rawBounds aligned with refreshed runtime bounds after mode flip.
       if (boundsModeChanged) {
         const stampRuntimeBounds = (series: ResolvedChartGPUOptions['series']): ResolvedChartGPUOptions['series'] =>
@@ -3037,6 +3155,7 @@ export function createRenderCoordinator(
         dataStore.removeSeries(i);
         lastSetSeriesCache.delete(i);
         filterGapsCache.delete(i);
+        stepExpandCache.byIndex.delete(i);
       }
     }
     lastSeriesCount = nextCount;
@@ -3662,6 +3781,8 @@ export function createRenderCoordinator(
       filterGapsCache.clear();
       // Stack baselines fingerprint peers — clear when values mutate in place.
       invalidateStackedMountainCache(stackedMountainCache);
+      // Step expand identity cache — clear when values mutate in place.
+      invalidateStepExpandCache(stepExpandCache);
       const pool = rendererPool.getState();
       const areas = pool.areaRenderers;
       for (let ai = 0; ai < areas.length; ai++) {
@@ -3689,6 +3810,10 @@ export function createRenderCoordinator(
       const errorBars = pool.errorBarRenderers;
       for (let ei = 0; ei < errorBars.length; ei++) {
         errorBars[ei]!.invalidateGeometry();
+      }
+      const impulses = pool.impulseRenderers;
+      for (let ii = 0; ii < impulses.length; ii++) {
+        impulses[ii]!.invalidateGeometry();
       }
     }
 
@@ -4041,6 +4166,25 @@ export function createRenderCoordinator(
                 return;
               }
 
+              const impulseResult = findImpulseAtPointerTooltip(
+                seriesForRender,
+                effectivePointer.gridX,
+                effectivePointer.gridY,
+                interactionScales
+              );
+              if (impulseResult) {
+                const content = formatter
+                  ? (formatter as (p: TooltipParams) => string)(impulseResult.params)
+                  : formatTooltipItem(impulseResult.params);
+                if (content && shouldUpdateTooltip(tooltipCache, content, containerX, containerY)) {
+                  updateTooltipCache(tooltipCache, content, containerX, containerY);
+                  showTooltipInternal(containerX, containerY, content, impulseResult.params);
+                } else if (!content) {
+                  hideTooltip();
+                }
+                return;
+              }
+
               const match = sharedNearestMatch ?? null;
               if (match) {
                 const params = buildTooltipParams(match.seriesIndex, match.dataIndex, match.point, {
@@ -4119,6 +4263,7 @@ export function createRenderCoordinator(
       lastSetSeriesCache,
       filterGapsCache,
       stackedMountainCache,
+      stepExpandCache,
     });
     // One-frame skip only: StagingRingView safety is isStagingRingView in
     // setSeriesIfChanged, not this set. Clear so partial multi-series flushes
@@ -4556,6 +4701,7 @@ export function createRenderCoordinator(
     lastSetSeriesCache.clear();
     filterGapsCache.clear();
     invalidateStackedMountainCache(stackedMountainCache);
+    invalidateStepExpandCache(stepExpandCache);
     clearOverlayPrepareMemo(overlayPrepareMemo);
     stickyAutoXDomain = null;
     stickyAutoYDomainByAxis.clear();

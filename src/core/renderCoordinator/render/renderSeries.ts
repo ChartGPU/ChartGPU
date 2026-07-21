@@ -19,8 +19,9 @@ import type {
   ResolvedBandSeriesConfig,
   ResolvedOhlcSeriesConfig,
   ResolvedErrorBarSeriesConfig,
+  ResolvedImpulseSeriesConfig,
 } from '../../../config/OptionResolver';
-import type { DataPoint } from '../../../config/types';
+import type { CartesianSeriesData, DataPoint } from '../../../config/types';
 import type { LinearScale } from '../../../utils/scales';
 import type { GridArea } from '../../../renderers/createGridRenderer';
 import type { LineRenderer } from '../../../renderers/createLineRenderer';
@@ -34,11 +35,13 @@ import type { CandlestickRenderer } from '../../../renderers/createCandlestickRe
 import type { OhlcRenderer } from '../../../renderers/createOhlcRenderer';
 import type { BandRenderer } from '../../../renderers/createBandRenderer';
 import type { ErrorBarRenderer } from '../../../renderers/createErrorBarRenderer';
+import type { ImpulseRenderer } from '../../../renderers/createImpulseRenderer';
 import type { ReferenceLineRenderer } from '../../../renderers/createReferenceLineRenderer';
 import type { AnnotationMarkerRenderer } from '../../../renderers/createAnnotationMarkerRenderer';
 import type { DecimationCompute } from '../../../renderers/createDecimationCompute';
 import type { DataStore } from '../../../data/createDataStore';
 import { isGpuDecimationEligible, mapSamplingToDecimationAlgorithm } from '../../../data/gpuDecimationEligibility';
+import { resolveStepMode, type StepMode } from '../../../data/stepGeometry';
 import { clampInt } from '../utils/canvasUtils';
 import { clamp01 } from '../animation/animationHelpers';
 import { findVisibleRangeIndicesByX } from '../data/computeVisibleSlice';
@@ -46,9 +49,11 @@ import { resolvePieRadiiCss } from '../utils/timeAxisUtils';
 import { isRingXYColumns, isStagingRingView } from '../../../data/cartesianData';
 import { type FilterGapsCache, getFilteredGapsCached } from './filterGapsCache';
 import { getStackedMountainGeometryMap, type StackedMountainCache } from './stackedMountainCache';
+import { getExpandedStepPolyline, getExpandedStepStacked, type StepExpandCache } from './stepExpandCache';
 
 // Re-export only production-used symbols for coordinator / frameRender.
 export { createStackedMountainCache, invalidateStackedMountainCache } from './stackedMountainCache';
+export { createStepExpandCache, invalidateStepExpandCache } from './stepExpandCache';
 
 /** Once-per-process warn when GPU-eligible line lacks a decimation pool slot. */
 const warnedMissingDecimationSlots = new Set<number>();
@@ -72,6 +77,7 @@ export interface SeriesRenderers {
   readonly candlestickRenderers: ReadonlyArray<CandlestickRenderer>;
   readonly ohlcRenderers: ReadonlyArray<OhlcRenderer>;
   readonly errorBarRenderers: ReadonlyArray<ErrorBarRenderer>;
+  readonly impulseRenderers: ReadonlyArray<ImpulseRenderer>;
   /** 1:1 with lineRenderers; unused slots are no-ops until prepared. */
   readonly decimationComputes: ReadonlyArray<DecimationCompute>;
 }
@@ -123,6 +129,11 @@ export interface SeriesPrepareContext {
    * Caller owns and must {@link invalidateStackedMountainCache} with lastSetSeriesCache.
    */
   stackedMountainCache: StackedMountainCache;
+  /**
+   * Per-chart step (digital) expand cache. Identity-keyed on source data + mode.
+   * Caller should clear with lastSetSeriesCache when data mutates in place.
+   */
+  stepExpandCache?: StepExpandCache;
 }
 
 export interface SeriesRenderContext {
@@ -191,6 +202,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
     lastSetSeriesCache,
     filterGapsCache,
     stackedMountainCache,
+    stepExpandCache,
   } = context;
   // zoomState kept on context for callers; sampling:none no longer needs full-span (1.6).
   void context.zoomState;
@@ -283,7 +295,8 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
   const introP = introPhase === 'running' ? clamp01(introProgress01) : 1;
 
   // performance.lod: 'strict' disables dense hairline / scatter radius compaction.
-  const forceStandardDraw = currentOptions.performance?.lod === 'strict';
+  // Step (digital) forces standard AA quads — dense hairline is linear-only (D7).
+  const forceStandardDrawLod = currentOptions.performance?.lod === 'strict';
 
   // Multi-series hairline budget (group 1): count **visible** line series once.
   // Used only for hairline segment budget and multi-series prepare inputs
@@ -313,6 +326,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
         // sliced array ref).
         const baseline = resolveAreaBaseline(s, getYScale(s));
         const stackGeom = stackedGeomByIndex.get(i);
+        const areaStepMode = resolveStepMode((s as { step?: boolean | StepMode | string | null | undefined }).step);
         // When connectNulls is true, strip null/NaN gap entries so the area draws through gaps.
         // Cached by data ref identity (P2-12) so static frames do not re-allocate.
         // sampling:'none' uploads full raw (same fullRawLine contract as line).
@@ -322,13 +336,51 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
             : s.data;
         const areaData = s.connectNulls ? getFilteredGapsCached(filterGapsCache, i, areaSource) : areaSource;
         if (stackGeom) {
-          // Stacked: private-pack yBottom/yTop from same view as packData (connectNulls-safe).
-          // Skip DataStore contribution upload — private pack owns GPU residency (issue 18).
-          renderers.areaRenderers[i].prepare(s, stackGeom.packData, xScale, getYScale(s), 0, undefined, undefined, 0, {
-            yBottom: stackGeom.yBottom,
-            yTop: stackGeom.yTop,
-          });
+          // Stacked: private-pack yBottom/yTop; step expands both edges when active (D8).
+          if (areaStepMode) {
+            const { stacked, stackedPack } = getExpandedStepStacked(
+              stepExpandCache,
+              i,
+              stackGeom.packData as CartesianSeriesData,
+              stackGeom.yBottom,
+              stackGeom.yTop,
+              areaStepMode,
+              !!s.connectNulls
+            );
+            renderers.areaRenderers[i].prepare(s, stackedPack, xScale, getYScale(s), 0, undefined, undefined, 0, {
+              yBottom: stacked.yBottom,
+              yTop: stacked.yTop,
+            });
+          } else {
+            renderers.areaRenderers[i].prepare(
+              s,
+              stackGeom.packData,
+              xScale,
+              getYScale(s),
+              0,
+              undefined,
+              undefined,
+              0,
+              {
+                yBottom: stackGeom.yBottom,
+                yTop: stackGeom.yTop,
+              }
+            );
+          }
           // Stacked mountain is not GPU-decimation eligible; tag other for append.
+          gpuSeriesKindByIndex[i] = 'other';
+          break;
+        }
+        // Step mountain: expand top edge polyline, private-pack (expanded N ≠ source).
+        if (areaStepMode) {
+          const { cartesian: steppedData } = getExpandedStepPolyline(
+            stepExpandCache,
+            i,
+            areaData as CartesianSeriesData,
+            areaStepMode,
+            !!s.connectNulls
+          );
+          renderers.areaRenderers[i].prepare(s, steppedData, xScale, getYScale(s), baseline);
           gpuSeriesKindByIndex[i] = 'other';
           break;
         }
@@ -371,14 +423,38 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
         // GPU compute-shader decimation (P0-2 / Stretch S1) vs CPU path.
         // Eligibility is a pure predicate; see `isGpuDecimationEligible`.
         // Stacked mountain lines are never GPU-decimation eligible (D9).
+        // Step forces standard AA and is never GPU-decimation eligible (D6/D7).
         const stackGeomLine = stackedGeomByIndex.get(i);
         const rawDataForGpu = s.rawData;
-        const gpuEligible = !stackGeomLine && isGpuDecimationEligible(s, rawDataForGpu);
+        const lineStepMode = resolveStepMode((s as { step?: boolean | StepMode | string | null | undefined }).step);
+        const forceStandardDraw = forceStandardDrawLod || lineStepMode != null;
+        const gpuEligible = !stackGeomLine && lineStepMode == null && isGpuDecimationEligible(s, rawDataForGpu);
 
         // Stacked mountain line: stroke at yTop; fill between yBottom and yTop (private pack).
         if (stackGeomLine && s.areaStyle) {
-          const strokeData = stackGeomLine.strokeData;
-          const packData = stackGeomLine.packData;
+          let strokeData = stackGeomLine.strokeData;
+          let packData = stackGeomLine.packData;
+          let yBottom = stackGeomLine.yBottom;
+          let yTop = stackGeomLine.yTop;
+          if (lineStepMode) {
+            const {
+              stacked,
+              strokeData: steppedStroke,
+              stackedPack,
+            } = getExpandedStepStacked(
+              stepExpandCache,
+              i,
+              packData as CartesianSeriesData,
+              yBottom,
+              yTop,
+              lineStepMode,
+              !!s.connectNulls
+            );
+            strokeData = steppedStroke;
+            packData = stackedPack;
+            yBottom = stacked.yBottom;
+            yTop = stacked.yTop;
+          }
           const { packingXOffset, xOffset } = resolveLinePackingXOffset({
             data: strokeData,
             dataStore,
@@ -421,8 +497,8 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
             stack: (s as { stack?: string }).stack,
           };
           renderers.areaRenderers[i].prepare(areaLike, packData, xScale, yScaleForArea, 0, undefined, undefined, 0, {
-            yBottom: stackGeomLine.yBottom,
-            yTop: stackGeomLine.yTop,
+            yBottom,
+            yTop,
           });
           gpuSeriesKindByIndex[i] = 'other';
           break;
@@ -610,7 +686,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
           break;
         }
 
-        // ─── CPU-sampled path (null-gap, 'none', 'average', areaStyle, etc.) ───
+        // ─── CPU-sampled path (null-gap, 'none', 'average', areaStyle, step, etc.) ───
         // If we already appended into the DataStore this frame (fast-path), avoid a full re-upload.
         // For time axes (epoch-ms), subtract an x-origin before packing to Float32 to avoid precision loss
         // (Float32 ulp at ~1e12 is ~2e5), which can manifest as stroke shimmer during zoom.
@@ -620,13 +696,26 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
         // sampling:'none' must upload full raw (rawData ?? data), never a zoomed window:
         // DataStore is tagged fullRawLine for ranged append. Uploading a slice then
         // append-streaming corrupts the buffer and right-side zoom draws the wrong prefix.
+        //
+        // Step (digital): expand source samples into an owned stair polyline, then upload.
+        // Hit-test still uses series source samples (not densified corners). Tag 'other'
+        // so append re-prepares (expanded N ≠ source N).
         const sourceForUpload =
           s.sampling === 'none'
             ? (((s as { rawData?: unknown }).rawData as typeof s.data | undefined) ?? s.data)
             : s.data;
-        const uploadData = s.connectNulls
+        const filteredUpload = s.connectNulls
           ? getFilteredGapsCached(filterGapsCache, i, sourceForUpload)
           : sourceForUpload;
+        const uploadData: CartesianSeriesData = lineStepMode
+          ? getExpandedStepPolyline(
+              stepExpandCache,
+              i,
+              filteredUpload as CartesianSeriesData,
+              lineStepMode,
+              !!s.connectNulls
+            ).cartesian
+          : (filteredUpload as CartesianSeriesData);
         const { packingXOffset, xOffset } = resolveLinePackingXOffset({
           data: uploadData,
           dataStore,
@@ -640,7 +729,8 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
         // Pass filtered/full-raw data to the renderer so point count matches the GPU buffer.
         const lineSeriesForRenderer = uploadData !== s.data ? { ...s, data: uploadData } : s;
         // Full-raw / CPU path may still be modular after maxPoints wrap — pass ring.
-        const cpuPathRingLayout = dataStore.getSeriesRingLayout(i);
+        // Step expand is always chronological linear (not a ring of source points).
+        const cpuPathRingLayout = lineStepMode ? { start: 0, capacity: 0 } : dataStore.getSeriesRingLayout(i);
         renderers.lineRenderers[i].prepare(
           lineSeriesForRenderer,
           buffer,
@@ -658,8 +748,10 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
 
         // Track the GPU buffer kind for future append fast-path decisions.
         // sampling:'none' keeps full raw resident at any zoom → ranged append
-        // (issue 1.6). Zoomed sampled CPU paths tag 'other' (full re-upload).
-        if (s.sampling === 'none') {
+        // (issue 1.6). Zoomed sampled CPU paths / step tag 'other' (full re-upload).
+        if (lineStepMode) {
+          gpuSeriesKindByIndex[i] = 'other';
+        } else if (s.sampling === 'none') {
           gpuSeriesKindByIndex[i] = 'fullRawLine';
         } else {
           gpuSeriesKindByIndex[i] = 'other';
@@ -667,6 +759,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
 
         // Line+areaStyle on CPU path: share DataStore only when linear (capacity 0).
         // After modular wrap, private-pack chronological uploadData (issue 1 review).
+        // Step mountain: uploadData is already the stepped polyline — private pack or share.
         if (s.areaStyle) {
           const yScaleForArea = getYScale(s);
           const areaBaseline = resolveAreaBaseline(s, yScaleForArea);
@@ -685,7 +778,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
             rawBounds: (s as { rawBounds?: ResolvedAreaSeriesConfig['rawBounds'] }).rawBounds,
           };
 
-          const cpuRingLayout = dataStore.getSeriesRingLayout(i);
+          const cpuRingLayout = lineStepMode ? { start: 0, capacity: 0 } : dataStore.getSeriesRingLayout(i);
           if (cpuRingLayout.capacity === 0) {
             renderers.areaRenderers[i].prepare(
               areaLike,
@@ -746,7 +839,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
           gpuSeriesKindByIndex[i] = 'other';
         } else {
           const animated = introP < 1 ? ({ ...s, color: withAlpha(s.color, introP) } as const) : s;
-          renderers.scatterRenderers[i].prepare(animated, s.data, xScale, getYScale(s), gridArea, forceStandardDraw);
+          renderers.scatterRenderers[i].prepare(animated, s.data, xScale, getYScale(s), gridArea, forceStandardDrawLod);
         }
         break;
       }
@@ -819,6 +912,13 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
         // Private instance pack — not GPU-decimation eligible (D10).
         const eb = s as ResolvedErrorBarSeriesConfig;
         renderers.errorBarRenderers[i]?.prepare(eb, eb.data, xScale, getYScale(s), gridArea);
+        gpuSeriesKindByIndex[i] = 'other';
+        break;
+      }
+      case 'impulse': {
+        // Private instance pack — not GPU-decimation eligible (D6).
+        const imp = s as ResolvedImpulseSeriesConfig;
+        renderers.impulseRenderers[i]?.prepare(imp, imp.data, xScale, getYScale(s), gridArea);
         gpuSeriesKindByIndex[i] = 'other';
         break;
       }
@@ -1033,6 +1133,27 @@ export function renderSeries(
         const { series, originalIndex } = visibleSeriesForRender[idx]!;
         if (series.type === 'errorBar') {
           renderers.errorBarRenderers[originalIndex]?.render(mainPass);
+        }
+      }
+      mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+    }
+  }
+
+  // Impulse stems — same layer as error bars (under line strokes when overlaid).
+  if (plotScissor.w > 0 && plotScissor.h > 0) {
+    let anyImpulse = false;
+    for (let idx = 0; idx < visibleSeriesForRender.length; idx++) {
+      if (visibleSeriesForRender[idx]!.series.type === 'impulse') {
+        anyImpulse = true;
+        break;
+      }
+    }
+    if (anyImpulse) {
+      mainPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+      for (let idx = 0; idx < visibleSeriesForRender.length; idx++) {
+        const { series, originalIndex } = visibleSeriesForRender[idx]!;
+        if (series.type === 'impulse') {
+          renderers.impulseRenderers[originalIndex]?.render(mainPass);
         }
       }
       mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);

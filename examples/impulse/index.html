@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Impulse / Stem Series - ChartGPU</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #0a0a0a;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    }
+    .page {
+      min-height: 100%;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 14px;
+      padding: 20px;
+      box-sizing: border-box;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    header h1 { margin: 0; font-size: 1.4rem; color: #fff; }
+    header p { margin: 8px 0 0; color: #aaa; line-height: 1.45; }
+    .back { display: inline-block; margin-top: 10px; color: #aaa; text-decoration: none; }
+    .back:hover { color: #fff; }
+    .note {
+      font-size: 0.85rem;
+      color: #9aa0aa;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: #12121a;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 18px;
+      align-items: center;
+      padding: 12px 14px;
+      border: 1px solid #333;
+      border-radius: 10px;
+      background: #0f0f14;
+    }
+    .controls label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.9rem;
+      color: #ccc;
+    }
+    input[type="range"], input[type="checkbox"] { accent-color: #a78bfa; }
+    .chart-shell {
+      position: relative;
+      border: 1px solid #333;
+      border-radius: 12px;
+      background: #0f0f14;
+      overflow: hidden;
+      min-height: 420px;
+      height: clamp(420px, 60vh, 640px);
+    }
+    #chart { width: 100%; height: 100%; }
+    .error { padding: 16px; color: #ffb4b4; white-space: pre-wrap; }
+    code { color: #c4b5fd; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1>Impulse / Stem Series</h1>
+      <p>
+        Vertical stems from baseline → y (<code>type: 'impulse'</code>) —
+        SciChart <code>FastImpulseRenderableSeries</code> parity. Optional lollipop markers.
+        Not error-bar HLC whiskers.
+      </p>
+      <a class="back" href="../index.html">← Back to examples</a>
+    </header>
+
+    <div class="note">
+      Each finite sample draws an independent stem. Tooltip reports <code>(x, y)</code> and baseline.
+      Prefer <code>sampling: 'none'</code> for sparse events.
+    </div>
+
+    <div class="controls">
+      <label>
+        <input type="checkbox" id="showMarker" checked />
+        Show markers
+      </label>
+      <label>
+        Baseline
+        <input type="range" id="baseline" min="-2" max="2" step="0.1" value="0" />
+        <span id="baselineVal">0</span>
+      </label>
+      <label>
+        Stem width
+        <input type="range" id="stemWidth" min="1" max="6" step="0.5" value="2" />
+        <span id="stemWidthVal">2</span>
+      </label>
+    </div>
+
+    <div class="chart-shell">
+      <div id="chart"></div>
+      <div id="error" class="error" style="display:none"></div>
+    </div>
+  </div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

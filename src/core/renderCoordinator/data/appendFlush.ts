@@ -29,6 +29,26 @@ import {
   isErrorBarShapedPayload,
   type MutableErrorBarHlcColumns,
 } from '../../../data/errorBarData';
+import { impulseBounds } from '../../../data/impulseGeometry';
+
+/** Fold impulse baseline into auto-Y bounds after cartesian extend/rescan. */
+function foldImpulseBaseline(
+  series: { readonly type?: string; readonly baseline?: number },
+  data: CartesianSeriesData,
+  current: AppendFlushBounds | null | undefined
+): AppendFlushBounds | null | undefined {
+  if (series.type !== 'impulse') return current ?? undefined;
+  const baseline = typeof series.baseline === 'number' && Number.isFinite(series.baseline) ? series.baseline : 0;
+  // Full rescan includes all retained y + baseline (correct after FIFO drop).
+  const full = impulseBounds(data, baseline);
+  if (full) return full;
+  if (!current) return undefined;
+  let yMin = current.yMin;
+  let yMax = current.yMax;
+  if (baseline < yMin) yMin = baseline;
+  if (baseline > yMax) yMax = baseline;
+  return { xMin: current.xMin, xMax: current.xMax, yMin, yMax };
+}
 
 /** Pending append batch stored per series index. */
 type PendingAppendBatch = {
@@ -73,6 +93,8 @@ export interface AppendFlushDeps {
    * append mutates data under stable refs / grows columns.
    */
   invalidateStackedMountainCache?: () => void;
+  /** Invalidate step (digital) expand identity cache on append. */
+  invalidateStepExpandCache?: () => void;
   lastSampledData: unknown[];
   warnedSamplingDefeatsFastPath: Set<number>;
   recomputeRuntimeBaseSeries: () => void;
@@ -145,6 +167,9 @@ function flushPendingAppendsImplInner(d: any): boolean {
   // Append grows / mutates peer data under stable refs — stack baselines must recompute.
   if (typeof d.invalidateStackedMountainCache === 'function') {
     d.invalidateStackedMountainCache();
+  }
+  if (typeof d.invalidateStepExpandCache === 'function') {
+    d.invalidateStepExpandCache();
   }
 
   const zoomRangeBefore = d.zoomState?.getRange() ?? null;
@@ -704,6 +729,15 @@ function flushPendingAppendsImplInner(d: any): boolean {
       if (didWindow) {
         // Dropping a prefix can invalidate xMin / y extrema — rescan retained window.
         d.runtimeRawBoundsByIndex[seriesIndex] = d.computeRawBoundsFromCartesianData(raw as CartesianSeriesData);
+      }
+      // Impulse: always fold baseline into auto-Y (extend, O(1) ring ends, or full rescan).
+      // Without this, FIFO/streaming can snap yMin to min(y) and cut stems short of the floor.
+      if (s.type === 'impulse') {
+        d.runtimeRawBoundsByIndex[seriesIndex] = foldImpulseBaseline(
+          s,
+          raw as CartesianSeriesData,
+          d.runtimeRawBoundsByIndex[seriesIndex]
+        );
       }
     }
 

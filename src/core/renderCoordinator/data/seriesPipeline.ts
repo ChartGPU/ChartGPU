@@ -94,6 +94,23 @@ function resolveBaselineSeriesEntry(
     } as ResolvedSeriesConfig;
   }
 
+  if (s.type === 'impulse') {
+    const anyS = s as ResolvedSeriesConfig & {
+      rawData?: unknown;
+      rawBounds?: RawBoundsSlot;
+      data?: unknown;
+    };
+    const rawImp =
+      (rawSlot as CartesianSeriesData | null | undefined) ?? ((anyS.rawData ?? anyS.data) as CartesianSeriesData);
+    const bounds = boundsSlot ?? anyS.rawBounds ?? undefined;
+    return {
+      ...s,
+      rawData: rawImp,
+      rawBounds: bounds,
+      data: rawImp,
+    } as ResolvedSeriesConfig;
+  }
+
   if (s.type === 'candlestick' || s.type === 'ohlc') {
     const anyS = s as ResolvedSeriesConfig & {
       rawData?: unknown;
@@ -200,6 +217,17 @@ function resolveSetOptionsReuseSeriesEntry(
       rawData: rawEb,
       rawBounds: boundsSlot ?? anyS.rawBounds ?? undefined,
       data: rawEb ?? anyS.data,
+    } as ResolvedSeriesConfig;
+  }
+
+  if (s.type === 'impulse') {
+    const rawImp =
+      (rawSlot as CartesianSeriesData | null | undefined) ?? ((anyS.rawData ?? anyS.data) as CartesianSeriesData);
+    return {
+      ...s,
+      rawData: rawImp,
+      rawBounds: boundsSlot ?? anyS.rawBounds ?? undefined,
+      data: rawImp,
     } as ResolvedSeriesConfig;
   }
 
@@ -316,6 +344,16 @@ export function resolveZoomedSeriesEntry(input: {
     const rawEb = (input.rawSlot as unknown) ?? anyS.rawData ?? anyS.data;
     return {
       series: { ...s, rawData: rawEb, data: rawEb } as ResolvedSeriesConfig,
+      cacheEntry: null,
+    };
+  }
+
+  if (s.type === 'impulse') {
+    // Prefer full raw for sparse event stems; zoom via scales.
+    const rawImp =
+      (input.rawSlot as CartesianSeriesData | null | undefined) ?? ((anyS.rawData ?? anyS.data) as CartesianSeriesData);
+    return {
+      series: { ...s, rawData: rawImp, data: rawImp } as ResolvedSeriesConfig,
       cacheEntry: null,
     };
   }

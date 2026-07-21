@@ -16,7 +16,8 @@ Chart configuration. Full types: [`types.ts`](../../src/config/types.ts).
 
 ## Series Configuration
 
-- **`SeriesType`**: `'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick' | 'ohlc' | 'heatmap' | 'band' | 'errorBar' | 'pointCloud3d' | 'surface3d'`. See [`types.ts`](../../src/config/types.ts).
+- **`SeriesType`**: `'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick' | 'ohlc' | 'heatmap' | 'band' | 'errorBar' | 'impulse' | 'pointCloud3d' | 'surface3d'`. See [`types.ts`](../../src/config/types.ts).
+- **`StepMode`**: `'before' | 'middle' | 'after'` — digital / step connection for line and area (not a series type). Boolean `step: true` ≡ `'after'` (SciChart `isDigitalLine`).
 - **`coordinateSystem`**: `'cartesian2d'` (default) | `'cartesian3d'`. 3D charts use a separate depth + camera path; only `pointCloud3d` / `surface3d` are valid there. Full 3D API: [`docs/api/3d.md`](./3d.md).
 - **Sampling (cartesian)**: `sampling?: 'none' | 'lttb' | 'average' | 'max' | 'min'`, `samplingThreshold?: number` (default 5000). Zoom-aware resampling when data zoom enabled.
 - **`visible?: boolean`**: hide series from rendering and interaction. Legend toggle updates both.
@@ -132,7 +133,19 @@ series: [{
 
 - **`lineStyle?: { width?, opacity?, color? }`** (default width 2). **`areaStyle?`** for fill under line. Color precedence: `lineStyle.color` → `series.color` → palette.
 - **`stack?: string`**: stack group id for **mountain fill composition** (multi-series stacked area). Non-empty + `areaStyle` → this series stacks with peers sharing the same id **and the same `yAxis`**. Stroke-only lines (no `areaStyle`) ignore `stack` for fill (dev warning once). Same string semantics as bar `stack`. Series array order within the stack = **bottom → top**. Omitted / empty / whitespace → unstacked single-series mountain (suite group 8 path).
-- **High-N hairline topology**: Under **`performance.lod: 'auto'`** (default), at ≥ ~25k displayed points **or** multi-series total-segment budget ≥ ~500k, the GPU may draw with `line-list` hairline topology (1 device px) regardless of `lineStyle.width` — draw-only LOD; does not change sampling or uploaded point count. Under **`performance.lod: 'strict'`**, configured width + AA quads are always honored. See **Dense line draw (hairline)** / **`performance.lod`** above and [performance.md](../performance.md#adaptive-draw-lod-performancelod).
+- **`step?: boolean | StepMode`**: connect samples with **stairs** instead of diagonals (SciChart `isDigitalLine`). Applies to stroke **and** mountain fill when `areaStyle` is set. **`true` ≡ `'after'`**. Modes:
+  | Mode | Geometry (consecutive samples \(P_i\), \(P_{i+1}\)) |
+  |------|-----------------------------------------------------|
+  | **`after`** (default / `true`) | Hold \(y_i\) until \(x_{i+1}\), then vertical to \(y_{i+1}\) |
+  | **`before`** | Vertical first at \(x_i\) to \(y_{i+1}\), then horizontal |
+  | **`middle`** | Horizontal to midpoint, vertical, horizontal to next |
+  - Omitted / `false` → **linear** (default). Invalid strings warn once → linear.
+  - **Not** dense hairline (`lineDrawPolicy`) — when `step` is active, ChartGPU forces standard AA quads.
+  - **Not** GPU line-decimation eligible (CPU expand after sampling on source samples). Prefer `sampling: 'none'` for exact digital edges; LTTB then step is approximate.
+  - Hit-test / tooltip use **source samples** (not densified stair corners).
+  - Works with **`stack`** (step on stacked yTop / yBottom).
+  - Library expands owned geometry — callers keep sparse sample arrays.
+- **High-N hairline topology**: Under **`performance.lod: 'auto'`** (default), at ≥ ~25k displayed points **or** multi-series total-segment budget ≥ ~500k, the GPU may draw with `line-list` hairline topology (1 device px) regardless of `lineStyle.width` — draw-only LOD; does not change sampling or uploaded point count. Under **`performance.lod: 'strict'`**, configured width + AA quads are always honored. See **Dense line draw (hairline)** / **`performance.lod`** above and [performance.md](../performance.md#adaptive-draw-lod-performancelod). **Step series never use dense hairline.**
 
 #### Null Gaps (Line Segmentation)
 
@@ -154,6 +167,7 @@ series: [{
 
 - **`baseline?: number`** (default: y-axis min). **`areaStyle?: { opacity?, color? }`**.
 - **`stack?: string`**: stack group id (same as line mountain / bar). Non-empty → stacked with peers of the same id and `yAxis`. When stacked, per-series `baseline` is **ignored** for layout (cumulative floor from 0; dev warning once if both set).
+- **`step?: boolean | StepMode`**: stepped top edge (and mountain fill) — same modes as line `step` (`true` ≡ `'after'`). See LineSeriesConfig `step`.
 
 ### Stacked mountain / area (`stack` on line mountain or area)
 
@@ -385,7 +399,7 @@ Error bars (`type: 'errorBar'`) draw **per-point high/low whiskers around a meas
 - **`sampling`**: **`'none'` only**. Other modes warn and are ignored (error bars are sparse science series; no LTTB / GPU line decimation).
 - **Null / NaN**: skip sample if `y` non-finite, or if required ends are non-finite for the active `errorMode` (`both` needs both ends; `high` needs high; `low` needs low). `low > high` swaps with a one-shot warn.
 - **Axis auto-bounds**: vertical — X from finite `x`, Y from finite `y`/`high`/`low`. Horizontal — X from `x`/`high`/`low`, Y from `y`. Bounds reuse on `setOption` is direction-keyed (vertical↔horizontal toggles recompute).
-- **Tooltip / hit-test**: stem + caps (CSS-px pad). `TooltipParams`: `value: [x, y]` plus `high`, `low`, optional `yErrorHigh`/`yErrorLow`. Hit priority: pie → candle/ohlc → **errorBar** → nearest cartesian → heatmap. Multi-axis: hit uses the series `yAxis` scale.
+- **Tooltip / hit-test**: stem + caps (CSS-px pad). `TooltipParams`: `value: [x, y]` plus `high`, `low`, optional `yErrorHigh`/`yErrorLow`. Hit priority: pie → candle/ohlc → **errorBar** → impulse → nearest cartesian → heatmap. Multi-axis: hit uses the series `yAxis` scale.
 - **`appendData`**: supported with the same HLC / relative / tuple / relative-object shapes. FIFO `maxPoints` works like band.
 - **Draw order**: respects `series[]` order among peers; typical pattern places `errorBar` **before** a mean `line`/`scatter` so markers sit on top.
 - **GPU**: instanced stem + caps (+ optional center) via `errorBar.wgsl`. Domain pack + affine uniforms; zoom/pan without re-upload when data identity is stable. **Horizontal** packs `high`/`low` relative to the same packing origin as `x`. **Stem thickness** is domain **X** (vertical) / **Y** (horizontal); **cap thickness** uses the opposite axis (OHLC lesson — never reuse domain-X as Y thickness).
@@ -415,6 +429,54 @@ series: [
 ```
 
 Example: [`examples/error-bars/`](../../examples/error-bars/). Implementation: [`createErrorBarRenderer.ts`](../../src/renderers/createErrorBarRenderer.ts), [`errorBar.wgsl`](../../src/shaders/errorBar.wgsl), [`errorBarData.ts`](../../src/data/errorBarData.ts), [`errorBarGeometry.ts`](../../src/renderers/errorBarGeometry.ts).
+
+### ImpulseSeriesConfig
+
+Impulse / stem series (`type: 'impulse'`) draws **one vertical stem per sample from `baseline` → y** — SciChart **FastImpulseRenderableSeries** parity for event trains, DSP stems, and lollipop charts.
+
+**Not** the same as:
+
+| | `type: 'errorBar'` | `type: 'ohlc'` | `type: 'impulse'` |
+|--|---------------------|----------------|-------------------|
+| Geometry | HLC whiskers around center | Finance stem + open/close ticks | Stem baseline→y only |
+| Data | HLC / relative error | OHLC | Cartesian XY |
+| Marker | Optional center | N/A | Optional tip marker (`showMarker`) |
+
+- **`data`**: same cartesian XY formats as line (`{x,y}`, tuples, interleaved).
+- **`baseline?: number`** (default **0**): data-space floor of each stem. Non-finite → `0` + warn. Auto Y bounds include baseline when outside the data range.
+- **`lineStyle?: { width?, opacity?, color? }`**: stem stroke. Width default **2** CSS px (clamp ≤0 → 1). Color falls back to `series.color` → palette. Thickness is **CSS px → domain X** (same lesson as error bars / OHLC — not domain-X units as Y thickness).
+- **`showMarker?: boolean`** (default **true**): lollipop head at `(x, y)`. Set `false` for pure stems.
+- **`symbolSize?: number`** (default **6**): marker size (CSS px, scatter spirit).
+- **`sampling`**: **`'none'` only**. Other modes warn and are ignored (sparse event stems; no LTTB / GPU line decimation).
+- **Null / NaN**: skip stem for non-finite x/y. Zero-length (`y ≈ baseline`) skips the stem body but still draws the marker when enabled.
+- **Tooltip / hit-test**: stem + marker with CSS-px pad. `TooltipParams`: `value: [x, y]` plus optional `baseline`. Hit priority: pie → candle/ohlc → errorBar → **impulse** → nearest cartesian → heatmap.
+- **`appendData`**: same XY payloads as line; FIFO `maxPoints` supported.
+- **GPU**: instanced stems (+ optional markers) reusing error-bar instance layout; private pack dirty-gated on data identity.
+
+```ts
+series: [{
+  type: 'impulse',
+  name: 'Events',
+  data: { x, y },
+  baseline: 0,
+  lineStyle: { width: 2, color: '#a78bfa' },
+  showMarker: true,
+  symbolSize: 6,
+  sampling: 'none',
+}]
+```
+
+Example: [`examples/impulse/`](../../examples/impulse/). Step digital line: [`examples/step-line/`](../../examples/step-line/). Implementation: [`createImpulseRenderer.ts`](../../src/renderers/createImpulseRenderer.ts), [`impulseGeometry.ts`](../../src/data/impulseGeometry.ts), [`stepGeometry.ts`](../../src/data/stepGeometry.ts).
+
+**SciChart map**
+
+| SciChart | ChartGPU |
+|----------|----------|
+| `FastLineRenderableSeries` + `isDigitalLine: true` | `type: 'line'`, `step: true` (≡ `'after'`) |
+| Digital mountain | `type: 'line'` + `areaStyle` + `step`, or `type: 'area'` + `step` |
+| `FastImpulseRenderableSeries` | `type: 'impulse'` |
+| `pointMarker` on impulse | `showMarker` + `symbolSize` |
+| `ZeroLineY` | `baseline` (default 0) |
 
 ### PieSeriesConfig
 

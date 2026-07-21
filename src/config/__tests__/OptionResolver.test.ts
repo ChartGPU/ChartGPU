@@ -1823,6 +1823,194 @@ describe('OptionResolver - errorBar', () => {
   });
 });
 
+describe('OptionResolver - impulse', () => {
+  it('resolves defaults: baseline 0, showMarker true, sampling none, bounds include baseline', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'impulse',
+          data: { x: [0, 1, 2], y: [2, 3, 4] },
+        },
+      ],
+    });
+    const s = resolved.series[0]!;
+    expect(s.type).toBe('impulse');
+    if (s.type !== 'impulse') throw new Error('expected impulse');
+    expect(s.baseline).toBe(0);
+    expect(s.showMarker).toBe(true);
+    expect(s.symbolSize).toBe(6);
+    expect(s.sampling).toBe('none');
+    expect(s.lineStyle.width).toBe(2);
+    expect(s.rawBounds?.yMin).toBe(0); // baseline
+    expect(s.rawBounds?.yMax).toBe(4);
+  });
+
+  it('includes baseline above data range in rawBounds', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'impulse',
+          baseline: 10,
+          data: { x: [0], y: [1] },
+        },
+      ],
+    });
+    const s = resolved.series[0]!;
+    if (s.type !== 'impulse') throw new Error('expected impulse');
+    expect(s.rawBounds?.yMin).toBe(1);
+    expect(s.rawBounds?.yMax).toBe(10);
+  });
+
+  it('warns and uses 0 for non-finite baseline', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'impulse',
+          baseline: Number.NaN,
+          data: { x: [0], y: [2] },
+        },
+      ],
+    });
+    const s = resolved.series[0]!;
+    if (s.type !== 'impulse') throw new Error('expected impulse');
+    expect(s.baseline).toBe(0);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('warns and ignores non-none sampling', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'impulse',
+          data: { x: [0], y: [1] },
+          sampling: 'lttb' as 'none',
+        },
+      ],
+    });
+    const s = resolved.series[0]!;
+    if (s.type !== 'impulse') throw new Error('expected impulse');
+    expect(s.sampling).toBe('none');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('showMarker false is preserved; width clamp for non-positive', () => {
+    const resolved = resolveOptions({
+      series: [
+        {
+          type: 'impulse',
+          showMarker: false,
+          lineStyle: { width: 0 },
+          data: { x: [0], y: [1] },
+        },
+      ],
+    });
+    const s = resolved.series[0]!;
+    if (s.type !== 'impulse') throw new Error('expected impulse');
+    expect(s.showMarker).toBe(false);
+    // width 0 fails >0 check → default 2
+    expect(s.lineStyle.width).toBe(2);
+  });
+
+  it('recomputes rawBounds when baseline changes with previousResolved (same data ref)', () => {
+    const data = { x: [0, 1], y: [2, 3] };
+    const first = resolveOptions({ series: [{ type: 'impulse', data, baseline: 0 }] });
+    const s0 = first.series[0]!;
+    if (s0.type !== 'impulse') throw new Error('expected impulse');
+    expect(s0.rawBounds?.yMin).toBe(0);
+
+    const second = resolveOptions({ series: [{ type: 'impulse', data, baseline: -5 }] }, { previousResolved: first });
+    const s1 = second.series[0]!;
+    if (s1.type !== 'impulse') throw new Error('expected impulse');
+    expect(s1.baseline).toBe(-5);
+    expect(s1.rawBounds?.yMin).toBe(-5);
+    expect(s1.rawBounds).not.toBe(s0.rawBounds);
+  });
+
+  it('reuses data identity on same data ref + baseline', () => {
+    const data = { x: [0, 1, 2], y: [1, 2, 3] };
+    const first = resolveOptions({ series: [{ type: 'impulse', data }] });
+    const s0 = first.series[0]!;
+    if (s0.type !== 'impulse') throw new Error('expected impulse');
+    const second = resolveOptions({ series: [{ type: 'impulse', data }] }, { previousResolved: first });
+    const s1 = second.series[0]!;
+    if (s1.type !== 'impulse') throw new Error('expected impulse');
+    expect(s1.data).toBe(s0.data);
+    expect(s1.rawBounds).toBe(s0.rawBounds);
+  });
+});
+
+describe('OptionResolver - step normalize', () => {
+  it('maps true → after; false/omitted → linear; modes preserved', () => {
+    const data = [
+      [0, 1],
+      [1, 2],
+    ] as const;
+    const trueStep = resolveOptions({
+      series: [{ type: 'line', data: [...data], step: true, sampling: 'none' }],
+    });
+    expect((trueStep.series[0] as { step?: string }).step).toBe('after');
+
+    const before = resolveOptions({
+      series: [{ type: 'line', data: [...data], step: 'before', sampling: 'none' }],
+    });
+    expect((before.series[0] as { step?: string }).step).toBe('before');
+
+    const middle = resolveOptions({
+      series: [{ type: 'area', data: [...data], step: 'middle', sampling: 'none' }],
+    });
+    expect((middle.series[0] as { step?: string }).step).toBe('middle');
+
+    const off = resolveOptions({
+      series: [{ type: 'line', data: [...data], step: false, sampling: 'none' }],
+    });
+    expect((off.series[0] as { step?: string }).step).toBeUndefined();
+
+    const omitted = resolveOptions({
+      series: [{ type: 'line', data: [...data], sampling: 'none' }],
+    });
+    expect((omitted.series[0] as { step?: string }).step).toBeUndefined();
+  });
+
+  it('invalid step string → linear + warn once', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const data = [
+      [0, 1],
+      [1, 2],
+    ] as const;
+    const resolved = resolveOptions({
+      series: [{ type: 'line', data: [...data], step: 'diagonal' as 'after', sampling: 'none' }],
+    });
+    expect((resolved.series[0] as { step?: string }).step).toBeUndefined();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('warns when step + sampling !== none', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    resolveOptions({
+      series: [
+        {
+          type: 'line',
+          data: [
+            [0, 1],
+            [1, 2],
+            [2, 3],
+          ],
+          step: true,
+          sampling: 'lttb',
+          samplingThreshold: 2,
+        },
+      ],
+    });
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('step + sampling'))).toBe(true);
+    warn.mockRestore();
+  });
+});
+
 describe('OptionResolver - stacked mountain/area stack', () => {
   it('normalizes stack on line+areaStyle and area; expands rawBounds to exact stacked total', () => {
     const resolved = resolveOptions({

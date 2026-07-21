@@ -186,6 +186,12 @@ export function formatTooltipItem(params: TooltipParams): string {
     const plain = `${y} [${lo} … ${hi}]`;
     return formatRowHtml(params, plain, `${escapeHtml(y)} ${mutedSecondaryHtml(`[${lo} … ${hi}]`)}`);
   }
+  if (typeof params.baseline === 'number' && Number.isFinite(params.baseline)) {
+    // Impulse: tip y with muted baseline.
+    const y = formatNumber(params.value[1]);
+    const base = formatNumber(params.baseline);
+    return formatRowHtml(params, `${y} (base ${base})`, `${escapeHtml(y)} ${mutedSecondaryHtml(`base ${base}`)}`);
+  }
   return formatRowHtml(params, formatNumber(params.value[1]));
 }
 
@@ -229,6 +235,11 @@ export function formatTooltipAxis(params: TooltipParams[]): string {
         const hi = formatNumber(p.high);
         const lo = formatNumber(p.low);
         return formatRowHtml(p, `${y} [${lo} … ${hi}]`, `${escapeHtml(y)} ${mutedSecondaryHtml(`[${lo} … ${hi}]`)}`);
+      }
+      if (typeof p.baseline === 'number' && Number.isFinite(p.baseline)) {
+        const y = formatNumber(p.value[1]);
+        const base = formatNumber(p.baseline);
+        return formatRowHtml(p, `${y} (base ${base})`, `${escapeHtml(y)} ${mutedSecondaryHtml(`base ${base}`)}`);
       }
       return formatRowHtml(p, formatNumber(p.value[1]));
     })

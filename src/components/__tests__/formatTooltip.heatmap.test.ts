@@ -125,6 +125,39 @@ describe('formatTooltip band y1', () => {
   });
 });
 
+describe('formatTooltip impulse baseline', () => {
+  it('formatTooltipItem shows y with muted baseline secondary', () => {
+    const params = {
+      seriesName: 'Events',
+      seriesIndex: 0,
+      dataIndex: 1,
+      value: [2, 4] as const,
+      color: '#a78bfa',
+      baseline: 0,
+    };
+    const html = formatTooltipItem(params);
+    expect(html).toContain('4');
+    expect(html).toMatch(/base/i);
+    expect(html).toContain('0');
+  });
+
+  it('formatTooltipAxis includes baseline muted span', () => {
+    const html = formatTooltipAxis([
+      {
+        seriesName: 'Events',
+        seriesIndex: 0,
+        dataIndex: 0,
+        value: [1, 3] as const,
+        color: '#a78bfa',
+        baseline: -1,
+      },
+    ]);
+    expect(html).toContain('3');
+    expect(html).toMatch(/base/i);
+    expect(html).toContain('-1');
+  });
+});
+
 describe('formatTooltip stacked mountain stackTotal', () => {
   it('formatTooltipItem shows contribution with muted total', () => {
     const params = {

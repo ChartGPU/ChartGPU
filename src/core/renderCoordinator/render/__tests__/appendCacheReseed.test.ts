@@ -183,6 +183,7 @@ describe('append cache re-seed / ring guard (issue 0.2)', () => {
         candlestickRenderers: [],
         ohlcRenderers: [],
         errorBarRenderers: [],
+        impulseRenderers: [],
         decimationComputes: [mockDecimation() as any],
       },
       prepareCtx({
@@ -237,6 +238,7 @@ describe('append cache re-seed / ring guard (issue 0.2)', () => {
         candlestickRenderers: [],
         ohlcRenderers: [],
         errorBarRenderers: [],
+        impulseRenderers: [],
         decimationComputes: [mockDecimation() as any],
       },
       prepareCtx({
@@ -291,6 +293,7 @@ describe('append cache re-seed / ring guard (issue 0.2)', () => {
         candlestickRenderers: [],
         ohlcRenderers: [],
         errorBarRenderers: [],
+        impulseRenderers: [],
         decimationComputes: [mockDecimation() as any],
       },
       prepareCtx({

@@ -105,6 +105,32 @@ describe('isGpuDecimationEligible', () => {
     expect(isGpuDecimationEligible(s, data)).toBe(false);
   });
 
+  it('rejects step (digital) line (D6 — not GPU-decimation eligible)', () => {
+    const data: CartesianSeriesData = [
+      [0, 1],
+      [1, 2],
+      [2, 3],
+    ];
+    for (const step of [true, 'after', 'before', 'middle'] as const) {
+      const s = makeLineSeries({
+        sampling: 'lttb',
+        step,
+      } as Partial<ResolvedSeriesConfig>);
+      expect(isGpuDecimationEligible(s, data)).toBe(false);
+    }
+  });
+
+  it('allows linear line when step is false / omitted', () => {
+    const data: CartesianSeriesData = [
+      [0, 1],
+      [1, 2],
+    ];
+    expect(isGpuDecimationEligible(makeLineSeries({ sampling: 'lttb' }), data)).toBe(true);
+    expect(
+      isGpuDecimationEligible(makeLineSeries({ sampling: 'lttb', step: false } as Partial<ResolvedSeriesConfig>), data)
+    ).toBe(true);
+  });
+
   it('allows stroke-only line with inert stack (no areaStyle)', () => {
     const s = makeLineSeries({
       sampling: 'lttb',

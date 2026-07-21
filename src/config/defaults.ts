@@ -106,6 +106,19 @@ export const errorBarDefaults = {
   sampling: 'none' as const,
 } as const;
 
+/** Defaults for impulse / stem series (`type: 'impulse'`). */
+export const impulseDefaults = {
+  baseline: 0,
+  /** Stem stroke width in CSS px. */
+  lineStyle: {
+    width: 2,
+    opacity: 1,
+  } as const,
+  showMarker: true,
+  symbolSize: 6,
+  sampling: 'none' as const,
+} as const;
+
 export const scatterDefaults = {
   mode: 'points' as const,
   // Bin size in CSS pixels for density mode. Must be > 0.

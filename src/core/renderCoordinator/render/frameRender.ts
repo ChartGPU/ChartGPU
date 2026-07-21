@@ -19,6 +19,8 @@ import {
   renderAboveSeriesAnnotations,
   createStackedMountainCache,
   invalidateStackedMountainCache,
+  createStepExpandCache,
+  invalidateStepExpandCache,
   type SeriesRenderers,
   type SeriesPrepareContext,
   type SeriesRenderContext,
@@ -35,6 +37,8 @@ export {
   renderAboveSeriesAnnotations,
   createStackedMountainCache,
   invalidateStackedMountainCache,
+  createStepExpandCache,
+  invalidateStepExpandCache,
   type LastSetSeriesCache,
 };
 // StackedMountainCache type is used only via create/invalidate at coordinator call sites.

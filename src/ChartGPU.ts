@@ -84,7 +84,9 @@ import {
 import type { BandSeriesData, ErrorBarSeriesData } from './config/types';
 import { pointerClientToLayoutCss } from './core/renderCoordinator/utils/canvasUtils';
 import { findErrorBarAtPointer } from './interaction/findErrorBar';
-import type { ResolvedErrorBarSeriesConfig } from './config/OptionResolver';
+import { findImpulseAtPointer } from './interaction/findImpulse';
+import type { ResolvedErrorBarSeriesConfig, ResolvedImpulseSeriesConfig } from './config/OptionResolver';
+import { impulseBounds } from './data/impulseGeometry';
 
 // --- Instance registry for auto-dispose on page unload (CGPU-OOM-139) ---
 const activeInstances = new Set<{ dispose(): void; disposed: boolean }>();
@@ -153,7 +155,7 @@ export type ZoomChangeSourceKind = 'user' | 'auto-scroll' | 'api';
  * Hit-test match for a chart element.
  */
 export type ChartGPUHitTestMatch = Readonly<{
-  readonly kind: 'cartesian' | 'candlestick' | 'ohlc' | 'pie' | 'errorBar' | 'pointCloud3d' | 'surface3d';
+  readonly kind: 'cartesian' | 'candlestick' | 'ohlc' | 'pie' | 'errorBar' | 'impulse' | 'pointCloud3d' | 'surface3d';
   readonly seriesIndex: number;
   readonly dataIndex: number;
   /**
@@ -161,6 +163,7 @@ export type ChartGPUHitTestMatch = Readonly<{
    * - candlestick / ohlc: still reported as [timestamp, close] at the ChartGPU wrapper (see hitTest)
    * - pie: [slice index proxy via value] (see pie hit path)
    * - errorBar: [x, y] center (see also high/low on TooltipParams)
+   * - impulse: [x, y] tip (see also baseline on TooltipParams)
    * - pointCloud3d: [x, y, z]
    * - surface3d: [x, y, z] world hit (height along Y)
    */
@@ -736,6 +739,21 @@ const computeGlobalBounds = (
       continue;
     }
 
+    if (seriesConfig.type === 'impulse') {
+      const baseline =
+        typeof (seriesConfig as { baseline?: number }).baseline === 'number' &&
+        Number.isFinite((seriesConfig as { baseline?: number }).baseline)
+          ? ((seriesConfig as { baseline: number }).baseline as number)
+          : 0;
+      const ib = impulseBounds((seriesConfig.rawData ?? seriesConfig.data) as CartesianSeriesData, baseline);
+      if (!ib) continue;
+      if (ib.xMin < xMin) xMin = ib.xMin;
+      if (ib.xMax > xMax) xMax = ib.xMax;
+      if (ib.yMin < yMin) yMin = ib.yMin;
+      if (ib.yMax > yMax) yMax = ib.yMax;
+      continue;
+    }
+
     const b = computeRawBoundsFromCartesianData(seriesConfig.data as CartesianSeriesData);
     if (!b) continue;
     if (b.xMin < xMin) xMin = b.xMin;
@@ -803,7 +821,19 @@ type ErrorBarHitTestMatch = Readonly<{
   point: { readonly x: number; readonly y: number; readonly high: number; readonly low: number };
 }>;
 
-type HitTestMatch = CartesianHitTestMatch | PieHitTestMatch | CandlestickHitTestMatch | ErrorBarHitTestMatch;
+type ImpulseHitTestMatch = Readonly<{
+  kind: 'impulse';
+  seriesIndex: number;
+  dataIndex: number;
+  point: { readonly x: number; readonly y: number; readonly baseline: number };
+}>;
+
+type HitTestMatch =
+  | CartesianHitTestMatch
+  | PieHitTestMatch
+  | CandlestickHitTestMatch
+  | ErrorBarHitTestMatch
+  | ImpulseHitTestMatch;
 
 const parseNumberOrPercent = (value: number | string, basis: number): number | null => {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
@@ -1942,6 +1972,36 @@ export async function createChartGPU(
     return null;
   };
 
+  const findImpulseHitAtGrid = (
+    gridX: number,
+    gridY: number,
+    xScale: LinearScale,
+    primaryYScale: LinearScale,
+    plotWidthCss: number,
+    plotHeightCss: number
+  ): ImpulseHitTestMatch | null => {
+    const hitSeries = getRuntimeHitTestSeries();
+    for (let i = hitSeries.length - 1; i >= 0; i--) {
+      const s = hitSeries[i]!;
+      if (s.type !== 'impulse' || s.visible === false) continue;
+      const imp = s as ResolvedImpulseSeriesConfig;
+      const axisId = imp.yAxis || 'y';
+      const yScaleSeries = resolveYScaleForAxisId(axisId, primaryYScale, plotHeightCss);
+      const m = findImpulseAtPointer([{ seriesIndex: i, series: imp }], gridX, gridY, xScale, yScaleSeries, {
+        width: plotWidthCss,
+        height: plotHeightCss,
+      });
+      if (!m) continue;
+      return {
+        kind: 'impulse',
+        seriesIndex: m.seriesIndex,
+        dataIndex: m.dataIndex,
+        point: { x: m.x, y: m.y, baseline: m.baseline },
+      };
+    }
+    return null;
+  };
+
   const getNearestPointFromPointerEvent = (
     e: PointerEvent
   ): { readonly match: HitTestMatch | null; readonly isInGrid: boolean } => {
@@ -2081,6 +2141,12 @@ export async function createChartGPU(
     {
       const ebHit = findErrorBarHitAtGrid(gridX, gridY, scales.xScale, scales.yScale, plotWidthCss, plotHeightCss);
       if (ebHit) return { match: ebHit, isInGrid: true };
+    }
+
+    // Impulse stems — prefer discrete stems over distant line samples when overlapping.
+    {
+      const impHit = findImpulseHitAtGrid(gridX, gridY, scales.xScale, scales.yScale, plotWidthCss, plotHeightCss);
+      if (impHit) return { match: impHit, isInGrid: true };
     }
 
     const cartesianMatch = findNearestPoint(getRuntimeHitTestSeries(), gridX, gridY, scales.xScale, scales.yScale);
@@ -2245,6 +2311,16 @@ export async function createChartGPU(
     }
 
     if (match.kind === 'errorBar') {
+      return {
+        seriesIndex,
+        dataIndex,
+        value: [match.point.x, match.point.y],
+        seriesName,
+        event,
+      };
+    }
+
+    if (match.kind === 'impulse') {
       return {
         seriesIndex,
         dataIndex,
@@ -3406,6 +3482,26 @@ export async function createChartGPU(
               seriesIndex: ebHit.seriesIndex,
               dataIndex: ebHit.dataIndex,
               value: [ebHit.point.x, ebHit.point.y],
+            },
+          };
+        }
+      }
+
+      // Impulse stems
+      {
+        const impHit = findImpulseHitAtGrid(gridX, gridY, scales.xScale, scales.yScale, plotWidthCss, plotHeightCss);
+        if (impHit) {
+          return {
+            isInGrid: true,
+            canvasX,
+            canvasY,
+            gridX,
+            gridY,
+            match: {
+              kind: 'impulse',
+              seriesIndex: impHit.seriesIndex,
+              dataIndex: impHit.dataIndex,
+              value: [impHit.point.x, impHit.point.y],
             },
           };
         }
