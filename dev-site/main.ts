@@ -83,6 +83,34 @@ const examples: readonly Example[] = [
     path: examplePath('band-range'),
   },
   {
+    id: 'error-bars',
+    title: 'Error Bars',
+    desc: 'Per-point high/low whiskers (type: errorBar) — SciChart HLC style; errorMode, capWidth, center markers',
+    category: 'series',
+    path: examplePath('error-bars'),
+  },
+  {
+    id: 'step-line',
+    title: 'Step / Digital Line + Mountain',
+    desc: 'Stairs via step on line/area (after/before/middle) — SciChart isDigitalLine; mountain fill follows stepped top',
+    category: 'series',
+    path: examplePath('step-line'),
+  },
+  {
+    id: 'impulse',
+    title: 'Impulse / Stem Series',
+    desc: 'Vertical stems baseline→y (type: impulse) — SciChart FastImpulseRenderableSeries; optional markers; not errorBar',
+    category: 'series',
+    path: examplePath('impulse'),
+  },
+  {
+    id: 'stacked-mountain',
+    title: 'Stacked Mountain / Area',
+    desc: 'Multi-series composition fill via stack on line+areaStyle (or type: area) — layers sit on cumulative peers',
+    category: 'series',
+    path: examplePath('stacked-mountain'),
+  },
+  {
     id: '3d-showcase',
     title: '3D Showcase',
     desc: 'Labeled axes, contours, cloud FIFO + surface strip streaming, pick tooltips — cartesian3d product demo',
@@ -116,6 +144,13 @@ const examples: readonly Example[] = [
     desc: 'Financial OHLC chart with classic and hollow style toggle',
     category: 'series',
     path: examplePath('candlestick'),
+  },
+  {
+    id: 'ohlc-bars',
+    title: 'OHLC Bars',
+    desc: 'Thin open–high–low–close bars (type: ohlc) with candlestick ↔ ohlc toggle on the same OHLCDataPoint data',
+    category: 'series',
+    path: examplePath('ohlc-bars'),
   },
   {
     id: 'scatter',
