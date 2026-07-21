@@ -68,7 +68,7 @@ Chart-level option controlling dense draw fidelity:
 **Thresholds (auto only):**
 
 - Dense hairline: `DENSE_HAIRLINE_POINT_THRESHOLD = 25_000` points per series, or multi-series total segments ≥ `500_000`
-- Dense scatter: density LO `0.5` / HI `3.0` points per plot pixel (see `scatterDrawPolicy.ts`)
+- Dense scatter: density LO `0.08` / HI `0.30` points per plot pixel, plus N ≥ `250_000` full-compact floor; **only fully compact** const-radius draws sampleCount:1 post-resolve (partial blends stay main 4×); deferred only on pure-scatter charts (any visible line keeps scatter on main for z-order — see `scatterDrawPolicy.ts`)
 
 Use `performance: { lod: 'strict' }` for fidelity-sensitive benchmarks or when SciChart harness geometry (width 2 / full markers) must match. Default `'auto'` remains the product FPS path.
 

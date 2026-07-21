@@ -338,7 +338,7 @@ describe('scatter equal-N y-only dual-buffer (issue 1.2 Option A)', () => {
     const writeUniform = writeUniformBuffer as ReturnType<typeof vi.fn>;
     writeUniform.mockClear();
     const renderer = createScatterRenderer(device, { sampleCount: 1 });
-    const n = 1000; // density ≪ 0.5 on 800×400
+    const n = 1000; // density ≪ DENSE_SCATTER_DENSITY_LO (0.08) on 800×400
     const data = Array.from({ length: n }, (_, i) => [i, i] as const);
     renderer.prepare(baseSeries(5), data as unknown as never, identityScale, identityScale, gridArea);
     const vsWrites = writeUniform.mock.calls.filter((c) => {
