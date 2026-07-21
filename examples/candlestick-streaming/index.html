@@ -3,39 +3,37 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ChartGPU - Live Crypto Streaming</title>
+  <title>Candlestick Streaming — ChartGPU</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div class="app">
-    <!-- Header -->
     <header class="header">
-      <div class="logo">
-        <span class="logo-icon">📊</span>
-        <span class="logo-text">ChartGPU</span>
-        <span class="logo-badge">WebGPU</span>
+      <div class="ticker" aria-live="polite" aria-atomic="true">
+        <span class="ticker-symbol">
+          <span class="ticker-cash" aria-hidden="true">$</span>ChartGPU
+        </span>
+        <span id="current-price" class="ticker-price" data-price="0">100.00</span>
       </div>
-      <div class="symbol-info">
-        <span class="symbol-name">MEME/USD</span>
-        <span id="current-price" class="current-price" data-price="0">$100.00</span>
-      </div>
-      <div class="timeframes">
-        <button class="timeframe-btn active" data-tf="1s">1s</button>
-        <button class="timeframe-btn" data-tf="5m">5m</button>
-        <button class="timeframe-btn" data-tf="15m">15m</button>
-        <button class="timeframe-btn" data-tf="1h">1H</button>
-        <button class="timeframe-btn" data-tf="4h">4H</button>
-        <button class="timeframe-btn" data-tf="1d">1D</button>
+      <div class="timeframes" role="group" aria-label="Candle interval">
+        <button type="button" class="timeframe-btn active" data-tf="1s">1s</button>
+        <button type="button" class="timeframe-btn" data-tf="5m">5m</button>
+        <button type="button" class="timeframe-btn" data-tf="15m">15m</button>
+        <button type="button" class="timeframe-btn" data-tf="1h">1H</button>
+        <button type="button" class="timeframe-btn" data-tf="4h">4H</button>
+        <button type="button" class="timeframe-btn" data-tf="1d">1D</button>
       </div>
       <a href="https://github.com/ChartGPU/ChartGPU" class="github-link" target="_blank" rel="noopener noreferrer">
-        <svg class="github-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <svg class="github-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
           <path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.17 6.839 9.49.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.167 22 16.418 22 12c0-5.523-4.477-10-10-10z"/>
         </svg>
         <span>GitHub</span>
       </a>
     </header>
 
-    <!-- Stats Bar -->
     <div class="stats-bar">
       <div class="stat">
         <span class="stat-label">FPS</span>
@@ -46,37 +44,35 @@
         <span id="stat-candles" class="stat-value">60</span>
       </div>
       <div class="stat">
-        <span class="stat-label">Tick Rate</span>
+        <span class="stat-label">Tick rate</span>
         <span id="stat-ticks" class="stat-value">0/s</span>
       </div>
       <div class="stat">
-        <span class="stat-label">Total Ticks</span>
+        <span class="stat-label">Total ticks</span>
         <span id="stat-total-ticks" class="stat-value">0</span>
       </div>
-      <div class="stat-separator"></div>
-      <div class="candle-presets">
-        <span class="preset-label">Candles:</span>
-        <button class="preset-btn active" data-count="60">60</button>
-        <button class="preset-btn" data-count="1000">1K</button>
-        <button class="preset-btn" data-count="10000">10K</button>
-        <button class="preset-btn" data-count="50000">50K</button>
-        <button class="preset-btn" data-count="100000">100K</button>
-        <button class="preset-btn" data-count="1000000">1M</button>
-        <button class="preset-btn" data-count="5000000">5M</button>
+      <div class="stat-separator" aria-hidden="true"></div>
+      <div class="candle-presets" role="group" aria-label="Candle count">
+        <span class="preset-label">Candles</span>
+        <button type="button" class="preset-btn active" data-count="60">60</button>
+        <button type="button" class="preset-btn" data-count="1000">1K</button>
+        <button type="button" class="preset-btn" data-count="10000">10K</button>
+        <button type="button" class="preset-btn" data-count="50000">50K</button>
+        <button type="button" class="preset-btn" data-count="100000">100K</button>
+        <button type="button" class="preset-btn" data-count="1000000">1M</button>
+        <button type="button" class="preset-btn" data-count="5000000">5M</button>
       </div>
-      <div class="stat-separator"></div>
-      <button id="toggle-btn" class="control-btn">▶ Start</button>
-      <button id="style-btn" class="control-btn secondary">Style: Classic</button>
-      <button id="autoscroll-btn" class="control-btn secondary toggle-active">📍 Auto-Scroll: ON</button>
+      <div class="stat-separator" aria-hidden="true"></div>
+      <button type="button" id="toggle-btn" class="control-btn">Start</button>
+      <button type="button" id="style-btn" class="control-btn secondary">Style: Classic</button>
+      <button type="button" id="autoscroll-btn" class="control-btn secondary toggle-active">Auto-scroll: On</button>
     </div>
 
-    <!-- Chart Container -->
     <div id="chart" class="chart-container"></div>
 
-    <!-- Footer -->
     <footer class="footer">
-      <span>Powered by WebGPU • Scale from 60 to 5M candles • Real-time streaming</span>
-      <a href="https://github.com/ChartGPU/ChartGPU" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <span>Live tick simulation · 60 candles → 5M · WebGPU</span>
+      <a href="https://github.com/ChartGPU/ChartGPU" target="_blank" rel="noopener noreferrer">Source</a>
     </footer>
   </div>
 

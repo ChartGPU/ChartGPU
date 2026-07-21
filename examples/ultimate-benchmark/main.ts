@@ -81,14 +81,14 @@ class FrameTimeGraph {
     const width = canvas.width;
     const height = canvas.height;
 
-    // Clear canvas
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    // Clear canvas (paper-2 surface; canvas can't read CSS vars reliably)
+    ctx.fillStyle = 'oklch(15% 0.014 265)';
     ctx.fillRect(0, 0, width, height);
     if (frameTimes.length === 0) return;
 
     // Draw 60fps target line
     const targetY = height - (EXPECTED_FRAME_TIME_MS / this.maxFrameTime) * height;
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+    ctx.strokeStyle = 'oklch(92% 0.01 265 / 0.14)';
     ctx.lineWidth = 1;
     ctx.setLineDash([4, 4]);
     ctx.beginPath();
@@ -104,10 +104,11 @@ class FrameTimeGraph {
       const barHeight = Math.min(1, frameTime / this.maxFrameTime) * height;
       const y = height - barHeight;
 
+      // Brand-aligned quality bands (success / warning / danger)
       let color: string;
-      if (frameTime <= EXPECTED_FRAME_TIME_MS) color = '#10b981';
-      else if (frameTime <= FRAME_TIME_SLOW_THRESHOLD) color = '#f59e0b';
-      else color = '#ef4444';
+      if (frameTime <= EXPECTED_FRAME_TIME_MS) color = '#6BCB77';
+      else if (frameTime <= FRAME_TIME_SLOW_THRESHOLD) color = '#F0A202';
+      else color = '#E05A8C';
 
       ctx.fillStyle = color;
       ctx.fillRect(x, y, Math.max(0, barWidth - 1), barHeight);
@@ -301,17 +302,18 @@ async function createChart(dataType: DataType, seriesData: Array<DataPoint[] | O
   const container = document.getElementById('chart');
   if (!container) throw new Error('Missing #chart container');
 
+  // ChartGPU brand palette (dev-site)
   const palette = [
-    '#06b6d4',
-    '#6366f1',
-    '#10b981',
-    '#f59e0b',
-    '#ef4444',
-    '#a78bfa',
-    '#22c55e',
-    '#eab308',
-    '#fb7185',
-    '#38bdf8',
+    '#D4A520',
+    '#3B7DD8',
+    '#3ECFCF',
+    '#E05A8C',
+    '#6BCB77',
+    '#8B7CFF',
+    '#F0A202',
+    '#7A8494',
+    '#D4A520',
+    '#3B7DD8',
   ];
 
   const baseSeries = seriesData.map((data, i) => {
