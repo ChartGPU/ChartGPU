@@ -680,11 +680,14 @@ async function mountBars(container: HTMLElement): Promise<{ dispose: () => void 
   const chart = await ChartGPU.create(container, options);
   const ro = attachResize(container, chart);
 
-  // Morph stacks smoothly (~12 Hz, small phase steps) instead of 900ms jumps.
-  let phase = 0;
-  const stream = startStreamPump(() => {
+  // Continuous morph: time-based phase at ~display rate. Discrete ~12 Hz steps
+  // read as stop-and-go even with small increments (no update animation on plates).
+  // 0.55 rad/s keeps the prior visual speed (~0.05 × 12 Hz).
+  const phaseRate = 0.55;
+  const t0 = performance.now();
+  const stream = startStreamPump((now) => {
     if (chart.disposed) return;
-    phase += 0.05;
+    const phase = ((now - t0) * 0.001) * phaseRate;
     chart.setOption({
       ...options,
       series: [
@@ -694,7 +697,7 @@ async function mountBars(container: HTMLElement): Promise<{ dispose: () => void 
         { type: 'bar', name: 'd', data: mk(phase + 0.7, 1.1, -1.2), stack: 's', color: CYAN },
       ],
     });
-  }, { hz: 12 });
+  }, { hz: 48 });
 
   return {
     dispose: () => {
@@ -995,7 +998,7 @@ async function mountWall(container: HTMLElement): Promise<{ dispose: () => void 
         grid: { left: 48, right: 52, top: 28, bottom: 28 },
         gridLines: { show: true, horizontal: { show: true, count: 4 }, vertical: { show: false } },
         tooltip: { show: true, trigger: 'axis' },
-        legend: { show: true },
+        legend: { show: false },
         animation: noAnim,
         autoScroll: true,
         xAxis: { type: 'time' },
