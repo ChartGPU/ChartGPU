@@ -53,6 +53,18 @@ export type RingXYColumns = {
   start: number;
   count: number;
   capacity: number;
+  /**
+   * Bumped on every mutating write ({@link appendIntoRingXY}).
+   * Generation-aware mono / identity caches must include this so strict full
+   * replace (start/count/capacity unchanged) cannot leave stale mono=true.
+   */
+  contentEpoch: number;
+  /**
+   * Bumped only on full-clear (drop ≥ count) before rewrite. Mono FIFO
+   * incremental must full-scan when this changes; partial multi-append epoch
+   * jumps alone are still O(dropped) verifiable.
+   */
+  rewriteGen: number;
 };
 
 /**
@@ -87,6 +99,11 @@ export type StagingRingView = {
   capacity: number;
   /** Added back in {@link getX} so domain / binary search use original x. */
   xOffset: number;
+  /**
+   * Bumped on every {@link createStagingRingView} (reuse or new). Staging floats
+   * may be rewritten in place under stable start/count — mono caches must key this.
+   */
+  contentEpoch: number;
 };
 
 /**
@@ -116,6 +133,9 @@ export function isStagingRingView(data: unknown): data is StagingRingView {
 /**
  * Creates or updates a staging-backed ring view (mutates `reuse` when provided
  * to avoid per-append object allocation on the high-rate FIFO path).
+ *
+ * Always bumps {@link StagingRingView.contentEpoch} so generation-aware mono
+ * caches re-evaluate after in-place float rewrites under stable layout fields.
  */
 export function createStagingRingView(
   staging: Float32Array,
@@ -131,6 +151,7 @@ export function createStagingRingView(
     reuse.capacity = capacity;
     reuse.count = count;
     reuse.xOffset = xOffset;
+    reuse.contentEpoch = (reuse.contentEpoch | 0) + 1;
     return reuse;
   }
   return {
@@ -140,6 +161,7 @@ export function createStagingRingView(
     capacity,
     count,
     xOffset,
+    contentEpoch: 1,
   };
 }
 
@@ -160,6 +182,10 @@ export function stagingRingViewToRingXYColumns(view: StagingRingView): RingXYCol
   }
   ring.start = 0;
   ring.count = view.count;
+  // Content was written outside appendIntoRingXY — bump so mono cache keys this pack.
+  if (view.count > 0) {
+    ring.contentEpoch = (ring.contentEpoch | 0) + 1;
+  }
   return ring;
 }
 
@@ -201,6 +227,8 @@ export function createRingXYColumns(capacity: number, withSize = false): RingXYC
     start: 0,
     count: 0,
     capacity: cap,
+    contentEpoch: 0,
+    rewriteGen: 0,
   };
   if (withSize) {
     ring.size = new Float64Array(cap);
@@ -238,10 +266,19 @@ export function appendIntoRingXY(
   dropPrevCount: number
 ): void {
   const cap = ring.capacity;
+  // Any structural or content mutation bumps epoch so mono caches cannot stick
+  // after strict full-buffer rewrite (start/count/capacity may be unchanged).
+  if (dropPrevCount > 0 || keepNewCount > 0) {
+    ring.contentEpoch = (ring.contentEpoch | 0) + 1;
+  }
   if (dropPrevCount > 0) {
     if (dropPrevCount >= ring.count) {
       ring.start = 0;
       ring.count = 0;
+      // Full clear: entire buffer content is discarded. rewriteGen forces mono
+      // full-scan (partial FIFO multi-append can advance contentEpoch by >1
+      // without rewriting the retained prefix).
+      ring.rewriteGen = (ring.rewriteGen | 0) + 1;
     } else {
       ring.start = (ring.start + dropPrevCount) % cap;
       ring.count -= dropPrevCount;

@@ -10,6 +10,127 @@ import type { ResolvedSeriesConfig } from '../../config/OptionResolver';
 import type { DataPoint, CartesianSeriesData } from '../../config/types';
 
 describe('findNearestPoint', () => {
+  describe('multi-M dense line (hover must not O(n) freeze)', () => {
+    it('hits near cursor on 200k mono line without scanning the whole series', () => {
+      const n = 200_000;
+      const xs = new Float64Array(n);
+      const ys = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        xs[i] = i;
+        ys[i] = Math.sin(i * 0.01);
+      }
+      const data = { x: xs, y: ys };
+      const series: ResolvedSeriesConfig[] = [
+        {
+          type: 'line',
+          data,
+          color: '#f00',
+          visible: true,
+          connectNulls: false,
+          sampling: 'none',
+          samplingThreshold: 5000,
+          yAxis: 'y',
+          rawData: data,
+          lineStyle: { width: 1, opacity: 1, color: '#f00' },
+        } as any,
+      ];
+      const xScale = createLinearScale()
+        .domain(0, n - 1)
+        .range(0, 1000);
+      const yScale = createLinearScale().domain(-2, 2).range(400, 0);
+      // Cursor over mid series
+      const target = Math.floor(n / 2);
+      const t0 = performance.now();
+      for (let k = 0; k < 50; k++) {
+        const hit = findNearestPoint(series, xScale.scale(target), yScale.scale(ys[target]!), xScale, yScale, 20);
+        expect(hit).not.toBeNull();
+        expect(Math.abs(hit!.dataIndex - target)).toBeLessThan(5);
+      }
+      // 50 nearest queries on 200k must stay well under a full linear pass budget
+      expect(performance.now() - t0).toBeLessThan(100);
+    });
+
+    it('returns null quickly when cursor is far from the series (no full scan)', () => {
+      const n = 100_000;
+      const data = {
+        x: Float64Array.from({ length: n }, (_, i) => i),
+        y: Float64Array.from({ length: n }, () => 0),
+      };
+      const series: ResolvedSeriesConfig[] = [
+        {
+          type: 'line',
+          data,
+          color: '#f00',
+          visible: true,
+          connectNulls: false,
+          sampling: 'none',
+          samplingThreshold: 5000,
+          yAxis: 'y',
+          rawData: data,
+          lineStyle: { width: 1, opacity: 1, color: '#f00' },
+        } as any,
+      ];
+      const xScale = createLinearScale()
+        .domain(0, n - 1)
+        .range(0, 1000);
+      const yScale = createLinearScale().domain(-1, 1).range(400, 0);
+      // Cursor 200 CSS px above the line (maxDistance 20) — must not scan 100k
+      const t0 = performance.now();
+      const miss = findNearestPoint(series, 500, yScale.scale(0) - 200, xScale, yScale, 20);
+      expect(miss).toBeNull();
+      expect(performance.now() - t0).toBeLessThan(30);
+    });
+
+    it('dense multi-M full-span: hover miss stays sub-linear (points-per-pixel × maxDist window)', () => {
+      // Device-window scale: millions of points across ~1000 CSS px → ~20px hit
+      // radius covers O(100k+) indices. Without stride expand this freezes streaming.
+      const n = 2_000_000;
+      const xs = new Float64Array(n);
+      const ys = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        xs[i] = i;
+        ys[i] = Math.sin(i * 0.001);
+      }
+      const data = { x: xs, y: ys };
+      const series: ResolvedSeriesConfig[] = [
+        {
+          type: 'line',
+          data,
+          color: '#0f0',
+          visible: true,
+          connectNulls: false,
+          sampling: 'none',
+          samplingThreshold: 5000,
+          yAxis: 'y',
+          rawData: data,
+          lineStyle: { width: 1, opacity: 1, color: '#0f0' },
+        } as any,
+      ];
+      const xScale = createLinearScale()
+        .domain(0, n - 1)
+        .range(0, 1000);
+      const yScale = createLinearScale().domain(-2, 2).range(400, 0);
+      const target = Math.floor(n / 2);
+
+      // Hit: cursor on the series mid-point
+      const tHit = performance.now();
+      for (let k = 0; k < 20; k++) {
+        const hit = findNearestPoint(series, xScale.scale(target), yScale.scale(ys[target]!), xScale, yScale, 20);
+        expect(hit).not.toBeNull();
+        expect(Math.abs(hit!.dataIndex - target)).toBeLessThan(200);
+      }
+      expect(performance.now() - tHit).toBeLessThan(80);
+
+      // Miss: far above the series — must not walk the full maxDistance x-window
+      const tMiss = performance.now();
+      for (let k = 0; k < 20; k++) {
+        const miss = findNearestPoint(series, xScale.scale(target), yScale.scale(0) - 200, xScale, yScale, 20);
+        expect(miss).toBeNull();
+      }
+      expect(performance.now() - tMiss).toBeLessThan(80);
+    });
+  });
+
   describe('step series uses source samples (not densified corners)', () => {
     it('reports source y values only — never densified stair corners as dataIndex', () => {
       // Source samples (0,1) and (2,3); after-step densified corner is (2,1) — not a sample.

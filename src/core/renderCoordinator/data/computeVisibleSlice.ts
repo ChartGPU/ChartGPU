@@ -28,6 +28,8 @@ import {
   isRingXYColumns,
   isStagingRingView,
   type CoordinatorCartesianData,
+  type RingXYColumns,
+  type StagingRingView,
 } from '../../../data/cartesianData';
 import { clampInt } from '../utils/canvasUtils';
 
@@ -36,51 +38,295 @@ export function isTupleOHLCDataPoint(p: OHLCDataPoint): p is OHLCDataPointTuple 
   return Array.isArray(p);
 }
 
-// Cache monotonicity checks to avoid O(n) scans on every zoom operation
-// WeakMap works for arrays, typed arrays, and object references (XYArraysData)
-const monotonicXCache = new WeakMap<object, boolean>();
+/**
+ * Cache monotonicity for array / XY / interleaved identities that may **grow
+ * in place** (owned MutableXYColumns under a stable object ref).
+ * Storing only `boolean` was wrong for streaming: first hover after multi‑M
+ * growth forced a full O(n) rescan every time the identity was new, and even
+ * with a boolean cache a later grow never re-verified the tail cheaply.
+ */
+type ArrayMonoCacheEntry = {
+  mono: boolean;
+  count: number;
+  lastX: number;
+};
+const monotonicXCache = new WeakMap<object, ArrayMonoCacheEntry>();
 const monotonicTimestampCache = new WeakMap<ReadonlyArray<OHLCDataPoint>, boolean>();
+
+/** Cap one-shot full mono scans so first hover at multi‑M cannot freeze the tab. */
+const MONO_FULL_SCAN_SOFT_CAP = 250_000;
+
+/**
+ * Generation-aware mono state for mutable ring / staging storage.
+ * Identity alone is unsafe (content mutates in place); generation is
+ * (start, count, capacity, xOffset, staging buffer identity, contentEpoch).
+ *
+ * `contentEpoch` is bumped by writers ({@link appendIntoRingXY},
+ * {@link createStagingRingView}) so strict full-buffer rewrite under unchanged
+ * layout fields cannot leave stale mono=true.
+ *
+ * Incremental path: pure append and partial FIFO drop+append of mono data only
+ * verify newly written chronological points — O(append) not O(n). Full replace
+ * (drop ≥ previous count / content rewrite under same layout) full-scans.
+ */
+type MutableMonoCacheEntry = {
+  mono: boolean;
+  start: number;
+  count: number;
+  capacity: number;
+  xOffset: number;
+  contentEpoch: number;
+  /** Ring full-clear generation; staging always 0. */
+  rewriteGen: number;
+  /** Staging buffer identity; null for RingXYColumns. */
+  staging: Float32Array | null;
+  /** Last chronological x when mono (or −∞ when empty). */
+  lastX: number;
+};
+
+const mutableMonoCache = new WeakMap<object, MutableMonoCacheEntry>();
+
+function fullScanMonotonicX(data: CoordinatorCartesianData): { mono: boolean; lastX: number } {
+  let prevX = Number.NEGATIVE_INFINITY;
+  const n = getPointCount(data);
+  for (let i = 0; i < n; i++) {
+    const x = getX(data, i);
+    if (!Number.isFinite(x) || x < prevX) {
+      return { mono: false, lastX: prevX };
+    }
+    prevX = x;
+  }
+  return { mono: true, lastX: prevX };
+}
+
+/**
+ * Verify chronological indices [from, to) stay non-decreasing vs `prevX`.
+ * Returns updated lastX on success, or null on violation.
+ */
+function verifyMonoRange(data: CoordinatorCartesianData, from: number, to: number, prevX: number): number | null {
+  let last = prevX;
+  for (let i = from; i < to; i++) {
+    const x = getX(data, i);
+    if (!Number.isFinite(x) || x < last) return null;
+    last = x;
+  }
+  return last;
+}
+
+function readContentEpoch(data: RingXYColumns | StagingRingView): number {
+  const epoch = data.contentEpoch;
+  return typeof epoch === 'number' && Number.isFinite(epoch) ? epoch | 0 : 0;
+}
+
+function readRewriteGen(data: RingXYColumns | StagingRingView): number {
+  if (isStagingRingView(data)) return 0;
+  const g = (data as RingXYColumns).rewriteGen;
+  return typeof g === 'number' && Number.isFinite(g) ? g | 0 : 0;
+}
+
+function isMonotonicMutableRingOrStaging(data: RingXYColumns | StagingRingView): boolean {
+  const start = data.start;
+  const count = data.count;
+  const capacity = data.capacity;
+  const xOffset = isStagingRingView(data) ? data.xOffset : 0;
+  const staging = isStagingRingView(data) ? data.staging : null;
+  const contentEpoch = readContentEpoch(data);
+  const rewriteGen = readRewriteGen(data);
+
+  const cached = mutableMonoCache.get(data as object);
+
+  // Same generation (layout + contentEpoch + rewriteGen) → reuse.
+  if (
+    cached &&
+    cached.start === start &&
+    cached.count === count &&
+    cached.capacity === capacity &&
+    cached.xOffset === xOffset &&
+    cached.staging === staging &&
+    cached.contentEpoch === contentEpoch &&
+    cached.rewriteGen === rewriteGen
+  ) {
+    return cached.mono;
+  }
+
+  const store = (mono: boolean, lastX: number): boolean => {
+    mutableMonoCache.set(data as object, {
+      mono,
+      start,
+      count,
+      capacity,
+      xOffset,
+      contentEpoch,
+      rewriteGen,
+      staging,
+      lastX,
+    });
+    return mono;
+  };
+
+  // Soft-cap: never full-scan multi‑M rings on the hover hot path (device
+  // auto-window is ~16M points at 128 MiB). Strided sample + endpoints.
+  const maybeSoftMono = (): boolean => {
+    if (count <= MONO_FULL_SCAN_SOFT_CAP) {
+      const scanned = fullScanMonotonicX(data);
+      return store(scanned.mono, scanned.lastX);
+    }
+    let prevX = Number.NEGATIVE_INFINITY;
+    let ok = true;
+    const stride = Math.max(1, Math.floor(count / 2048));
+    for (let i = 0; i < count; i += stride) {
+      const x = getX(data, i);
+      if (!Number.isFinite(x) || x < prevX) {
+        ok = false;
+        break;
+      }
+      prevX = x;
+    }
+    if (ok && count > 0) {
+      const lastX = getX(data, count - 1);
+      if (!Number.isFinite(lastX) || lastX < prevX) ok = false;
+      else prevX = lastX;
+    }
+    return store(ok, ok ? prevX : Number.NEGATIVE_INFINITY);
+  };
+
+  // Full-clear rewrite: retained prefix is invalid — soft/full scan.
+  if (cached && cached.rewriteGen !== rewriteGen) {
+    return maybeSoftMono();
+  }
+
+  // Incremental pure append: start unchanged, count grew, prior mono.
+  // contentEpoch may advance by >1 if mono was not polled between appends.
+  if (
+    cached &&
+    cached.mono &&
+    cached.capacity === capacity &&
+    cached.xOffset === xOffset &&
+    cached.staging === staging &&
+    cached.start === start &&
+    count > cached.count &&
+    contentEpoch > cached.contentEpoch
+  ) {
+    const last = verifyMonoRange(data, cached.count, count, cached.lastX);
+    if (last == null) return store(false, cached.lastX);
+    return store(true, last);
+  }
+
+  // Incremental FIFO at capacity: start advanced by total drops since last
+  // check (one or more appends). Verify only the newly written chronological
+  // tail — O(dropped), not O(capacity). Device auto-window hover depends on this.
+  if (
+    cached &&
+    cached.mono &&
+    cached.capacity === capacity &&
+    capacity > 0 &&
+    cached.xOffset === xOffset &&
+    cached.staging === staging &&
+    count === cached.count &&
+    count === capacity &&
+    start !== cached.start &&
+    contentEpoch > cached.contentEpoch &&
+    rewriteGen === cached.rewriteGen
+  ) {
+    const dropped = (start - cached.start + capacity) % capacity;
+    if (dropped > 0 && dropped < count) {
+      const retainedLastIdx = count - dropped - 1;
+      const prevX = getX(data, retainedLastIdx);
+      if (!Number.isFinite(prevX)) return store(false, cached.lastX);
+      const last = verifyMonoRange(data, count - dropped, count, prevX);
+      if (last == null) return store(false, prevX);
+      return store(true, last);
+    }
+  }
+
+  // Unrecognized transition, first visit, or full replace: soft-capped scan.
+  return maybeSoftMono();
+}
 
 /**
  * Checks if cartesian data is monotonic non-decreasing by X coordinate with all finite values.
- * Results are cached in a WeakMap to avoid repeated O(n) scans for **immutable**
- * DataPoint[] / typed arrays / XYArraysData.
  *
- * **Mutable ring / staging:** `RingXYColumns` and `StagingRingView` mutate content
- * under a stable object identity. WeakMap caching is **disabled** for those shapes
- * so a mono=true result cannot stick after content becomes non-monotonic (issue 1.5).
+ * **Array / XY / interleaved** (including coordinator-owned MutableXYColumns that
+ * grow under a stable identity): WeakMap entry `{ mono, count, lastX }`. Pure
+ * mono growth only re-checks the new tail (O(append)) — critical for multi‑M
+ * streaming hover so we never re-scan 15M points every hit-test.
  *
- * Supports all CartesianSeriesData formats: DataPoint[], XYArraysData, InterleavedXYData,
- * plus internal ring/staging (always scanned).
+ * **Mutable ring / staging:** generation-aware cache (start/count/capacity/
+ * xOffset/staging/`contentEpoch`). Pure mono append and partial FIFO drop+append
+ * re-verify only new points; strict full replace full-scans.
+ *
+ * First visit of huge series (n ≫ soft cap): strided sample + endpoints rather
+ * than a multi-second full scan (streaming line contract is mono-increasing x).
  */
 export function isMonotonicNonDecreasingFiniteX(data: CartesianSeriesData): boolean {
-  // Mutable modular storage: never cache by identity (content mutates in place).
-  const isMutableRingOrStaging = isRingXYColumns(data) || isStagingRingView(data);
+  if (isRingXYColumns(data) || isStagingRingView(data)) {
+    return isMonotonicMutableRingOrStaging(data);
+  }
 
-  // For immutable arrays / XY objects, cache by object reference.
-  const cacheKey = !isMutableRingOrStaging && typeof data === 'object' && data !== null ? (data as object) : null;
+  const cacheKey = typeof data === 'object' && data !== null ? (data as object) : null;
+  const n = getPointCount(data);
+
   if (cacheKey) {
     const cached = monotonicXCache.get(cacheKey);
-    if (cached !== undefined) return cached;
+    if (cached) {
+      if (cached.count === n) return cached.mono;
+      // Pure mono growth: verify only the new chronological tail.
+      if (cached.mono && n > cached.count) {
+        const last = verifyMonoRange(data as CoordinatorCartesianData, cached.count, n, cached.lastX);
+        if (last == null) {
+          monotonicXCache.set(cacheKey, { mono: false, count: n, lastX: cached.lastX });
+          return false;
+        }
+        monotonicXCache.set(cacheKey, { mono: true, count: n, lastX: last });
+        return true;
+      }
+      // Shrink, mono=false with growth, or other transitions → rescan below.
+    }
+  }
+
+  // Soft-cap full scan: multi‑M first hover must not block streaming for seconds.
+  if (n > MONO_FULL_SCAN_SOFT_CAP) {
+    let prevX = Number.NEGATIVE_INFINITY;
+    let ok = true;
+    const stride = Math.max(1, Math.floor(n / 2048));
+    for (let i = 0; i < n; i += stride) {
+      const x = getX(data as CoordinatorCartesianData, i);
+      if (!Number.isFinite(x) || x < prevX) {
+        ok = false;
+        break;
+      }
+      prevX = x;
+    }
+    if (ok) {
+      const lastX = getX(data as CoordinatorCartesianData, n - 1);
+      if (!Number.isFinite(lastX) || lastX < prevX) ok = false;
+      else prevX = lastX;
+    }
+    if (cacheKey) {
+      monotonicXCache.set(cacheKey, {
+        mono: ok,
+        count: n,
+        lastX: ok ? prevX : Number.NEGATIVE_INFINITY,
+      });
+    }
+    return ok;
   }
 
   let prevX = Number.NEGATIVE_INFINITY;
-  const n = getPointCount(data);
-
   for (let i = 0; i < n; i++) {
-    const x = getX(data, i);
-    if (!Number.isFinite(x)) {
-      if (cacheKey) monotonicXCache.set(cacheKey, false);
-      return false;
-    }
-    if (x < prevX) {
-      if (cacheKey) monotonicXCache.set(cacheKey, false);
+    const x = getX(data as CoordinatorCartesianData, i);
+    if (!Number.isFinite(x) || x < prevX) {
+      if (cacheKey) {
+        monotonicXCache.set(cacheKey, { mono: false, count: n, lastX: prevX });
+      }
       return false;
     }
     prevX = x;
   }
 
-  if (cacheKey) monotonicXCache.set(cacheKey, true);
+  if (cacheKey) {
+    monotonicXCache.set(cacheKey, { mono: true, count: n, lastX: prevX });
+  }
   return true;
 }
 

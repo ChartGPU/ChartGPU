@@ -127,6 +127,14 @@ import type { ZoomRange, ZoomState } from '../../interaction/createZoomState';
 import { findNearestPoint } from '../../interaction/findNearestPoint';
 import { findPointsAtX } from '../../interaction/findPointsAtX';
 import {
+  createHoverHitTestGateState,
+  DEFAULT_HOVER_HIT_TEST_GATE_OPTIONS,
+  DEFAULT_HOVER_HIT_TEST_THROTTLE_MS,
+  invalidateHoverHitTest,
+  resolveHoverHitTestFrame,
+  shouldAllowSyncTooltipHitTest,
+} from '../../interaction/hoverHitTestGate';
+import {
   computeCandlestickBodyWidthRange,
   findCandlestick,
   type FinanceOhlcHitSeriesConfig,
@@ -1606,11 +1614,15 @@ export function createRenderCoordinator(
   // Cache tooltip state to avoid unnecessary DOM updates
   const tooltipCache = createTooltipCache();
 
-  // Throttle tooltip hit-testing to ~30 Hz (P0-4). Crosshair/highlight still track the
-  // pointer every frame; only the expensive tooltip scan + DOM path is rate-limited.
-  // A follow-up render is scheduled so the tooltip catches up after the window elapses.
-  const TOOLTIP_HIT_TEST_THROTTLE_MS = 33;
-  let lastTooltipHitTestMs = -Infinity;
+  // Shared hover hit-test gate (~60 Hz, time-only) for highlight + tooltip.
+  // Crosshair still tracks the pointer every frame (cheap). findNearestPoint is
+  // rate-limited so multi-M streaming hover does not pay a full nearest scan every
+  // paint; suppressed frames reuse the last match. A follow-up render is scheduled
+  // so highlight/tooltip catch up after the throttle window elapses.
+  const HOVER_HIT_TEST_THROTTLE_MS = DEFAULT_HOVER_HIT_TEST_THROTTLE_MS;
+  const hoverHitTestGate = createHoverHitTestGateState();
+  /** Sync tooltips use a separate time gate (do not share mouse match cache). */
+  let lastSyncTooltipHitTestMs = Number.NEGATIVE_INFINITY;
   let pendingTooltipFollowupTimerId: ReturnType<typeof setTimeout> | null = null;
 
   const cancelPendingTooltipFollowup = (): void => {
@@ -2918,6 +2930,12 @@ export function createRenderCoordinator(
     // and other label-affecting options may have changed (functions not in sig).
     axisLabelContentEpoch++;
 
+    // Drop cached hover match when series data/structure may change so highlight
+    // does not ghost the prior nearest point until the throttle window elapses.
+    if (likelyDataChanged || needsBaselineResample || prevSeries.length !== resolvedOptions.series.length) {
+      invalidateHoverHitTest(hoverHitTestGate);
+    }
+
     // Heatmap stream vs setOption identity policy (shouldClearHeatmapStream).
     ensureHeatmapStreamSlots(resolvedOptions.series.length);
     for (let i = 0; i < resolvedOptions.series.length; i++) {
@@ -3880,25 +3898,47 @@ export function createRenderCoordinator(
       }
     );
 
-    // P0-5: single findNearestPoint for highlight + item-mode tooltip.
-    // Computed once when the real pointer is over the plot; shared via prepareOverlays.
+    // Shared findNearestPoint for highlight + item-mode tooltip (P0-5), gated by
+    // ~60 Hz time-only rate limit so multi-M hover is not every-frame O(scan).
     let sharedNearestMatch: ReturnType<typeof findNearestPoint> | undefined;
-    if (
-      effectivePointer.source === 'mouse' &&
-      effectivePointer.hasPointer &&
-      effectivePointer.isInGrid &&
-      interactionScales
-    ) {
-      sharedNearestMatch = findNearestPoint(
-        seriesForRender,
-        effectivePointer.gridX,
-        effectivePointer.gridY,
-        interactionScales.xScale,
-        interactionScales.yScales.values().next().value!,
-        undefined,
-        interactionScales.yScales
-      );
+    /** True when this frame ran a fresh nearest-point compute (mouse path). */
+    let hoverHitTestRecomputed = false;
+    const pointerInGrid = effectivePointer.hasPointer && effectivePointer.isInGrid && interactionScales != null;
+    const mouseInGrid = pointerInGrid && effectivePointer.source === 'mouse';
+
+    if (mouseInGrid && interactionScales) {
+      const now = performance.now();
+      const scales = interactionScales;
+      const frame = resolveHoverHitTestFrame({
+        state: hoverHitTestGate,
+        nowMs: now,
+        gridX: effectivePointer.gridX,
+        gridY: effectivePointer.gridY,
+        options: DEFAULT_HOVER_HIT_TEST_GATE_OPTIONS,
+        findNearest: () =>
+          findNearestPoint(
+            seriesForRender,
+            effectivePointer.gridX,
+            effectivePointer.gridY,
+            scales.xScale,
+            scales.yScales.values().next().value!,
+            undefined,
+            scales.yScales
+          ),
+      });
+      sharedNearestMatch = frame.match;
+      hoverHitTestRecomputed = frame.recomputed;
+      if (frame.scheduleFollowupMs == null) {
+        cancelPendingTooltipFollowup();
+      } else {
+        schedulePendingTooltipFollowup(frame.scheduleFollowupMs);
+      }
+    } else if (!pointerInGrid) {
+      sharedNearestMatch = null;
+      invalidateHoverHitTest(hoverHitTestGate);
+      cancelPendingTooltipFollowup();
     } else {
+      // Sync pointer in grid: highlight is mouse-only; no findNearestPoint.
       sharedNearestMatch = null;
     }
 
@@ -3934,21 +3974,27 @@ export function createRenderCoordinator(
     const tooltipPointerActive =
       effectivePointer.hasPointer && effectivePointer.isInGrid && currentOptions.tooltip?.show !== false;
 
-    // Throttle gate (P0-4): suppress hit-testing within TOOLTIP_HIT_TEST_THROTTLE_MS of
-    // the previous computation. When suppressed, leave the existing tooltip alone and
-    // schedule a follow-up render. Hides (pointer leaving the grid) are not throttled.
+    // Tooltip DOM + axis/pie/candle secondary hit paths share the same ~60 Hz gate
+    // as highlight findNearestPoint (mouse). Sync tooltips use a **separate** time
+    // gate so mouse↔sync transitions do not suppress recomputes wrongly.
+    // When suppressed, leave the existing tooltip alone and rely on the scheduled
+    // follow-up render. Hides (pointer leaving the grid) are not throttled.
     let tooltipHitTestAllowed = true;
     if (tooltipPointerActive) {
-      const now = performance.now();
-      const elapsed = now - lastTooltipHitTestMs;
-      if (elapsed < TOOLTIP_HIT_TEST_THROTTLE_MS) {
-        tooltipHitTestAllowed = false;
-        schedulePendingTooltipFollowup(TOOLTIP_HIT_TEST_THROTTLE_MS - elapsed);
+      if (mouseInGrid) {
+        tooltipHitTestAllowed = hoverHitTestRecomputed;
       } else {
-        lastTooltipHitTestMs = now;
-        cancelPendingTooltipFollowup();
+        const now = performance.now();
+        const syncGate = shouldAllowSyncTooltipHitTest(lastSyncTooltipHitTestMs, now, HOVER_HIT_TEST_THROTTLE_MS);
+        lastSyncTooltipHitTestMs = syncGate.nextLastSyncMs;
+        tooltipHitTestAllowed = syncGate.allowed;
+        if (syncGate.scheduleFollowupMs != null) {
+          schedulePendingTooltipFollowup(syncGate.scheduleFollowupMs);
+        } else {
+          cancelPendingTooltipFollowup();
+        }
       }
-    } else {
+    } else if (!mouseInGrid) {
       cancelPendingTooltipFollowup();
     }
 

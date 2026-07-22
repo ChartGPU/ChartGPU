@@ -2942,9 +2942,34 @@ export async function createChartGPU(
               appendData
             );
           } else {
-            runtimeRawBoundsByIndex[seriesIndex] = computeRawBoundsFromCartesianData(
-              owned as unknown as CartesianSeriesData
-            );
+            // Match coordinator appendFlush: O(1) endpoint x + extend y from the
+            // new batch only. Full O(n) rescan of a ~16M device ring every wrap
+            // freezes main-thread streaming (tooltip dual-store path).
+            const ring = owned as RingXYColumns;
+            const prevB = runtimeRawBoundsByIndex[seriesIndex];
+            const x0 = getCartesianX(ring as unknown as CartesianSeriesData, 0);
+            const x1 = getCartesianX(ring as unknown as CartesianSeriesData, Math.max(0, ring.count - 1));
+            let yMin = prevB?.yMin ?? Number.POSITIVE_INFINITY;
+            let yMax = prevB?.yMax ?? Number.NEGATIVE_INFINITY;
+            const end = plan.newSrcOffset + plan.keepNewCount;
+            for (let i = plan.newSrcOffset; i < end; i++) {
+              const y = getCartesianY(appendData, i);
+              if (Number.isFinite(y)) {
+                if (y < yMin) yMin = y;
+                if (y > yMax) yMax = y;
+              }
+            }
+            if (Number.isFinite(x0) && Number.isFinite(x1) && Number.isFinite(yMin) && Number.isFinite(yMax)) {
+              let xMin = x0;
+              let xMax = x1;
+              if (xMin === xMax) xMax = xMin + 1;
+              if (yMin === yMax) yMax = yMin + 1;
+              runtimeRawBoundsByIndex[seriesIndex] = { xMin, xMax, yMin, yMax };
+            } else {
+              runtimeRawBoundsByIndex[seriesIndex] = computeRawBoundsFromCartesianData(
+                ring as unknown as CartesianSeriesData
+              );
+            }
           }
         } else {
           // Unbounded: demote ring → linear if needed, then grow arrays.
