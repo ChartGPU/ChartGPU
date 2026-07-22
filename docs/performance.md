@@ -39,6 +39,21 @@ Zoom triggers resampling on visible range only. Target scales with zoom level (c
 
 **Memory:** Trim when `rawData.length > maxPoints` — `setOption({ series: [{ data: rawData.slice(-maxPoints) }] })`. See [`examples/live-streaming/`](../examples/live-streaming/).
 
+### Hover / hit-test during multi‑M streaming
+
+Pointer-in-plot work (highlight ring + optional tooltip) must stay cheap while appending:
+
+| Path | Behavior |
+|------|----------|
+| **Shared nearest-point** | One `findNearestPoint` result feeds **highlight + item tooltip**. **Time-only rate limit (~60 Hz / 16 ms)** — pointer move does **not** bypass the throttle. Each allowed sample uses the **latest** pointer; suppressed frames reuse the last match and schedule a follow-up render. Crosshair still tracks every frame. |
+| **findNearest multi‑M** | Above ~8k points: **skip mono check entirely**, domain x-window for the hit radius, then expand. When that window still has **≫4k** points (full-span multi‑M: points-per-pixel × maxDist), **stride + local refine** so hover stays O(thousands) not O(100k+). At ~**16M** (128 MiB storage bind / 8 bytes per f32 xy) device auto-window engages ring FIFO — without dense-stride expand, hover freezes streaming even with binary search. |
+| **Tooltip dual-store ring bounds** | When `tooltip.show: true` and device/`maxPoints` ring wraps, hit-test bounds use **O(1) endpoint x + batch y** (same as coordinator) — not a full O(n) rescan of the ~16M ring every append. |
+| **Monotonic X cache** | **Growing XY / arrays** (owned MutableXYColumns): `{ mono, count, lastX }` — pure mono growth re-checks **only the new tail**. First visit of n ≫ 250k uses strided sample + endpoints (avoids multi-second full scan on first hover). **Ring / staging**: generation-aware cache + `contentEpoch`. |
+| **`tooltip.show: false`** | Skips dual hit-test columnar store maintenance on `appendData` (GPU/coordinator only). Highlight/crosshair still use the shared gated path above — turning tooltips off alone does **not** disable hit-test. |
+| **`tooltip.show: true`** | Dual store kept for history/hit APIs; tooltip DOM updates share the same ~60 Hz gate as highlight. |
+
+Prefer library defaults (crosshair + highlight on) over demo-only `tooltip: false` when measuring interactive FPS. CPU-sampled series already hit-test their display resolution; GPU-decimation series keep raw resident data and use binary search when X is mono.
+
 ## appendData vs setOption
 
 | Method | Use case | GPU upload | Animation |

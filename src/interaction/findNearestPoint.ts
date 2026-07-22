@@ -26,6 +26,20 @@ const DEFAULT_MAX_DISTANCE_PX = 20;
 const DEFAULT_BAR_GAP = 0.01; // Minimal gap between bars within a group (was 0.1)
 const DEFAULT_BAR_CATEGORY_GAP = 0.2;
 const DEFAULT_SCATTER_RADIUS_CSS_PX = 4;
+/**
+ * Above this count, never full-linear-scan for nearest (would freeze multi‑M hover
+ * and block streaming). Use lowerBound + x-window expand instead (best-effort if
+ * non-monotonic).
+ */
+const LARGE_N_NO_FULL_LINEAR = 8_192;
+/**
+ * Max samples inside the maxDistance x-window before we stride.
+ * Full-span multi‑M (e.g. 16M pts on ~1000 CSS px) puts **hundreds of thousands**
+ * of points under a 20px hit radius. Walking them every hover frame freezes
+ * setInterval streaming even when mono/binary-search is correct. Stride the
+ * window then refine around the best / x-nearest index.
+ */
+const DENSE_EXPAND_MAX_SAMPLES = 4_096;
 
 /**
  * Binary search: finds the lower bound index (first element >= target) in monotonic cartesian data.
@@ -776,147 +790,120 @@ export function findNearestPoint(
     const isScatter = seriesCfg.type === 'scatter';
     const scatterCfg = isScatter ? (seriesCfg as ResolvedScatterSeriesConfig) : null;
 
-    // Check if data is monotonic for O(log n) fast path
-    const canBinarySearch = isMonotonicNonDecreasingFiniteX(data);
+    // Multi‑M (incl. device auto-window ~16M at 128 MiB): never call mono —
+    // even a "soft" mono scan or cache miss under hover freezes setInterval
+    // streaming. Windowed lowerBound+expand is correct for mono line streams
+    // and best-effort for unsorted. Small series still use exact mono check.
+    const useWindowedSearch = n >= LARGE_N_NO_FULL_LINEAR || isMonotonicNonDecreasingFiniteX(data);
 
-    if (canBinarySearch) {
-      // Fast path: binary search + expand outward
-      // Find the index where data[i].x >= xTarget (lower bound)
+    const considerCartesianIndex = (i: number): boolean => {
+      // Returns true when expand should stop (x beyond hit radius).
+      const px = getX(data, i);
+      const py = getY(data, i);
+      if (!Number.isFinite(px) || !Number.isFinite(py)) return false;
+
+      const sx = xScale.scale(px);
+      const sy = yScale.scale(py);
+      if (!Number.isFinite(sx) || !Number.isFinite(sy)) return false;
+
+      const dx = sx - x;
+      const dy = sy - y;
+      const dxSq = dx * dx;
+      // Hard stop: no point with |dx| > maxDistance can be a valid hit
+      // (scatter radius added below for allowedSq only). Critical when
+      // bestDistSq is still +∞ (all prior y non-finite) — without this,
+      // mono expand scans the entire multi‑M series and freezes streaming.
+      let allowedSq = maxDistSq;
+      if (scatterCfg) {
+        const size = getSize(data, i);
+        const p: DataPoint = size !== undefined ? [px, py, size] : [px, py];
+        const r = getScatterRadiusCssPx(scatterCfg, p);
+        const allowed = md + r;
+        allowedSq = allowed * allowed;
+      }
+      if (dxSq > allowedSq) return true;
+
+      const distSq = dxSq + dy * dy;
+      // Also stop when x alone exceeds the current best Euclidean distance.
+      if (dxSq > bestDistSq) return true;
+
+      if (distSq > allowedSq) return false;
+
+      const isBetter =
+        distSq < bestDistSq ||
+        (distSq === bestDistSq &&
+          (bestPoint === null ||
+            originalSeriesIndex < bestSeriesIndex ||
+            (originalSeriesIndex === bestSeriesIndex && i < bestDataIndex)));
+
+      if (isBetter) {
+        bestDistSq = distSq;
+        bestSeriesIndex = originalSeriesIndex;
+        bestDataIndex = i;
+        const size = getSize(data, i);
+        bestPoint = size !== undefined ? [px, py, size] : [px, py];
+      }
+      return false;
+    };
+
+    if (useWindowedSearch) {
+      // Binary search, then only visit points whose range-x is within maxDistance.
+      // Dense multi‑M: that window can still be O(100k+) indices — stride + refine.
       const startIdx = lowerBoundX(data, xTarget);
 
-      // Expand outward from startIdx while points could still be closer
-      // Check right side first (startIdx onwards)
-      for (let i = startIdx; i < n; i++) {
-        const px = getX(data, i);
-        const py = getY(data, i);
-        if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
-
-        const sx = xScale.scale(px);
-        const sy = yScale.scale(py);
-        if (!Number.isFinite(sx) || !Number.isFinite(sy)) continue;
-
-        const dx = sx - x;
-        const dy = sy - y;
-        const distSq = dx * dx + dy * dy;
-
-        // Early exit: if x-distance alone exceeds current best, no point can be closer (monotonic x)
-        const dxSq = dx * dx;
-        if (dxSq > bestDistSq) break;
-
-        // Check scatter radius if applicable
-        let allowedSq = maxDistSq;
-        if (scatterCfg) {
-          const size = getSize(data, i);
-          const p: DataPoint = size !== undefined ? [px, py, size] : [px, py];
-          const r = getScatterRadiusCssPx(scatterCfg, p);
-          const allowed = md + r;
-          allowedSq = allowed * allowed;
-        }
-
-        if (distSq > allowedSq) continue;
-
-        const isBetter =
-          distSq < bestDistSq ||
-          (distSq === bestDistSq &&
-            (bestPoint === null ||
-              originalSeriesIndex < bestSeriesIndex ||
-              (originalSeriesIndex === bestSeriesIndex && i < bestDataIndex)));
-
-        if (isBetter) {
-          bestDistSq = distSq;
-          bestSeriesIndex = originalSeriesIndex;
-          bestDataIndex = i;
-          const size = getSize(data, i);
-          bestPoint = size !== undefined ? [px, py, size] : [px, py];
+      // Scatter hit radius extends past `md`; pad the domain window a little so
+      // large markers near the edge of the cursor radius are not skipped.
+      const padPx = scatterCfg ? md + DEFAULT_SCATTER_RADIUS_CSS_PX * 4 : md;
+      const xLo = xScale.invert(x - padPx);
+      const xHi = xScale.invert(x + padPx);
+      let iLeft = 0;
+      let iRight = n;
+      if (Number.isFinite(xLo) && Number.isFinite(xHi)) {
+        const domainLeft = Math.min(xLo, xHi);
+        const domainRight = Math.max(xLo, xHi);
+        iLeft = lowerBoundX(data, domainLeft);
+        // Exclusive end: first index with domain x > domainRight (mono).
+        iRight = lowerBoundX(data, domainRight);
+        while (iRight < n && getX(data, iRight) <= domainRight) {
+          iRight++;
         }
       }
+      // Always include the x-nearest neighbourhood even if invert failed.
+      iLeft = Math.max(0, Math.min(iLeft, startIdx > 0 ? startIdx - 1 : 0));
+      iRight = Math.min(n, Math.max(iRight, Math.min(n, startIdx + 1)));
 
-      // Check left side (before startIdx)
-      for (let i = startIdx - 1; i >= 0; i--) {
-        const px = getX(data, i);
-        const py = getY(data, i);
-        if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
-
-        const sx = xScale.scale(px);
-        const sy = yScale.scale(py);
-        if (!Number.isFinite(sx) || !Number.isFinite(sy)) continue;
-
-        const dx = sx - x;
-        const dy = sy - y;
-        const distSq = dx * dx + dy * dy;
-
-        // Early exit: if x-distance alone exceeds current best, no point can be closer
-        const dxSq = dx * dx;
-        if (dxSq > bestDistSq) break;
-
-        // Check scatter radius if applicable
-        let allowedSq = maxDistSq;
-        if (scatterCfg) {
-          const size = getSize(data, i);
-          const p: DataPoint = size !== undefined ? [px, py, size] : [px, py];
-          const r = getScatterRadiusCssPx(scatterCfg, p);
-          const allowed = md + r;
-          allowedSq = allowed * allowed;
+      const span = iRight - iLeft;
+      if (span <= 0) {
+        // fall through — nothing in window
+      } else if (span <= DENSE_EXPAND_MAX_SAMPLES) {
+        for (let i = startIdx; i < iRight; i++) {
+          if (considerCartesianIndex(i)) break;
         }
+        for (let i = startIdx - 1; i >= iLeft; i--) {
+          if (considerCartesianIndex(i)) break;
+        }
+      } else {
+        // Dense window: stride so hover stays O(DENSE_EXPAND_MAX_SAMPLES), then
+        // refine ±stride around the best hit (or x-nearest if no hit yet).
+        const stride = Math.max(1, Math.ceil(span / DENSE_EXPAND_MAX_SAMPLES));
+        for (let i = iLeft; i < iRight; i += stride) {
+          considerCartesianIndex(i);
+        }
+        // Ensure the two x-nearest samples are always evaluated (exact for flat y).
+        if (startIdx < n) considerCartesianIndex(startIdx);
+        if (startIdx > 0) considerCartesianIndex(startIdx - 1);
 
-        if (distSq > allowedSq) continue;
-
-        const isBetter =
-          distSq < bestDistSq ||
-          (distSq === bestDistSq &&
-            (bestPoint === null ||
-              originalSeriesIndex < bestSeriesIndex ||
-              (originalSeriesIndex === bestSeriesIndex && i < bestDataIndex)));
-
-        if (isBetter) {
-          bestDistSq = distSq;
-          bestSeriesIndex = originalSeriesIndex;
-          bestDataIndex = i;
-          const size = getSize(data, i);
-          bestPoint = size !== undefined ? [px, py, size] : [px, py];
+        const refineCenter = bestSeriesIndex === originalSeriesIndex && bestDataIndex >= 0 ? bestDataIndex : startIdx;
+        const refineLo = Math.max(iLeft, refineCenter - stride);
+        const refineHi = Math.min(iRight, refineCenter + stride + 1);
+        for (let i = refineLo; i < refineHi; i++) {
+          considerCartesianIndex(i);
         }
       }
     } else {
-      // Fallback: linear scan for non-monotonic data
+      // Small non-monotonic series: full linear scan.
       for (let i = 0; i < n; i++) {
-        const px = getX(data, i);
-        const py = getY(data, i);
-        if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
-
-        const sx = xScale.scale(px);
-        const sy = yScale.scale(py);
-        if (!Number.isFinite(sx) || !Number.isFinite(sy)) continue;
-
-        const dx = sx - x;
-        const dy = sy - y;
-        const distSq = dx * dx + dy * dy;
-
-        // Check scatter radius if applicable
-        let allowedSq = maxDistSq;
-        if (scatterCfg) {
-          const size = getSize(data, i);
-          const p: DataPoint = size !== undefined ? [px, py, size] : [px, py];
-          const r = getScatterRadiusCssPx(scatterCfg, p);
-          const allowed = md + r;
-          allowedSq = allowed * allowed;
-        }
-
-        if (distSq > allowedSq) continue;
-
-        const isBetter =
-          distSq < bestDistSq ||
-          (distSq === bestDistSq &&
-            (bestPoint === null ||
-              originalSeriesIndex < bestSeriesIndex ||
-              (originalSeriesIndex === bestSeriesIndex && i < bestDataIndex)));
-
-        if (isBetter) {
-          bestDistSq = distSq;
-          bestSeriesIndex = originalSeriesIndex;
-          bestDataIndex = i;
-          const size = getSize(data, i);
-          bestPoint = size !== undefined ? [px, py, size] : [px, py];
-        }
+        considerCartesianIndex(i);
       }
     }
   }

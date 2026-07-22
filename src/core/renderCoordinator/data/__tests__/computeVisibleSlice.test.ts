@@ -135,6 +135,56 @@ describe('computeVisibleSlice', () => {
       const data = new Float32Array([1, 10, NaN, 20, 3, 15]);
       expect(isMonotonicNonDecreasingFiniteX(data)).toBe(false);
     });
+
+    it('FIFO multi-append at capacity stays mono without full rescan (device auto-window hover)', async () => {
+      // ~device ring: many appends between mono polls (hover throttle) must not O(n).
+      const { createRingXYColumns, appendIntoRingXY } = await import('../../../../data/cartesianData');
+      const cap = 10_000;
+      const ring = createRingXYColumns(cap);
+      const seed = {
+        x: Float64Array.from({ length: cap }, (_, i) => i),
+        y: Float64Array.from({ length: cap }, () => 0),
+      };
+      appendIntoRingXY(ring, seed, 0, cap, 0);
+      expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+
+      for (let a = 0; a < 5; a++) {
+        const batch = {
+          x: Float64Array.from({ length: 100 }, (_, i) => cap + a * 100 + i),
+          y: Float64Array.from({ length: 100 }, () => 0),
+        };
+        appendIntoRingXY(ring, batch, 0, 100, 100);
+      }
+      const t0 = performance.now();
+      for (let k = 0; k < 100; k++) {
+        expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+      }
+      expect(performance.now() - t0).toBeLessThan(50);
+    });
+
+    it('growing XY columns only re-check the new tail (streaming multi-M)', () => {
+      // Owned MutableXYColumns grow under stable identity during appendData.
+      const growable = {
+        x: Array.from({ length: 5_000 }, (_, i) => i),
+        y: Array.from({ length: 5_000 }, (_, i) => i),
+      };
+      expect(isMonotonicNonDecreasingFiniteX(growable)).toBe(true);
+      for (let i = 5_000; i < 15_000; i++) {
+        growable.x.push(i);
+        growable.y.push(i);
+      }
+      expect(isMonotonicNonDecreasingFiniteX(growable)).toBe(true);
+      // Same generation: pure cache hits must stay cheap
+      const t1 = performance.now();
+      for (let k = 0; k < 200; k++) {
+        expect(isMonotonicNonDecreasingFiniteX(growable)).toBe(true);
+      }
+      expect(performance.now() - t1).toBeLessThan(50);
+
+      growable.x.push(0);
+      growable.y.push(0);
+      expect(isMonotonicNonDecreasingFiniteX(growable)).toBe(false);
+    });
   });
 
   describe('sliceVisibleRangeByX', () => {
@@ -472,24 +522,195 @@ describe('computeVisibleSlice', () => {
   });
 });
 
-describe('isMonotonicNonDecreasingFiniteX mutable ring/staging (issue 1.5)', () => {
-  it('does not stick mono=true after ring x mutates under same ref', async () => {
+describe('isMonotonicNonDecreasingFiniteX mutable ring/staging (issue 1.5 + generation cache)', () => {
+  it('detects mono violation after FIFO append of decreasing x (same ring ref)', async () => {
     const { createRingXYColumns, appendIntoRingXY } = await import('../../../../data/cartesianData');
-    const ring = createRingXYColumns(4);
+    const ring = createRingXYColumns(8);
     appendIntoRingXY(ring, { x: [0, 1, 2, 3], y: [0, 1, 2, 3] }, 0, 4, 0);
     expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
-    // Mutate physical x under same object identity to break monotonicity.
-    ring.x[1] = -100;
+    // Append decreasing x via API (generation count advances) — must not stick mono=true.
+    appendIntoRingXY(ring, { x: [-50], y: [9] }, 0, 1, 0);
     expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(false);
   });
 
-  it('does not stick mono=true after StagingRingView mutates', async () => {
+  it('detects mono violation on staging after count growth with decreasing x', async () => {
+    const { createStagingRingView } = await import('../../../../data/cartesianData');
+    const staging = new Float32Array(16);
+    // linear: (0,0)(1,1)(2,2)(3,3)
+    for (let i = 0; i < 4; i++) {
+      staging[i * 2] = i;
+      staging[i * 2 + 1] = i;
+    }
+    const view = createStagingRingView(staging, 0, 0, 4, 0);
+    expect(isMonotonicNonDecreasingFiniteX(view as any)).toBe(true);
+    // Grow count with a decreasing x (generation change) — must re-verify tail.
+    staging[8] = -1;
+    staging[9] = 0;
+    createStagingRingView(staging, 0, 0, 5, 0, view);
+    expect(isMonotonicNonDecreasingFiniteX(view as any)).toBe(false);
+  });
+
+  it('monotonic ring append stays mono under many pure appends (incremental path)', async () => {
+    const { createRingXYColumns, appendIntoRingXY } = await import('../../../../data/cartesianData');
+    const ring = createRingXYColumns(10_000);
+    appendIntoRingXY(ring, { x: [0, 1, 2, 3], y: [0, 1, 2, 3] }, 0, 4, 0);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+
+    // Many mono appends: generation-aware cache must keep mono=true (O(append) path).
+    for (let k = 0; k < 200; k++) {
+      const x0 = 4 + k;
+      appendIntoRingXY(ring, { x: [x0], y: [0] }, 0, 1, 0);
+      expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+    }
+    expect(ring.count).toBe(204);
+  });
+
+  it('same generation returns stable mono result', async () => {
+    const { createRingXYColumns, appendIntoRingXY } = await import('../../../../data/cartesianData');
+    const ring = createRingXYColumns(16);
+    appendIntoRingXY(ring, { x: [1, 2, 3, 4], y: [0, 0, 0, 0] }, 0, 4, 0);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+  });
+
+  it('FIFO wrap at capacity keeps mono then detects violation', async () => {
+    const { createRingXYColumns, appendIntoRingXY } = await import('../../../../data/cartesianData');
+    const cap = 8;
+    const ring = createRingXYColumns(cap);
+    // Fill to capacity 0..7
+    appendIntoRingXY(ring, { x: [0, 1, 2, 3, 4, 5, 6, 7], y: [0, 0, 0, 0, 0, 0, 0, 0] }, 0, 8, 0);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+    // Drop 2, append 8,9 → still mono
+    appendIntoRingXY(ring, { x: [8, 9], y: [0, 0] }, 0, 2, 2);
+    expect(ring.count).toBe(cap);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+    // Drop 2, append decreasing → mono false via incremental
+    appendIntoRingXY(ring, { x: [0, 1], y: [0, 0] }, 0, 2, 2);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(false);
+  });
+
+  it('strict full-buffer replace at start=0 detects non-mono (contentEpoch)', async () => {
+    const { createRingXYColumns, appendIntoRingXY } = await import('../../../../data/cartesianData');
+    const cap = 4;
+    const ring = createRingXYColumns(cap);
+    appendIntoRingXY(ring, { x: [0, 1, 2, 3], y: [0, 0, 0, 0] }, 0, 4, 0);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+    // Strict replace: drop all 4, write non-mono 3,1,2,0 — start/count/capacity stay 0/4/4.
+    appendIntoRingXY(ring, { x: [3, 1, 2, 0], y: [0, 0, 0, 0] }, 0, 4, 4);
+    expect(ring.start).toBe(0);
+    expect(ring.count).toBe(cap);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(false);
+  });
+
+  it('wrap then strict full replace detects prefix-only mono violation', async () => {
+    const { createRingXYColumns, appendIntoRingXY } = await import('../../../../data/cartesianData');
+    const cap = 4;
+    const ring = createRingXYColumns(cap);
+    appendIntoRingXY(ring, { x: [0, 1, 2, 3], y: [0, 0, 0, 0] }, 0, 4, 0);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+    // Partial wrap so start != 0
+    appendIntoRingXY(ring, { x: [4, 5], y: [0, 0] }, 0, 2, 2);
+    expect(ring.start).not.toBe(0);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+    // Strict replace entire buffer with non-mono (prefix violation only if tail-only verify)
+    appendIntoRingXY(ring, { x: [10, 0, 1, 2], y: [0, 0, 0, 0] }, 0, 4, 4);
+    expect(ring.start).toBe(0);
+    expect(ring.count).toBe(cap);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(false);
+  });
+
+  it('staging full rewrite under same layout fields detects non-mono via contentEpoch', async () => {
     const { createStagingRingView } = await import('../../../../data/cartesianData');
     const staging = new Float32Array([0, 0, 1, 1, 2, 2, 3, 3]);
     const view = createStagingRingView(staging, 0, 0, 4, 0);
     expect(isMonotonicNonDecreasingFiniteX(view as any)).toBe(true);
-    staging[2] = -5; // break chronological x at logical index 1
+    // Rewrite floats in place; same start/count/capacity/xOffset; bump via createStagingRingView.
+    staging[0] = 9;
+    staging[2] = 1;
+    staging[4] = 5;
+    staging[6] = 0;
+    createStagingRingView(staging, 0, 0, 4, 0, view);
     expect(isMonotonicNonDecreasingFiniteX(view as any)).toBe(false);
+  });
+
+  it('non-finite append tail makes mono false', async () => {
+    const { createRingXYColumns, appendIntoRingXY } = await import('../../../../data/cartesianData');
+    const ring = createRingXYColumns(8);
+    appendIntoRingXY(ring, { x: [0, 1, 2], y: [0, 0, 0] }, 0, 3, 0);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+    appendIntoRingXY(ring, { x: [Number.NaN], y: [0] }, 0, 1, 0);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(false);
+  });
+
+  it('equal consecutive x stays mono non-decreasing', async () => {
+    const { createRingXYColumns, appendIntoRingXY } = await import('../../../../data/cartesianData');
+    const ring = createRingXYColumns(8);
+    appendIntoRingXY(ring, { x: [1, 1, 2, 2], y: [0, 1, 2, 3] }, 0, 4, 0);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+    appendIntoRingXY(ring, { x: [2], y: [4] }, 0, 1, 0);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+  });
+
+  it('mono recovers after false when full mono rewrite replaces content', async () => {
+    const { createRingXYColumns, appendIntoRingXY } = await import('../../../../data/cartesianData');
+    const ring = createRingXYColumns(4);
+    appendIntoRingXY(ring, { x: [0, 1, 2, 3], y: [0, 0, 0, 0] }, 0, 4, 0);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+    appendIntoRingXY(ring, { x: [5, 1, 2, 3], y: [0, 0, 0, 0] }, 0, 4, 4);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(false);
+    appendIntoRingXY(ring, { x: [10, 11, 12, 13], y: [0, 0, 0, 0] }, 0, 4, 4);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+  });
+
+  it('capacity change forces re-eval (new ring)', async () => {
+    const { createRingXYColumns, appendIntoRingXY } = await import('../../../../data/cartesianData');
+    const ring = createRingXYColumns(4);
+    appendIntoRingXY(ring, { x: [0, 1, 2, 3], y: [0, 0, 0, 0] }, 0, 4, 0);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+    const bigger = createRingXYColumns(8);
+    appendIntoRingXY(bigger, { x: [0, 1, 2, 3, 4], y: [0, 0, 0, 0, 0] }, 0, 5, 0);
+    expect(isMonotonicNonDecreasingFiniteX(bigger as any)).toBe(true);
+  });
+
+  it('staging multi-append mono stays true', async () => {
+    const { createStagingRingView } = await import('../../../../data/cartesianData');
+    const staging = new Float32Array(32);
+    for (let i = 0; i < 4; i++) {
+      staging[i * 2] = i;
+      staging[i * 2 + 1] = 0;
+    }
+    const view = createStagingRingView(staging, 0, 0, 4, 0);
+    expect(isMonotonicNonDecreasingFiniteX(view as any)).toBe(true);
+    for (let n = 5; n <= 10; n++) {
+      staging[(n - 1) * 2] = n - 1;
+      staging[(n - 1) * 2 + 1] = 0;
+      createStagingRingView(staging, 0, 0, n, 0, view);
+      expect(isMonotonicNonDecreasingFiniteX(view as any)).toBe(true);
+    }
+  });
+
+  it('large mono ring: many generation-stable checks stay correct and fast', async () => {
+    const { createRingXYColumns, appendIntoRingXY } = await import('../../../../data/cartesianData');
+    // Behavioral perf guard: after one mono establish, repeated same-generation
+    // checks must not re-walk multi-M points (would time out / be multi-ms).
+    const n = 200_000;
+    const ring = createRingXYColumns(n);
+    const xs = new Float64Array(n);
+    const ys = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      xs[i] = i;
+      ys[i] = i * 0.01;
+    }
+    appendIntoRingXY(ring, { x: xs, y: ys }, 0, n, 0);
+    expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+    const t0 = performance.now();
+    for (let i = 0; i < 500; i++) {
+      expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+    }
+    const elapsed = performance.now() - t0;
+    // 500 cached hits should be well under 50ms (full 200k×500 would be seconds).
+    expect(elapsed).toBeLessThan(50);
   });
 });
 
