@@ -1,9 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { planGpuFrame, framePlanIncludesDenseHairline, framePlanIncludesAnnotationOverlay } from '../frameRender';
+import {
+  planGpuFrame,
+  framePlanIncludesDenseHairline,
+  framePlanIncludesAnnotationOverlay,
+  hasDenseHairlineLines,
+  renderDenseHairlineLines,
+  prepareSeries,
+  encodeFrameComputePasses,
+  encodeMainSeriesPass,
+} from '../frameRender';
 import { MAIN_SCENE_MSAA_SAMPLE_COUNT, ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT } from '../../gpu/textureManager';
 
 describe('frameRender pass graph', () => {
-  it('uses 4× MSAA for main and overlay (textureManager constants)', () => {
+  it('uses legal MSAA sample counts (1|4 only; main + overlay constants are 4)', () => {
     expect(MAIN_SCENE_MSAA_SAMPLE_COUNT).toBe(4);
     expect(ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT).toBe(4);
   });
@@ -11,8 +20,15 @@ describe('frameRender pass graph', () => {
   it('planGpuFrame orders dense hairline after main and before overlay', () => {
     const withHair = planGpuFrame({ msaaSampleCount: 4, hasDenseHairline: true });
     expect(withHair.passOrder).toEqual(['main', 'denseHairline', 'annotationOverlay']);
+    expect(framePlanIncludesDenseHairline(withHair)).toBe(true);
+    expect(framePlanIncludesAnnotationOverlay(withHair)).toBe(true);
+    expect(withHair.useDirectSwapchainResolve).toBe(false);
+    expect(withHair.needResolveAndOverlay).toBe(true);
+
     const noHair = planGpuFrame({ msaaSampleCount: 4, hasDenseHairline: false });
     expect(noHair.passOrder).toEqual(['main', 'annotationOverlay']);
+    expect(noHair.useDirectSwapchainResolve).toBe(true);
+    expect(framePlanIncludesAnnotationOverlay(noHair)).toBe(false);
   });
 
   it('direct swapchain resolve only without dense hairline', () => {
@@ -68,5 +84,13 @@ describe('frameRender pass graph', () => {
     expect(both.needsDenseHairlinePass).toBe(true);
     expect(both.passOrder).toEqual(['main', 'denseHairline', 'annotationOverlay']);
     expect(both.useDirectSwapchainResolve).toBe(false);
+  });
+
+  it('exports series prepare/draw and encode helpers (frame ownership)', () => {
+    expect(typeof prepareSeries).toBe('function');
+    expect(typeof hasDenseHairlineLines).toBe('function');
+    expect(typeof renderDenseHairlineLines).toBe('function');
+    expect(typeof encodeFrameComputePasses).toBe('function');
+    expect(typeof encodeMainSeriesPass).toBe('function');
   });
 });

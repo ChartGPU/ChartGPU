@@ -1,6 +1,5 @@
 import candlestickWgsl from '../shaders/candlestick.wgsl?raw';
 import type { ResolvedCandlestickSeriesConfig } from '../config/OptionResolver';
-import type { OHLCDataPoint, OHLCDataPointTuple } from '../config/types';
 import type { ContinuousScale } from '../utils/scales';
 import type { GridArea } from './createGridRenderer';
 import { parseCssColorToRgba01 } from '../utils/colors';
@@ -8,6 +7,17 @@ import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from '.
 import type { PipelineCache } from '../core/PipelineCache';
 import { resolveUploadPolicy } from '../data/seriesResidency';
 import { computeClipAffineFromContinuousScale, resolveLogProjection } from './packedXAffine';
+import { computeOhlcCategoryStep, getOHLC, parsePercent } from './ohlcGeometry';
+import {
+  clamp01,
+  computePlotClipRect,
+  computePlotScissorDevicePx,
+  computePlotSizeCssPx,
+  createCssToDomainConverters,
+  nearEqual,
+  nextPow2,
+  writeTransformMat4F32,
+} from './plotMetrics';
 
 export interface CandlestickRenderer {
   prepare(
@@ -55,155 +65,9 @@ const DEFAULT_WICK_WIDTH_CSS_PX = 1;
 const INSTANCE_STRIDE_BYTES = 40; // 6 floats + vec4 color
 const INSTANCE_STRIDE_FLOATS = INSTANCE_STRIDE_BYTES / 4;
 
-const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
-const clampInt = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v | 0));
-
 const parseSeriesColorToRgba01 = (color: string): Rgba => parseCssColorToRgba01(color) ?? ([0, 0, 0, 1] as const);
 
-const nextPow2 = (v: number): number => {
-  if (!Number.isFinite(v) || v <= 0) return 1;
-  const n = Math.ceil(v);
-  return 2 ** Math.ceil(Math.log2(n));
-};
-
-const parsePercent = (value: string): number | null => {
-  const m = value.trim().match(/^(\d+(?:\.\d+)?)%$/);
-  if (!m) return null;
-  const p = Number(m[1]) / 100;
-  return Number.isFinite(p) ? p : null;
-};
-
-const isTupleDataPoint = (p: OHLCDataPoint): p is OHLCDataPointTuple => Array.isArray(p);
-
-const getOHLC = (
-  p: OHLCDataPoint
-): {
-  readonly timestamp: number;
-  readonly open: number;
-  readonly close: number;
-  readonly low: number;
-  readonly high: number;
-} => {
-  if (isTupleDataPoint(p)) {
-    return { timestamp: p[0], open: p[1], close: p[2], low: p[3], high: p[4] };
-  }
-  return {
-    timestamp: p.timestamp,
-    open: p.open,
-    close: p.close,
-    low: p.low,
-    high: p.high,
-  };
-};
-
-const computePlotSizeCssPx = (
-  gridArea: GridArea
-): { readonly plotWidthCss: number; readonly plotHeightCss: number } | null => {
-  const dpr = gridArea.devicePixelRatio;
-  if (!(dpr > 0)) return null;
-  const canvasCssWidth = gridArea.canvasWidth / dpr;
-  const canvasCssHeight = gridArea.canvasHeight / dpr;
-  const plotWidthCss = canvasCssWidth - gridArea.left - gridArea.right;
-  const plotHeightCss = canvasCssHeight - gridArea.top - gridArea.bottom;
-  if (!(plotWidthCss > 0) || !(plotHeightCss > 0)) return null;
-  return { plotWidthCss, plotHeightCss };
-};
-
-const computePlotClipRect = (
-  gridArea: GridArea
-): {
-  readonly left: number;
-  readonly right: number;
-  readonly top: number;
-  readonly bottom: number;
-  readonly width: number;
-  readonly height: number;
-} => {
-  const { left, right, top, bottom, canvasWidth, canvasHeight, devicePixelRatio } = gridArea;
-
-  const plotLeft = left * devicePixelRatio;
-  const plotRight = canvasWidth - right * devicePixelRatio;
-  const plotTop = top * devicePixelRatio;
-  const plotBottom = canvasHeight - bottom * devicePixelRatio;
-
-  const plotLeftClip = (plotLeft / canvasWidth) * 2.0 - 1.0;
-  const plotRightClip = (plotRight / canvasWidth) * 2.0 - 1.0;
-  const plotTopClip = 1.0 - (plotTop / canvasHeight) * 2.0; // flip Y
-  const plotBottomClip = 1.0 - (plotBottom / canvasHeight) * 2.0; // flip Y
-
-  return {
-    left: plotLeftClip,
-    right: plotRightClip,
-    top: plotTopClip,
-    bottom: plotBottomClip,
-    width: plotRightClip - plotLeftClip,
-    height: plotTopClip - plotBottomClip,
-  };
-};
-
-const computePlotScissorDevicePx = (
-  gridArea: GridArea
-): {
-  readonly x: number;
-  readonly y: number;
-  readonly w: number;
-  readonly h: number;
-} => {
-  const { canvasWidth, canvasHeight, devicePixelRatio } = gridArea;
-
-  const plotLeftDevice = gridArea.left * devicePixelRatio;
-  const plotRightDevice = canvasWidth - gridArea.right * devicePixelRatio;
-  const plotTopDevice = gridArea.top * devicePixelRatio;
-  const plotBottomDevice = canvasHeight - gridArea.bottom * devicePixelRatio;
-
-  const scissorX = clampInt(Math.floor(plotLeftDevice), 0, Math.max(0, canvasWidth));
-  const scissorY = clampInt(Math.floor(plotTopDevice), 0, Math.max(0, canvasHeight));
-  const scissorR = clampInt(Math.ceil(plotRightDevice), 0, Math.max(0, canvasWidth));
-  const scissorB = clampInt(Math.ceil(plotBottomDevice), 0, Math.max(0, canvasHeight));
-  const scissorW = Math.max(0, scissorR - scissorX);
-  const scissorH = Math.max(0, scissorB - scissorY);
-
-  return { x: scissorX, y: scissorY, w: scissorW, h: scissorH };
-};
-
-const computeCategoryStep = (data: ReadonlyArray<OHLCDataPoint>): number => {
-  const timestamps: number[] = [];
-  for (let i = 0; i < data.length; i++) {
-    const { timestamp } = getOHLC(data[i]);
-    if (Number.isFinite(timestamp)) timestamps.push(timestamp);
-  }
-
-  if (timestamps.length < 2) return 1;
-  timestamps.sort((a, b) => a - b);
-
-  let minStep = Number.POSITIVE_INFINITY;
-  for (let i = 1; i < timestamps.length; i++) {
-    const d = timestamps[i] - timestamps[i - 1];
-    if (d > 0 && d < minStep) minStep = d;
-  }
-  return Number.isFinite(minStep) && minStep > 0 ? minStep : 1;
-};
-
-const writeTransformMat4F32 = (out: Float32Array, ax: number, bx: number, ay: number, by: number): void => {
-  out[0] = ax;
-  out[1] = 0;
-  out[2] = 0;
-  out[3] = 0;
-  out[4] = 0;
-  out[5] = ay;
-  out[6] = 0;
-  out[7] = 0;
-  out[8] = 0;
-  out[9] = 0;
-  out[10] = 1;
-  out[11] = 0;
-  out[12] = bx;
-  out[13] = by;
-  out[14] = 0;
-  out[15] = 1;
-};
-
-const nearEqual = (a: number, b: number): boolean => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
+const computeCategoryStep = computeOhlcCategoryStep;
 
 type CandleGeometryCache = {
   readonly data: ResolvedCandlestickSeriesConfig['data'];
@@ -457,20 +321,15 @@ export function createCandlestickRenderer(
 
     // CSS → domain width. On log X, clip-space slope is d(clip)/d(log x), so
     // invert-at-mid yields local linear domain width (mirrors bar renderer).
-    const cssWidthToDomainX = (cssPx: number): number => {
-      const widthClip = Math.max(0, cssPx) * clipPerCssX;
-      if (!(widthClip > 0)) return 0;
-      if (xScale.kind === 'log') {
-        const { min, max } = xScale.getDomain();
-        const mid = Math.sqrt(Math.max(min, Number.MIN_VALUE) * Math.max(max, Number.MIN_VALUE));
-        const midClip = xScale.scale(mid);
-        const lo = xScale.invert(midClip - widthClip * 0.5);
-        const hi = xScale.invert(midClip + widthClip * 0.5);
-        return Number.isFinite(lo) && Number.isFinite(hi) ? Math.abs(hi - lo) : 0;
-      }
-      const absAx = Math.abs(ax);
-      return absAx > 1e-20 ? widthClip / absAx : 0;
-    };
+    const clipPerCssY = plotSize.plotHeightCss > 0 ? plotClipRect.height / plotSize.plotHeightCss : 0;
+    const { cssWidthToDomainX } = createCssToDomainConverters({
+      xScale,
+      yScale,
+      ax,
+      ay,
+      clipPerCssX,
+      clipPerCssY,
+    });
 
     // Body width in domain units (percent of category is zoom-invariant).
     let bodyWidthDomain = 0;

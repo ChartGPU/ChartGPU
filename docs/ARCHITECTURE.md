@@ -20,12 +20,15 @@ Isolated from the 2D coordinator. Depth on; **sampleCount 1** (no MSAA in v1).
 ```
 clear color + depth24plus
   → surface3d meshes (opaque/lit colormap)
+  → surface3d contours (optional line overlays)
   → pointCloud3d billboards
-  → optional AABB axis box (line-list)
+  → axes3d box/grid/ticks (GPU)
+  → optional GPU axis tick numbers + titles (labelMode 'gpu' / 'auto')
+  → DOM axis labels when labelMode is 'dom' (or fallback)
   → queue.submit (via submitBatcher)
 ```
 
-Camera (orbit/pan/dolly) rebuilds view-projection uniforms only; series geometry re-uploads when data identity changes. Point-cloud appends stay resident while the series `data` seed identity is stable. Shared: `GPUContext`, `PipelineCache`, colormap LUT helpers. Not shared: 2D scale/zoom stack, dataZoom, 2D axis tick modules.
+Camera (orbit/pan/dolly) rebuilds view-projection uniforms only; series geometry re-uploads when data identity changes. Point-cloud appends stay resident while the series `data` seed identity is stable. Surface contours follow mesh updates. Shared: `GPUContext`, `PipelineCache`, colormap LUT helpers. Not shared: 2D scale/zoom stack, dataZoom, 2D axis tick modules.
 
 See [`docs/api/3d.md`](api/3d.md).
 
@@ -130,13 +133,18 @@ flowchart TB
   subgraph GPURenderers["GPU renderers - src/renderers/*"]
     MainPass --> GridR["Grid"]
     MainPass --> AreaR["Area"]
+    MainPass --> BandR["Band"]
     MainPass --> BarR["Bar"]
     MainPass --> ScatterR["Scatter"]
-    MainPass --> ScatterDensityR["Scatter density/heatmap"]
+    MainPass --> ScatterDensityR["Scatter density mode"]
+    MainPass --> HeatmapR["Heatmap / spectrogram"]
     MainPass --> LineR["Line - AA quads"]
     HairlinePass --> LineHairline["Line - dense hairline line-list"]
     MainPass --> PieR["Pie"]
     MainPass --> CandlestickR["Candlestick"]
+    MainPass --> OhlcR["OHLC bars"]
+    MainPass --> ErrorBarR["Error bars"]
+    MainPass --> ImpulseR["Impulse / stem"]
     MainPass --> ReferenceLineR["Reference lines"]
     MainPass --> AnnotationMarkerR["Annotation markers - below"]
     OverlayPass --> AnnotationAbove["Annotation markers - above"]
@@ -151,15 +159,20 @@ flowchart TB
     GridR --> gridWGSL["grid.wgsl"]
     AxisR --> gridWGSL
     AreaR --> areaWGSL["area.wgsl"]
+    BandR --> bandWGSL["band.wgsl"]
     BarR --> barWGSL["bar.wgsl"]
     ScatterR --> scatterWGSL["scatter.wgsl"]
     DensityC --> scatterDensityBinningWGSL["scatterDensityBinning.wgsl"]
     ScatterDensityR --> scatterDensityColormapWGSL["scatterDensityColormap.wgsl"]
+    HeatmapR --> heatmapWGSL["heatmap.wgsl"]
     LineR --> lineWGSL["line.wgsl"]
     LineHairline --> lineWGSL
     DecimationC --> decimationWGSL["decimation.wgsl"]
     PieR --> pieWGSL["pie.wgsl"]
     CandlestickR --> candlestickWGSL["candlestick.wgsl"]
+    OhlcR --> ohlcWGSL["ohlc.wgsl"]
+    ErrorBarR --> errorBarWGSL["errorBar.wgsl"]
+    ImpulseR --> errorBarWGSL
     ReferenceLineR --> referenceLineWGSL["referenceLine.wgsl"]
     AnnotationMarkerR --> annotationMarkerWGSL["annotationMarker.wgsl"]
     AnnotationAbove --> annotationMarkerWGSL

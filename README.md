@@ -3,224 +3,192 @@
 </p>
 
 <p align="center" style="margin-top:-18px;">
-  The fastest open-source charting library — 50M points at 60 FPS.
+  MIT-licensed WebGPU charting library for dense real-time, multi-series and multi-panel dashboards.
 </p>
 
 <div align="center">
 
-
-[<img src="docs/assets/powered-by-webgpu.svg" alt="Powered by WebGPU" height="28" />](https://forthebadge.com)
-[![GitHub Stars](https://img.shields.io/github/stars/ChartGPU/chartgpu?style=for-the-badge&color=yellow)](https://github.com/chartgpu/chartgpu)
+[<img src="docs/assets/powered-by-webgpu.svg" alt="Powered by WebGPU" height="28" />](#browser-support-webgpu-required)
 [![CI Status](https://img.shields.io/github/actions/workflow/status/chartgpu/chartgpu/tests.yml?branch=main&style=for-the-badge&label=Tests)](https://github.com/chartgpu/chartgpu/actions/workflows/tests.yml)
 [![npm version](https://img.shields.io/npm/v/chartgpu?style=for-the-badge&color=blue)](https://www.npmjs.com/package/chartgpu)
 [![NPM Downloads](https://img.shields.io/npm/dm/chartgpu?style=for-the-badge&color=%2368cc49)](https://www.npmjs.com/package/chartgpu)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://github.com/chartgpu/chartgpu/blob/main/LICENSE)
-[![Live Demo](https://img.shields.io/badge/demo-live-brightgreen?style=for-the-badge)](https://chartgpu.github.io/ChartGPU/)
-[![Examples](https://img.shields.io/badge/Examples-Code%20Samples-blue?style=for-the-badge)](https://github.com/chartgpu/chartgpu/tree/main/examples)
-[![Documentation](https://img.shields.io/badge/Documentation-Getting%20Started-blue?style=for-the-badge)](https://github.com/chartgpu/chartgpu/blob/main/docs/GETTING_STARTED.md)
+[![Live Demo](https://img.shields.io/badge/demo-live-brightgreen?style=for-the-badge)](https://chartgpu.io)
+[![Documentation](https://img.shields.io/badge/Documentation-Getting%20Started-blue?style=for-the-badge)](https://chartgpu.io/docs/getting-started/)
 
 [<img src="https://hackerbadge.now.sh/api?id=46706528" alt="Featured on Hacker News" height="30" />](https://news.ycombinator.com/item?id=46706528)
 
 [<img src="https://awesome.re/mentioned-badge.svg" alt="Featured in Awesome WebGPU" style="height: 30px;" />](https://github.com/mikbry/awesome-webgpu)
 
-
 </div>
 
-ChartGPU is a TypeScript charting library built on WebGPU for smooth, interactive rendering—especially when you have lots of data.
+ChartGPU is a TypeScript WebGPU charting library for browser engineers who need streaming multi-series, multi-chart ops/trading/APM walls, and dense scientific views. MIT for commercial embed. Zero npm runtime dependencies. No WebGL fallback: WebGPU is required.
 
-## Demo
-
-![ChartGPU demo](https://raw.githubusercontent.com/chartgpu/chartgpu/main/docs/assets/chart-gpu-demo.gif)
-
-### Streaming Multi-Chart Dashboard
-
-Five live charts. Annotations ticking in real time. Latency percentiles, throughput, error rates, resource utilization — all streaming simultaneously at 60 FPS on a single shared `GPUDevice`. This is what ChartGPU was built for.
-
-Want to build your own? Check out the [Multi-Chart Dashboard Cookbook](docs/guides/multichart-dashboard-cookbook.md) for hands-on recipes and tips to get started!
-
-![Streaming multi-chart dashboard example](docs/assets/streaming-dashboard-example.png)
-
-### 35M points (benchmark)
-
-35,000,000 points rendered at ~72 FPS (benchmark mode).
-
-![35 million point benchmark at 72 FPS](docs/assets/35-million-ultimate-benchmark-example.png)
-
-## Quick Start
-
-```ts
-import { ChartGPU } from 'chartgpu';
-const container = document.getElementById('chart')!;
-await ChartGPU.create(container, {
-  series: [{ type: 'line', data: [[0, 1], [1, 3], [2, 2]] }],
-});
-```
-
-### Annotations
-
-Add reference lines, point markers, and text overlays to highlight important data features:
-
-```ts
-await ChartGPU.create(container, {
-  series: [{ type: 'line', data: [[0, 1], [1, 3], [2, 2]] }],
-  annotations: [
-    // Horizontal reference line
-    {
-      id: 'ref-y',
-      type: 'lineY',
-      y: 2.5,
-      layer: 'belowSeries',
-      style: { color: '#ffd166', lineWidth: 2, lineDash: [8, 6], opacity: 0.95 },
-      label: { text: 'threshold' },
-    },
-    // Point marker at peak
-    {
-      id: 'peak',
-      type: 'point',
-      x: 1,
-      y: 3,
-      layer: 'aboveSeries',
-      marker: { symbol: 'circle', size: 8, style: { color: '#ff4ab0' } },
-      label: { template: 'peak={y}', decimals: 2 },
-    },
-  ],
-});
-```
-
-See [Annotations Documentation](https://github.com/chartgpu/chartgpu/blob/main/docs/api/options.md#annotations) and the [annotations example](https://github.com/chartgpu/chartgpu/tree/main/examples/annotation-authoring).
-
-## Highlights
-
-- 🚀 WebGPU-accelerated rendering for high FPS with large datasets
-- 📈 Multiple series types: line, area, bar, scatter, pie, candlestick, **ohlc** bars, heatmap, **band**, **errorBar**, **impulse**, **step/digital** line & mountain (`step` on line/area), **stacked mountain** (`stack` on line/area), plus **3D** `pointCloud3d` / `surface3d`
-- 🧊 **3D modality** (`coordinateSystem: 'cartesian3d'`) — world XYZ point clouds + uniform height-field surfaces with depth, orbit camera, labeled axes/grids, pick, cloud `maxPoints` FIFO, surface streaming + contours — see [`docs/api/3d.md`](docs/api/3d.md), hero demo [`examples/3d-showcase/`](examples/3d-showcase/), thin samples [`examples/point-cloud-3d/`](examples/point-cloud-3d/), [`examples/surface-3d/`](examples/surface-3d/)
-- 🌡️ Scatter density mode (`mode: 'density'`) for large **2D** scatters (screen-space bins, not world XYZ) — see [`docs/api/options.md#scatterseriesconfig`](docs/api/options.md#scatterseriesconfig) and [`examples/scatter-density-1m/`](examples/scatter-density-1m/)
-- 🗺️ Uniform heatmap / spectrogram (`type: 'heatmap'`) for **data grids** (FFT waterfall, matrices) — not scatter density; see [`docs/api/options.md#heatmapseriesconfig`](docs/api/options.md#heatmapseriesconfig) and [`examples/heatmap-spectrogram/`](examples/heatmap-spectrogram/)
-- 📉 Band / range series (`type: 'band'`) fills between dual Y curves (`y` + `y1`) for confidence intervals and envelopes — not area-to-baseline and not annotation `bandX`; see [`docs/api/options.md#bandseriesconfig`](docs/api/options.md#bandseriesconfig) and [`examples/band-range/`](examples/band-range/)
-- 📊 Error bars (`type: 'errorBar'`) — SciChart-style HLC whiskers around a measured center (absolute high/low or relative `yError`; not band fill / not OHLC); see [`docs/api/options.md#errorbarseriesconfig`](docs/api/options.md#errorbarseriesconfig) and [`examples/error-bars/`](examples/error-bars/)
-- 📶 Step / digital line + mountain (`step` on `line`/`area`, `true` ≡ `'after'`) — SciChart `isDigitalLine`; stairs not diagonals; see [`examples/step-line/`](examples/step-line/)
-- 📍 Impulse / stem (`type: 'impulse'`) — vertical stems baseline→y with optional markers; SciChart `FastImpulseRenderableSeries`; see [`examples/impulse/`](examples/impulse/)
-- 🗻 Stacked mountain / area — multi-series composition fill via `stack` on `line`+`areaStyle` or `type: 'area'` (not single-series mountain; not `type: 'band'`); see [`docs/api/options.md`](docs/api/options.md#stacked-mountain--area-stack-on-line-mountain-or-area) and [`examples/stacked-mountain/`](examples/stacked-mountain/)
-- 📍 Annotation overlays: reference lines (horizontal/vertical), point markers, and text labels — see [`docs/api/options.md#annotations`](docs/api/options.md#annotations) and [`examples/annotations/`](examples/annotations/)
-- 🧭 Built-in interaction: hover highlight, tooltip, crosshair
-- 🔁 Streaming updates via `appendData(...)` with typed-array support (`XYArraysData`, `InterleavedXYData`, `DataPoint[]`) — see [`examples/cartesian-data-formats/`](examples/cartesian-data-formats/)
-- 🔌 Line/area segmentation via `null` data entries — gaps for exchange outages, maintenance windows, etc. `connectNulls` option bridges gaps — see [`examples/exchange-gaps/`](examples/exchange-gaps/)
-- 🔍 X-axis zoom (inside gestures + optional slider UI)
-- 🎛️ Theme presets (`'dark' | 'light'`) and custom theme support
-- 🔗 Shared GPUDevice support for multi-chart dashboards (efficient GPU resource management) — see [`docs/api/chart.md#shared-gpudevice`](docs/api/chart.md#shared-gpudevice)
-- 🧱 Shared pipeline cache for multi-chart dashboards (dedupe shader modules + render pipelines across charts) — see [`docs/api/chart.md#pipeline-cache-cgpu-pipeline-cache`](docs/api/chart.md#pipeline-cache-cgpu-pipeline-cache)
-
-
-### Candlestick Charts
-
-Financial OHLC (open-high-low-close) **candlestick** rendering with classic/hollow style toggle, plus thin **`type: 'ohlc'`** bars (stem + open/close ticks) on the same data — see `examples/ohlc-bars/`. The live streaming demo renders **5 million candlesticks at over 100 FPS** with real-time updates.
-
-![Candlestick chart example](docs/assets/candle-stick-example.png)
-
-### Scatter Density (1M points)
-
-GPU-binned density/heatmap mode for scatter plots (`mode: 'density'`) to reveal structure in overplotted point clouds. See [`docs/api/options.md#scatterseriesconfig`](docs/api/options.md#scatterseriesconfig) and the demo in [`examples/scatter-density-1m/`](examples/scatter-density-1m/).
-
-![Scatter density chart example (1M points)](docs/assets/scatter-plot-density-chart-1million-points-example.png)
-
-### Interactive Annotation Authoring
-
-Full-featured annotation authoring system with interactive editing capabilities. Create, edit, drag, and delete annotations with an intuitive UI. Supports all annotation types: reference lines (horizontal/vertical), point markers, text annotations (plot-space + data-space tracking), labels, and styling options.
-
-![Annotations comprehensive demo](docs/assets/annotations.png)
-
-**Key features:**
-- **Right-click empty space** → Add vertical/horizontal line or text note with custom color, style & label
-- **Click & drag annotations** → Reposition them (lines constrained to their axis)
-- **Right-click on annotation** → Edit properties or delete
-- **Full styling control** → Color picker, line style (solid/dashed), line width, and label customization
-- **Undo/Redo support** → All annotations are reversible
-- **Scroll to zoom, Drag to pan** → Standard chart interactions work seamlessly
-
-![Annotation configuration dialog](docs/assets/annontations-add-indicator.png)
-
-The annotation authoring system is demonstrated in the [`examples/annotation-authoring/`](examples/annotation-authoring/) example.
-
-## Installation
-
-```bash
-npm install chartgpu
-```
-
-**GitHub Packages:**
+Use it when Chart.js, ECharts, or uPlot hit streaming or multi-panel walls. Commercial GPU seats often ship WebGL fallback and broader catalog; ChartGPU is the open WebGPU-only embed. Not a formal claim to win every suite row vs SciChart/LightningChart, and not a general "every chart type" catalog.
 
 ```bash
 npm install @chartgpu/chartgpu
 ```
 
-For GitHub Packages, configure your `.npmrc`:
+```ts
+import { ChartGPU } from '@chartgpu/chartgpu';
 
+const el = document.getElementById('chart')!;
+const chart = await ChartGPU.create(el, {
+  series: [{ type: 'line', data: { x: new Float64Array([0, 1, 2]), y: new Float64Array([1, 3, 2]) } }],
+});
+
+// Density path: shared x + per-series y columns, fixed-capacity ring
+const x = new Float64Array([3, 4, 5]);
+const y = new Float64Array([2.5, 2.1, 2.8]);
+chart.appendData(0, { x, y }, { maxPoints: 50_000 });
+
+// Object / [x,y] tuples are fine for tiny demos; prefer columns at scale
 ```
-@chartgpu:registry=https://npm.pkg.github.com
-```
 
-## React Integration
+Unscoped `chartgpu` is also on npm (same version line). GitHub Packages: `@chartgpu:registry=https://npm.pkg.github.com`. React: [`chartgpu-react`](https://github.com/ChartGPU/chartgpu-react) (`npm i chartgpu-react @chartgpu/chartgpu`).
 
-React bindings are available via [`chartgpu-react`](https://github.com/ChartGPU/chartgpu-react):
+### Shared-device multi-panel (recommended for ≥3 charts)
 
-```bash
-npm install chartgpu-react
-```
+```ts
+import { ChartGPU, createPipelineCache, connectCharts } from '@chartgpu/chartgpu';
 
-```tsx
-import { ChartGPUChart } from 'chartgpu-react';
-
-function MyChart() {
-  return (
-    <ChartGPUChart
-      options={{
-        series: [{ type: 'line', data: [[0, 1], [1, 3], [2, 2]] }],
-      }}
-    />
-  );
+if (!navigator.gpu) {
+  // Fail closed: never leave a blank canvas without UI
+  throw new Error('WebGPU not available');
 }
+
+const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+if (!adapter) throw new Error('No GPU adapter');
+const device = await adapter.requestDevice();
+const pipelineCache = createPipelineCache(device);
+const ctx = { adapter, device, pipelineCache };
+
+const a = await ChartGPU.create(document.getElementById('a')!, { series: [{ type: 'line', data: { x: new Float64Array([0]), y: new Float64Array([0]) } }] }, ctx);
+const b = await ChartGPU.create(document.getElementById('b')!, { series: [{ type: 'line', data: { x: new Float64Array([0]), y: new Float64Array([0]) } }] }, ctx);
+const c = await ChartGPU.create(document.getElementById('c')!, { series: [{ type: 'line', data: { x: new Float64Array([0]), y: new Float64Array([0]) } }] }, ctx);
+
+connectCharts([a, b, c], { syncZoom: true });
+// You own the device: charts do not destroy it on dispose
+// Optional: setRenderMode('external') + renderFrame() for one app rAF loop
 ```
 
-See the [chartgpu-react repository](https://github.com/ChartGPU/chartgpu-react) for full documentation and examples.
+Full recipes: [multi-chart cookbook](docs/guides/multichart-dashboard-cookbook.md) · [streaming dashboards](https://chartgpu.io/docs/streaming-dashboards/)
+
+---
+
+## Why ChartGPU
+
+| | |
+|---|---|
+| **Dense real-time jobs** | Multi-series streaming, multi-panel dashboards, finance candles/OHLC, heatmaps |
+| **Shared-device multi-panel** | Opt-in shared `GPUDevice` + pipeline cache (recommended for ≥3 charts); optional external rAF via `setRenderMode('external')` + `renderFrame()`; chart sync |
+| **Ring FIFO streaming** | `appendData(..., { maxPoints })`; `updateHeatmap` / `updateSurface3D`; not full-rewrite `setOption` every tick |
+| **Sampling and gaps** | LTTB / min / max (CPU or GPU for eligible lines); `performance.lod` auto/strict; null gaps; optional `connectNulls` |
+| **Multi-axis and themes** | Independent Y axes; multi-chart zoom sync; dark / light / custom themes |
+| **MIT commercial embed** | Free density under MIT. Zero npm runtime dependencies. No core feature gates on FIFO, zoom, multi-chart, or finance series |
+| **WebGPU-only** | Chrome/Edge 113+, Safari 18+. Explicit browser matrix; no dual-backend WebGL path |
+
+Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Performance: [chartgpu.io/docs/performance](https://chartgpu.io/docs/performance/). Theming: [chartgpu.io/docs/theming](https://chartgpu.io/docs/theming/).
+
+---
+
+## Demo
+
+Live product surface: [chartgpu.io](https://chartgpu.io) · [docs](https://chartgpu.io/docs/) · [playground](https://chartgpu.io/docs/playground/)
+
+![ChartGPU demo](https://raw.githubusercontent.com/chartgpu/chartgpu/main/docs/assets/chart-gpu-demo.gif)
+
+### Multi-panel streaming (product hero)
+
+Shared-device multi-chart wall: latency, throughput, errors, resources, live annotations. Architecture sample above; hosted wall and recipes linked next.
+
+[Streaming dashboards](https://chartgpu.io/docs/streaming-dashboards/) · [Multi-chart cookbook (repo)](docs/guides/multichart-dashboard-cookbook.md)
+
+![Streaming multi-chart dashboard](docs/assets/streaming-dashboard-example.png)
+
+### Dense 2D and finance
+
+| Dense scatter (density mode) | Candlestick / OHLC | Annotations |
+|:---:|:---:|:---:|
+| ![Scatter density](docs/assets/scatter-plot-density-chart-1million-points-example.png) | ![Candlestick](docs/assets/candle-stick-example.png) | ![Annotations](docs/assets/annotations.png) |
+
+Large-N and multi-panel numbers depend on browser, hardware, sampling, and production vs dev dist. Prefer the [hosted demos](https://chartgpu.io) and [performance guide](https://chartgpu.io/docs/performance/) over bare FPS claims. Formal suite tables are versioned separately; do not treat marketing screenshots as competitive scores.
+
+Right-click annotation authoring: [annotations guide](https://chartgpu.io/docs/annotations/) · [`examples/annotation-authoring/`](examples/annotation-authoring/).
+
+---
+
+## Series
+
+Focused on dense real-time work. Full options stay in the API docs.
+
+| Kind | Types / modes | Docs |
+|------|----------------|------|
+| **Cartesian** | `line`, `area`, `bar`, `scatter`, `pie` | [line](https://chartgpu.io/docs/series/line/) · [scatter](https://chartgpu.io/docs/series/scatter/) |
+| **Finance** | `candlestick`, `ohlc` | [candlestick](https://chartgpu.io/docs/series/candlestick/) |
+| **Scientific** | `heatmap`, `band`, `errorBar`, `impulse` | [heatmap](https://chartgpu.io/docs/series/heatmap/) |
+| **Composition** | `step` on line/area · `stack` mountain/area · scatter `mode: 'density'` | [charting](https://chartgpu.io/docs/charting/) |
+| **3D** | `pointCloud3d`, `surface3d` (`coordinateSystem: 'cartesian3d'`) | [API (repo)](docs/api/3d.md) |
+
+Full option reference (repo): [`docs/api/options.md`](docs/api/options.md)
+
+---
 
 ## Browser support (WebGPU required)
 
-- Chrome 113+ or Edge 113+ (WebGPU enabled by default)
-- Safari 18+ (WebGPU enabled by default)
-- Firefox: Windows 114+, Mac 145+, Linux nightly
+No WebGL fallback. Unsupported browsers must be gated in your app (capability detect, never a blank canvas).
 
-See the [gpuweb repository](https://github.com/gpuweb/gpuweb/wiki/Implementation-Status) for full Implementation Status
+| Browser | Notes |
+|---------|--------|
+| Chrome / Edge | 113+ |
+| Safari | 18+ |
+| Firefox | Windows 114+, macOS 145+, Linux still incomplete on [gpuweb status](https://github.com/gpuweb/gpuweb/wiki/Implementation-Status) |
 
-## Who's Using ChartGPU
+Enterprise matrix: WebGPU-only is intentional. If you need universal Canvas/SVG or dual WebGL+WebGPU, evaluate commercial stacks that ship fallbacks.
 
-ChartGPU is a young project and we'd love to hear how you're using it! If your team or project uses ChartGPU, [open a pull request](https://github.com/chartgpu/chartgpu/pulls) to add your name here.
-
-<!-- Add your project/company below:
-- [Your Project](https://link) — short description
--->
+---
 
 ## Documentation
 
-- Full documentation: [Getting Started](https://github.com/chartgpu/chartgpu/blob/main/docs/GETTING_STARTED.md)
-- API reference: [`docs/api/README.md`](https://github.com/chartgpu/chartgpu/blob/main/docs/api/README.md)
+### chartgpu.io
 
-## Examples
+| | |
+|---|---|
+| [Docs hub](https://chartgpu.io/docs/) | Guides, series, playground |
+| [Getting started](https://chartgpu.io/docs/getting-started/) | Install and first chart |
+| [Playground](https://chartgpu.io/docs/playground/) | Interactive sandbox |
+| [Charting](https://chartgpu.io/docs/charting/) | Series, axes, interaction |
+| [Streaming dashboards](https://chartgpu.io/docs/streaming-dashboards/) | Shared device, multi-chart |
+| [Annotations](https://chartgpu.io/docs/annotations/) | Lines, markers, labels |
+| [Theming](https://chartgpu.io/docs/theming/) | Dark / light / custom |
+| [Performance](https://chartgpu.io/docs/performance/) | Density, sampling, GPU sharing |
+| [Examples](https://chartgpu.io/#examples) | Live gallery |
 
-- Browse examples: [`examples/`](https://github.com/chartgpu/chartgpu/tree/main/examples)
-- Run locally:
-  - `npm install`
-  - `npm run dev` (opens `http://localhost:5173/examples/`)
+### This repository
+
+| | |
+|---|---|
+| [API hub](docs/api/README.md) | Instance methods, options map, scales |
+| [Options](docs/api/options.md) | Full series / axis / streaming types |
+| [3D](docs/api/3d.md) | Camera, point cloud, surface, contours |
+| [Multi-chart cookbook](docs/guides/multichart-dashboard-cookbook.md) | Shared device recipes |
+| [Architecture](docs/ARCHITECTURE.md) | Render path and modules |
+| [Internals](docs/api/INTERNALS.md) | Data store, renderers, coordinator |
+| [`examples/`](examples/) | Local Vite samples |
+
+```bash
+npm install
+npm run dev
+# http://localhost:5173/examples/
+```
+
+---
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](https://github.com/chartgpu/chartgpu/blob/main/CONTRIBUTING.md).
+[CONTRIBUTING.md](CONTRIBUTING.md) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ## License
 
-MIT — see [`LICENSE`](https://github.com/chartgpu/chartgpu/blob/main/LICENSE).
-
-## Architecture
-
-ChartGPU follows a functional-first architecture. `ChartGPU.create(...)` owns the canvas and WebGPU lifecycle, delegating render orchestration to a modular render coordinator with 11 specialized modules.
-
-For the full architecture diagram, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). For deep internal notes, see [`docs/api/INTERNALS.md`](docs/api/INTERNALS.md).
+[MIT](LICENSE). Free for commercial embedding. Zero npm runtime dependencies. Density, FIFO, multi-chart, and finance series stay in the open core.

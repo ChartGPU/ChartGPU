@@ -323,7 +323,7 @@ describe('ChartGPU - External Render Mode', () => {
       });
 
       // Wait a bit to ensure no RAF was scheduled
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
       // In external mode, RAF should NOT be called
       expect(rafSpy).not.toHaveBeenCalled();
@@ -370,7 +370,7 @@ describe('ChartGPU - External Render Mode', () => {
       // Trigger resize
       chart.resize();
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
       // In external mode, RAF should NOT be called
       expect(rafSpy).not.toHaveBeenCalled();
@@ -443,7 +443,7 @@ describe('ChartGPU - External Render Mode', () => {
       });
 
       // Wait for initial render to complete
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
       // Append data
       chart.appendData(0, [{ x: 2, y: 20 }]);
@@ -707,7 +707,7 @@ describe('ChartGPU - External Render Mode', () => {
       const chart = await ChartGPU.create(mockContainer, options);
 
       // Wait for auto mode to settle
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
       // Switch to external mode
       chart.setRenderMode('external');
@@ -727,7 +727,7 @@ describe('ChartGPU - External Render Mode', () => {
         ],
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
       // RAF should not be scheduled in external mode
       expect(rafSpy).not.toHaveBeenCalled();
@@ -791,7 +791,7 @@ describe('ChartGPU - External Render Mode', () => {
       chart.setRenderMode('auto');
       expect(chart.getRenderMode()).toBe('auto');
 
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
       rafSpy?.mockClear();
 
@@ -808,7 +808,7 @@ describe('ChartGPU - External Render Mode', () => {
         ],
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
       // RAF should be scheduled in auto mode
       expect(rafSpy).toHaveBeenCalled();
@@ -884,7 +884,7 @@ describe('ChartGPU - External Render Mode', () => {
       const chart = await ChartGPU.create(mockContainer, options);
 
       // Wait for some frames to accumulate metrics
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
       // Switch to external mode
       chart.setRenderMode('external');
@@ -928,7 +928,7 @@ describe('ChartGPU - External Render Mode', () => {
         }
 
         frameCount++;
-        await new Promise((resolve) => setTimeout(resolve, 16)); // ~60fps
+        await new Promise((resolve) => setTimeout(resolve, 0));
       }
 
       // Verify that we actually rendered frames
@@ -973,11 +973,11 @@ describe('ChartGPU - External Render Mode', () => {
           renderCount++;
         }
 
-        await new Promise((resolve) => setTimeout(resolve, 16));
+        await new Promise((resolve) => setTimeout(resolve, 0));
       }
 
       // Should have rendered at least once (we added data)
-      expect(renderCount).toBeGreaterThanOrEqual(0);
+      expect(renderCount).toBeGreaterThan(0);
 
       await chart.dispose();
     });
@@ -1066,7 +1066,7 @@ describe('ChartGPU - External Render Mode', () => {
       const chart = await ChartGPU.create(mockContainer, options);
 
       // Wait for initial RAF calls to complete
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
       rafSpy?.mockClear();
 
@@ -1084,7 +1084,7 @@ describe('ChartGPU - External Render Mode', () => {
       });
 
       // RAF should be scheduled (may take a moment)
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 0));
       expect(rafSpy).toHaveBeenCalled();
 
       await chart.dispose();

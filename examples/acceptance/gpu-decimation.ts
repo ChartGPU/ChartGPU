@@ -42,11 +42,13 @@ const assert: (condition: unknown, message: string) => asserts condition = (cond
     ],
   });
 
-  const [autoSeries, noneSeries, lttbSeries, avgSeries] = resolved.series as ReadonlyArray<ResolvedLineSeriesConfig>;
+  const [defaultSeries, noneSeries, lttbSeries, avgSeries] = resolved.series as ReadonlyArray<ResolvedLineSeriesConfig>;
 
+  // Default sampling resolves to 'lttb' (there is no SeriesSampling 'auto' enum value).
+  assert(defaultSeries.sampling === 'lttb', "Default line series sampling should resolve to 'lttb'.");
   assert(
-    isGpuDecimationEligible(autoSeries, autoSeries.rawData),
-    'Default (auto) line series should be eligible.',
+    isGpuDecimationEligible(defaultSeries, defaultSeries.rawData),
+    "Default (lttb) line series should be GPU-decimation eligible.",
   );
   assert(
     !isGpuDecimationEligible(noneSeries, noneSeries.rawData),

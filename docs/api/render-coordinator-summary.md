@@ -37,7 +37,16 @@ export interface RenderCoordinator {
    *
    * Appends are coalesced and flushed once per render frame.
    */
-  appendData(seriesIndex: number, newPoints: ReadonlyArray<DataPoint> | ReadonlyArray<OHLCDataPoint>): void;
+  appendData(
+    seriesIndex: number,
+    newPoints: CartesianSeriesData | ReadonlyArray<OHLCDataPoint>,
+    options?: Readonly<{ maxPoints?: number }>
+  ): void;
+  /**
+   * 2D heatmap streaming (replaceZ / appendColumns / appendRows). Not cartesian appendData.
+   * Required on the 2D RenderCoordinator surface (returns false when series is not heatmap).
+   */
+  updateHeatmap(seriesIndex: number, update: HeatmapUpdate): boolean;
   /**
    * Gets the current "interaction x" in domain units (or `null` when inactive).
    *

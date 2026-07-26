@@ -41,13 +41,6 @@ type AnyCb =
 // Reuse the module-level registry from ChartGPU via a callback pattern would be ideal,
 // but ChartGPU registers after return. We export a hook used by ChartGPU.create branch.
 
-export type ChartGPU3DCreateResult = ChartGPUInstance & {
-  readonly is3D: true;
-  resetCamera(): void;
-  setCamera(partial: Chart3DCameraOptions): void;
-  getCamera(): ResolvedCamera;
-};
-
 export async function createChartGPU3D(
   container: HTMLElement,
   options: ChartGPUOptions,

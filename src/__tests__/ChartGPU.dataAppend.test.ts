@@ -218,6 +218,9 @@ function createMockContainer(): HTMLElement {
   return container;
 }
 
+/** Drain one mock rAF (stubbed as setTimeout(0) in beforeEach). */
+const flushMockRaf = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
 describe('ChartGPU - dataAppend event', () => {
   let mockContainer: HTMLElement;
   let warnSpy: ReturnType<typeof vi.spyOn> | null = null;
@@ -269,7 +272,7 @@ describe('ChartGPU - dataAppend event', () => {
       chart.appendData(0, interleaved);
 
       // Wait for any async emission (requestAnimationFrame)
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
       const payload: ChartGPUDataAppendPayload = listener.mock.calls[0][0];
@@ -306,7 +309,7 @@ describe('ChartGPU - dataAppend event', () => {
       };
       chart.appendData(0, xyArrays);
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
       const payload: ChartGPUDataAppendPayload = listener.mock.calls[0][0];
@@ -342,7 +345,7 @@ describe('ChartGPU - dataAppend event', () => {
       ];
       chart.appendData(0, tuples);
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
       const payload: ChartGPUDataAppendPayload = listener.mock.calls[0][0];
@@ -379,7 +382,7 @@ describe('ChartGPU - dataAppend event', () => {
       ];
       chart.appendData(0, objects);
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
       const payload: ChartGPUDataAppendPayload = listener.mock.calls[0][0];
@@ -410,7 +413,7 @@ describe('ChartGPU - dataAppend event', () => {
       // Append empty array
       chart.appendData(0, []);
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       // Should not emit for empty append
       expect(listener).not.toHaveBeenCalled();
@@ -436,7 +439,7 @@ describe('ChartGPU - dataAppend event', () => {
       // Append single point
       chart.appendData(0, [{ x: 42, y: 100 }]);
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
       const payload: ChartGPUDataAppendPayload = listener.mock.calls[0][0];
@@ -467,7 +470,7 @@ describe('ChartGPU - dataAppend event', () => {
       const data = new Float32Array([-5, 10, -2, 20, 3, 30, -10, 40]);
       chart.appendData(0, data);
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
       const payload: ChartGPUDataAppendPayload = listener.mock.calls[0][0];
@@ -510,7 +513,7 @@ describe('ChartGPU - dataAppend event', () => {
         ],
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       // Should NOT emit dataAppend
       expect(listener).not.toHaveBeenCalled();
@@ -546,7 +549,7 @@ describe('ChartGPU - dataAppend event', () => {
         ],
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).not.toHaveBeenCalled();
 
@@ -572,7 +575,7 @@ describe('ChartGPU - dataAppend event', () => {
 
       // Append data - should trigger
       chart.appendData(0, [{ x: 2, y: 20 }]);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
 
@@ -581,7 +584,7 @@ describe('ChartGPU - dataAppend event', () => {
 
       // Append more data - should NOT trigger
       chart.appendData(0, [{ x: 3, y: 30 }]);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       // Still only 1 call (from before off())
       expect(listener).toHaveBeenCalledTimes(1);
@@ -611,7 +614,7 @@ describe('ChartGPU - dataAppend event', () => {
 
       // Append data - should still trigger original listener
       chart.appendData(0, [{ x: 2, y: 20 }]);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
       expect(differentListener).not.toHaveBeenCalled();
@@ -646,7 +649,7 @@ describe('ChartGPU - dataAppend event', () => {
         { x: 2, y: 20 },
         { x: 3, y: 30 },
       ]);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       // All listeners should be called once
       expect(listener1).toHaveBeenCalledTimes(1);
@@ -695,7 +698,7 @@ describe('ChartGPU - dataAppend event', () => {
 
       // Append data
       chart.appendData(0, [{ x: 2, y: 20 }]);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       // Only listeners 1 and 3 should be called
       expect(listener1).toHaveBeenCalledTimes(1);
@@ -729,7 +732,7 @@ describe('ChartGPU - dataAppend event', () => {
         { timestamp: 4000, open: 115, high: 125, low: 110, close: 120 },
       ]);
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
       const payload: ChartGPUDataAppendPayload = listener.mock.calls[0][0];
@@ -765,7 +768,7 @@ describe('ChartGPU - dataAppend event', () => {
         [3000, 110, 115, 108, 120] as [number, number, number, number, number],
       ]);
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
       const payload: ChartGPUDataAppendPayload = listener.mock.calls[0][0];
@@ -802,7 +805,7 @@ describe('ChartGPU - dataAppend event', () => {
       };
       chart.appendData(0, xyArrays);
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
       const payload: ChartGPUDataAppendPayload = listener.mock.calls[0][0];
@@ -845,7 +848,7 @@ describe('ChartGPU - dataAppend event', () => {
       ]);
       chart.appendData(0, interleaved);
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
       const payload: ChartGPUDataAppendPayload = listener.mock.calls[0][0];
@@ -880,7 +883,7 @@ describe('ChartGPU - dataAppend event', () => {
         { x: NaN, y: 30 },
       ]);
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
       const payload: ChartGPUDataAppendPayload = listener.mock.calls[0][0];
@@ -914,7 +917,7 @@ describe('ChartGPU - dataAppend event', () => {
         { timestamp: -Infinity, open: 110, high: 120, low: 108, close: 115 },
       ]);
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
       const payload: ChartGPUDataAppendPayload = listener.mock.calls[0][0];
@@ -952,7 +955,7 @@ describe('ChartGPU - dataAppend event', () => {
         { x: 15, y: 700 }, // valid
       ]);
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
       const payload: ChartGPUDataAppendPayload = listener.mock.calls[0][0];
@@ -993,7 +996,7 @@ describe('ChartGPU - dataAppend event', () => {
       // This should complete without computing xExtent
       chart.appendData(0, largeData);
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       // No errors should occur
       expect(chart.disposed).toBe(false);
@@ -1015,7 +1018,7 @@ describe('ChartGPU - dataAppend event', () => {
 
       // First append without listener - no event
       chart.appendData(0, [{ x: 2, y: 20 }]);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       // Now register listener
       const listener = vi.fn();
@@ -1023,7 +1026,7 @@ describe('ChartGPU - dataAppend event', () => {
 
       // Second append with listener - should emit
       chart.appendData(0, [{ x: 3, y: 30 }]);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
       const payload: ChartGPUDataAppendPayload = listener.mock.calls[0][0];
@@ -1036,7 +1039,7 @@ describe('ChartGPU - dataAppend event', () => {
       // Third append without listener - no event
       listener.mockClear();
       chart.appendData(0, [{ x: 4, y: 40 }]);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).not.toHaveBeenCalled();
 
@@ -1062,7 +1065,7 @@ describe('ChartGPU - dataAppend event', () => {
 
       // Try to append to non-existent series
       chart.appendData(999, [{ x: 2, y: 20 }]);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).not.toHaveBeenCalled();
 
@@ -1089,7 +1092,7 @@ describe('ChartGPU - dataAppend event', () => {
 
       // Try to append to pie series (should log warning but not crash)
       chart.appendData(0, [{ x: 3, y: 30 }] as any);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).not.toHaveBeenCalled();
 
@@ -1120,7 +1123,7 @@ describe('ChartGPU - dataAppend event', () => {
       chart.on('dataAppend', listener);
 
       chart.appendData(0, [{ x: 3, y: 30 }] as any);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).not.toHaveBeenCalled();
       expect(warn).toHaveBeenCalled();
@@ -1152,7 +1155,7 @@ describe('ChartGPU - dataAppend event', () => {
 
       // Try to append after disposal
       chart.appendData(0, [{ x: 2, y: 20 }]);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).not.toHaveBeenCalled();
     });
@@ -1178,7 +1181,7 @@ describe('ChartGPU - dataAppend event', () => {
 
       // Append to first series
       chart.appendData(0, [{ x: 2, y: 20 }]);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
       expect(listener.mock.calls[0][0].seriesIndex).toBe(0);
@@ -1187,7 +1190,7 @@ describe('ChartGPU - dataAppend event', () => {
 
       // Append to second series
       chart.appendData(1, [{ x: 2, y: 10 }]);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await Promise.resolve();
 
       expect(listener).toHaveBeenCalledTimes(1);
       expect(listener.mock.calls[0][0].seriesIndex).toBe(1);
@@ -1269,7 +1272,7 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
     chart.appendData(0, [[100, 50]], { maxPoints: 2 }); // [3, 100]
 
     // Allow flush.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await Promise.resolve();
 
     // Right edge should still match newest x=100; oldest x=0 must not dominate domain.
     const hitRight = chart.hitTest(makePointer(799, 86));
@@ -1383,11 +1386,11 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
 
     chart.appendData(0, [[2, 2]], { maxPoints: 2 });
     chart.appendData(0, [[3, 3]], { maxPoints: 2 });
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await Promise.resolve();
 
     // Unbounded + tooltip still off: still skip dual store; GPU/coordinator only.
     chart.appendData(0, [[100, 50]]);
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await Promise.resolve();
 
     const hitRight = chart.hitTest(makePointer(799, 86));
     expect(hitRight.isInGrid).toBe(true);
@@ -1422,14 +1425,14 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
 
     chart.appendData(0, [[50, 25]]);
     chart.appendData(0, [[100, 50]]);
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await Promise.resolve();
 
     // Axes-only setOption that turns tooltip on — must resync from coordinator.
     chart.setOption({
       ...chart.options,
       tooltip: { show: true },
     });
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await Promise.resolve();
 
     const hitRight = chart.hitTest(makePointer(799, 86));
     expect(hitRight.isInGrid).toBe(true);
@@ -1457,7 +1460,7 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
 
     chart.appendData(0, [[2, 2]], { maxPoints: 3 });
     chart.appendData(0, [[3, 3]], { maxPoints: 3 });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await Promise.resolve();
 
     chart.setOption({
       ...chart.options,
@@ -1465,7 +1468,7 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
     });
     // After resync store is coordinator [0,1]→[0,1,2]→[1,2,3] = [1,2,3]
     chart.appendData(0, [[100, 50]], { maxPoints: 3 });
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await Promise.resolve();
 
     // Correct single apply: retained [2,3,100]. Double would still end at 100
     // but left would differ if count exceeded capacity incorrectly — hard assert
@@ -1498,7 +1501,7 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
 
     chart.appendData(0, [[2, 20]], { maxPoints: 2 });
     chart.appendData(0, [[100, 50]], { maxPoints: 2 });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await Promise.resolve();
 
     const hitRight = chart.hitTest(makePointer(799, 86));
     expect(hitRight.match).not.toBeNull();
@@ -1527,14 +1530,14 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
 
     chart.appendData(0, [[50, 25]], { maxPoints: 2 });
     chart.appendData(0, [[100, 50]], { maxPoints: 2 });
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await Promise.resolve();
 
     // Axes-only setOption that turns tooltip on — must resync from coordinator.
     chart.setOption({
       ...chart.options,
       tooltip: { show: true },
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await Promise.resolve();
 
     const hit = chart.hitTest(makePointer(799, 86));
     expect(hit.match).not.toBeNull();
@@ -1557,7 +1560,7 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
     });
 
     chart.appendData(0, [[100, 50]], { maxPoints: 2 });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await Promise.resolve();
 
     // Same setOption: re-enable tooltip AND add a second series (length 1→2).
     chart.setOption({
@@ -1575,7 +1578,7 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
         },
       ],
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await Promise.resolve();
 
     // Must hit-test the first series' resynced newest point (x≈100 after FIFO).
     // y=50 with axis -10..60 → gridY ≈ (1 - 60/70)*600 ≈ 86.
@@ -1647,7 +1650,7 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
     });
 
     chart.appendData(0, [[100, 50]]);
-    await new Promise((r) => setTimeout(r, 30));
+    await flushMockRaf();
 
     // Same seed data ref; axes → auto. Domain must include appended (100, 50).
     chart.setOption({
@@ -1688,7 +1691,7 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
     });
 
     // Drive a frame so prepareSeries can tag gpuDecimationRaw.
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await Promise.resolve();
 
     warnSpy?.mockClear();
     chart.appendData(
@@ -1699,7 +1702,7 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
       ],
       { maxPoints: 50 }
     );
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await Promise.resolve();
 
     const samplingWarns = (warnSpy?.mock.calls ?? []).filter((c) =>
       String(c[0] ?? '').includes('causes full buffer re-upload')
@@ -1740,7 +1743,7 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
       { maxPoints: 10 }
     );
     chart.appendData(0, [[100, 50]], { maxPoints: 3 });
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await Promise.resolve();
 
     const hitRight = chart.hitTest(makePointer(799, 86));
     expect(hitRight.match).not.toBeNull();
@@ -1947,7 +1950,7 @@ describe('ChartGPU - hit-test store identity reuse (axes-only setOption)', () =>
       x: [3, 4],
       y: [4, 5],
     });
-    await new Promise((r) => setTimeout(r, 30));
+    await flushMockRaf();
     // Caller arrays must be untouched (owned columns brand prevents in-place mutate).
     expect(x).toEqual(xCopy);
     expect(y).toEqual(yCopy);
@@ -2090,7 +2093,7 @@ describe('ChartGPU - dual-store correctness (PR167 review)', () => {
     // Newest point uses y=50 so right-edge hit matches existing suite coords.
     const batch: Array<[number, number]> = Array.from({ length: 200 }, (_, i) => [20 + i, i === 199 ? 50 : 25]);
     chart.appendData(0, batch);
-    await new Promise((r) => setTimeout(r, 40));
+    await flushMockRaf();
 
     // Hard length assert: dual-store must share device window (not grow unbounded).
     const hitCount = chart.getHitTestSeriesPointCount(0);
@@ -2130,14 +2133,14 @@ describe('ChartGPU - dual-store correctness (PR167 review)', () => {
 
     chart.appendData(0, [[50, 25]], { maxPoints: 2 });
     chart.appendData(0, [[100, 50]], { maxPoints: 2 });
-    await new Promise((r) => setTimeout(r, 30));
+    await flushMockRaf();
 
     // First setOption: re-enable tooltip (resync).
     chart.setOption({
       ...chart.options,
       tooltip: { show: true },
     });
-    await new Promise((r) => setTimeout(r, 20));
+    await flushMockRaf();
 
     // Second presentation-only setOption (stable series data refs via chart.options).
     chart.setOption({
@@ -2145,7 +2148,7 @@ describe('ChartGPU - dual-store correctness (PR167 review)', () => {
       grid: { left: 0, right: 0, top: 0, bottom: 0 },
       legend: { show: false },
     });
-    await new Promise((r) => setTimeout(r, 20));
+    await flushMockRaf();
 
     const hit = chart.hitTest(makePointer(799, 86));
     expect(hit.match).not.toBeNull();
@@ -2160,7 +2163,7 @@ describe('ChartGPU - dual-store correctness (PR167 review)', () => {
       ...chart.options,
       series: [{ type: 'line', data: seedReplace, sampling: 'none' }],
     });
-    await new Promise((r) => setTimeout(r, 20));
+    await flushMockRaf();
     // After full series replace to seed domain 0..1, hit-test must rebuild from seed.
     expect(chart.getHitTestSeriesPointCount(0)).toBe(2);
     // Pointer near right edge of seed domain (x≈1): must match seed, not append history.
@@ -2198,7 +2201,7 @@ describe('ChartGPU - dual-store correctness (PR167 review)', () => {
       ] as any,
       { maxPoints: 3 }
     );
-    await new Promise((r) => setTimeout(r, 20));
+    await flushMockRaf();
     expect(chart.getHitTestSeriesPointCount(0)).toBe(3);
     // Right edge hits newest x=100 (same coords as other maxPoints wrap tests).
     const hit = chart.hitTest(makePointer(799, 86));
@@ -2314,7 +2317,7 @@ describe('ChartGPU - band hit-test store + append', () => {
       },
       { maxPoints: 3 }
     );
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await Promise.resolve();
 
     const hitRight = chart.hitTest(makePointer(799, 86));
     expect(hitRight.isInGrid).toBe(true);
@@ -2349,7 +2352,7 @@ describe('ChartGPU - band hit-test store + append', () => {
 
     // Cartesian XY without y1 — must warn and skip.
     chart.appendData(0, { x: [2], y: [50] } as any);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await Promise.resolve();
 
     expect(warn.mock.calls.some((c) => String(c[0]).includes('band series requires Xyy'))).toBe(true);
 
@@ -2397,7 +2400,7 @@ describe('ChartGPU - band hit-test store + append', () => {
 
     const kept = await ChartGPU.create(mockContainer, base);
     kept.appendData(0, { x: [5], y: [49], y1: [51] }, { maxPoints: 100 });
-    await new Promise((r) => setTimeout(r, 20));
+    await flushMockRaf();
     // Correct live-zoom pattern: spread current user options, only flip the flag.
     kept.setOption({
       ...kept.options,

@@ -21,7 +21,7 @@ import {
   generateLogTicksForVisibleDomain,
   generateLinearTicks,
 } from '../axis/computeAxisTicks';
-import { getAxisTitleFontSize } from '../../../utils/axisLabelStyling';
+import { AXIS_TITLE_FONT_WEIGHT, getAxisTitleFontSize, styleAxisLabelSpan } from '../../../utils/axisLabelStyling';
 import { getRightYAxisLabelX, getYAxisLabelX, getRightYAxisTitleX, getYAxisTitleX } from '../axis/axisLabelHelpers';
 
 const DEFAULT_TICK_LENGTH_CSS_PX = 6;
@@ -60,16 +60,6 @@ function clipXToCanvasCssPx(xClip: number, canvasCssWidth: number): number {
 
 function clipYToCanvasCssPx(yClip: number, canvasCssHeight: number): number {
   return ((1 - yClip) / 2) * canvasCssHeight;
-}
-
-/** Title weight matches `styleAxisLabelSpan` in axisLabelStyling (600). */
-const AXIS_TITLE_FONT_WEIGHT = '600';
-
-function styleAxisLabelSpan(span: HTMLSpanElement, isTitle: boolean, theme: ResolvedChartGPUOptions['theme']): void {
-  span.style.fontFamily = theme.fontFamily;
-  span.style.fontWeight = isTitle ? AXIS_TITLE_FONT_WEIGHT : '400';
-  span.style.userSelect = 'none';
-  span.style.pointerEvents = 'none';
 }
 
 /**

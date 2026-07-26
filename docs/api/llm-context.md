@@ -22,7 +22,8 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 
 ### Configuration
 - **Options overview**: [options.md](options.md#chartgpuoptions)
-- **Series configuration** (line, area, bar, scatter, pie, candlestick, ohlc, heatmap, band, errorBar, impulse; step on line/area): [options.md](options.md#series-configuration)
+- **Series configuration** (line, area, bar, scatter, pie, candlestick, ohlc, heatmap, band, errorBar, impulse, pointCloud3d, surface3d; step on line/area): [options.md](options.md#series-configuration)
+- **3D charts** (`coordinateSystem: 'cartesian3d'`, camera, pointCloud3d, surface3d): [3d.md](3d.md)
 - **OHLC bars** (`type: 'ohlc'`, thin stem + open/close ticks; same `OHLCDataPoint` as candlestick): [options.md](options.md#ohlcseriesconfig), [`examples/ohlc-bars/`](../../examples/ohlc-bars/)
 - **Scatter density mode** (scatter series `mode: 'density'` — screen-space point-cloud bins, **not** a data-grid heatmap): [src/config/types.ts](../../src/config/types.ts), [src/renderers/createScatterDensityRenderer.ts](../../src/renderers/createScatterDensityRenderer.ts), [`examples/scatter-density-1m/`](../../examples/scatter-density-1m/)
 - **Uniform heatmap / spectrogram** (`type: 'heatmap'`): [options.md](options.md#heatmapseriesconfig), streaming via `chart.updateHeatmap` ([heatmapStream.ts](../../src/data/heatmapStream.ts)), [src/renderers/createHeatmapRenderer.ts](../../src/renderers/createHeatmapRenderer.ts), [src/shaders/heatmap.wgsl](../../src/shaders/heatmap.wgsl), [src/utils/heatmapLayout.ts](../../src/utils/heatmapLayout.ts), [src/utils/colormap.ts](../../src/utils/colormap.ts), [`examples/heatmap-spectrogram/`](../../examples/heatmap-spectrogram/)

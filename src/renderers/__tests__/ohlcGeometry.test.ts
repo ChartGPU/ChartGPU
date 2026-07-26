@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  computeOhlcCategoryStep,
+  getOHLC,
   ohlcBarQuads,
+  parsePercent,
   resolveOhlcDirection,
   resolveOhlcStemHalfWidthDomain,
   resolveOhlcTickLengthDomain,
@@ -97,3 +100,68 @@ describe('ohlcBarQuads', () => {
     expect(q.stem.maxX).toBe(5000);
   });
 });
+
+describe('getOHLC', () => {
+  it('reads object OHLC fields', () => {
+    expect(
+      getOHLC({ timestamp: 1, open: 2, close: 3, low: 0, high: 4 })
+    ).toEqual({ timestamp: 1, open: 2, close: 3, low: 0, high: 4 });
+  });
+
+  it('reads tuple [t,o,c,l,h]', () => {
+    expect(getOHLC([10, 1, 2, 0.5, 3])).toEqual({
+      timestamp: 10,
+      open: 1,
+      close: 2,
+      low: 0.5,
+      high: 3,
+    });
+  });
+});
+
+describe('parsePercent', () => {
+  it('parses valid percent strings', () => {
+    expect(parsePercent('50%')).toBeCloseTo(0.5);
+    expect(parsePercent(' 12.5% ')).toBeCloseTo(0.125);
+  });
+
+  it('returns null for invalid strings', () => {
+    expect(parsePercent('nope')).toBeNull();
+    expect(parsePercent('50')).toBeNull();
+    expect(parsePercent('%')).toBeNull();
+  });
+});
+
+describe('computeOhlcCategoryStep', () => {
+  it('returns 1 for empty or single finite timestamp', () => {
+    expect(computeOhlcCategoryStep([])).toBe(1);
+    expect(computeOhlcCategoryStep([{ timestamp: 5, open: 1, close: 1, low: 1, high: 1 }])).toBe(1);
+  });
+
+  it('uses min positive Δtimestamp across unsorted input', () => {
+    const data = [
+      { timestamp: 30, open: 1, close: 1, low: 1, high: 1 },
+      { timestamp: 10, open: 1, close: 1, low: 1, high: 1 },
+      { timestamp: 20, open: 1, close: 1, low: 1, high: 1 },
+    ];
+    expect(computeOhlcCategoryStep(data)).toBe(10);
+  });
+
+  it('ignores non-finite timestamps', () => {
+    const data = [
+      { timestamp: Number.NaN, open: 1, close: 1, low: 1, high: 1 },
+      { timestamp: 100, open: 1, close: 1, low: 1, high: 1 },
+      { timestamp: 125, open: 1, close: 1, low: 1, high: 1 },
+    ];
+    expect(computeOhlcCategoryStep(data)).toBe(25);
+  });
+
+  it('returns 1 when no positive step exists', () => {
+    const data = [
+      { timestamp: 5, open: 1, close: 1, low: 1, high: 1 },
+      { timestamp: 5, open: 1, close: 1, low: 1, high: 1 },
+    ];
+    expect(computeOhlcCategoryStep(data)).toBe(1);
+  });
+});
+

@@ -79,12 +79,19 @@ Renderer factories live under [`src/renderers/`](../../src/renderers/).
 | Feature | Factory | Shader(s) |
 |---|---|---|
 | Line | [`createLineRenderer.ts`](../../src/renderers/createLineRenderer.ts) | [`line.wgsl`](../../src/shaders/line.wgsl) |
-| Area | [`createAreaRenderer.ts`](../../src/renderers/createAreaRenderer.ts) | [`area.wgsl`](../../src/shaders/area.wgsl) |
+| Area | [`createAreaRenderer.ts`](../../src/renderers/createAreaRenderer.ts) | [`area.wgsl`](../../src/shaders/area.wgsl), [`areaStacked.wgsl`](../../src/shaders/areaStacked.wgsl) |
+| Band / range | [`createBandRenderer.ts`](../../src/renderers/createBandRenderer.ts) | [`band.wgsl`](../../src/shaders/band.wgsl) |
 | Bar | [`createBarRenderer.ts`](../../src/renderers/createBarRenderer.ts) | [`bar.wgsl`](../../src/shaders/bar.wgsl) |
 | Scatter | [`createScatterRenderer.ts`](../../src/renderers/createScatterRenderer.ts) | [`scatter.wgsl`](../../src/shaders/scatter.wgsl) |
-| Scatter density | [`createScatterDensityRenderer.ts`](../../src/renderers/createScatterDensityRenderer.ts) | [`scatterDensityBinning.wgsl`](../../src/shaders/scatterDensityBinning.wgsl), [`scatterDensityColormap.wgsl`](../../src/shaders/scatterDensityColormap.wgsl) |
+| Scatter density (`mode: 'density'`) | [`createScatterDensityRenderer.ts`](../../src/renderers/createScatterDensityRenderer.ts) | [`scatterDensityBinning.wgsl`](../../src/shaders/scatterDensityBinning.wgsl), [`scatterDensityColormap.wgsl`](../../src/shaders/scatterDensityColormap.wgsl) |
+| Uniform heatmap | [`createHeatmapRenderer.ts`](../../src/renderers/createHeatmapRenderer.ts) | [`heatmap.wgsl`](../../src/shaders/heatmap.wgsl) |
 | Pie | [`createPieRenderer.ts`](../../src/renderers/createPieRenderer.ts) | [`pie.wgsl`](../../src/shaders/pie.wgsl) |
 | Candlestick | [`createCandlestickRenderer.ts`](../../src/renderers/createCandlestickRenderer.ts) | [`candlestick.wgsl`](../../src/shaders/candlestick.wgsl) |
+| OHLC bars | [`createOhlcRenderer.ts`](../../src/renderers/createOhlcRenderer.ts) | [`ohlc.wgsl`](../../src/shaders/ohlc.wgsl) |
+| Error bars | [`createErrorBarRenderer.ts`](../../src/renderers/createErrorBarRenderer.ts) | [`errorBar.wgsl`](../../src/shaders/errorBar.wgsl) |
+| Impulse / stem | [`createImpulseRenderer.ts`](../../src/renderers/createImpulseRenderer.ts) | [`errorBar.wgsl`](../../src/shaders/errorBar.wgsl) *(shared layout)* |
+| Point cloud 3D | [`createPointCloud3DRenderer.ts`](../../src/renderers/createPointCloud3DRenderer.ts) | point-cloud 3D shaders under `src/shaders/` |
+| Surface 3D | [`createSurface3DRenderer.ts`](../../src/renderers/createSurface3DRenderer.ts) | surface 3D shaders under `src/shaders/` |
 | Grid lines | [`createGridRenderer.ts`](../../src/renderers/createGridRenderer.ts) | [`grid.wgsl`](../../src/shaders/grid.wgsl) |
 | Axis baseline + ticks | [`createAxisRenderer.ts`](../../src/renderers/createAxisRenderer.ts) | [`grid.wgsl`](../../src/shaders/grid.wgsl) *(shared)* |
 | Crosshair | [`createCrosshairRenderer.ts`](../../src/renderers/createCrosshairRenderer.ts) | [`crosshair.wgsl`](../../src/shaders/crosshair.wgsl) |

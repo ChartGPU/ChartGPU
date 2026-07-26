@@ -63,14 +63,18 @@ See [ChartGPU.ts](../../src/ChartGPU.ts) for the full interface and lifecycle be
 - `setOption(...)`: update options and schedule a render.
   - **Series identity:** Prefer immutable series configs. When the same series **element objects** are re-passed (axes-only y/x range ticks), ChartGPU may reuse the previous resolved series array without re-scanning each series. To change data, color, visibility, or style, pass **new series element objects** (or a new `series` array). See [options.md — series array identity reuse](options.md#series-configuration).
 - `appendData(seriesIndex, newPoints, options?)`: streaming append for cartesian series.
-  - Formats: `DataPoint[]`, `XYArraysData`, `InterleavedXYData`, `OHLCDataPoint[]`
+  - Formats: `CartesianSeriesData` (`DataPoint[]`, `XYArraysData`, `InterleavedXYData`, band/errorBar payloads) or `OHLCDataPoint[]`
   - Optional `{ maxPoints }` (**per call**, not sticky series state — omit later for unbounded growth):
     - If a single batch is ≥ `maxPoints`, keep only that batch’s tail (strict replace; prior points discarded).
     - Otherwise **fixed-capacity ring**: fill up to `maxPoints`, then overwrite oldest slots (GPU modular writes — O(append), no full retained-window rewrite). Peak retained length / GPU reservation = **`maxPoints`**.
     - Prefer over sliding-window full `setOption` for high-rate streaming (fixed-capacity ring; not sticky series construction state).
     - When both `maxPoints` is set and `tooltip.show === false`, ChartGPU’s hit-test columnar store is not updated on append (dual-store relief); coordinator/GPU still apply the ring.
   - **Device storage cap (unbounded append):** series buffers are storage-bound. When growth would exceed `min(maxBufferSize, maxStorageBufferBindingSize)` (often **128 MiB ≈ 16.7M** xy points on Chrome/Metal), ChartGPU **auto-windows** to that point budget (same ring policy as `maxPoints`) so the x-domain stays in sync with GPU-resident data. The hit-test store (when tooltips are on) applies the **same** effective window — GPU and interaction history retain one chronological window. Without this, the axis could keep expanding while the series stopped short of the right edge. Pass an explicit `{ maxPoints }` when you want a smaller sliding window (still hard-clamped by the device budget).
+  - Not for heatmap / surface3d / pie — use the dedicated update APIs below (or full `setOption`).
   - Types: [`src/config/types.ts`](../../src/config/types.ts)
+- `updateHeatmap(seriesIndex, update)`: **2D only** — streaming / partial update for `type: 'heatmap'` (`replaceZ` / `appendColumns`+scrollX / `appendRows`+scrollY). Not cartesian `appendData`. See [options.md](options.md#heatmapseriesconfig).
+- `updateSurface3D(seriesIndex, update)`: **3D only** — partial update for `surface3d` (`replaceY` / `appendColumns` / `appendRows`). No-op on 2D. See [3d.md](3d.md).
+- `setCamera(partial)` / `getCamera()` / `resetCamera()`: **3D only** camera pose APIs. No-op / `null` on 2D charts. See [3d.md](3d.md).
 - `resize()`, `dispose()`
 - `on(...)`, `off(...)`: events (see [interaction.md](interaction.md))
 - `hitTest(e)`: pointer hit-test (coordinates + optional match)

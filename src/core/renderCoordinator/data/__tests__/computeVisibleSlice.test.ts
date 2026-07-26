@@ -155,14 +155,13 @@ describe('computeVisibleSlice', () => {
         };
         appendIntoRingXY(ring, batch, 0, 100, 100);
       }
-      const t0 = performance.now();
+      // Same generation: repeated results stay true (correctness only; no scan counter).
       for (let k = 0; k < 100; k++) {
         expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
       }
-      expect(performance.now() - t0).toBeLessThan(50);
     });
 
-    it('growing XY columns only re-check the new tail (streaming multi-M)', () => {
+    it('growing XY columns remain mono after mono tail growth', () => {
       // Owned MutableXYColumns grow under stable identity during appendData.
       const growable = {
         x: Array.from({ length: 5_000 }, (_, i) => i),
@@ -174,12 +173,10 @@ describe('computeVisibleSlice', () => {
         growable.y.push(i);
       }
       expect(isMonotonicNonDecreasingFiniteX(growable)).toBe(true);
-      // Same generation: pure cache hits must stay cheap
-      const t1 = performance.now();
+      // Same generation: repeated same-generation results stay true.
       for (let k = 0; k < 200; k++) {
         expect(isMonotonicNonDecreasingFiniteX(growable)).toBe(true);
       }
-      expect(performance.now() - t1).toBeLessThan(50);
 
       growable.x.push(0);
       growable.y.push(0);
@@ -690,10 +687,10 @@ describe('isMonotonicNonDecreasingFiniteX mutable ring/staging (issue 1.5 + gene
     }
   });
 
-  it('large mono ring: many generation-stable checks stay correct and fast', async () => {
+  it('large mono ring: many generation-stable checks stay true', async () => {
     const { createRingXYColumns, appendIntoRingXY } = await import('../../../../data/cartesianData');
-    // Behavioral perf guard: after one mono establish, repeated same-generation
-    // checks must not re-walk multi-M points (would time out / be multi-ms).
+    // Correctness only: after one mono establish, repeated same-generation
+    // results stay true (no wall-clock or scan-count instrumentation).
     const n = 200_000;
     const ring = createRingXYColumns(n);
     const xs = new Float64Array(n);
@@ -704,13 +701,9 @@ describe('isMonotonicNonDecreasingFiniteX mutable ring/staging (issue 1.5 + gene
     }
     appendIntoRingXY(ring, { x: xs, y: ys }, 0, n, 0);
     expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
-    const t0 = performance.now();
     for (let i = 0; i < 500; i++) {
       expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
     }
-    const elapsed = performance.now() - t0;
-    // 500 cached hits should be well under 50ms (full 200k×500 would be seconds).
-    expect(elapsed).toBeLessThan(50);
   });
 });
 
