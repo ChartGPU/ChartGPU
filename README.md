@@ -24,7 +24,7 @@
 
 ChartGPU is a TypeScript WebGPU charting library for browser engineers who need streaming multi-series, multi-chart ops/trading/APM walls, and dense scientific views. MIT for commercial embed. Zero npm runtime dependencies. No WebGL fallback: WebGPU is required.
 
-Use it when Chart.js, ECharts, or uPlot hit streaming or multi-panel walls. Commercial GPU seats often ship WebGL fallback and broader catalog; ChartGPU is the open WebGPU-only embed. Not a formal claim to win every suite row vs SciChart/LightningChart, and not a general "every chart type" catalog.
+Use it when Chart.js, ECharts, or uPlot hit streaming or multi-panel walls. Commercial GPU seats often ship WebGL fallback and broader catalog; ChartGPU is the open WebGPU-only embed.
 
 ```bash
 npm install @chartgpu/chartgpu
