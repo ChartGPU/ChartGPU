@@ -95,7 +95,7 @@ Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Performance: [chartg
 
 ## Demo
 
-Live product surface: [chartgpu.io](https://chartgpu.io) · [docs](https://chartgpu.io/docs/) · [playground](https://chartgpu.io/docs/playground/)
+Demo and docs: [chartgpu.io](https://chartgpu.io) · [docs](https://chartgpu.io/docs/) · [streaming dashboards](https://chartgpu.io/docs/streaming-dashboards/)
 
 ![ChartGPU demo](https://raw.githubusercontent.com/chartgpu/chartgpu/main/docs/assets/chart-gpu-demo.gif)
 
@@ -155,9 +155,8 @@ Enterprise matrix: WebGPU-only is intentional. If you need universal Canvas/SVG 
 
 | | |
 |---|---|
-| [Docs hub](https://chartgpu.io/docs/) | Guides, series, playground |
+| [Docs hub](https://chartgpu.io/docs/) | Guides and series docs |
 | [Getting started](https://chartgpu.io/docs/getting-started/) | Install and first chart |
-| [Playground](https://chartgpu.io/docs/playground/) | Interactive sandbox |
 | [Charting](https://chartgpu.io/docs/charting/) | Series, axes, interaction |
 | [Streaming dashboards](https://chartgpu.io/docs/streaming-dashboards/) | Shared device, multi-chart |
 | [Annotations](https://chartgpu.io/docs/annotations/) | Lines, markers, labels |
