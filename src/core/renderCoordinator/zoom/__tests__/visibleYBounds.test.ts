@@ -74,4 +74,14 @@ describe('scanCartesianPositiveYBounds', () => {
     expect(scanCartesianPositiveYBounds(onlyNonPos)).toBeNull();
     expect(scanCartesianPositiveYBounds(data, { min: 100, max: 200 })).toBeNull();
   });
+
+  it('does not expand equal strictly-positive y (expandEqual: false for log domain)', () => {
+    const flatPos = {
+      x: new Float64Array([0, 1]),
+      y: new Float64Array([5, 5]),
+    };
+    // Linear visible scan expands equal y → 5..6; positive path must keep 5..5.
+    expect(scanCartesianVisibleYBounds(flatPos)).toEqual({ yMin: 5, yMax: 6 });
+    expect(scanCartesianPositiveYBounds(flatPos)).toEqual({ yMin: 5, yMax: 5 });
+  });
 });

@@ -10,7 +10,7 @@
  */
 
 import type { CartesianSeriesData } from '../config/types';
-import { filterGaps, getPointCount, getX, getY, type Bounds } from './cartesianData';
+import { filterGaps, getPointCount, getX, getY } from './cartesianData';
 
 /**
  * Normalize a stack group id (shared semantics with bar `stack`).
@@ -222,26 +222,6 @@ export function computeStackedYExtents(geometries: ReadonlyArray<StackLayerGeome
   if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) return null;
   if (yMin === yMax) yMax = yMin + 1;
   return { yMin, yMax };
-}
-
-/**
- * Expand cartesian bounds with stacked layer y extents (x from data bounds).
- */
-export function expandBoundsWithStackedExtents(
-  bounds: Bounds | null | undefined,
-  geometries: ReadonlyArray<StackLayerGeometry>
-): Bounds | null {
-  const ext = computeStackedYExtents(geometries);
-  if (!ext) return bounds ?? null;
-  if (!bounds) {
-    return { xMin: 0, xMax: 1, yMin: ext.yMin, yMax: ext.yMax };
-  }
-  return {
-    xMin: bounds.xMin,
-    xMax: bounds.xMax,
-    yMin: Math.min(bounds.yMin, ext.yMin),
-    yMax: Math.max(bounds.yMax, ext.yMax),
-  };
 }
 
 /**

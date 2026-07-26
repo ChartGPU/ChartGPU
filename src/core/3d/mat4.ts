@@ -30,11 +30,6 @@ export const identityMat4 = (out: Mat4 = createMat4()): Mat4 => {
   return out;
 };
 
-export const copyMat4 = (out: Mat4, a: Mat4): Mat4 => {
-  out.set(a);
-  return out;
-};
-
 /** out = a * b (column-major multiply). */
 export const multiplyMat4 = (out: Mat4, a: Mat4, b: Mat4): Mat4 => {
   const a00 = a[0]!,

@@ -5,6 +5,7 @@ node_modules/
 .cursor/
 .claude/
 .factory/
+.grok/
 
 .worktrees/
 

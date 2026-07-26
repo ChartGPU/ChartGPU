@@ -154,16 +154,6 @@ export function getBandX(data: BandSeriesData, i: number): number {
   return p ? p.x : Number.NaN;
 }
 
-export function getBandY(data: BandSeriesData, i: number): number {
-  const p = getBandPoint(data, i);
-  return p ? p.y : Number.NaN;
-}
-
-export function getBandY1(data: BandSeriesData, i: number): number {
-  const p = getBandPoint(data, i);
-  return p ? p.y1 : Number.NaN;
-}
-
 /**
  * Bounds from all finite x and both y channels (y and y1).
  * Returns null when no finite contribution.

@@ -37,7 +37,9 @@ Zoom triggers resampling on visible range only. Target scales with zoom level (c
 - `dataZoom: [{ type: 'inside' }, { type: 'slider' }]`
 - `sampling: 'lttb'`, `samplingThreshold: 2500`
 
-**Memory:** Trim when `rawData.length > maxPoints` — `setOption({ series: [{ data: rawData.slice(-maxPoints) }] })`. See [`examples/live-streaming/`](../examples/live-streaming/).
+**Memory (preferred):** Stream with a fixed-capacity ring via `appendData(index, newPoints, { maxPoints })` — GPU modular ring writes, O(append), no full retained-window rewrite. Prefer this over sliding-window full `setOption` for high-rate FIFO.
+
+**Memory (fallback):** When you must fully replace series data, trim client-side then `setOption({ series: [{ data: rawData.slice(-maxPoints) }] })`. See [`examples/live-streaming/`](../examples/live-streaming/) and [chart.md — appendData](api/chart.md).
 
 ### Hover / hit-test during multi‑M streaming
 

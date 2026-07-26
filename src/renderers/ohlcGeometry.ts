@@ -1,9 +1,60 @@
 /**
  * Pure helpers for OHLC bar geometry (stem + open/close ticks).
- * Shared by the GPU pack path and unit tests.
+ * Shared by OHLC and candlestick GPU pack paths and unit tests.
  */
 
+import type { OHLCDataPoint, OHLCDataPointTuple } from '../config/types';
+
 export type OhlcDirection = 'up' | 'down';
+
+export const parsePercent = (value: string): number | null => {
+  const m = value.trim().match(/^(\d+(?:\.\d+)?)%$/);
+  if (!m) return null;
+  const p = Number(m[1]) / 100;
+  return Number.isFinite(p) ? p : null;
+};
+
+export const isTupleDataPoint = (p: OHLCDataPoint): p is OHLCDataPointTuple => Array.isArray(p);
+
+export const getOHLC = (
+  p: OHLCDataPoint
+): {
+  readonly timestamp: number;
+  readonly open: number;
+  readonly close: number;
+  readonly low: number;
+  readonly high: number;
+} => {
+  if (isTupleDataPoint(p)) {
+    return { timestamp: p[0], open: p[1], close: p[2], low: p[3], high: p[4] };
+  }
+  return {
+    timestamp: p.timestamp,
+    open: p.open,
+    close: p.close,
+    low: p.low,
+    high: p.high,
+  };
+};
+
+/** Minimum positive Δtimestamp between consecutive finite candles (sorted). */
+export const computeOhlcCategoryStep = (data: ReadonlyArray<OHLCDataPoint>): number => {
+  const timestamps: number[] = [];
+  for (let i = 0; i < data.length; i++) {
+    const { timestamp } = getOHLC(data[i]!);
+    if (Number.isFinite(timestamp)) timestamps.push(timestamp);
+  }
+
+  if (timestamps.length < 2) return 1;
+  timestamps.sort((a, b) => a - b);
+
+  let minStep = Number.POSITIVE_INFINITY;
+  for (let i = 1; i < timestamps.length; i++) {
+    const d = timestamps[i]! - timestamps[i - 1]!;
+    if (d > 0 && d < minStep) minStep = d;
+  }
+  return Number.isFinite(minStep) && minStep > 0 ? minStep : 1;
+};
 
 /**
  * Direction color rule (match candlestick body fill): close > open → up.

@@ -6,6 +6,7 @@
 
 - [Chart API](chart.md) — `ChartGPU.create()`, instance methods, sync, shared device, pipeline cache
 - [Options](options.md) — `ChartGPUOptions`, series, axes (incl. candle-primary price axis / `priceLabel`), zoom, tooltip, animation
+- [3D charts](3d.md) — `coordinateSystem: 'cartesian3d'`, `pointCloud3d` / `surface3d`, camera, pick
 - [Annotations](annotations.md) — annotation types, interactive authoring
 - [Themes](themes.md) — `ThemeConfig`, presets
 - [Scales](scales.md) — `createLinearScale`, `createCategoryScale`

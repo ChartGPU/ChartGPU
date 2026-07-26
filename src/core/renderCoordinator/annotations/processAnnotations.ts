@@ -13,10 +13,14 @@ import type { LinearScale } from '../../../utils/scales';
 import type { ThemeConfig } from '../../../themes/types';
 import type { ReferenceLineInstance } from '../../../renderers/createReferenceLineRenderer';
 import type { AnnotationMarkerInstance } from '../../../renderers/createAnnotationMarkerRenderer';
-import type { TextOverlayAnchor } from '../../../components/createTextOverlay';
 import { parseCssColorToRgba01 } from '../../../utils/colors';
 import { clipXToCanvasCssPx, clipYToCanvasCssPx, clamp01 } from '../utils/axisUtils';
 import { assertUnreachable } from '../utils/dataPointUtils';
+import {
+  mapAnnotationAnchor as mapAnchor,
+  renderAnnotationTemplate as renderTemplate,
+  toCssRgba,
+} from './annotationLabelHelpers';
 
 /**
  * Internal type for annotation label data (DOM overlay).
@@ -90,77 +94,6 @@ function resolveAnnotationRgba(
     parseCssColorToRgba01(color ?? defaultColor) ?? parseCssColorToRgba01(defaultColor) ?? ([1, 1, 1, 1] as const);
   const o = opacity == null ? 1 : clamp01(opacity);
   return [clamp01(base[0]), clamp01(base[1]), clamp01(base[2]), clamp01(base[3] * o)] as const;
-}
-
-/**
- * Converts color and opacity to CSS rgba() string.
- *
- * @param color - CSS color string
- * @param opacity01 - Opacity in range [0, 1]
- * @returns CSS rgba() string
- */
-function toCssRgba(color: string, opacity01: number): string {
-  const base = parseCssColorToRgba01(color) ?? ([0, 0, 0, 1] as const);
-  const a = clamp01(base[3] * clamp01(opacity01));
-  const r = Math.round(clamp01(base[0]) * 255);
-  const g = Math.round(clamp01(base[1]) * 255);
-  const b = Math.round(clamp01(base[2]) * 255);
-  return `rgba(${r}, ${g}, ${b}, ${a})`;
-}
-
-/**
- * Formats number with optional decimal precision.
- *
- * @param n - Number to format
- * @param decimals - Number of decimal places (optional)
- * @returns Formatted string
- */
-function formatNumber(n: number, decimals?: number): string {
-  if (!Number.isFinite(n)) return '';
-  if (decimals == null) return String(n);
-  const d = Math.min(20, Math.max(0, Math.floor(decimals)));
-  return n.toFixed(d);
-}
-
-/**
- * Renders template string with value substitution.
- * Supports {x}, {y}, {value}, and {name} placeholders.
- *
- * @param template - Template string with placeholders
- * @param values - Values for substitution
- * @param decimals - Decimal precision for numbers
- * @returns Rendered string
- */
-function renderTemplate(
-  template: string,
-  values: Readonly<{ x?: number; y?: number; value?: number; name?: string }>,
-  decimals?: number
-): string {
-  // PERFORMANCE: Create regex per call (cached by engine in hot path)
-  const templateRegex = /\{(x|y|value|name)\}/g;
-  return template.replace(templateRegex, (_m, key) => {
-    if (key === 'name') return values.name ?? '';
-    const v = (values as any)[key] as number | undefined;
-    return v == null ? '' : formatNumber(v, decimals);
-  });
-}
-
-/**
- * Maps annotation anchor to text overlay anchor.
- *
- * @param anchor - Annotation anchor or undefined
- * @returns Text overlay anchor
- */
-function mapAnchor(anchor: 'start' | 'center' | 'end' | undefined): TextOverlayAnchor {
-  switch (anchor) {
-    case 'center':
-      return 'middle';
-    case 'end':
-      return 'end';
-    case 'start':
-    default:
-      return 'start';
-  }
 }
 
 /**
