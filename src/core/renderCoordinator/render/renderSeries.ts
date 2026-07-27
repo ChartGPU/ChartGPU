@@ -690,6 +690,9 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
             strokePointCount = outputPointCount;
 
             // Decimation output is always chronological linear (no ring params).
+            // Pass raw residency as policyPointCount: LineRenderer applies it only
+            // when multi-M (≥1M) so FIFO exits 4× MSAA AA-quads; mid-N residency is
+            // ignored and draw instance count stays on outputPointCount (buckets).
             renderers.lineRenderers[i].prepare(
               s,
               decimatedBuffer,
@@ -705,7 +708,8 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
               lineSeriesCount,
               undefined,
               forceStandardDraw,
-              plotWidthDevicePx
+              plotWidthDevicePx,
+              rawPointCount
             );
             gpuSeriesKindByIndex[i] = 'gpuDecimationRaw';
           }

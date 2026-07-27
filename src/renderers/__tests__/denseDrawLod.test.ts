@@ -6,7 +6,12 @@ import {
   DENSE_DRAW_MIN_TARGET_SEGMENTS,
   DENSE_DRAW_WIDTH_OVERSAMPLE,
 } from '../denseDrawLod';
-import { resolveAreaDrawPolicy, DENSE_AREA_POINT_THRESHOLD } from '../areaDrawPolicy';
+import {
+  resolveAreaDrawPolicy,
+  DENSE_AREA_POINT_THRESHOLD,
+  DENSE_AREA_MIN_TARGET_SEGMENTS,
+  DENSE_AREA_WIDTH_OVERSAMPLE,
+} from '../areaDrawPolicy';
 
 describe('resolveMaxDrawSegments', () => {
   it('floors at DENSE_DRAW_MIN_TARGET_SEGMENTS when width unknown', () => {
@@ -35,6 +40,22 @@ describe('resolveDenseDrawStride', () => {
     expect(r.lastPointIndex).toBe(n - 1);
   });
 
+  it('N = 250_000 at plotW 1400 stays full geometry (product demo / was cliff)', () => {
+    const n = 250_000;
+    const r = resolveDenseDrawStride({ pointCount: n, plotWidthDevicePx: 1400 });
+    expect(r.dense).toBe(false);
+    expect(r.stride).toBe(1);
+    expect(r.drawSegmentCount).toBe(n - 1);
+  });
+
+  it('N = 500_000 at plotW 1400 stays full (below 1M threshold)', () => {
+    const n = 500_000;
+    const r = resolveDenseDrawStride({ pointCount: n, plotWidthDevicePx: 1400 });
+    expect(r.dense).toBe(false);
+    expect(r.stride).toBe(1);
+    expect(r.drawSegmentCount).toBe(n - 1);
+  });
+
   it('forceStandard always full geometry at multi-M', () => {
     const r = resolveDenseDrawStride({
       pointCount: 10_000_000,
@@ -58,16 +79,22 @@ describe('resolveDenseDrawStride', () => {
     // ceil math can land slightly above maxDraw by < stride (still ≪ full N).
     expect(r.drawSegmentCount).toBeLessThanOrEqual(maxSeg + r.stride);
     expect(r.drawSegmentCount).toBeLessThan(20_000);
-    // Still enough segments for a continuous mountain under suite camera.
-    expect(r.drawSegmentCount).toBeGreaterThanOrEqual(DENSE_DRAW_MIN_TARGET_SEGMENTS - 1);
+    // ceil(full/stride) can land slightly under maxSeg by < stride — still continuous.
+    expect(r.drawSegmentCount).toBeGreaterThanOrEqual(maxSeg - r.stride);
   });
 
   it('enters dense LOD at 10M (group 8 gate B)', () => {
+    const plotW = 1400;
+    const maxSeg = resolveMaxDrawSegments(plotW);
     const r = resolveDenseDrawStride({
       pointCount: 10_000_000,
-      plotWidthDevicePx: 1400,
+      plotWidthDevicePx: plotW,
     });
     expect(r.dense).toBe(true);
+    expect(r.stride).toBeGreaterThan(1);
+    // Same budget band as 5M gate A (ceil slack ± stride).
+    expect(r.drawSegmentCount).toBeLessThanOrEqual(maxSeg + r.stride);
+    expect(r.drawSegmentCount).toBeGreaterThanOrEqual(maxSeg - r.stride);
     expect(r.drawSegmentCount).toBeLessThan(20_000);
   });
 
@@ -85,35 +112,33 @@ describe('resolveDenseDrawStride', () => {
     expect(r2.drawSegmentCount * r2.stride).toBeGreaterThanOrEqual(r2.lastPointIndex);
   });
 
-  it('1M with typical suite plot still densifies (display-refresh budget)', () => {
+  it('1M at typical suite plot densifies under new threshold + budget', () => {
     const r = resolveDenseDrawStride({
       pointCount: 1_000_000,
       plotWidthDevicePx: 1400,
     });
+    expect(DENSE_DRAW_POINT_THRESHOLD).toBe(1_000_000);
     expect(r.dense).toBe(true);
-    expect(r.drawSegmentCount).toBeLessThan(10_000);
+    const maxSeg = resolveMaxDrawSegments(1400);
+    expect(r.drawSegmentCount).toBeLessThanOrEqual(maxSeg + r.stride);
+    expect(r.drawSegmentCount).toBeLessThan(20_000);
   });
 
-  it('budget is max(2048, 1× plotWidth) — not 4096 / 2×', () => {
-    expect(DENSE_DRAW_MIN_TARGET_SEGMENTS).toBe(2_048);
-    expect(DENSE_DRAW_WIDTH_OVERSAMPLE).toBe(1);
-    expect(resolveMaxDrawSegments(1400)).toBe(2_048); // floor wins under 2048
-    expect(resolveMaxDrawSegments(3000)).toBe(3000);
-  });
-
-  it('500k protect row densifies under auto (document intentional)', () => {
-    const r = resolveDenseDrawStride({
-      pointCount: 500_000,
-      plotWidthDevicePx: 1400,
-    });
-    expect(r.dense).toBe(true);
-    expect(r.drawSegmentCount).toBeLessThan(500_000 - 1);
+  it('budget is max(8192, 4× plotWidth)', () => {
+    expect(DENSE_DRAW_MIN_TARGET_SEGMENTS).toBe(8_192);
+    expect(DENSE_DRAW_WIDTH_OVERSAMPLE).toBe(4);
+    // 1400×4 = 5600 → floor wins
+    expect(resolveMaxDrawSegments(1400)).toBe(8_192);
+    // 3000×4 = 12000 → width drives
+    expect(resolveMaxDrawSegments(3000)).toBe(12_000);
   });
 });
 
 describe('resolveAreaDrawPolicy', () => {
-  it('aliases dense area threshold to shared floor', () => {
+  it('aliases dense area constants to shared denseDrawLod floor/budget', () => {
     expect(DENSE_AREA_POINT_THRESHOLD).toBe(DENSE_DRAW_POINT_THRESHOLD);
+    expect(DENSE_AREA_MIN_TARGET_SEGMENTS).toBe(DENSE_DRAW_MIN_TARGET_SEGMENTS);
+    expect(DENSE_AREA_WIDTH_OVERSAMPLE).toBe(DENSE_DRAW_WIDTH_OVERSAMPLE);
   });
 
   it('maps dense stride to denseLod policy', () => {
@@ -133,5 +158,15 @@ describe('resolveAreaDrawPolicy', () => {
     });
     expect(r.policy).toBe('standard');
     expect(r.stride).toBe(1);
+  });
+
+  it('N = 250_000 stays standard fill policy under auto', () => {
+    const r = resolveAreaDrawPolicy({
+      pointCount: 250_000,
+      plotWidthDevicePx: 1400,
+    });
+    expect(r.policy).toBe('standard');
+    expect(r.stride).toBe(1);
+    expect(r.drawSegmentCount).toBe(249_999);
   });
 });

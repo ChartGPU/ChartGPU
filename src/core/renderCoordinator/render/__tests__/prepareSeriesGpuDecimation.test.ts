@@ -1426,9 +1426,163 @@ describe('prepareSeries modular ring → line prepare (issue 0.1 / review 8)', (
 
     expect(linePrepare).toHaveBeenCalled();
     const args = linePrepare.mock.calls[0]!;
-    expect(args[1]).toBe(decimatedBuffer);
+    // prepare(series, buf, x, y, xOff, dpr, w, h, override, lineCount, ring, forceStd, plotW, policyN)
+    expect(args.length).toBeGreaterThanOrEqual(14);
+    const [
+      _series,
+      dataBufferArg,
+      _xScale,
+      _yScale,
+      _xOffset,
+      _dpr,
+      _canvasW,
+      _canvasH,
+      pointCountOverride,
+      _lineSeriesCount,
+      ringLayoutArg,
+      _forceStandard,
+      _plotWidth,
+      policyPointCount,
+    ] = args;
+    expect(dataBufferArg).toBe(decimatedBuffer);
     // Decimation output is chronological linear — ringLayout arg is undefined.
-    expect(args[10]).toBeUndefined();
+    expect(ringLayoutArg).toBeUndefined();
+    // pointCountOverride = decimation output buckets; policyPointCount = raw residency.
+    expect(pointCountOverride).toBe(8);
+    expect(policyPointCount).toBe(64);
+  });
+
+  it('forwards multi-M raw residency as policyPointCount with bucket override', () => {
+    // Coordinator-level wiring: raw N at multi-M magnitude must reach line.prepare
+    // as the last policy arg while draw uses decimation bucket count.
+    const RAW_N = 1_000_000;
+    const BUCKETS = 2_500;
+    const points: Array<[number, number]> = [];
+    // Small host array for eligibility / gap checks only — store reports multi-M count.
+    for (let i = 0; i < 64; i++) points.push([i, Math.sin(i)]);
+    const series = {
+      ...makeLineSeries(points),
+      samplingThreshold: BUCKETS,
+      // Full-span domain so visible range uses store rawPointCount (not host length).
+      rawBounds: { xMin: 0, xMax: RAW_N - 1 },
+    } as ReturnType<typeof makeLineSeries> & {
+      rawBounds: { xMin: number; xMax: number };
+      samplingThreshold: number;
+    };
+
+    const rawBuffer = { label: 'raw-1M' } as unknown as GPUBuffer;
+    const decimatedBuffer = { label: 'decimated-2500' } as unknown as GPUBuffer;
+    const linePrepare = vi.fn();
+    const decimationPrepare = vi.fn(() => BUCKETS);
+
+    const dataStore: DataStore = {
+      setSeries: vi.fn(),
+      appendSeries: vi.fn(),
+      removeSeries: vi.fn(),
+      getSeriesBuffer: vi.fn(() => rawBuffer),
+      getSeriesPointCount: vi.fn(() => RAW_N),
+      getSeriesRingLayout: vi.fn(() => ({ start: 0, capacity: 0 })),
+      isSeriesRingMode: vi.fn(() => false),
+      getSeriesEffectiveMaxPoints: vi.fn(() => null),
+      getSeriesContentHash: vi.fn(() => 1),
+      getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
+      getSeriesXOffset: vi.fn(() => 0),
+      dispose: vi.fn(),
+    };
+
+    prepareSeries(
+      {
+        lineRenderers: [{ prepare: linePrepare, render: vi.fn(), dispose: vi.fn() } as any],
+        areaRenderers: [],
+        barRenderer: { prepare: vi.fn(), render: vi.fn(), dispose: vi.fn() } as any,
+        scatterRenderers: [],
+        scatterDensityRenderers: [],
+        pieRenderers: [],
+        heatmapRenderers: [],
+        candlestickRenderers: [],
+        ohlcRenderers: [],
+        errorBarRenderers: [],
+        impulseRenderers: [],
+        decimationComputes: [
+          {
+            prepare: decimationPrepare,
+            needsEncode: vi.fn(() => false),
+            encodeCompute: vi.fn(),
+            getOutputBuffer: vi.fn(() => decimatedBuffer),
+            getOutputPointCount: vi.fn(() => BUCKETS),
+            dispose: vi.fn(),
+          },
+        ],
+      },
+      {
+        currentOptions: {
+          xAxis: { type: 'value' },
+          yAxes: [{ id: 'y', min: -1 }],
+          series: [series],
+          performance: { lod: 'auto' },
+        } as any,
+        seriesForRender: [series],
+        xScale: makeScale(0, RAW_N - 1),
+        yScales: new Map([['y', makeScale(-1, 1)]]),
+        // Full GridArea margins so plot-width pixelCap is finite (makeGridArea
+        // uses legacy x/y/width and leaves left/right undefined → NaN buckets).
+        // canvas 1400 − left 40 − right 20 = 1340 device px → pixelCap 2680 ≥ 2500.
+        gridArea: {
+          left: 40,
+          right: 20,
+          top: 20,
+          bottom: 20,
+          canvasWidth: 1400,
+          canvasHeight: 560,
+          devicePixelRatio: 1,
+        } as GridArea,
+        dataStore,
+        // Skip setSeries (would pack host 64-point array into store).
+        appendedGpuThisFrame: new Set([0]),
+        gpuSeriesKindByIndex: ['gpuDecimationRaw'],
+        zoomState: null,
+        visibleXDomain: { min: 0, max: RAW_N - 1 },
+        introPhase: 'done',
+        introProgress01: 1,
+        withAlpha: (c: string) => c,
+        maxRadiusCss: 4,
+        lastSetSeriesCache: new Map(),
+        filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
+      }
+    );
+
+    expect(decimationPrepare).toHaveBeenCalled();
+    const decArgs = decimationPrepare.mock.calls[0]![0] as {
+      rawPointCount: number;
+      targetBuckets: number;
+    };
+    expect(decArgs.rawPointCount).toBe(RAW_N);
+    expect(decArgs.targetBuckets).toBe(BUCKETS);
+
+    expect(linePrepare).toHaveBeenCalled();
+    const args = linePrepare.mock.calls[0]!;
+    expect(args.length).toBeGreaterThanOrEqual(14);
+    const [
+      _series,
+      dataBufferArg,
+      _xScale,
+      _yScale,
+      _xOffset,
+      _dpr,
+      _canvasW,
+      _canvasH,
+      pointCountOverride,
+      _lineSeriesCount,
+      ringLayoutArg,
+      _forceStandard,
+      _plotWidth,
+      policyPointCount,
+    ] = args;
+    expect(dataBufferArg).toBe(decimatedBuffer);
+    expect(ringLayoutArg).toBeUndefined();
+    expect(pointCountOverride).toBe(BUCKETS);
+    expect(policyPointCount).toBe(RAW_N);
   });
 });
 

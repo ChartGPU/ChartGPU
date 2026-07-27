@@ -319,7 +319,7 @@ describe('createDecimationCompute', () => {
       expect(enc3.__passes).toHaveLength(1);
     });
 
-    it('skips uniform writeBuffer on second prepare when not dirty (issue 2.5)', () => {
+    it('skips uniform writeBuffer on second prepare when SIG matches lastEncoded (issue 2.5)', () => {
       const d = createDecimationCompute(device);
       const rawBuffer = createMockBuffer({ size: 800000 });
       const params = {
@@ -332,11 +332,14 @@ describe('createDecimationCompute', () => {
         contentVersion: 7,
       };
       d.prepare(params);
+      // G1: lastEncoded advances only after encode — identical prepare without
+      // encode would still rewrite uniforms (SIG not yet encoded).
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
       const writeBuffer = device.queue.writeBuffer as Mock;
       writeBuffer.mockClear();
 
       d.prepare(params);
-      // Uniform path uses writeBuffer; identical prepare must not re-write uniforms.
+      // Uniform path uses writeBuffer; SIG == lastEncoded must not re-write.
       expect(writeBuffer).not.toHaveBeenCalled();
 
       d.prepare({ ...params, targetBuckets: 256 });
@@ -396,44 +399,45 @@ describe('createDecimationCompute', () => {
       expect(enc.__passes).toHaveLength(0);
     });
 
-    it('high-density streaming append uses density-scaled recompute cadence', () => {
+    // ─── Golden encode-signature fidelity (G0–G2 / Phase A) ───
+    // Period tables and multi-frame amortization are deleted. Any SIG change
+    // vs lastEncodedSIG encodes this frame. lastEncoded updates only after encode.
+
+    it('G2: high-density linear growth encodes every N↑ frame (no period amortization)', () => {
       const d = createDecimationCompute(device);
       const rawBuffer = createMockBuffer({ size: 8_000_000 });
-      // density = 200_000/512 ≈ 390 ≥ 200 → period 4 after warm prepare
+      // density = 200_000/1000 = 200 — historically period 4; now period 1
       const base = {
         algorithm: 'lttb' as const,
         rawBuffer,
         visibleStart: 0,
-        targetBuckets: 512,
+        targetBuckets: 1000,
       };
 
       d.prepare({ ...base, rawPointCount: 200_000, visibleEnd: 200_000, contentVersion: 1 });
       d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
 
-      // Growth frames 1–3: skip; frame 4: accept (period 4)
-      for (let i = 1; i <= 3; i++) {
+      for (let i = 1; i <= 4; i++) {
         const n = 200_000 + i * 10_000;
         d.prepare({ ...base, rawPointCount: n, visibleEnd: n, contentVersion: 1 + i });
+        expect(d.needsEncode()).toBe(true);
         const enc = createMockEncoder();
         d.encodeCompute(enc as unknown as GPUCommandEncoder);
-        expect(enc.__passes).toHaveLength(0);
+        expect(enc.__passes).toHaveLength(1);
+        expect(d.needsEncode()).toBe(false);
       }
-      d.prepare({ ...base, rawPointCount: 240_000, visibleEnd: 240_000, contentVersion: 5 });
-      const runEnc = createMockEncoder();
-      d.encodeCompute(runEnc as unknown as GPUCommandEncoder);
-      expect(runEnc.__passes).toHaveLength(1);
 
-      // Equal-N content rewrite must always re-dispatch (not streaming cadence)
-      d.prepare({ ...base, rawPointCount: 240_000, visibleEnd: 240_000, contentVersion: 6 });
+      // Equal-N content rewrite still re-dispatches
+      d.prepare({ ...base, rawPointCount: 240_000, visibleEnd: 240_000, contentVersion: 99 });
       const rewriteEnc = createMockEncoder();
       d.encodeCompute(rewriteEnc as unknown as GPUCommandEncoder);
       expect(rewriteEnc.__passes).toHaveLength(1);
     });
 
-    it('period-2 cadence when density ∈ [100, 200)', () => {
+    it('G2: mid-density linear growth encodes every frame (was period-2 band)', () => {
       const d = createDecimationCompute(device);
       const rawBuffer = createMockBuffer({ size: 8_000_000 });
-      // density = 60_000/512 ≈ 117 → period 2
+      // density = 60_000/512 ≈ 117 — historically period 2
       const base = {
         algorithm: 'lttb' as const,
         rawBuffer,
@@ -444,20 +448,22 @@ describe('createDecimationCompute', () => {
       d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
 
       d.prepare({ ...base, rawPointCount: 65_000, visibleEnd: 65_000, contentVersion: 2 });
-      const skipEnc = createMockEncoder();
-      d.encodeCompute(skipEnc as unknown as GPUCommandEncoder);
-      expect(skipEnc.__passes).toHaveLength(0);
+      expect(d.needsEncode()).toBe(true);
+      const enc1 = createMockEncoder();
+      d.encodeCompute(enc1 as unknown as GPUCommandEncoder);
+      expect(enc1.__passes).toHaveLength(1);
 
       d.prepare({ ...base, rawPointCount: 70_000, visibleEnd: 70_000, contentVersion: 3 });
-      const runEnc = createMockEncoder();
-      d.encodeCompute(runEnc as unknown as GPUCommandEncoder);
-      expect(runEnc.__passes).toHaveLength(1);
+      expect(d.needsEncode()).toBe(true);
+      const enc2 = createMockEncoder();
+      d.encodeCompute(enc2 as unknown as GPUCommandEncoder);
+      expect(enc2.__passes).toHaveLength(1);
     });
 
-    it('period-8 cadence when density ≥ 1000', () => {
+    it('G2: extreme density linear growth encodes every frame (was period-64 band)', () => {
       const d = createDecimationCompute(device);
       const rawBuffer = createMockBuffer({ size: 80_000_000 });
-      // density = 600_000/512 ≈ 1172 → period 8
+      // density = 600_000/512 ≈ 1172 — historically period 64
       const base = {
         algorithm: 'lttb' as const,
         rawBuffer,
@@ -467,20 +473,40 @@ describe('createDecimationCompute', () => {
       d.prepare({ ...base, rawPointCount: 600_000, visibleEnd: 600_000, contentVersion: 1 });
       d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
 
-      for (let i = 1; i <= 7; i++) {
+      for (let i = 1; i <= 8; i++) {
         const n = 600_000 + i * 5_000;
         d.prepare({ ...base, rawPointCount: n, visibleEnd: n, contentVersion: 1 + i });
+        expect(d.needsEncode()).toBe(true);
         const enc = createMockEncoder();
         d.encodeCompute(enc as unknown as GPUCommandEncoder);
-        expect(enc.__passes).toHaveLength(0);
+        expect(enc.__passes).toHaveLength(1);
       }
-      d.prepare({ ...base, rawPointCount: 640_000, visibleEnd: 640_000, contentVersion: 9 });
-      const runEnc = createMockEncoder();
-      d.encodeCompute(runEnc as unknown as GPUCommandEncoder);
-      expect(runEnc.__passes).toHaveLength(1);
     });
 
-    it('buffer identity change always dirties (not cadence-skipped)', () => {
+    it('G2: high-density linear growth encodes every frame (was period-32 band)', () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 40_000_000 });
+      // density = 250_000/512 ≈ 488 — historically period 32
+      const base = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        visibleStart: 0,
+        targetBuckets: 512,
+      };
+      d.prepare({ ...base, rawPointCount: 250_000, visibleEnd: 250_000, contentVersion: 1 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+
+      for (let i = 1; i <= 8; i++) {
+        const n = 250_000 + i * 5_000;
+        d.prepare({ ...base, rawPointCount: n, visibleEnd: n, contentVersion: 1 + i });
+        expect(d.needsEncode()).toBe(true);
+        const enc = createMockEncoder();
+        d.encodeCompute(enc as unknown as GPUCommandEncoder);
+        expect(enc.__passes).toHaveLength(1);
+      }
+    });
+
+    it('buffer identity change always dirties and encodes', () => {
       const d = createDecimationCompute(device);
       const raw1 = createMockBuffer({ size: 8_000_000 });
       const raw2 = createMockBuffer({ size: 8_000_000 });
@@ -495,7 +521,6 @@ describe('createDecimationCompute', () => {
       });
       d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
 
-      // Streaming-sized growth on a NEW buffer must recompute immediately.
       d.prepare({
         algorithm: 'lttb',
         rawBuffer: raw2,
@@ -505,42 +530,89 @@ describe('createDecimationCompute', () => {
         targetBuckets: 512,
         contentVersion: 2,
       });
+      expect(d.needsEncode()).toBe(true);
       const enc = createMockEncoder();
       d.encodeCompute(enc as unknown as GPUCommandEncoder);
       expect(enc.__passes).toHaveLength(1);
     });
 
-    it('never density-skips when modular ring capacity is active (FIFO 5M safety)', () => {
+    it('G2: modular FIFO fill (N↑) encodes every prepare at density ≥200', () => {
       const d = createDecimationCompute(device);
       const rawBuffer = createMockBuffer({ size: 40_000_000 });
-      // High density would normally period-skip on linear unbounded growth.
       const base = {
         algorithm: 'lttb' as const,
         rawBuffer,
-        rawPointCount: 200_000,
         visibleStart: 0,
-        visibleEnd: 200_000,
-        targetBuckets: 512,
-        contentVersion: 1,
+        targetBuckets: 1000,
         ringStart: 0,
         ringCapacity: 5_000_000,
       };
-      d.prepare(base);
+      d.prepare({ ...base, rawPointCount: 200_000, visibleEnd: 200_000, contentVersion: 1 });
       d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
 
-      // N growth with same ring identity — must still encode every frame (no skip).
-      for (let n = 210_000; n <= 250_000; n += 10_000) {
+      for (let i = 1; i <= 5; i++) {
+        const n = 200_000 + i * 10_000;
         d.prepare({
           ...base,
           rawPointCount: n,
           visibleEnd: n,
-          contentVersion: n,
-          ringCapacity: 5_000_000,
+          contentVersion: 1 + i,
         });
+        expect(d.needsEncode()).toBe(true);
         const enc = createMockEncoder();
         d.encodeCompute(enc as unknown as GPUCommandEncoder);
-        expect(enc.__passes.length).toBeGreaterThanOrEqual(1);
+        expect(enc.__passes).toHaveLength(1);
       }
+    });
+
+    it('G2: modular wrap density≥400 encodes every ringStart advance (suite 1M×5 shape)', () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 40_000_000 });
+      // density = 1_000_000/2500 = 400 — historically period 32 period-flash
+      const base = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        rawPointCount: 1_000_000,
+        visibleStart: 0,
+        visibleEnd: 1_000_000,
+        targetBuckets: 2500,
+        ringCapacity: 1_000_000,
+      };
+      d.prepare({ ...base, ringStart: 0, contentVersion: 1 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+
+      // Every wrap-only frame must encode (max frames presenting prior SIG = 0)
+      for (let i = 1; i <= 8; i++) {
+        d.prepare({ ...base, ringStart: i * 10_000, contentVersion: 1 + i });
+        expect(d.needsEncode()).toBe(true);
+        const enc = createMockEncoder();
+        d.encodeCompute(enc as unknown as GPUCommandEncoder);
+        expect(enc.__passes).toHaveLength(1);
+        expect(d.needsEncode()).toBe(false);
+      }
+    });
+
+    it('equal-N rewrite on modular ring (same ringStart) always recomputes', () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 40_000_000 });
+      const base = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        rawPointCount: 1_000_000,
+        visibleStart: 0,
+        visibleEnd: 1_000_000,
+        targetBuckets: 2500,
+        ringStart: 0,
+        ringCapacity: 1_000_000,
+      };
+      d.prepare({ ...base, contentVersion: 1 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+
+      d.prepare({ ...base, contentVersion: 2 });
+      expect(d.needsEncode()).toBe(true);
+      const enc = createMockEncoder();
+      d.encodeCompute(enc as unknown as GPUCommandEncoder);
+      expect(enc.__passes).toHaveLength(1);
     });
 
     it('dirties when ringStart/ringCapacity change (modular FIFO wrap)', () => {
@@ -549,9 +621,9 @@ describe('createDecimationCompute', () => {
       const base = {
         algorithm: 'lttb' as const,
         rawBuffer,
-        rawPointCount: 100_000,
+        rawPointCount: 50_000,
         visibleStart: 0,
-        visibleEnd: 100_000,
+        visibleEnd: 50_000,
         targetBuckets: 512,
         contentVersion: 1,
         ringStart: 0,
@@ -560,7 +632,6 @@ describe('createDecimationCompute', () => {
       d.prepare(base);
       d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
 
-      // Same everything except ringStart (wrap) must re-dispatch.
       d.prepare({ ...base, ringStart: 10 });
       const enc = createMockEncoder();
       d.encodeCompute(enc as unknown as GPUCommandEncoder);
@@ -577,6 +648,134 @@ describe('createDecimationCompute', () => {
       const enc3 = createMockEncoder();
       d.encodeCompute(enc3 as unknown as GPUCommandEncoder);
       expect(enc3.__passes).toHaveLength(1);
+    });
+
+    it('G1: lastEncoded advances only after encode — prepare without encode stays dirty', () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 8_000_000 });
+      const base = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        visibleStart: 0,
+        targetBuckets: 512,
+      };
+      d.prepare({ ...base, rawPointCount: 100_000, visibleEnd: 100_000, contentVersion: 1 });
+      expect(d.needsEncode()).toBe(true);
+      // Do NOT encode. Re-prepare identical SIG: still needs encode (lastEncoded unset).
+      d.prepare({ ...base, rawPointCount: 100_000, visibleEnd: 100_000, contentVersion: 1 });
+      expect(d.needsEncode()).toBe(true);
+      // Advance SIG without encode — still needs encode for newest SIG.
+      d.prepare({ ...base, rawPointCount: 110_000, visibleEnd: 110_000, contentVersion: 2 });
+      expect(d.needsEncode()).toBe(true);
+      const writeBuffer = device.queue.writeBuffer as Mock;
+      writeBuffer.mockClear();
+      d.prepare({ ...base, rawPointCount: 120_000, visibleEnd: 120_000, contentVersion: 3 });
+      // Uniform rewrite required whenever SIG changed and encode will run.
+      expect(writeBuffer).toHaveBeenCalled();
+      expect(d.needsEncode()).toBe(true);
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      expect(d.needsEncode()).toBe(false);
+      // After encode, identical prepare is clean.
+      d.prepare({ ...base, rawPointCount: 120_000, visibleEnd: 120_000, contentVersion: 3 });
+      expect(d.needsEncode()).toBe(false);
+    });
+
+    it('G0 formal: after prepare if SIG changed then needsEncode; after encode dirty false', () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 8_000_000 });
+      const p0 = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        rawPointCount: 80_000,
+        visibleStart: 0,
+        visibleEnd: 80_000,
+        targetBuckets: 256,
+        contentVersion: 1,
+      };
+      d.prepare(p0);
+      expect(d.needsEncode()).toBe(true);
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      expect(d.needsEncode()).toBe(false);
+
+      // visibleEnd-only change
+      d.prepare({ ...p0, visibleEnd: 70_000 });
+      expect(d.needsEncode()).toBe(true);
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      expect(d.needsEncode()).toBe(false);
+
+      // algorithm change
+      d.prepare({ ...p0, visibleEnd: 70_000, algorithm: 'min' });
+      expect(d.needsEncode()).toBe(true);
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      expect(d.needsEncode()).toBe(false);
+
+      // targetBuckets change
+      d.prepare({ ...p0, visibleEnd: 70_000, algorithm: 'min', targetBuckets: 128 });
+      expect(d.needsEncode()).toBe(true);
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      expect(d.needsEncode()).toBe(false);
+    });
+
+    it('G2: multi-instance independence (no shared amortization state)', () => {
+      const a = createDecimationCompute(device);
+      const b = createDecimationCompute(device);
+      const rawA = createMockBuffer({ size: 8_000_000 });
+      const rawB = createMockBuffer({ size: 8_000_000 });
+      const baseA = {
+        algorithm: 'lttb' as const,
+        rawBuffer: rawA,
+        visibleStart: 0,
+        targetBuckets: 512,
+      };
+      const baseB = {
+        algorithm: 'lttb' as const,
+        rawBuffer: rawB,
+        visibleStart: 0,
+        targetBuckets: 512,
+      };
+      a.prepare({ ...baseA, rawPointCount: 200_000, visibleEnd: 200_000, contentVersion: 1 });
+      a.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      b.prepare({ ...baseB, rawPointCount: 200_000, visibleEnd: 200_000, contentVersion: 1 });
+      b.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+
+      // Grow only A — B must stay clean; A encodes every growth frame.
+      for (let i = 1; i <= 5; i++) {
+        const n = 200_000 + i * 10_000;
+        a.prepare({ ...baseA, rawPointCount: n, visibleEnd: n, contentVersion: 1 + i });
+        expect(a.needsEncode()).toBe(true);
+        expect(b.needsEncode()).toBe(false);
+        a.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+        expect(a.needsEncode()).toBe(false);
+      }
+      // B still matches lastEncoded
+      b.prepare({ ...baseB, rawPointCount: 200_000, visibleEnd: 200_000, contentVersion: 1 });
+      expect(b.needsEncode()).toBe(false);
+    });
+
+    it('uniform write path invoked iff encode will run (SIG change)', () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 800000 });
+      const params = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        rawPointCount: 100_000,
+        visibleStart: 0,
+        visibleEnd: 100_000,
+        targetBuckets: 512,
+        contentVersion: 1,
+      };
+      d.prepare(params);
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      const writeBuffer = device.queue.writeBuffer as Mock;
+      writeBuffer.mockClear();
+
+      d.prepare(params);
+      expect(writeBuffer).not.toHaveBeenCalled();
+      expect(d.needsEncode()).toBe(false);
+
+      d.prepare({ ...params, contentVersion: 2 });
+      expect(writeBuffer).toHaveBeenCalled();
+      expect(d.needsEncode()).toBe(true);
     });
 
     it('writes ringStart/ringCapacity into uniform slots 5–6', () => {
@@ -616,7 +815,7 @@ describe('createDecimationCompute', () => {
       const d = createDecimationCompute(device);
       const rawBuffer = createMockBuffer({ size: 8000 });
 
-      d.prepare({
+      const count = d.prepare({
         algorithm: 'lttb',
         rawBuffer,
         rawPointCount: 1000,
@@ -624,12 +823,100 @@ describe('createDecimationCompute', () => {
         visibleEnd: 500, // empty
         targetBuckets: 64,
       });
+      expect(count).toBe(0);
+      expect(d.getOutputPointCount()).toBe(0);
+      expect(d.needsEncode()).toBe(false);
 
       const encoder = createMockEncoder();
+      // Empty span never opens a compute pass (dirty false / needsEncode false).
       expect(() => d.encodeCompute(encoder as unknown as GPUCommandEncoder)).not.toThrow();
-      // encodeCompute opens a pass then returns without dispatching.
-      // (Current implementation exits before beginComputePass when span <= 0.)
       expect(encoder.__passes).toHaveLength(0);
+    });
+
+    it('G0: empty span after valid encode does not present prior lastEncoded as current', () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 800000 });
+      d.prepare({
+        algorithm: 'lttb',
+        rawBuffer,
+        rawPointCount: 100_000,
+        visibleStart: 0,
+        visibleEnd: 100_000,
+        targetBuckets: 512,
+        contentVersion: 1,
+      });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      expect(d.getOutputPointCount()).toBe(512);
+      expect(d.needsEncode()).toBe(false);
+
+      // Empty window (same capacity): output is not current — count must be 0.
+      // Buffer identity preserved → lastEncoded still valid for a later restore.
+      const emptyCount = d.prepare({
+        algorithm: 'lttb',
+        rawBuffer,
+        rawPointCount: 100_000,
+        visibleStart: 50_000,
+        visibleEnd: 50_000,
+        targetBuckets: 512,
+        contentVersion: 1,
+      });
+      expect(emptyCount).toBe(0);
+      expect(d.getOutputPointCount()).toBe(0);
+      expect(d.needsEncode()).toBe(false);
+
+      // Restoring the lastEncoded SIG presents that count again without re-encode.
+      d.prepare({
+        algorithm: 'lttb',
+        rawBuffer,
+        rawPointCount: 100_000,
+        visibleStart: 0,
+        visibleEnd: 100_000,
+        targetBuckets: 512,
+        contentVersion: 1,
+      });
+      expect(d.getOutputPointCount()).toBe(512);
+      expect(d.needsEncode()).toBe(false);
+    });
+
+    it('G0: empty-span capacity growth invalidates lastEncoded (must re-encode on restore)', () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 8_000_000 });
+      const original = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        rawPointCount: 100_000,
+        visibleStart: 0,
+        visibleEnd: 100_000,
+        targetBuckets: 512,
+        contentVersion: 1,
+      };
+      d.prepare(original);
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      expect(d.getOutputPointCount()).toBe(512);
+      const outputBeforeGrow = d.getOutputBuffer();
+
+      // Empty prepare with larger targetBuckets → ensureBuffers destroys encoded output.
+      const emptyCount = d.prepare({
+        ...original,
+        visibleStart: 50_000,
+        visibleEnd: 50_000,
+        targetBuckets: 2000,
+      });
+      expect(emptyCount).toBe(0);
+      expect(d.getOutputPointCount()).toBe(0);
+      expect(d.needsEncode()).toBe(false);
+      // Buffer identity changed (geometric growth).
+      expect(d.getOutputBuffer()).not.toBe(outputBeforeGrow);
+
+      // Restore original SIG: must not present stale lastEncoded against empty buffer.
+      d.prepare(original);
+      expect(d.needsEncode()).toBe(true);
+      expect(d.getOutputPointCount()).toBe(512);
+      const enc = createMockEncoder();
+      d.encodeCompute(enc as unknown as GPUCommandEncoder);
+      expect(enc.__passes).toHaveLength(1);
+      expect(d.needsEncode()).toBe(false);
+      expect(d.getOutputPointCount()).toBe(512);
     });
 
     it('needsEncode is true after prepare when dirty; false after encode and when clean', () => {

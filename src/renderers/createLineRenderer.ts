@@ -7,7 +7,7 @@ import { getPointCount, getX, getY, isStagingRingView, isRingXYColumns } from '.
 import type { CartesianSeriesData } from '../config/types';
 import type { PipelineCache } from '../core/PipelineCache';
 import { resolveLineDrawPolicy, type LineDrawPolicy } from './lineDrawPolicy';
-import { resolveDenseDrawStride } from './denseDrawLod';
+import { resolveDenseDrawStride, DENSE_DRAW_POINT_THRESHOLD } from './denseDrawLod';
 import {
   computeClipAffineFromContinuousScale,
   computePackedXAffineFromScale,
@@ -55,7 +55,17 @@ export interface LineRenderer {
      * When omitted, falls back to canvas width (slightly more segments).
      * Share with area fill LOD so mountain stroke/fill stride stay aligned.
      */
-    plotWidthDevicePx?: number
+    plotWidthDevicePx?: number,
+    /**
+     * Optional residency / pre-sample point count for **draw policy only**
+     * (dense hairline entry). Applied only when raw residency is multi‑M
+     * (≥ {@link DENSE_DRAW_POINT_THRESHOLD} / 1M): GPU-decimated multi‑M FIFO
+     * exits 4× MSAA AA-quad fill while draw instance count still uses
+     * {@link pointCountOverride} / series data length. Mid-N residency
+     * (e.g. 50k–500k raw LTTB’d to a few k buckets) is ignored so low draw N
+     * keeps full AA quads + configured width.
+     */
+    policyPointCount?: number
   ): void;
   /**
    * Drop identity-cached dense compact geometry so the next prepare re-packs.
@@ -426,7 +436,8 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     lineSeriesCount,
     ringLayout,
     forceStandardDraw,
-    plotWidthDevicePx
+    plotWidthDevicePx,
+    policyPointCount
   ) => {
     assertNotDisposed();
 
@@ -454,8 +465,19 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     // Dense full-rewrite (group 3) + multi-series fill cliff (group 1): switch to
     // line-list hairline only when main MSAA is 4× (see lineDrawPolicy).
     // `forceStandardDraw` (performance.lod: 'strict') always honors configured width.
+    // Multi-M residency only: fold raw N into policy when ≥ DENSE_DRAW_POINT_THRESHOLD
+    // so suite FIFO 1M×5+ exits AA-quad fill; mid-N GPU-decimated series keep AA.
+    // Draw instance count always uses pointCountOverride / series length.
+    const residencyN =
+      typeof policyPointCount === 'number' && Number.isFinite(policyPointCount) && policyPointCount > 0
+        ? Math.floor(policyPointCount)
+        : 0;
+    const policyN =
+      residencyN >= DENSE_DRAW_POINT_THRESHOLD
+        ? Math.max(currentPointCount, residencyN)
+        : currentPointCount;
     const drawPolicy = resolveLineDrawPolicy({
-      pointCount: currentPointCount,
+      pointCount: policyN,
       lineWidthCssPx: nominalLineWidthCss,
       lineSeriesCount,
       msaaSampleCount: sampleCount,

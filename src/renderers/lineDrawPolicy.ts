@@ -8,8 +8,13 @@
  * - multi-series total segment budget ≥ {@link MULTI_SERIES_HAIRLINE_SEGMENT_BUDGET}
  *   (group 1 1000×1000+ cliff; 500×500 stays standard AA).
  *
- * Does not change sampling, packing, or data residency. FIFO suite rows stay under
- * the per-series threshold when GPU/CPU decimation keeps displayed points low.
+ * Does not change sampling, packing, or data residency. Callers pass the **draw**
+ * instance count as `pointCount` in most paths (raw stroke length or GPU-decimation
+ * bucket/`pointCountOverride`). Separately, `LineRenderer.prepare` may fold multi‑M
+ * **raw residency** (`policyPointCount` ≥ 1M / `DENSE_DRAW_POINT_THRESHOLD`) into the
+ * policy N so GPU-decimated multi‑M FIFO exits AA-quad fill while still drawing the
+ * small LTTB sample — mid-N residency below that floor is ignored, so LTTB-low draw
+ * N keeps full AA quads + configured width.
  *
  * @module lineDrawPolicy
  * @internal

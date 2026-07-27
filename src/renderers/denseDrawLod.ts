@@ -13,22 +13,23 @@
  * Minimum max-draw-segment budget when plot width is tiny or unknown.
  * Keeps mid-N series from collapsing to a handful of segments.
  */
-export const DENSE_DRAW_MIN_TARGET_SEGMENTS = 2_048;
+export const DENSE_DRAW_MIN_TARGET_SEGMENTS = 8_192;
 
 /**
  * Oversample factor × plot width (device px) → max drawn segments.
- * ~1 sample per device pixel is continuous for mountain fill under suite cameras;
- * multi-M group 8 needs a tight budget to stay at display refresh.
+ * ~4 samples per device pixel is continuous for mountain fill under suite cameras;
+ * multi-M group 8 still densifies well below full N under this budget.
  */
-export const DENSE_DRAW_WIDTH_OVERSAMPLE = 1;
+export const DENSE_DRAW_WIDTH_OVERSAMPLE = 4;
 
 /**
  * Only enter multi-segment stride when raw point count is at/above this floor.
- * Protects ≤200k fidelity. At N ≥ 250k under lod:auto, series over
- * `max(2048, 1× plotWidthDevicePx)` densify — including suite protect rows
- * at 500k / 1M (intentional display-refresh budget; use lod:'strict' for full N).
+ * Protects ≤999k fidelity (product demos at 250k–500k keep full geometry).
+ * At N ≥ 1M under lod:auto, series over `max(8192, 4× plotWidthDevicePx)` densify —
+ * including suite multi-M protect rows (intentional display-refresh budget;
+ * use lod:'strict' for full N).
  */
-export const DENSE_DRAW_POINT_THRESHOLD = 250_000;
+export const DENSE_DRAW_POINT_THRESHOLD = 1_000_000;
 
 export type DenseDrawStrideInput = Readonly<{
   readonly pointCount: number;
