@@ -323,6 +323,50 @@ describe('createDataStore', () => {
       expect(writes.mock.calls[0]![1]).toBe(32);
     });
 
+    it('cold multi-M setSeries stamps content version without full FNV (Phase B setup)', () => {
+      const N = 1_000_000;
+      // Discriminating: O(1) stamp keys on N only — two cold seeds with the same N
+      // but different floats must share a hash. Full FNV would diverge here.
+      const xA = new Float64Array(N);
+      const yA = new Float64Array(N);
+      const xB = new Float64Array(N);
+      const yB = new Float64Array(N);
+      for (let i = 0; i < N; i++) {
+        xA[i] = i;
+        yA[i] = i * 0.001;
+        xB[i] = i + 0.5;
+        yB[i] = 999 - i * 0.002;
+      }
+      const storeA = createDataStore(device);
+      storeA.setSeries(0, { x: xA, y: yA });
+      const storeB = createDataStore(device);
+      storeB.setSeries(0, { x: xB, y: yB });
+      const hA = storeA.getSeriesContentHash(0);
+      const hB = storeB.getSeriesContentHash(0);
+      expect(storeA.getSeriesPointCount(0)).toBe(N);
+      expect(hA).toBe(hB);
+
+      // Sub-threshold cold setSeries still uses FNV — different floats → different hash.
+      const storeLo = createDataStore(device);
+      storeLo.setSeries(0, [
+        [0, 1],
+        [1, 2],
+        [2, 3],
+      ]);
+      const hLo1 = storeLo.getSeriesContentHash(0);
+      const storeLo2 = createDataStore(device);
+      storeLo2.setSeries(0, [
+        [0, 10],
+        [1, 20],
+        [2, 30],
+      ]);
+      expect(storeLo2.getSeriesContentHash(0)).not.toBe(hLo1);
+
+      // Append still bumps so decimation dirties after multi-M seed.
+      storeA.appendSeries(0, { x: new Float64Array([N]), y: new Float64Array([1]) }, { maxPoints: N });
+      expect(storeA.getSeriesContentHash(0)).not.toBe(hA);
+    });
+
     it('append content hash bumps without full FNV of new floats (FIFO O(1) version)', () => {
       const store = createDataStore(device);
       const seed: Array<[number, number]> = [];

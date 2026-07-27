@@ -17,7 +17,7 @@ Optimize ChartGPU for large datasets and real-time streaming.
 | `max` / `min` | Spikes | Peaks / valleys |
 | `none` | Small datasets (<5K) | All points |
 
-**GPU decimation (line, `lttb`/`min`/`max`, null-gap-free):** compute shaders replace CPU sampling. When points-per-bucket exceed **512**, each bucket evaluates a uniform **512-candidate** set (endpoints included) instead of every raw point — exact below that density; approximate extrema/shape at extreme N (e.g. 10M pts / 2500 buckets). This bounds GPU bandwidth for FIFO streaming without changing `sampling` mode.
+**GPU decimation (line, `lttb`/`min`/`max`, null-gap-free):** compute shaders replace CPU sampling. When points-per-bucket exceed **512**, LTTB/min/max evaluate a uniform **128-candidate** set (endpoints included) and the averages pre-pass uses **64** samples for coarse triangle anchors — exact below 512 pts/bucket (covers 1M × 2500 ≈ 400); approximate extrema/shape at extreme N (5M–10M pts / 2500 buckets). This bounds GPU bandwidth so period=1 present fidelity stays interactive without multi-frame cadence.
 
 **Golden encode-signature fidelity (foundation):** the present path never draws decimation samples computed for a different prepare input than this frame.
 
@@ -29,7 +29,9 @@ Optimize ChartGPU for large datasets and real-time streaming.
 
 **Period-flash (forbidden):** multi-frame freeze of geometry for a prior streaming `SIG` while ring/N/window/version moved, then a hard snap when encode finally runs. Max frames presenting a prior streaming `SIG` = **0**.
 
-**Allowed residual motion:** honest LTTB reselection every streaming frame (polyline may move slightly frame-to-frame without freeze), 512-candidate approximation at extreme pts/bucket, dense-hairline / draw-LOD policy. These are not golden-rule failures.
+**Allowed residual motion:** honest LTTB reselection every streaming frame (polyline may move slightly frame-to-frame without freeze), 128-candidate (averages 64) approximation at extreme pts/bucket, dense-hairline / draw-LOD policy. These are not golden-rule failures.
+
+**Phase B multi‑M cost model (still G0–G2):** every streaming `SIG` change re-encodes this frame. Speed comes from cheaper honest recompute (dense candidate caps, O(1) cold multi‑M content stamp on `setSeries`, modular ring index without integer `%` in WGSL) — **not** multi-frame present lag.
 
 Equal-N content rewrites (same N + same ringStart, version bump) and bind-group/output rebuilds always recompute. Domain scales are **not** in `SIG` — they update every frame on the line/area draw path.
 

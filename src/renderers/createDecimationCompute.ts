@@ -17,10 +17,12 @@
  *     triangle-area maximization against the neighboring bucket averages).
  *
  * **Dense-bucket candidate cap (WGSL):** when a bucket's raw range exceeds 512
- * points, all three kernels evaluate a uniform 512-sample candidate set
- * (including endpoints) instead of every raw point. Below that density the
- * scan is exact. At extreme N (e.g. 10M / 2500 buckets) min/max are therefore
- * approximate extrema, not guaranteed true bucket min/max.
+ * points, LTTB / min / max evaluate a uniform **128**-sample candidate set
+ * (including endpoints) instead of every raw point; the averages pre-pass uses
+ * **64** samples for coarse triangle anchors. Below 512 pts/bucket the scan is
+ * exact (covers 1M × 2500 ≈ 400). At extreme N (5M–10M / 2500 buckets) min/max
+ * are approximate extrema, not guaranteed true bucket min/max. Cap is a G4
+ * residual — still period=1 honest recompute for this frame's `SIG` (G0–G2).
  *
  * All entry points live in `src/shaders/decimation.wgsl` — that file documents
  * the per-bucket indexing convention and the output layout contract.

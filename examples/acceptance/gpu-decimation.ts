@@ -99,11 +99,17 @@ function interiorBucketRange(
   return { lo, hi };
 }
 
-/** Mirrors `bucketCandidateCount` / `candidateRawIndex` in decimation.wgsl. */
-const MAX_BUCKET_CANDIDATES = 512;
+/** Mirrors `bucketCandidateCount` / `bucketAverageCandidateCount` / `candidateRawIndex` in decimation.wgsl. */
+const EXACT_SCAN_MAX = 512;
+const DENSE_MAX_CANDIDATES = 128;
+const DENSE_AVERAGE_CANDIDATES = 64;
 
 function bucketCandidateCount(rangeLen: number): number {
-  return rangeLen > MAX_BUCKET_CANDIDATES ? MAX_BUCKET_CANDIDATES : rangeLen;
+  return rangeLen > EXACT_SCAN_MAX ? DENSE_MAX_CANDIDATES : rangeLen;
+}
+
+function bucketAverageCandidateCount(rangeLen: number): number {
+  return rangeLen > EXACT_SCAN_MAX ? DENSE_AVERAGE_CANDIDATES : rangeLen;
 }
 
 function candidateRawIndex(rangeStart: number, rangeLen: number, s: number, candCount: number): number {
@@ -112,7 +118,7 @@ function candidateRawIndex(rangeStart: number, rangeLen: number, s: number, cand
   return rangeStart + Math.floor((s * (rangeLen - 1)) / (candCount - 1));
 }
 
-/** Iterate bucket candidates (full scan when rangeLen ≤ 512; else uniform subsample). */
+/** Iterate LTTB/min/max candidates (full scan when rangeLen ≤ 512; else 128-cap subsample). */
 function forEachBucketCandidate(
   lo: number,
   hi: number,
@@ -120,6 +126,19 @@ function forEachBucketCandidate(
 ): void {
   const rangeLen = hi - lo;
   const candCount = bucketCandidateCount(rangeLen);
+  for (let s = 0; s < candCount; s++) {
+    visit(candidateRawIndex(lo, rangeLen, s, candCount));
+  }
+}
+
+/** Iterate average-pass candidates (64-cap at extreme density). */
+function forEachBucketAverageCandidate(
+  lo: number,
+  hi: number,
+  visit: (i: number) => void,
+): void {
+  const rangeLen = hi - lo;
+  const candCount = bucketAverageCandidateCount(rangeLen);
   for (let s = 0; s < candCount; s++) {
     visit(candidateRawIndex(lo, rangeLen, s, candCount));
   }
@@ -177,7 +196,7 @@ function cpuBucketAverages(
     let sumX = 0;
     let sumY = 0;
     let cnt = 0;
-    forEachBucketCandidate(lo, hi, (i) => {
+    forEachBucketAverageCandidate(lo, hi, (i) => {
       const x = raw[i * 2 + 0]!;
       const y = raw[i * 2 + 1]!;
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
@@ -349,19 +368,19 @@ function generateSynthetic(n: number, seed = 42): Float32Array {
   console.log('[acceptance:gpu-decimation] parallel-LTTB reference OK');
 }
 
-// Dense-bucket candidate cap (rangeLen > 512): activate the subsampled path.
-// N=100_000 / B=32 → interior span ≈ 100k/30 ≈ 3300+ pts/bucket → cap at 512.
+// Dense-bucket candidate cap (rangeLen > 512): activate the Phase B subsampled path.
+// N=100_000 / B=32 → interior span ≈ 100k/30 ≈ 3300+ pts/bucket → LTTB/min/max 128, averages 64.
 // Assert endpoints exact + min/max extremum and LTTB score match the candidate set.
 {
   const N = 100_000;
   const B = 32;
   const data = generateSynthetic(N, 7);
 
-  // Prove at least one interior bucket exceeds the cap.
+  // Prove at least one interior bucket exceeds the exact-scan threshold.
   let sawCapped = false;
   for (let b = 0; b < B - 2; b++) {
     const { lo, hi } = interiorBucketRange(b, 0, N, B);
-    if (hi - lo > MAX_BUCKET_CANDIDATES) {
+    if (hi - lo > EXACT_SCAN_MAX) {
       sawCapped = true;
       break;
     }
@@ -391,13 +410,13 @@ function generateSynthetic(n: number, seed = 42): Float32Array {
         if (mode === 'max' ? y > truth : y < truth) truth = y;
       });
       assert(
-        hi - lo > MAX_BUCKET_CANDIDATES ? candCount === MAX_BUCKET_CANDIDATES : candCount === hi - lo,
+        hi - lo > EXACT_SCAN_MAX ? candCount === DENSE_MAX_CANDIDATES : candCount === hi - lo,
         `dense-cap ${mode} bucket ${b}: candCount ${candCount} mismatch rangeLen ${hi - lo}.`,
       );
       // Candidate endpoints must include lo and hi-1 when capped.
-      if (hi - lo > MAX_BUCKET_CANDIDATES) {
-        const firstCand = candidateRawIndex(lo, hi - lo, 0, MAX_BUCKET_CANDIDATES);
-        const lastCand = candidateRawIndex(lo, hi - lo, MAX_BUCKET_CANDIDATES - 1, MAX_BUCKET_CANDIDATES);
+      if (hi - lo > EXACT_SCAN_MAX) {
+        const firstCand = candidateRawIndex(lo, hi - lo, 0, DENSE_MAX_CANDIDATES);
+        const lastCand = candidateRawIndex(lo, hi - lo, DENSE_MAX_CANDIDATES - 1, DENSE_MAX_CANDIDATES);
         assert(firstCand === lo, `dense-cap ${mode} bucket ${b}: first candidate is range start.`);
         assert(lastCand === hi - 1, `dense-cap ${mode} bucket ${b}: last candidate is range end-1.`);
       }
@@ -416,6 +435,18 @@ function generateSynthetic(n: number, seed = 42): Float32Array {
 
   for (let b = 0; b < B - 2; b++) {
     const { lo, hi } = interiorBucketRange(b, 0, N, B);
+    // Averages at extreme density use the tighter average candidate set.
+    let avgCandCount = 0;
+    forEachBucketAverageCandidate(lo, hi, () => {
+      avgCandCount++;
+    });
+    assert(
+      hi - lo > EXACT_SCAN_MAX
+        ? avgCandCount === DENSE_AVERAGE_CANDIDATES
+        : avgCandCount === hi - lo,
+      `dense-cap averages bucket ${b}: candCount ${avgCandCount} mismatch.`,
+    );
+
     const aX = averages[b * 2]!;
     const aY = averages[b * 2 + 1]!;
     const nX = averages[(b + 2) * 2]!;
@@ -435,7 +466,7 @@ function generateSynthetic(n: number, seed = 42): Float32Array {
       `dense-cap lttb bucket ${b}: score ${picked} vs candidate max ${truthScore}.`,
     );
   }
-  console.log('[acceptance:gpu-decimation] dense-bucket candidate-cap (rangeLen>512) OK');
+  console.log('[acceptance:gpu-decimation] dense-bucket candidate-cap (rangeLen>512 → 128/64) OK');
 }
 
 // Timing probe — lets CI flag pathological regressions in the reference

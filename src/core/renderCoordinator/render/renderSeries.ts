@@ -646,9 +646,9 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
             );
             gpuSeriesKindByIndex[i] = 'gpuDecimationRaw';
           } else {
-            // Extreme-N bandwidth: WGSL dense-bucket candidate cap (512) bounds
-            // per-bucket scans for lttb/min/max. Do not silently rewrite lttb→min
-            // (ECG peak quality; append path is pack/write-bound after the cap).
+            // Extreme-N bandwidth: WGSL dense-bucket candidate cap (128 above
+            // 512 pts/bucket; averages 64) bounds per-bucket scans for lttb/min/max.
+            // Do not silently rewrite lttb→min (ECG peak quality).
             const decimation = renderers.decimationComputes[i];
             if (!decimation) {
               // Pool undersized (should not happen when sampling is GPU-eligible).

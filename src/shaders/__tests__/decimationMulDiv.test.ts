@@ -11,6 +11,9 @@
  * algorithm so we lock the contract without a live GPU.
  */
 
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 
 /** Mirror of `umul64` in decimation.wgsl — returns [hi, lo]. */
@@ -113,14 +116,22 @@ describe('decimation mulDivU32 (bucket index overflow regression)', () => {
 });
 
 /**
- * Mirror of bucketCandidateCount / candidateRawIndex in decimation.wgsl.
- * Dense-bucket cap bounds GPU reads at extreme FIFO N (10M×5 LTTB).
+ * Mirror of bucketCandidateCount / bucketAverageCandidateCount / candidateRawIndex
+ * in decimation.wgsl. Dense-bucket cap bounds GPU reads at extreme FIFO N
+ * (5M–10M×5 LTTB) under period=1 present fidelity (Phase B).
  */
-const MAX_BUCKET_CANDIDATES = 512;
+const EXACT_SCAN_MAX = 512;
+const DENSE_MAX_CANDIDATES = 128;
+const DENSE_AVERAGE_CANDIDATES = 64;
 
 function bucketCandidateCount(rangeLen: number): number {
   rangeLen = rangeLen >>> 0;
-  return rangeLen > MAX_BUCKET_CANDIDATES ? MAX_BUCKET_CANDIDATES : rangeLen;
+  return rangeLen > EXACT_SCAN_MAX ? DENSE_MAX_CANDIDATES : rangeLen;
+}
+
+function bucketAverageCandidateCount(rangeLen: number): number {
+  rangeLen = rangeLen >>> 0;
+  return rangeLen > EXACT_SCAN_MAX ? DENSE_AVERAGE_CANDIDATES : rangeLen;
 }
 
 function candidateRawIndex(rangeStart: number, rangeLen: number, s: number, candCount: number): number {
@@ -133,36 +144,82 @@ function candidateRawIndex(rangeStart: number, rangeLen: number, s: number, cand
   return rangeStart + mulDivU32(rangeLen - 1, s, candCount - 1);
 }
 
-describe('decimation dense-bucket candidate cap (FIFO 10M LTTB)', () => {
+/** Mirror of rawAt ring path: one wrap via compare+subtract (not `%`). */
+function rawAtPhys(ringStart: number, ringCapacity: number, logicalIdx: number): number {
+  if (ringCapacity === 0) return logicalIdx;
+  const sum = (ringStart + logicalIdx) >>> 0;
+  return sum >= ringCapacity ? (sum - ringCapacity) >>> 0 : sum;
+}
+
+describe('decimation dense-bucket candidate cap (FIFO multi-M LTTB Phase B)', () => {
+  it('pins decimation.wgsl dense-cap literals (512 exact / 128 LTTB / 64 averages)', () => {
+    // Mirror helpers above can drift; lock the real shader source so Phase B
+    // caps cannot silently regress to 512-everywhere or lose the average tier.
+    const wgslPath = join(dirname(fileURLToPath(import.meta.url)), '../decimation.wgsl');
+    const wgsl = readFileSync(wgslPath, 'utf8');
+
+    // Slice each small fn by name → next `fn ` so nested braces in if-bodies are fine.
+    const sliceFn = (name: string): string => {
+      const start = wgsl.indexOf(`fn ${name}`);
+      expect(start).toBeGreaterThanOrEqual(0);
+      const next = wgsl.indexOf('\nfn ', start + 1);
+      return next < 0 ? wgsl.slice(start) : wgsl.slice(start, next);
+    };
+
+    const candFn = sliceFn('bucketCandidateCount');
+    expect(candFn).toContain('rangeLen > 512u');
+    expect(candFn).toContain('return 128u');
+    // Pre-Phase-B dense path returned 512u for oversized buckets — forbidden.
+    expect(candFn).not.toContain('return 512u');
+
+    const avgFn = sliceFn('bucketAverageCandidateCount');
+    expect(avgFn).toContain('rangeLen > 512u');
+    expect(avgFn).toContain('return 64u');
+
+    const rawAtFn = sliceFn('rawAt');
+    expect(rawAtFn).toContain('sum >= uni.ringCapacity');
+    expect(rawAtFn).not.toMatch(/%\s*uni\.ringCapacity/);
+  });
+
   it('full-scans when rangeLen ≤ 512 (1M×2500 ≈ 400 pts/bucket — no 1M regression)', () => {
     const rangeLen = 400;
     expect(bucketCandidateCount(rangeLen)).toBe(400);
+    expect(bucketAverageCandidateCount(rangeLen)).toBe(400);
     for (let s = 0; s < rangeLen; s++) {
       expect(candidateRawIndex(10, rangeLen, s, rangeLen)).toBe(10 + s);
     }
   });
 
-  it('caps at 512 and includes endpoints for oversized buckets (10M path)', () => {
+  it('caps LTTB/min/max at 128 and averages at 64 for oversized buckets (5M/10M path)', () => {
     const rangeStart = 1000;
-    const rangeLen = 4000; // ~10M / 2500
-    const candCount = bucketCandidateCount(rangeLen);
-    expect(candCount).toBe(512);
-    expect(candidateRawIndex(rangeStart, rangeLen, 0, candCount)).toBe(rangeStart);
-    expect(candidateRawIndex(rangeStart, rangeLen, candCount - 1, candCount)).toBe(rangeStart + rangeLen - 1);
+    const rangeLen5M = 2000; // ~5M / 2500
+    const rangeLen10M = 4000; // ~10M / 2500
+    expect(bucketCandidateCount(rangeLen5M)).toBe(128);
+    expect(bucketCandidateCount(rangeLen10M)).toBe(128);
+    expect(bucketAverageCandidateCount(rangeLen5M)).toBe(64);
+    expect(bucketAverageCandidateCount(rangeLen10M)).toBe(64);
+
+    const candCount = bucketCandidateCount(rangeLen10M);
+    expect(candidateRawIndex(rangeStart, rangeLen10M, 0, candCount)).toBe(rangeStart);
+    expect(candidateRawIndex(rangeStart, rangeLen10M, candCount - 1, candCount)).toBe(
+      rangeStart + rangeLen10M - 1
+    );
     // Monotonic non-decreasing candidate indices
     let prev = -1;
     for (let s = 0; s < candCount; s++) {
-      const idx = candidateRawIndex(rangeStart, rangeLen, s, candCount);
+      const idx = candidateRawIndex(rangeStart, rangeLen10M, s, candCount);
       expect(idx).toBeGreaterThanOrEqual(rangeStart);
-      expect(idx).toBeLessThan(rangeStart + rangeLen);
+      expect(idx).toBeLessThan(rangeStart + rangeLen10M);
       expect(idx).toBeGreaterThanOrEqual(prev);
       prev = idx;
     }
   });
 
-  it('false-positive guard: rangeLen exactly 512 is not subsampled', () => {
+  it('false-positive guard: rangeLen exactly 512 is not subsampled; 513 uses dense cap', () => {
     expect(bucketCandidateCount(512)).toBe(512);
-    expect(bucketCandidateCount(513)).toBe(512);
+    expect(bucketAverageCandidateCount(512)).toBe(512);
+    expect(bucketCandidateCount(513)).toBe(128);
+    expect(bucketAverageCandidateCount(513)).toBe(64);
     expect(candidateRawIndex(0, 512, 511, 512)).toBe(511);
   });
 
@@ -170,6 +227,8 @@ describe('decimation dense-bucket candidate cap (FIFO 10M LTTB)', () => {
     // bucketCandidateCount: empty / singleton ranges stay exact (no cap).
     expect(bucketCandidateCount(0)).toBe(0);
     expect(bucketCandidateCount(1)).toBe(1);
+    expect(bucketAverageCandidateCount(0)).toBe(0);
+    expect(bucketAverageCandidateCount(1)).toBe(1);
 
     // candidateRawIndex: candCount <= 1 or rangeLen <= 1 → rangeStart.
     expect(candidateRawIndex(42, 0, 0, 0)).toBe(42);
@@ -179,5 +238,17 @@ describe('decimation dense-bucket candidate cap (FIFO 10M LTTB)', () => {
     expect(candidateRawIndex(7, 1, 0, 1)).toBe(7);
     // rangeLen <= 1 takes precedence even if candCount looks larger.
     expect(candidateRawIndex(9, 1, 3, 5)).toBe(9);
+  });
+
+  it('ring rawAt uses single-wrap subtract equivalent to modulo for full-ring FIFO', () => {
+    const cap = 1_000_000;
+    for (const ringStart of [0, 1, 500_000, cap - 1]) {
+      for (const logical of [0, 1, 999, cap - 1]) {
+        const expected = (ringStart + logical) % cap;
+        expect(rawAtPhys(ringStart, cap, logical)).toBe(expected);
+      }
+    }
+    // Linear mode identity
+    expect(rawAtPhys(0, 0, 42)).toBe(42);
   });
 });
