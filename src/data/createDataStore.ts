@@ -112,12 +112,20 @@ export interface DataStore {
   /**
    * Content version for GPU dirty-gating (WG-P0-2).
    *
-   * - **`setSeries`**: FNV-1a of the packed Float32 payload (equal-content
-   *   early-out when the full rewrite matches the previous hash).
+   * - **`setSeries`**:
+   *   - **Cold multi‑M** (no prior entry, `pointCount ≥ 1_000_000`): O(1)
+   *     version stamp from N only (not FNV of packed floats). Setup tax for
+   *     FIFO 5M/10M seeds; floats still pack/upload — only the hash path skips.
+   *     Content-independent at equal N (equal-content early-out does not apply
+   *     on cold first write anyway).
+   *   - **Otherwise**: FNV-1a of the packed Float32 payload (equal-content
+   *     early-out when a full rewrite matches the previous hash). Y-only and
+   *     `skipContentHash` use an O(1) stamp bump when an entry already exists.
    * - **`appendSeries`**: O(1) version stamp (not FNV of the new floats). Append
    *   always mutates residency; hashing 250k×5 floats/frame was pure tax.
    *
-   * Changes whenever packed content is rewritten (including same-N appends).
+   * Changes whenever packed content is rewritten (including same-N appends),
+   * except cold multi‑M stamps which key on N only for the first write.
    * Throws if the series has not been set yet.
    */
   getSeriesContentHash(index: number): number;
@@ -627,10 +635,16 @@ export function createDataStore(device: GPUDevice): DataStore {
 
     // Issue 2.1 / Track C: y-only already proved y changed — skip full O(N) FNV.
     // Stamp hash so decimation still dirties. Issue 2.6: skipContentHash same.
+    // Phase B: cold multi-M seeds (FIFO 5M/10M×5 setup) — full FNV over 10M×2
+    // floats × 5 series is multi-second pure tax on the hang budget; stamp is
+    // enough for decimation dirty (append path already uses O(1) bump).
+    const MULTI_M_CONTENT_STAMP_POINTS = 1_000_000;
     const skipHash = yOnlyChanged || options?.skipContentHash === true;
     let hash32: number;
     if (skipHash && existing) {
       hash32 = (existing.hash32 + 0x9e3779b9) >>> 0;
+    } else if (!existing && pointCount >= MULTI_M_CONTENT_STAMP_POINTS) {
+      hash32 = bumpContentVersion(0x811c9dc5, pointCount, 0);
     } else {
       hash32 = hashFloat32ArrayBits(packedView);
     }

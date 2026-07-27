@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   planGpuFrame,
   framePlanIncludesDenseHairline,
@@ -10,6 +10,7 @@ import {
   encodeMainSeriesPass,
 } from '../frameRender';
 import { MAIN_SCENE_MSAA_SAMPLE_COUNT, ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT } from '../../gpu/textureManager';
+import type { SeriesPrepareContext, SeriesRenderers } from '../renderSeries';
 
 describe('frameRender pass graph', () => {
   it('uses legal MSAA sample counts (1|4 only; main + overlay constants are 4)', () => {
@@ -90,6 +91,54 @@ describe('frameRender pass graph', () => {
     expect(typeof prepareSeries).toBe('function');
     expect(typeof hasDenseHairlineLines).toBe('function');
     expect(typeof renderDenseHairlineLines).toBe('function');
+    expect(typeof encodeFrameComputePasses).toBe('function');
+    expect(typeof encodeMainSeriesPass).toBe('function');
+  });
+
+  it('WS2: encodeFrameComputePasses runs encodeCompute when needsEncode (before draw helpers)', () => {
+    // Coordinator order (createRenderCoordinatorImpl): prepareSeries → encodeFrameComputePasses
+    // → encodeMainSeriesPass / render passes. Assert compute encodes dirty instances
+    // when needsEncode, and is a no-op when clean — same frame gate as production.
+    const encodeCompute = vi.fn();
+    const needsEncode = vi.fn(() => true);
+    const encodeComputeClean = vi.fn();
+    const needsEncodeClean = vi.fn(() => false);
+
+    const dirtyCompute = { needsEncode, encodeCompute };
+    const cleanCompute = { needsEncode: needsEncodeClean, encodeCompute: encodeComputeClean };
+
+    const poolState = {
+      decimationComputes: [dirtyCompute, cleanCompute],
+      scatterDensityRenderers: [],
+    } as unknown as SeriesRenderers;
+
+    const seriesForRender = [
+      { type: 'line', visible: true },
+      { type: 'line', visible: true },
+    ] as SeriesPrepareContext['seriesForRender'];
+
+    // Minimal encoder: beginComputePass for the batch path.
+    const pass = {
+      setPipeline: vi.fn(),
+      setBindGroup: vi.fn(),
+      dispatchWorkgroups: vi.fn(),
+      end: vi.fn(),
+    };
+    const encoder = {
+      beginComputePass: vi.fn(() => pass),
+    } as unknown as GPUCommandEncoder;
+
+    encodeFrameComputePasses(poolState, seriesForRender, encoder);
+
+    expect(needsEncode).toHaveBeenCalled();
+    expect(encodeCompute).toHaveBeenCalledTimes(1);
+    expect(encodeCompute).toHaveBeenCalledWith(encoder, pass);
+    // Clean instance skipped (needsEncode false).
+    expect(encodeComputeClean).not.toHaveBeenCalled();
+    expect(pass.end).toHaveBeenCalledTimes(1);
+
+    // encodeMainSeriesPass is the draw entry after encode — both must remain exported
+    // and callable independently so prepare→encode→draw order is enforceable at call sites.
     expect(typeof encodeFrameComputePasses).toBe('function');
     expect(typeof encodeMainSeriesPass).toBe('function');
   });

@@ -646,9 +646,9 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
             );
             gpuSeriesKindByIndex[i] = 'gpuDecimationRaw';
           } else {
-            // Extreme-N bandwidth: WGSL dense-bucket candidate cap (512) bounds
-            // per-bucket scans for lttb/min/max. Do not silently rewrite lttb→min
-            // (ECG peak quality; append path is pack/write-bound after the cap).
+            // Extreme-N bandwidth: WGSL dense-bucket candidate cap (128 above
+            // 512 pts/bucket; averages 64) bounds per-bucket scans for lttb/min/max.
+            // Do not silently rewrite lttb→min (ECG peak quality).
             const decimation = renderers.decimationComputes[i];
             if (!decimation) {
               // Pool undersized (should not happen when sampling is GPU-eligible).
@@ -690,6 +690,9 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
             strokePointCount = outputPointCount;
 
             // Decimation output is always chronological linear (no ring params).
+            // Pass raw residency as policyPointCount: LineRenderer applies it only
+            // when multi-M (≥1M) so FIFO exits 4× MSAA AA-quads; mid-N residency is
+            // ignored and draw instance count stays on outputPointCount (buckets).
             renderers.lineRenderers[i].prepare(
               s,
               decimatedBuffer,
@@ -705,7 +708,8 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
               lineSeriesCount,
               undefined,
               forceStandardDraw,
-              plotWidthDevicePx
+              plotWidthDevicePx,
+              rawPointCount
             );
             gpuSeriesKindByIndex[i] = 'gpuDecimationRaw';
           }

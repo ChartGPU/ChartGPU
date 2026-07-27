@@ -17,9 +17,25 @@ Optimize ChartGPU for large datasets and real-time streaming.
 | `max` / `min` | Spikes | Peaks / valleys |
 | `none` | Small datasets (<5K) | All points |
 
-**GPU decimation (line, `lttb`/`min`/`max`, null-gap-free):** compute shaders replace CPU sampling. When points-per-bucket exceed **512**, each bucket evaluates a uniform **512-candidate** set (endpoints included) instead of every raw point — exact below that density; approximate extrema/shape at extreme N (e.g. 10M pts / 2500 buckets). This bounds GPU bandwidth for FIFO streaming without changing `sampling` mode.
+**GPU decimation (line, `lttb`/`min`/`max`, null-gap-free):** compute shaders replace CPU sampling. When points-per-bucket exceed **512**, LTTB/min/max evaluate a uniform **128-candidate** set (endpoints included) and the averages pre-pass uses **64** samples for coarse triangle anchors — exact below 512 pts/bucket (covers 1M × 2500 ≈ 400); approximate extrema/shape at extreme N (5M–10M pts / 2500 buckets). This bounds GPU bandwidth so period=1 present fidelity stays interactive without multi-frame cadence.
 
-**Streaming density cadence (intentional visual lag):** under pure unbounded growth (N increases, same buffer / buckets / ring), recompute period scales with points-per-bucket: **period 2** at density ≥100, **4** at ≥200, **8** at ≥1000. Between recomputes the chart draws a **1–7-frame-old** LTTB sample — acceptable for extreme streaming N, not a sampling-mode change. Equal-N content rewrites always recompute immediately; modular FIFO rings never density-skip.
+**Golden encode-signature fidelity (foundation):** the present path never draws decimation samples computed for a different prepare input than this frame.
+
+| Rule | Meaning |
+|------|---------|
+| **G0** | Never present output whose last successful encode `SIG` ≠ this frame’s prepare inputs. `SIG` = algorithm, rawBuffer, rawPointCount, visibleStart/End, targetBuckets, contentVersion, ringStart, ringCapacity. |
+| **G1** | `lastEncodedSIG` updates **only after** a successful `encodeCompute` (never on prepare entry alone). Same-frame order: prepare → encode if needed → draw. |
+| **G2** | **Period = 1** whenever prepare `SIG` differs from `lastEncodedSIG` — modular FIFO wrap/fill **and** linear growth. Multi-frame density amortization (period 2/4/32/64) and intentional present lag are **removed / forbidden**. |
+
+**Period-flash (forbidden):** multi-frame freeze of geometry for a prior streaming `SIG` while ring/N/window/version moved, then a hard snap when encode finally runs. Max frames presenting a prior streaming `SIG` = **0**.
+
+**Allowed residual motion:** honest LTTB reselection every streaming frame (polyline may move slightly frame-to-frame without freeze), 128-candidate (averages 64) approximation at extreme pts/bucket, dense-hairline / draw-LOD policy. These are not golden-rule failures.
+
+**Phase B multi‑M cost model (still G0–G2):** every streaming `SIG` change re-encodes this frame. Speed comes from cheaper honest recompute (dense candidate caps, O(1) cold multi‑M content stamp on `setSeries`, modular ring index without integer `%` in WGSL) — **not** multi-frame present lag.
+
+Equal-N content rewrites (same N + same ringStart, version bump) and bind-group/output rebuilds always recompute. Domain scales are **not** in `SIG` — they update every frame on the line/area draw path.
+
+Multi‑M FIFO rows re-encode LTTB every append frame after this foundation; Avg FPS may drop vs pre-fidelity cadence-inflated baselines. Competitive speed claims use a **post-present-fidelity** harness archive (not pre-fidelity multi‑M FPS).
 
 **Config:** Per-series `sampling`, `samplingThreshold` in [options](api/options.md#series-configuration). See [`examples/sampling/`](../examples/sampling/).
 
@@ -79,13 +95,13 @@ Chart-level option controlling dense draw fidelity:
 
 | Value | Lines | Scatter | Mountain / area fill | Equal-N LTTB |
 |-------|-------|---------|---------------------|--------------|
-| `'auto'` (default) | ≥25k points or multi-series segment budget ≥500k → 1 device-px hairline; multi-M hairline also caps **drawn** segments toward `max(2048, 1× plotWidth)` | High points/pixel → compact marker radius toward ~1 device px | N ≥ 250k and over pixel budget → draw-stride fill (resident data unchanged; `sampling: 'none'` still full raw); dense fill draws sampleCount:1 post-resolve (or direct SS1 when no annotations/hover) | Index-sorted equal-N rewrites may freeze prior LTTB indices (O(k) y remap) |
+| `'auto'` (default) | ≥25k **draw** points or multi-series segment budget ≥500k → 1 device-px hairline; multi‑M **raw residency** (≥1M) on GPU-decimation path also forces hairline while draw instance count stays on buckets; multi-M hairline also caps **drawn** segments toward `max(8192, 4× plotWidth)` | High points/pixel → compact marker radius toward ~1 device px | N ≥ 1M and over pixel budget → draw-stride fill (resident data unchanged; `sampling: 'none'` still full raw); dense fill draws sampleCount:1 post-resolve (or direct SS1 when no annotations/hover) | Index-sorted equal-N rewrites may freeze prior LTTB indices (O(k) y remap) |
 | `'strict'` | Always honor `lineStyle.width` + AA quads + full N segments | Always honor `symbolSize` | Full N−1 fill trapezoids | Full LTTB recompute on every y change (honest sampling) |
 
 **Thresholds (auto only):**
 
-- Dense hairline: `DENSE_HAIRLINE_POINT_THRESHOLD = 25_000` points per series, or multi-series total segments ≥ `500_000`
-- Dense draw stride (mountain fill + multi-M hairline stroke): N ≥ `250_000` and segments over `max(2048, 1× plotWidthDevicePx)` → index stride in VS (`denseDrawLod.ts` / `areaDrawPolicy.ts`); residency and sampling mode unchanged. **May draw ≪ N−1** at 500k / 1M protect rows under auto — use `lod: 'strict'` when full geometry is required
+- Dense hairline: `DENSE_HAIRLINE_POINT_THRESHOLD = 25_000` **draw / displayed** points per series (raw stroke length or GPU-decimation bucket/`pointCountOverride` count), or multi-series total segments ≥ `500_000`. **GPU-decimation multi‑M residency:** when raw residency ≥ `DENSE_DRAW_POINT_THRESHOLD` (`1_000_000`), hairline policy may use that raw count even if draw N is only a few thousand LTTB buckets (multi‑M FIFO exits 4× MSAA AA-quad fill). Mid-N raw (50k–500k) with low draw N keeps full AA quads + configured width.
+- Dense draw stride (mountain fill + multi-M hairline stroke): N ≥ `1_000_000` and segments over `max(8192, 4× plotWidthDevicePx)` → index stride in VS (`denseDrawLod.ts` / `areaDrawPolicy.ts`); residency and sampling mode unchanged. Mid-N product demos (≤999k, including 250k–500k) keep full N−1 under auto. **May draw ≪ N−1** at multi-M protect rows under auto — use `lod: 'strict'` when full geometry is required
 - Dense mountain under auto may use **sampleCount:1** for dense fill/stroke (post-resolve, or a direct swapchain SS1 path when every series layer is deferred and there are no annotations / pointer overlays). Overlay axes stay correct; main 4× MSAA is skipped only on that narrow dense-only path
 - Dense scatter: density LO `0.08` / HI `0.30` points per plot pixel, plus N ≥ `250_000` full-compact floor; **only fully compact** const-radius draws sampleCount:1 post-resolve (partial blends stay main 4×); deferred only on pure-scatter charts (any visible line keeps scatter on main for z-order — see `scatterDrawPolicy.ts`)
 

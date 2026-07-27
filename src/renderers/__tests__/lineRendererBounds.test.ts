@@ -30,6 +30,7 @@ beforeAll(() => {
 });
 
 import { createLineRenderer } from '../createLineRenderer';
+import { DENSE_DRAW_POINT_THRESHOLD } from '../denseDrawLod';
 
 function createMockDevice() {
   return {
@@ -522,6 +523,236 @@ describe('createLineRenderer bounds (P2-5)', () => {
     renderer.dispose();
   });
 
+  it('policyPointCount multi-M forces hairline while draw uses low override (GPU-decimation FIFO)', () => {
+    const device = createMockDevice();
+    const writeUniform = writeUniformBuffer as ReturnType<typeof vi.fn>;
+    writeUniform.mockClear();
+    const renderer = createLineRenderer(device, { sampleCount: 4 });
+    const data: DataPoint[] = [
+      [0, 0],
+      [1, 1],
+    ];
+    // width 2 → hairline bookkeeping floors to 1 CSS px at VS float[19]
+    const series = makeSeries(data);
+    const xScale = createLinearScale().domain(0, 1).range(-1, 1);
+    const yScale = createLinearScale().domain(0, 1).range(1, -1);
+    const dataBuffer = { label: 'data' } as GPUBuffer;
+    // Buckets = 10k (draw path); raw residency = 1M → multi-M gate → hairline.
+    // prepare(..., pointCountOverride, lineSeriesCount, ringLayout, forceStandard, plotW, policyPointCount)
+    renderer.prepare(
+      series,
+      dataBuffer,
+      xScale,
+      yScale,
+      0,
+      1,
+      800,
+      600,
+      10_000,
+      1,
+      undefined,
+      false,
+      800,
+      DENSE_DRAW_POINT_THRESHOLD
+    );
+    expect(renderer.isDenseHairline()).toBe(true);
+
+    const vsWrites = writeUniform.mock.calls.filter((c) => {
+      const dataArg = c[2];
+      return dataArg instanceof ArrayBuffer && dataArg.byteLength === 112;
+    });
+    expect(vsWrites.length).toBeGreaterThan(0);
+    const f32 = new Float32Array(vsWrites[vsWrites.length - 1]![2] as ArrayBuffer);
+    // Hairline floors line width bookkeeping to 1 CSS px (pipeline ignores expansion).
+    expect(f32[19]).toBe(1);
+
+    const hairDraws: Array<{ v: number; i: number }> = [];
+    const hairPass = {
+      setPipeline: vi.fn(),
+      setBindGroup: vi.fn(),
+      draw: vi.fn((v: number, i: number) => {
+        hairDraws.push({ v, i });
+      }),
+    } as unknown as GPURenderPassEncoder;
+    renderer.render(hairPass);
+    expect(hairDraws).toEqual([]); // deferred out of main MSAA
+    renderer.renderHairline(hairPass);
+    // Draw instance count follows override (10k points → 9999 segments), not raw 1M.
+    expect(hairDraws).toEqual([{ v: 2, i: 9_999 }]);
+    renderer.dispose();
+  });
+
+  it('policyPointCount mid-N does not force hairline when override is low', () => {
+    const device = createMockDevice();
+    const renderer = createLineRenderer(device, { sampleCount: 4 });
+    const data: DataPoint[] = [
+      [0, 0],
+      [1, 1],
+    ];
+    const series = makeSeries(data);
+    const xScale = createLinearScale().domain(0, 1).range(-1, 1);
+    const yScale = createLinearScale().domain(0, 1).range(1, -1);
+    const dataBuffer = { label: 'data' } as GPUBuffer;
+    // 30k raw would trip the 25k hairline floor if residency were ungated;
+    // multi-M gate (1M) ignores mid-N policyPointCount → standard AA on 5k buckets.
+    renderer.prepare(
+      series,
+      dataBuffer,
+      xScale,
+      yScale,
+      0,
+      1,
+      800,
+      600,
+      5_000,
+      1,
+      undefined,
+      false,
+      800,
+      30_000
+    );
+    expect(renderer.isDenseHairline()).toBe(false);
+
+    const draws: Array<{ v: number; i: number }> = [];
+    const pass = {
+      setPipeline: vi.fn(),
+      setBindGroup: vi.fn(),
+      draw: vi.fn((v: number, i: number) => {
+        draws.push({ v, i });
+      }),
+    } as unknown as GPURenderPassEncoder;
+    renderer.render(pass);
+    expect(draws).toEqual([{ v: 6, i: 4_999 }]);
+    renderer.dispose();
+  });
+
+  it('policyPointCount just below multi-M floor does not force hairline', () => {
+    const device = createMockDevice();
+    const renderer = createLineRenderer(device, { sampleCount: 4 });
+    const data: DataPoint[] = [
+      [0, 0],
+      [1, 1],
+    ];
+    const series = makeSeries(data);
+    const xScale = createLinearScale().domain(0, 1).range(-1, 1);
+    const yScale = createLinearScale().domain(0, 1).range(1, -1);
+    const dataBuffer = { label: 'data' } as GPUBuffer;
+    // 999_999 is in the documented 250k–999k non-hairline residency band.
+    renderer.prepare(
+      series,
+      dataBuffer,
+      xScale,
+      yScale,
+      0,
+      1,
+      800,
+      600,
+      5_000,
+      1,
+      undefined,
+      false,
+      800,
+      DENSE_DRAW_POINT_THRESHOLD - 1
+    );
+    expect(renderer.isDenseHairline()).toBe(false);
+
+    const draws: Array<{ v: number; i: number }> = [];
+    const pass = {
+      setPipeline: vi.fn(),
+      setBindGroup: vi.fn(),
+      draw: vi.fn((v: number, i: number) => {
+        draws.push({ v, i });
+      }),
+    } as unknown as GPURenderPassEncoder;
+    renderer.render(pass);
+    expect(draws).toEqual([{ v: 6, i: 4_999 }]);
+    renderer.dispose();
+  });
+
+  it('forceStandardDraw blocks multi-M policyPointCount hairline (lod:strict)', () => {
+    const device = createMockDevice();
+    const renderer = createLineRenderer(device, { sampleCount: 4 });
+    const data: DataPoint[] = [
+      [0, 0],
+      [1, 1],
+    ];
+    const series = makeSeries(data);
+    const xScale = createLinearScale().domain(0, 1).range(-1, 1);
+    const yScale = createLinearScale().domain(0, 1).range(1, -1);
+    const dataBuffer = { label: 'data' } as GPUBuffer;
+    renderer.prepare(
+      series,
+      dataBuffer,
+      xScale,
+      yScale,
+      0,
+      1,
+      800,
+      600,
+      10_000,
+      1,
+      undefined,
+      true, // forceStandardDraw
+      800,
+      DENSE_DRAW_POINT_THRESHOLD
+    );
+    expect(renderer.isDenseHairline()).toBe(false);
+
+    const draws: Array<{ v: number; i: number }> = [];
+    const pass = {
+      setPipeline: vi.fn(),
+      setBindGroup: vi.fn(),
+      draw: vi.fn((v: number, i: number) => {
+        draws.push({ v, i });
+      }),
+    } as unknown as GPURenderPassEncoder;
+    renderer.render(pass);
+    expect(draws).toEqual([{ v: 6, i: 9_999 }]);
+    renderer.dispose();
+  });
+
+  it('sampleCount 1 blocks multi-M policyPointCount hairline (antialias:false)', () => {
+    const device = createMockDevice();
+    const renderer = createLineRenderer(device, { sampleCount: 1 });
+    const data: DataPoint[] = [
+      [0, 0],
+      [1, 1],
+    ];
+    const series = makeSeries(data);
+    const xScale = createLinearScale().domain(0, 1).range(-1, 1);
+    const yScale = createLinearScale().domain(0, 1).range(1, -1);
+    const dataBuffer = { label: 'data' } as GPUBuffer;
+    renderer.prepare(
+      series,
+      dataBuffer,
+      xScale,
+      yScale,
+      0,
+      1,
+      800,
+      600,
+      10_000,
+      1,
+      undefined,
+      false,
+      800,
+      DENSE_DRAW_POINT_THRESHOLD
+    );
+    expect(renderer.isDenseHairline()).toBe(false);
+
+    const draws: Array<{ v: number; i: number }> = [];
+    const pass = {
+      setPipeline: vi.fn(),
+      setBindGroup: vi.fn(),
+      draw: vi.fn((v: number, i: number) => {
+        draws.push({ v, i });
+      }),
+    } as unknown as GPURenderPassEncoder;
+    renderer.render(pass);
+    expect(draws).toEqual([{ v: 6, i: 9_999 }]);
+    renderer.dispose();
+  });
+
   it('denseHairline defers main render; renderHairline uses line-list draw(2, segments)', () => {
     const device = createMockDevice();
     const renderer = createLineRenderer(device, { sampleCount: 4 });
@@ -630,6 +861,10 @@ describe('createLineRenderer bounds (P2-5)', () => {
 });
 
 describe('createLineRenderer dense compact LOD (mountain multi-M)', () => {
+  // Dense draw stride enters at DENSE_DRAW_POINT_THRESHOLD (1M); use multi-M so
+  // compact pack + segment budget assertions stay non-vacuous under lod:auto.
+  const DENSE_LOD_N = 1_500_000;
+
   const makeXyCols = (n: number): { x: Float64Array; y: Float64Array } => {
     const x = new Float64Array(n);
     const y = new Float64Array(n);
@@ -644,7 +879,7 @@ describe('createLineRenderer dense compact LOD (mountain multi-M)', () => {
     const device = createMockDevice();
     const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
     const renderer = createLineRenderer(device, { sampleCount: 4 });
-    const n = 300_000;
+    const n = DENSE_LOD_N;
     const cols = makeXyCols(n);
     const series = makeSeries(cols as any);
     const xScale = createLinearScale()
@@ -675,7 +910,7 @@ describe('createLineRenderer dense compact LOD (mountain multi-M)', () => {
     const device = createMockDevice();
     const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
     const renderer = createLineRenderer(device, { sampleCount: 4 });
-    const n = 300_000;
+    const n = DENSE_LOD_N;
     const cols = makeXyCols(n);
     const ring = {
       __ring: true as const,
@@ -704,7 +939,7 @@ describe('createLineRenderer dense compact LOD (mountain multi-M)', () => {
     const device = createMockDevice();
     const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
     const renderer = createLineRenderer(device, { sampleCount: 4 });
-    const n = 300_000;
+    const n = DENSE_LOD_N;
     const staging = new Float32Array(n * 2);
     for (let i = 0; i < n; i++) {
       staging[i * 2] = i;
@@ -735,7 +970,7 @@ describe('createLineRenderer dense compact LOD (mountain multi-M)', () => {
     const device = createMockDevice();
     const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
     const renderer = createLineRenderer(device, { sampleCount: 4 });
-    const n = 300_000;
+    const n = DENSE_LOD_N;
     const cols = makeXyCols(n);
     const series = makeSeries(cols as any);
     const xScale = createLinearScale()
@@ -763,7 +998,7 @@ describe('createLineRenderer dense compact LOD (mountain multi-M)', () => {
   it('uses plotWidthDevicePx for dense stride budget (not full canvas width alone)', () => {
     const device = createMockDevice();
     const renderer = createLineRenderer(device, { sampleCount: 4 });
-    const n = 300_000;
+    const n = DENSE_LOD_N;
     const cols = makeXyCols(n);
     const series = makeSeries(cols as any);
     const xScale = createLinearScale()
@@ -772,7 +1007,7 @@ describe('createLineRenderer dense compact LOD (mountain multi-M)', () => {
     const yScale = createLinearScale().domain(0, 10).range(1, -1);
     const dataBuffer = { label: 'data', size: n * 8 } as GPUBuffer;
 
-    // Narrow plot width vs wide canvas: budget uses plot width (floor max(2048, plotW)).
+    // Narrow plot width vs wide canvas: budget uses plot width (max(8192, 4× plotW)).
     const canvasW = 4000;
     const plotW = 1000;
     renderer.prepare(series, dataBuffer, xScale, yScale, 0, 1, canvasW, 800, n, 1, undefined, false, plotW);
@@ -787,11 +1022,12 @@ describe('createLineRenderer dense compact LOD (mountain multi-M)', () => {
       }),
     } as unknown as GPURenderPassEncoder;
     renderer.renderHairline(pass);
-    // Budget = max(2048, plotW)=2048 when plotW < min floor; not canvasW=4000.
-    expect(hairDraws[0]).toBeLessThanOrEqual(2048 + 64);
+    // Budget = max(8192, 4×plotW)=8192 when 4×plotW < min floor; not canvasW=4000.
+    expect(hairDraws[0]).toBeLessThanOrEqual(8_192 + 64);
     expect(hairDraws[0]).toBeGreaterThan(0);
     expect(hairDraws[0]).toBeLessThan(n - 1);
     // Wider plot alone would still be ≪ full N; verify plot budget wins over canvas.
+    // 4×3500 = 14000 drives budget above the min floor.
     const renderer2 = createLineRenderer(device, { sampleCount: 4 });
     renderer2.prepare(series, dataBuffer, xScale, yScale, 0, 1, canvasW, 800, n, 1, undefined, false, 3500);
     const hairDrawsWide: number[] = [];
@@ -804,7 +1040,7 @@ describe('createLineRenderer dense compact LOD (mountain multi-M)', () => {
     } as unknown as GPURenderPassEncoder;
     renderer2.renderHairline(pass2);
     expect(hairDrawsWide[0]).toBeGreaterThan(hairDraws[0]!);
-    expect(hairDrawsWide[0]).toBeLessThanOrEqual(3500 + 64);
+    expect(hairDrawsWide[0]).toBeLessThanOrEqual(14_000 + 64);
     renderer2.dispose();
     renderer.dispose();
   });

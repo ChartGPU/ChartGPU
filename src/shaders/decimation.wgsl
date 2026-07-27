@@ -55,11 +55,17 @@ struct DecimationUniforms {
 
 // Map a chronological (logical) raw index into physical storage. Ring mode
 // stores points modularly after FIFO wrap; linear mode is a no-op.
+//
+// Full-ring FIFO (suite G7 steady state): logicalIdx < ringCapacity, so
+// ringStart + logicalIdx wraps **at most once**. Prefer a compare + subtract
+// over `%` — integer modulo is expensive in the dense LTTB candidate loop
+// (Phase B multi-M).
 fn rawAt(logicalIdx : u32) -> vec2<f32> {
   if (uni.ringCapacity == 0u) {
     return rawPoints[logicalIdx];
   }
-  let phys = (uni.ringStart + logicalIdx) % uni.ringCapacity;
+  let sum = uni.ringStart + logicalIdx;
+  let phys = select(sum, sum - uni.ringCapacity, sum >= uni.ringCapacity);
   return rawPoints[phys];
 }
 
@@ -148,18 +154,23 @@ fn mulDivU32(a : u32, b : u32, denom : u32) -> u32 {
 // Max raw points examined per interior bucket. When the bucket range is
 // larger, candidates are uniformly subsampled (including endpoints).
 //
-// Rationale (FIFO extreme-N, e.g. 10M × 5 series, samplingThreshold=2500):
+// Rationale (FIFO extreme-N, e.g. 5M–10M × 5 series, samplingThreshold=2500):
 //   Parallel LTTB otherwise full-scans the visible span twice per series
 //   (~100M raw reads/frame at 10M×5). Cap keeps quality on dense waveforms
-//   while bounding GPU bandwidth.
+//   while bounding GPU bandwidth so period=1 (G2) stays interactive.
 //
 // At 1M × 2500 buckets ≈ 400 pts/bucket → full scan (exact; no 1M×5 regression).
-// At 10M ≈ 4000 pts/bucket → 512 samples (~8× less bandwidth per pass).
+// At 5M ≈ 2000 pts/bucket → DENSE_MAX candidates (~4× less bandwidth than a
+//   512-cap; ~16× less than an uncapped scan).
+// At 10M ≈ 4000 pts/bucket → same DENSE_MAX cap.
 //
 // **Approximation (all three entry points when rangeLen > 512):**
 //   - LTTB / averages: triangle-area / mean over the uniform candidate set.
 //   - min/max: argmin/argmax over candidates only — not the true bucket
-//     extremum. Dense ECG/noise still preserves peaks well at 512 samples.
+//     extremum. Dense ECG/noise still preserves peaks well at 128 samples.
+//   - Averages at extreme density use an even tighter set (see
+//     bucketAverageCandidateCount) — coarse anchors are enough for parallel
+//     LTTB while nearly free vs a second full candidate scan.
 //
 // Literal (not module const) so Chrome's WGSL front-end never couples this
 // to workgroup_size / array-size resolution (see AGENTS.md WG_SIZE note).
@@ -176,11 +187,21 @@ fn candidateRawIndex(rangeStart : u32, rangeLen : u32, s : u32, candCount : u32)
   return rangeStart + mulDivU32(rangeLen - 1u, s, candCount - 1u);
 }
 
-// candCount = min(rangeLen, 512). Shared by all three entry points
-// (min/max, averages, LTTB) — see approximation note above.
+// Exact scan while pts/bucket ≤ 512 (covers 1M×2500 ≈ 400). Above that,
+// Phase B tight cap (128) for honest every-frame LTTB bandwidth.
+// Shared by min/max + LTTB selection. Averages use bucketAverageCandidateCount.
 fn bucketCandidateCount(rangeLen : u32) -> u32 {
   if (rangeLen > 512u) {
-    return 512u;
+    return 128u;
+  }
+  return rangeLen;
+}
+
+// Averages only need coarse triangle anchors. At extreme density, scan far
+// fewer points than LTTB selection (still endpoint-inclusive via candidateRawIndex).
+fn bucketAverageCandidateCount(rangeLen : u32) -> u32 {
+  if (rangeLen > 512u) {
+    return 64u;
   }
   return rangeLen;
 }
@@ -372,10 +393,11 @@ fn computeBucketAverages(
   var sumY : f32 = 0.0;
   var cnt  : u32 = 0u;
 
-  // Uniform subsample when range is huge (same cap as min/max and LTTB).
-  // Approximate mean is enough for parallel-LTTB triangle anchors at extreme N.
+  // Uniform subsample when range is huge. Extreme density uses a tighter
+  // average-only cap (bucketAverageCandidateCount) — anchors need less
+  // precision than LTTB selection (Phase B bandwidth).
   let rangeLenAvg = rangeEnd - rangeStart;
-  let candCountAvg = bucketCandidateCount(rangeLenAvg);
+  let candCountAvg = bucketAverageCandidateCount(rangeLenAvg);
   var sAvg : u32 = tid;
   while (sAvg < candCountAvg) {
     let i = candidateRawIndex(rangeStart, rangeLenAvg, sAvg, candCountAvg);
