@@ -22,8 +22,6 @@
 
 </div>
 
-MIT-licensed WebGPU charting library for gigantic datasets, real-time streaming dashboards, 3D visualization
-
 ---
 
 ## Demo
