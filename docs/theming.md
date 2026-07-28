@@ -32,4 +32,4 @@ chart.setOption({ ...chart.options, theme: 'light' });
 
 ## Full reference
 
-See [api/themes.md](api/themes.md) for `ThemeConfig` properties, color precedence, and type definitions.
+See [Themes API](https://chartgpu.io/docs/api/themes/) for `ThemeConfig` properties, color precedence, and type definitions.

@@ -158,9 +158,9 @@ See the [full source code](../../examples/streaming-dashboard/) for the complete
 
 ## See Also
 
-- [Chart API](../api/chart.md) — `ChartGPU.create()`, shared device, device loss events
-- [GPU Context](../api/gpu-context.md) — `GPUContextOptions`, shared device support
-- [Interaction](../api/interaction.md) — Chart sync, events, `connectCharts()`
-- [Options](../api/options.md) — `ChartGPUOptions`, series config, data zoom
-- [Annotations API](../api/annotations.md) — Programmatic annotations, authoring tools
+- [Chart API](https://chartgpu.io/docs/api/chart/) — `ChartGPU.create()`, shared device, device loss events
+- [Streaming](https://chartgpu.io/docs/api/streaming/) — `appendData`, shared device, multi-chart patterns
+- [Interaction](https://chartgpu.io/docs/api/interaction/) — Chart sync, events, `connectCharts()`
+- [Options](https://chartgpu.io/docs/api/options/) — `ChartGPUOptions`, series config, data zoom
+- [Annotations API](https://chartgpu.io/docs/api/annotations/) — Programmatic annotations, authoring tools
 - [Streaming Dashboard Example](../../examples/streaming-dashboard/) — Full source code

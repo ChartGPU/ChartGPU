@@ -1,6 +1,8 @@
 # ChartGPU API Reference
 
-**LLM/agent:** start with [llm-context.md](llm-context.md). **Human:** pick a section below.
+**Hosted:** [https://chartgpu.io/docs/api/](https://chartgpu.io/docs/api/) (preferred for humans). This directory is the source markdown ported to the site.
+
+**LLM/agent:** start with [llm-context.md](llm-context.md). **Human:** pick a section below, or use the hosted hub.
 
 ## Public API
 
