@@ -3,7 +3,7 @@
 </p>
 
 <p align="center" style="margin-top:-18px;">
-  MIT-licensed WebGPU charting library for dense real-time, multi-series and multi-panel dashboards.
+  MIT-licensed WebGPU charting library for gigantic datasets, real-time streaming dashboards, and 3D visualization.
 </p>
 
 <div align="center">
@@ -22,9 +22,32 @@
 
 </div>
 
-ChartGPU is a TypeScript WebGPU charting library for browser engineers who need streaming multi-series, multi-chart ops/trading/APM walls, and dense scientific views. MIT for commercial embed. Zero npm runtime dependencies. No WebGL fallback: WebGPU is required.
+MIT-licensed WebGPU charting library for gigantic datasets, real-time streaming dashboards, 3D visualization
 
-Use it when Chart.js, ECharts, or uPlot hit streaming or multi-panel walls. Commercial GPU seats often ship WebGL fallback and broader catalog; ChartGPU is the open WebGPU-only embed.
+---
+
+## Demo
+
+![ChartGPU demo](https://raw.githubusercontent.com/chartgpu/chartgpu/main/docs/assets/chart-gpu-demo.gif)
+
+### Multi-chart dashboards with streaming data
+
+Shared-device multi-chart wall: latency, throughput, errors, resources, live annotations. Hosted wall and recipes linked next; shared-device sample below.
+
+[Streaming dashboards](https://chartgpu.io/docs/streaming-dashboards/) · [Multi-chart cookbook (repo)](docs/guides/multichart-dashboard-cookbook.md)
+
+![Streaming multi-chart dashboard](docs/assets/streaming-dashboard-example.png)
+
+### More Chart Types
+
+| Dense  scatter (density mode) | Candlestick / OHLC | Annotations |
+|:---:|:---:|:---:|
+| ![Scatter density](docs/assets/scatter-plot-density-chart-1million-points-example.png) | ![Candlestick](docs/assets/candle-stick-example.png) | ![Annotations](docs/assets/annotations.png) |
+
+Right-click annotation authoring: [annotations guide](https://chartgpu.io/docs/annotations/) · [`examples/annotation-authoring/`](examples/annotation-authoring/).
+---
+
+## Quick start
 
 ```bash
 npm install @chartgpu/chartgpu
@@ -48,7 +71,8 @@ chart.appendData(0, { x, y }, { maxPoints: 50_000 });
 
 Unscoped `chartgpu` is also on npm (same version line). GitHub Packages: `@chartgpu:registry=https://npm.pkg.github.com`. React: [`chartgpu-react`](https://github.com/ChartGPU/chartgpu-react) (`npm i chartgpu-react @chartgpu/chartgpu`).
 
-### Shared-device multi-panel (recommended for ≥3 charts)
+### Shared-device multi-chart (recommended for ≥3 charts)
+
 
 ```ts
 import { ChartGPU, createPipelineCache, connectCharts } from '@chartgpu/chartgpu';
@@ -77,51 +101,24 @@ Full recipes: [multi-chart cookbook](docs/guides/multichart-dashboard-cookbook.m
 
 ---
 
-## Why ChartGPU
+## ChartGPU
 
 | | |
 |---|---|
-| **Dense real-time jobs** | Multi-series streaming, multi-panel dashboards, finance candles/OHLC, heatmaps |
-| **Shared-device multi-panel** | Opt-in shared `GPUDevice` + pipeline cache (recommended for ≥3 charts); optional external rAF via `setRenderMode('external')` + `renderFrame()`; chart sync |
+| **Multi-chart dashboards** | Shared GPUDevice (≥3 charts) + `appendData` streaming |
 | **Ring FIFO streaming** | `appendData(..., { maxPoints })`; `updateHeatmap` / `updateSurface3D`; not full-rewrite `setOption` every tick |
 | **Sampling and gaps** | LTTB / min / max (CPU or GPU for eligible lines); `performance.lod` auto/strict; null gaps; optional `connectNulls` |
 | **Multi-axis and themes** | Independent Y axes; multi-chart zoom sync; dark / light / custom themes |
-| **MIT commercial embed** | Free density under MIT. Zero npm runtime dependencies. No core feature gates on FIFO, zoom, multi-chart, or finance series |
+| **MIT commercial embed** | Free density under MIT. Zero npm runtime dependencies |
 | **WebGPU-only** | Chrome/Edge 113+, Safari 18+. Explicit browser matrix; no dual-backend WebGL path |
 
 Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Performance: [chartgpu.io/docs/performance](https://chartgpu.io/docs/performance/). Theming: [chartgpu.io/docs/theming](https://chartgpu.io/docs/theming/).
 
 ---
 
-## Demo
-
-Demo and docs: [chartgpu.io](https://chartgpu.io) · [docs](https://chartgpu.io/docs/) · [streaming dashboards](https://chartgpu.io/docs/streaming-dashboards/)
-
-![ChartGPU demo](https://raw.githubusercontent.com/chartgpu/chartgpu/main/docs/assets/chart-gpu-demo.gif)
-
-### Multi-panel streaming (product hero)
-
-Shared-device multi-chart wall: latency, throughput, errors, resources, live annotations. Architecture sample above; hosted wall and recipes linked next.
-
-[Streaming dashboards](https://chartgpu.io/docs/streaming-dashboards/) · [Multi-chart cookbook (repo)](docs/guides/multichart-dashboard-cookbook.md)
-
-![Streaming multi-chart dashboard](docs/assets/streaming-dashboard-example.png)
-
-### Dense 2D and finance
-
-| Dense scatter (density mode) | Candlestick / OHLC | Annotations |
-|:---:|:---:|:---:|
-| ![Scatter density](docs/assets/scatter-plot-density-chart-1million-points-example.png) | ![Candlestick](docs/assets/candle-stick-example.png) | ![Annotations](docs/assets/annotations.png) |
-
-Large-N and multi-panel numbers depend on browser, hardware, sampling, and production vs dev dist. Prefer the [hosted demos](https://chartgpu.io) and [performance guide](https://chartgpu.io/docs/performance/) over bare FPS claims. Formal suite tables are versioned separately; do not treat marketing screenshots as competitive scores.
-
-Right-click annotation authoring: [annotations guide](https://chartgpu.io/docs/annotations/) · [`examples/annotation-authoring/`](examples/annotation-authoring/).
-
----
-
 ## Series
 
-Focused on dense real-time work. Full options stay in the API docs.
+Full options are in the API docs: [https://chartgpu.io/docs/api/options/](https://chartgpu.io/docs/api/options/)
 
 | Kind | Types / modes | Docs |
 |------|----------------|------|
@@ -129,9 +126,9 @@ Focused on dense real-time work. Full options stay in the API docs.
 | **Finance** | `candlestick`, `ohlc` | [candlestick](https://chartgpu.io/docs/series/candlestick/) |
 | **Scientific** | `heatmap`, `band`, `errorBar`, `impulse` | [heatmap](https://chartgpu.io/docs/series/heatmap/) |
 | **Composition** | `step` on line/area · `stack` mountain/area · scatter `mode: 'density'` | [charting](https://chartgpu.io/docs/charting/) |
-| **3D** | `pointCloud3d`, `surface3d` (`coordinateSystem: 'cartesian3d'`) | [API (repo)](docs/api/3d.md) |
+| **3D** | `pointCloud3d`, `surface3d` (`coordinateSystem: 'cartesian3d'`) | [API](https://chartgpu.io/docs/api/3d/) |
 
-Full option reference (repo): [`docs/api/options.md`](docs/api/options.md)
+Full option reference: [chartgpu.io/docs/api/options](https://chartgpu.io/docs/api/options/)
 
 ---
 
@@ -156,6 +153,7 @@ Enterprise matrix: WebGPU-only is intentional. If you need universal Canvas/SVG 
 | | |
 |---|---|
 | [Docs hub](https://chartgpu.io/docs/) | Guides and series docs |
+| [API reference](https://chartgpu.io/docs/api/) | `create`, options, streaming, interaction, 3D |
 | [Getting started](https://chartgpu.io/docs/getting-started/) | Install and first chart |
 | [Charting](https://chartgpu.io/docs/charting/) | Series, axes, interaction |
 | [Streaming dashboards](https://chartgpu.io/docs/streaming-dashboards/) | Shared device, multi-chart |
@@ -168,12 +166,9 @@ Enterprise matrix: WebGPU-only is intentional. If you need universal Canvas/SVG 
 
 | | |
 |---|---|
-| [API hub](docs/api/README.md) | Instance methods, options map, scales |
-| [Options](docs/api/options.md) | Full series / axis / streaming types |
-| [3D](docs/api/3d.md) | Camera, point cloud, surface, contours |
 | [Multi-chart cookbook](docs/guides/multichart-dashboard-cookbook.md) | Shared device recipes |
 | [Architecture](docs/ARCHITECTURE.md) | Render path and modules |
-| [Internals](docs/api/INTERNALS.md) | Data store, renderers, coordinator |
+| [Internals](docs/api/INTERNALS.md) | Data store, renderers, coordinator (contributors) |
 | [`examples/`](examples/) | Local Vite samples |
 
 ```bash
@@ -190,4 +185,4 @@ npm run dev
 
 ## License
 
-[MIT](LICENSE). Free for commercial embedding. Zero npm runtime dependencies. Density, FIFO, multi-chart, and finance series stay in the open core.
+[MIT](LICENSE). Free for commercial embedding. Zero npm runtime dependencies.

@@ -30,7 +30,7 @@ clear color + depth24plus
 
 Camera (orbit/pan/dolly) rebuilds view-projection uniforms only; series geometry re-uploads when data identity changes. Point-cloud appends stay resident while the series `data` seed identity is stable. Surface contours follow mesh updates. Shared: `GPUContext`, `PipelineCache`, colormap LUT helpers. Not shared: 2D scale/zoom stack, dataZoom, 2D axis tick modules.
 
-See [`docs/api/3d.md`](api/3d.md).
+See [3D API](https://chartgpu.io/docs/api/3d/).
 
 ## Architecture Diagram
 
@@ -215,5 +215,5 @@ flowchart TB
 ## Further Reading
 
 - [INTERNALS.md](api/INTERNALS.md) — Deep internal notes for contributors (data store, renderers, coordinator modules, upload/decimation contracts)
-- [Performance Guide](performance.md) — Sampling, GPU decimation, zoom-aware resampling, streaming best practices
-- [API Documentation](api/README.md) — Full public API reference
+- [Performance Guide](https://chartgpu.io/docs/performance/) — Sampling, GPU decimation, zoom-aware resampling, streaming best practices
+- [API Documentation](https://chartgpu.io/docs/api/) — Full public API reference

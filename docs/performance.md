@@ -37,7 +37,7 @@ Equal-N content rewrites (same N + same ringStart, version bump) and bind-group/
 
 Multi‑M FIFO rows re-encode LTTB every append frame after this foundation; Avg FPS may drop vs pre-fidelity cadence-inflated baselines. Competitive speed claims use a **post-present-fidelity** harness archive (not pre-fidelity multi‑M FPS).
 
-**Config:** Per-series `sampling`, `samplingThreshold` in [options](api/options.md#series-configuration). See [`examples/sampling/`](../examples/sampling/).
+**Config:** Per-series `sampling`, `samplingThreshold` in [options](https://chartgpu.io/docs/api/options/#series-configuration). See [`examples/sampling/`](../examples/sampling/).
 
 ## Zoom-aware resampling
 
@@ -55,7 +55,7 @@ Zoom triggers resampling on visible range only. Target scales with zoom level (c
 
 **Memory (preferred):** Stream with a fixed-capacity ring via `appendData(index, newPoints, { maxPoints })` — GPU modular ring writes, O(append), no full retained-window rewrite. Prefer this over sliding-window full `setOption` for high-rate FIFO.
 
-**Memory (fallback):** When you must fully replace series data, trim client-side then `setOption({ series: [{ data: rawData.slice(-maxPoints) }] })`. See [`examples/live-streaming/`](../examples/live-streaming/) and [chart.md — appendData](api/chart.md).
+**Memory (fallback):** When you must fully replace series data, trim client-side then `setOption({ series: [{ data: rawData.slice(-maxPoints) }] })`. See [`examples/live-streaming/`](../examples/live-streaming/) and [Chart API — appendData](https://chartgpu.io/docs/api/streaming/#appenddata).
 
 ### Hover / hit-test during multi‑M streaming
 
@@ -83,11 +83,11 @@ Prefer library defaults (crosshair + highlight on) over demo-only `tooltip: fals
 
 ### Axes-only multi-series `setOption`
 
-When only axis ranges / grid change and each series config object is identity-stable, resolve reuses the prior series array (O(1) vs O(series count)). Treat series elements as immutable; use `appendData` or new series objects when data changes. See [options.md](api/options.md#series-configuration).
+When only axis ranges / grid change and each series config object is identity-stable, resolve reuses the prior series array (O(1) vs O(series count)). Treat series elements as immutable; use `appendData` or new series objects when data changes. See [options](https://chartgpu.io/docs/api/options/#series-configuration).
 
 ### Multi-series dense hairline (draw LOD)
 
-Many short line series (e.g. 1000×1000) can exceed a **~500k total-segment** budget and switch to **1 device-px hairline** draw (post-resolve sampleCount 1) even when each series is under the 25k per-series threshold. This is draw-only; sampling and data residency are unchanged. Prefer fewer series or lower N for thick AA strokes. Details: [options.md — multi-series dense hairline](api/options.md#series-configuration).
+Many short line series (e.g. 1000×1000) can exceed a **~500k total-segment** budget and switch to **1 device-px hairline** draw (post-resolve sampleCount 1) even when each series is under the 25k per-series threshold. This is draw-only; sampling and data residency are unchanged. Prefer fewer series or lower N for thick AA strokes. Details: [options — multi-series dense hairline](https://chartgpu.io/docs/api/options/#series-configuration).
 
 ### Adaptive draw LOD (`performance.lod`)
 
@@ -156,6 +156,6 @@ Details: [`benchmarks/baseline/README.md`](../benchmarks/baseline/README.md), [`
 
 ## See also
 
-- [API Reference](api/README.md) — Sampling, zoom, lifecycle
-- [Getting Started](GETTING_STARTED.md)
+- [API Reference](https://chartgpu.io/docs/api/) — Sampling, zoom, lifecycle
+- [Getting Started](https://chartgpu.io/docs/getting-started/)
 - [examples/sampling/](../examples/sampling/), [examples/live-streaming/](../examples/live-streaming/), [examples/million-points/](../examples/million-points/)

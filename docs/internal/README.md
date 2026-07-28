@@ -20,9 +20,9 @@ These documents are intended for:
 
 For end-user documentation, see:
 
-- **[Getting Started Guide](../GETTING_STARTED.md)** - Quick start and first chart tutorial
-- **[API Documentation](../api/README.md)** - Complete API reference
-- **[Performance Guide](../performance.md)** - End-user performance optimization tips
+- **[Getting Started Guide](https://chartgpu.io/docs/getting-started/)** - Quick start and first chart tutorial
+- **[API Documentation](https://chartgpu.io/docs/api/)** - Complete API reference
+- **[Performance Guide](https://chartgpu.io/docs/performance/)** - End-user performance optimization tips
 
 For contributor documentation on architecture and internal APIs, see:
 

@@ -51,16 +51,16 @@ Run `npm run dev` and open the URL shown.
 
 ## Next Steps
 
-- **[API Reference](api/README.md)** — Options, series, axes, tooltip, zoom, themes
+- **[API Reference](https://chartgpu.io/docs/api/)** — Options, series, axes, tooltip, zoom, themes
 - **[Examples](../examples/)** — `basic-line`, `interactive`, `live-streaming`, `scatter-density-1m`, `candlestick`, `candlestick-streaming`, etc.
-- **[Options](api/options.md)** — Series, axes, zoom, tooltip; candlestick **price axis** / `priceLabel` (right rail, last-price badge, dual-Y gutters)
-- **[Performance](performance.md)** — Sampling, streaming, zoom-aware resampling
-- **[Theming](api/themes.md)** — Built-in themes, custom themes
-- **[Annotations](api/annotations.md)** — Reference lines, point markers, interactive authoring
+- **[Options](https://chartgpu.io/docs/api/options/)** — Series, axes, zoom, tooltip; candlestick **price axis** / `priceLabel` (right rail, last-price badge, dual-Y gutters)
+- **[Performance](https://chartgpu.io/docs/performance/)** — Sampling, streaming, zoom-aware resampling
+- **[Theming](https://chartgpu.io/docs/api/themes/)** — Built-in themes, custom themes
+- **[Annotations](https://chartgpu.io/docs/api/annotations/)** — Reference lines, point markers, interactive authoring
 
 ## Support
 
 1. Check browser support (Chrome 113+, Edge 113+, Safari 18+)
 2. Check console for errors
 3. See [examples](../examples/) for working code
-4. See [API docs](api/README.md) and [troubleshooting](api/troubleshooting.md)
+4. See [API docs](https://chartgpu.io/docs/api/) and [troubleshooting](https://chartgpu.io/docs/api/troubleshooting/)
