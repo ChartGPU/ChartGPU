@@ -43,6 +43,7 @@ Shared-device multi-chart wall: latency, throughput, errors, resources, live ann
 | ![Scatter density](docs/assets/scatter-plot-density-chart-1million-points-example.png) | ![Candlestick](docs/assets/candle-stick-example.png) | ![Annotations](docs/assets/annotations.png) |
 
 Right-click annotation authoring: [annotations guide](https://chartgpu.io/docs/annotations/) · [`examples/annotation-authoring/`](examples/annotation-authoring/).
+
 ---
 
 ## Quick start
