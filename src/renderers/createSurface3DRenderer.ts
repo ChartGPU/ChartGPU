@@ -1,5 +1,8 @@
 /**
  * Uniform grid surface mesh renderer (Y-up, XZ grid) with height colormap + simple lighting.
+ *
+ * Steady-state path: upload height-only storage (4 B/cell); VS reconstructs position + normals.
+ * Index + wire-index buffers retained when columns×rows are stable.
  */
 
 import surfaceWgsl from '../shaders/surface3d.wgsl?raw';
@@ -7,7 +10,7 @@ import type { ResolvedSurface3DSeriesConfig } from '../config/OptionResolver';
 import { buildColormapLut, colormapKey } from '../utils/colormap';
 import type { PipelineCache } from '../core/PipelineCache';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
-import { packSurface3D, packSurface3DWireframeIndices, type PackedSurface3D } from '../data/surface3dData';
+import { packSurface3DWireframeIndices, sanitizeSurface3DGrid } from '../data/surface3dData';
 import type { Mat4 } from '../core/3d/mat4';
 
 export interface Surface3DPrepareOptions {
@@ -29,9 +32,8 @@ export interface Surface3DRendererOptions {
 }
 
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
-const VERTEX_STRIDE = 32; // 8 floats
-// viewProj(64) + light(16) + colorParams(16) + ambient(16) = 112
-const VS_UNIFORM_SIZE = 112;
+// viewProj(64) + light(16) + colorParams(16) + ambient(16) + grid(16) + gridDims(16) = 144
+const VS_UNIFORM_SIZE = 144;
 
 const premulBlend: GPUBlendState = {
   color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
@@ -44,6 +46,45 @@ const depthStencilWrite: GPUDepthStencilState = {
   depthCompare: 'less',
 };
 
+/** Build solid triangle indices (two tris per cell). */
+function packSolidIndices(columns: number, rows: number): Uint32Array {
+  const cellCount = (columns - 1) * (rows - 1);
+  const indices = new Uint32Array(cellCount * 6);
+  let ii = 0;
+  for (let j = 0; j < rows - 1; j++) {
+    for (let i = 0; i < columns - 1; i++) {
+      const a = j * columns + i;
+      const b = a + 1;
+      const c = a + columns;
+      const d = c + 1;
+      indices[ii++] = a;
+      indices[ii++] = c;
+      indices[ii++] = b;
+      indices[ii++] = b;
+      indices[ii++] = c;
+      indices[ii++] = d;
+    }
+  }
+  return indices;
+}
+
+/**
+ * Copy ArrayLike heights into a tightly packed Float32Array for queue.writeBuffer.
+ * Non-finite → NaN (shader maps to 0); missing → NaN.
+ */
+function copyHeightsToF32(src: ArrayLike<number>, n: number, target: Float32Array): Float32Array {
+  const out = target.length >= n ? (target.length === n ? target : target.subarray(0, n)) : new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    if (i < src.length) {
+      const v = Number(src[i]);
+      out[i] = Number.isFinite(v) ? v : Number.NaN;
+    } else {
+      out[i] = Number.NaN;
+    }
+  }
+  return out;
+}
+
 export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRendererOptions): Surface3DRenderer {
   let disposed = false;
   const targetFormat = options?.targetFormat ?? DEFAULT_TARGET_FORMAT;
@@ -53,21 +94,28 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
   const vsUniformBuffer = createUniformBuffer(device, VS_UNIFORM_SIZE, { label: 'surface3d/vsUniforms' });
   const vsUniformF32 = new Float32Array(VS_UNIFORM_SIZE / 4);
 
-  let vertexBuffer: GPUBuffer | null = null;
+  let heightBuffer: GPUBuffer | null = null;
+  let heightCapacityBytes = 0;
   let indexBuffer: GPUBuffer | null = null;
   let wireIndexBuffer: GPUBuffer | null = null;
   let indexCount = 0;
   let wireIndexCount = 0;
   let lastDataRef: unknown = null;
-  /** Track data.y identity so y replace under a new array ref invalidates geometry. */
+  /** Track data.y identity so y replace under a new array ref invalidates heights. */
   let lastYRef: unknown = null;
   let lastWire = false;
   let lastColumns = -1;
   let lastRows = -1;
+  let lastXStart = NaN;
+  let lastXStep = NaN;
+  let lastZStart = NaN;
+  let lastZStep = NaN;
   let uploadCount = 0;
   let hasGeom = false;
-  /** Reused CPU pack target — avoids allocating columns×rows×8 floats every strip tick. */
-  let packVertexScratch: Float32Array | null = null;
+  /** Soft-fail when N²×4 exceeds device storage bind limit. */
+  let heightLimitWarned = false;
+  /** CPU scratch when heights are not a ready Float32Array of length n. */
+  let heightCpuScratch: Float32Array | null = null;
 
   let lutTexture: GPUTexture | null = null;
   let lutView: GPUTextureView | null = null;
@@ -90,18 +138,6 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
     return lutView!;
   };
 
-  const vertexBuffers: GPUVertexBufferLayout[] = [
-    {
-      arrayStride: VERTEX_STRIDE,
-      stepMode: 'vertex',
-      attributes: [
-        { shaderLocation: 0, offset: 0, format: 'float32x3' }, // position
-        { shaderLocation: 1, offset: 12, format: 'float32x3' }, // normal
-        { shaderLocation: 2, offset: 24, format: 'float32' }, // height
-      ],
-    },
-  ];
-
   const bindGroupLayout = device.createBindGroupLayout({
     label: 'surface3d/bindGroupLayout',
     entries: [
@@ -111,9 +147,15 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
         visibility: GPUShaderStage.VERTEX,
         texture: { sampleType: 'float', viewDimension: '2d' },
       },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.VERTEX,
+        buffer: { type: 'read-only-storage' },
+      },
     ],
   });
 
+  // No vertex buffers — geometry from @builtin(vertex_index) + heights storage.
   const solidPipeline = createRenderPipeline(
     device,
     {
@@ -123,7 +165,7 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
         code: surfaceWgsl,
         label: 'surface3d/shader',
         entryPoint: 'vsMain',
-        buffers: vertexBuffers,
+        buffers: [],
       },
       fragment: {
         code: surfaceWgsl,
@@ -148,7 +190,7 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
         code: surfaceWgsl,
         label: 'surface3d/shader',
         entryPoint: 'vsMainWire',
-        buffers: vertexBuffers,
+        buffers: [],
       },
       fragment: {
         code: surfaceWgsl,
@@ -166,44 +208,92 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
 
   let bindGroup: GPUBindGroup | null = null;
   let lastBindLutKey = '';
+  let lastBindHeightBuffer: GPUBuffer | null = null;
   let hasPrepared = false;
   let drawWire = false;
-  let packedMeta: PackedSurface3D | null = null;
+  let geomColumns = 0;
+  let geomRows = 0;
 
-  const uploadGeometry = (packed: PackedSurface3D, wireframe: boolean): void => {
-    const dimsStable =
-      packed.columns === lastColumns && packed.rows === lastRows && vertexBuffer != null && indexBuffer != null;
+  const maxHeightBytes = (): number => {
+    const maxBind = device.limits?.maxStorageBufferBindingSize ?? Number.POSITIVE_INFINITY;
+    const maxBuf = device.limits?.maxBufferSize ?? Number.POSITIVE_INFINITY;
+    return Math.min(maxBind, maxBuf);
+  };
 
-    // Vertices always re-upload when heights change.
-    const vBytes = packed.vertices.byteLength;
-    const vSize = Math.ceil(vBytes / 4) * 4;
-    if (!dimsStable || !vertexBuffer || vertexBuffer.size < vSize) {
-      vertexBuffer?.destroy();
-      vertexBuffer = device.createBuffer({
-        label: 'surface3d/vertices',
-        size: Math.max(vSize, 4),
-        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-      });
+  const ensureHeightBuffer = (bytes: number): GPUBuffer | null => {
+    const size = Math.max(Math.ceil(bytes / 4) * 4, 4);
+    const hardCap = maxHeightBytes();
+    if (size > hardCap) {
+      if (!heightLimitWarned) {
+        heightLimitWarned = true;
+        console.warn(
+          `ChartGPU surface3d: height field (${size} bytes) exceeds device storage limit ` +
+            `(min(maxStorageBufferBindingSize, maxBufferSize)=${hardCap}). Skipping mesh draw.`
+        );
+      }
+      return null;
     }
-    device.queue.writeBuffer(vertexBuffer, 0, packed.vertices.buffer, packed.vertices.byteOffset, vBytes);
+    if (!heightBuffer || heightCapacityBytes < size) {
+      heightBuffer?.destroy();
+      // Geometric growth to absorb modest dim growth without thrash; never exceed hardCap.
+      const grown = heightBuffer ? Math.max(size, heightCapacityBytes * 2) : size;
+      const alloc = Math.min(grown, hardCap);
+      if (alloc < size) {
+        return null;
+      }
+      heightBuffer = device.createBuffer({
+        label: 'surface3d/heights',
+        size: alloc,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      heightCapacityBytes = alloc;
+      bindGroup = null;
+      lastBindHeightBuffer = null;
+    }
+    return heightBuffer;
+  };
 
-    // Index topology is stable when columns×rows unchanged — retain index buffers (D6).
-    // skipIndices packs report indexCount 0; keep previous indexCount when dimsStable.
-    if (!dimsStable && packed.indexCount > 0) {
+  /** @returns false when field exceeds device storage limit (skip draw). */
+  const uploadHeights = (y: ArrayLike<number>, n: number): boolean => {
+    const bytes = n * 4;
+    const buf = ensureHeightBuffer(bytes);
+    if (!buf) return false;
+    if (y instanceof Float32Array && y.length >= n) {
+      const view = y.length === n ? y : y.subarray(0, n);
+      // byteOffset must be multiple of 4 (Float32Array guarantee when from f32 buffer).
+      device.queue.writeBuffer(buf, 0, view.buffer, view.byteOffset, bytes);
+    } else {
+      if (!heightCpuScratch || heightCpuScratch.length < n) {
+        heightCpuScratch = new Float32Array(n);
+      }
+      const packed = copyHeightsToF32(y, n, heightCpuScratch);
+      if (packed !== heightCpuScratch && packed.length >= n) {
+        heightCpuScratch = packed;
+      }
+      device.queue.writeBuffer(buf, 0, packed.buffer, packed.byteOffset, bytes);
+    }
+    uploadCount++;
+    return true;
+  };
+
+  const ensureIndices = (columns: number, rows: number, wireframe: boolean): void => {
+    const dimsStable = columns === lastColumns && rows === lastRows && indexBuffer != null;
+    if (!dimsStable) {
       indexBuffer?.destroy();
       wireIndexBuffer?.destroy();
-      const iBytes = packed.indices.byteLength;
+      const solid = packSolidIndices(columns, rows);
+      const iBytes = solid.byteLength;
       const iSize = Math.ceil(iBytes / 4) * 4;
       indexBuffer = device.createBuffer({
         label: 'surface3d/indices',
         size: Math.max(iSize, 4),
         usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
       });
-      device.queue.writeBuffer(indexBuffer, 0, packed.indices.buffer, packed.indices.byteOffset, iBytes);
-      indexCount = packed.indexCount;
+      device.queue.writeBuffer(indexBuffer, 0, solid.buffer, solid.byteOffset, iBytes);
+      indexCount = solid.length;
 
       if (wireframe) {
-        const wIdx = packSurface3DWireframeIndices(packed.columns, packed.rows);
+        const wIdx = packSurface3DWireframeIndices(columns, rows);
         const wBytes = wIdx.byteLength;
         const wSize = Math.ceil(wBytes / 4) * 4;
         wireIndexBuffer = device.createBuffer({
@@ -217,11 +307,10 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
         wireIndexBuffer = null;
         wireIndexCount = 0;
       }
-      lastColumns = packed.columns;
-      lastRows = packed.rows;
+      lastColumns = columns;
+      lastRows = rows;
     } else if (wireframe && !wireIndexBuffer) {
-      // Wire mode toggled on with stable dims
-      const wIdx = packSurface3DWireframeIndices(packed.columns, packed.rows);
+      const wIdx = packSurface3DWireframeIndices(columns, rows);
       const wBytes = wIdx.byteLength;
       const wSize = Math.ceil(wBytes / 4) * 4;
       wireIndexBuffer = device.createBuffer({
@@ -236,11 +325,6 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
       wireIndexBuffer = null;
       wireIndexCount = 0;
     }
-
-    uploadCount++;
-    // skipIndices packs leave indexCount 0 while GPU retains prior index buffer.
-    hasGeom = packed.vertexCount > 0 && (packed.indexCount > 0 || indexCount > 0);
-    packedMeta = packed;
   };
 
   const prepare = (seriesConfig: ResolvedSurface3DSeriesConfig, options: Surface3DPrepareOptions): void => {
@@ -253,44 +337,55 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
     }
 
     const dataRef = seriesConfig.data;
+    const grid = sanitizeSurface3DGrid(dataRef);
+    if (!grid) {
+      hasGeom = false;
+      hasPrepared = false;
+      return;
+    }
+
     const yRef = dataRef?.y;
     const wire = seriesConfig.wireframe;
-    // Geometry upload when data / y channel / wire mode changes.
-    // Colormap domain (yMin/yMax) is uniform-only — does not rebuild mesh.
+    const metaChanged =
+      grid.xStart !== lastXStart ||
+      grid.xStep !== lastXStep ||
+      grid.zStart !== lastZStart ||
+      grid.zStep !== lastZStep;
+    // Heights upload when data / y / grid meta change. Wireframe-only toggles only
+    // rebuild index topology — do not re-write the full height storage.
+    // Colormap domain (yMin/yMax) is uniform-only — does not rebuild heights.
     // In-place mutation of y values under a stable array reference is not detected
-    // (same contract as heatmap z) — replace `data` or `data.y` reference via setOption.
-    if (dataRef !== lastDataRef || yRef !== lastYRef || wire !== lastWire) {
-      // Streaming strip keeps columns×rows fixed — skip index rebuild (retained on GPU).
-      const dimsKnown = lastColumns === dataRef.columns && lastRows === dataRef.rows && indexBuffer != null;
-      const floats = Math.max(0, (dataRef?.columns ?? 0) * (dataRef?.rows ?? 0) * 8);
-      if (!packVertexScratch || packVertexScratch.length < floats) {
-        packVertexScratch = new Float32Array(Math.max(floats, 64));
+    // (same contract as heatmap z) — replace `data` or `data.y` reference via setOption
+    // or use updateSurface3D (new data wrapper each call; y may be zero-copy identity).
+    const heightsChanged = dataRef !== lastDataRef || yRef !== lastYRef || metaChanged;
+    const wireChanged = wire !== lastWire;
+    if (heightsChanged || wireChanged) {
+      const n = grid.columns * grid.rows;
+      if (heightsChanged) {
+        const ok = uploadHeights(grid.y, n);
+        if (!ok) {
+          hasGeom = false;
+          hasPrepared = false;
+          // Do not latch lastDataRef — allow retry if limits improve (rare) or data shrinks.
+          return;
+        }
       }
-      const packed = packSurface3D(dataRef, {
-        yMin: seriesConfig.yMin,
-        yMax: seriesConfig.yMax,
-        skipIndices: dimsKnown,
-        // Coordinator owns scene AABB; skip duplicate bounds walk in pack.
-        skipAabb: true,
-        targetVertices: packVertexScratch,
-      });
-      if (!packed) {
-        hasGeom = false;
-        hasPrepared = false;
-        // Do not latch lastDataRef on failed pack — allow retry when data becomes valid.
-        return;
-      }
-      uploadGeometry(packed, wire);
+      ensureIndices(grid.columns, grid.rows, wire);
       lastDataRef = dataRef;
       lastYRef = yRef;
       lastWire = wire;
-    } else if (!hasGeom && vertexBuffer != null && indexBuffer != null && indexCount > 0) {
-      // Recover from a prior failed/skip frame without re-packing the same refs.
+      lastXStart = grid.xStart;
+      lastXStep = grid.xStep;
+      lastZStart = grid.zStart;
+      lastZStep = grid.zStep;
+      geomColumns = grid.columns;
+      geomRows = grid.rows;
+      hasGeom = n > 0 && heightBuffer != null && indexCount > 0;
+    } else if (!hasGeom && heightBuffer != null && indexBuffer != null && indexCount > 0) {
       hasGeom = true;
     }
 
-    const meta = packedMeta;
-    if (!meta) {
+    if (!hasGeom || !heightBuffer || geomColumns < 2 || geomRows < 2) {
       hasPrepared = false;
       return;
     }
@@ -311,19 +406,31 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
     vsUniformF32[25] = 0.35;
     vsUniformF32[26] = 0.4;
     vsUniformF32[27] = 1;
+    // grid: xStart, xStep, zStart, zStep
+    vsUniformF32[28] = grid.xStart;
+    vsUniformF32[29] = grid.xStep;
+    vsUniformF32[30] = grid.zStart;
+    vsUniformF32[31] = grid.zStep;
+    // gridDims: columns, rows
+    vsUniformF32[32] = geomColumns;
+    vsUniformF32[33] = geomRows;
+    vsUniformF32[34] = 0;
+    vsUniformF32[35] = 0;
     writeUniformBuffer(device, vsUniformBuffer, vsUniformF32);
 
-    // Rebuild bind group only when LUT texture view identity changes.
-    if (!bindGroup || lastBindLutKey !== lutKey) {
+    // Rebuild bind group when LUT or height buffer identity changes.
+    if (!bindGroup || lastBindLutKey !== lutKey || lastBindHeightBuffer !== heightBuffer) {
       bindGroup = device.createBindGroup({
         label: 'surface3d/bindGroup',
         layout: bindGroupLayout,
         entries: [
           { binding: 0, resource: { buffer: vsUniformBuffer } },
           { binding: 1, resource: lut },
+          { binding: 2, resource: { buffer: heightBuffer } },
         ],
       });
       lastBindLutKey = lutKey;
+      lastBindHeightBuffer = heightBuffer;
     }
     drawWire = wire;
     hasPrepared = true;
@@ -332,13 +439,10 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
   return {
     prepare,
     render(passEncoder) {
-      if (disposed || !hasPrepared || !hasGeom || !bindGroup || !vertexBuffer || !indexBuffer) return;
+      if (disposed || !hasPrepared || !hasGeom || !bindGroup || !heightBuffer || !indexBuffer) return;
       passEncoder.setBindGroup(0, bindGroup);
-      passEncoder.setVertexBuffer(0, vertexBuffer);
       if (drawWire && wireIndexBuffer && wireIndexCount > 0) {
-        // Solid first then wire for dual-mode when wireframe flag is pure wire — goal allows solid+wire.
-        // When wireframe:true we draw line-list only; when false solid only.
-        // Dual: if wireframe, still draw solid faintly then wire — keep simple: wire replaces solid.
+        // wireframe:true → line-list only (product exclusive mode).
         passEncoder.setPipeline(wirePipeline);
         passEncoder.setIndexBuffer(wireIndexBuffer, 'uint32');
         passEncoder.drawIndexed(wireIndexCount);
@@ -351,17 +455,18 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
     dispose() {
       if (disposed) return;
       disposed = true;
-      vertexBuffer?.destroy();
+      heightBuffer?.destroy();
       indexBuffer?.destroy();
       wireIndexBuffer?.destroy();
       vsUniformBuffer.destroy();
       lutTexture?.destroy();
-      vertexBuffer = null;
+      heightBuffer = null;
       indexBuffer = null;
       wireIndexBuffer = null;
       lutTexture = null;
       lutView = null;
       bindGroup = null;
+      heightCpuScratch = null;
     },
     getUploadCount: () => uploadCount,
     hasGeometry: () => hasGeom,

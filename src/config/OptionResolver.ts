@@ -496,6 +496,11 @@ export type ResolvedSurface3DSeriesConfig = Readonly<{
   readonly colormap: HeatmapColormap;
   readonly yMin: number;
   readonly yMax: number;
+  /**
+   * True when the user supplied both finite `yMin` and `yMax` on the series config.
+   * Stream `replaceY` without update-level domain can skip full-field domain walks.
+   */
+  readonly yDomainExplicit: boolean;
   readonly wireframe: boolean;
   readonly opacity: number;
   readonly lighting: number;
@@ -802,7 +807,11 @@ function resolveSurface3DSeries(
     s.data.y != null &&
     s.data.y.length > 0;
 
-  // yMin/yMax: use explicit or placeholder (renderer pack fills from data)
+  // yMin/yMax: user-supplied finite pair is sticky (yDomainExplicit); otherwise
+  // resolve-time walk of initial heights fills placeholders. Stream replaceY may
+  // override via surfaceDomainByIndex when not yDomainExplicit.
+  const yDomainExplicit =
+    typeof s.yMin === 'number' && Number.isFinite(s.yMin) && typeof s.yMax === 'number' && Number.isFinite(s.yMax);
   let yMin = typeof s.yMin === 'number' && Number.isFinite(s.yMin) ? s.yMin : 0;
   let yMax = typeof s.yMax === 'number' && Number.isFinite(s.yMax) ? s.yMax : 1;
   if (drawable && (s.yMin == null || s.yMax == null) && s.data.y) {
@@ -848,6 +857,7 @@ function resolveSurface3DSeries(
     colormap,
     yMin,
     yMax,
+    yDomainExplicit,
     wireframe,
     opacity,
     lighting,

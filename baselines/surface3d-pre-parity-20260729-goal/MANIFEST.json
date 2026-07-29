@@ -1,0 +1,7 @@
+{
+  "intent": "surface3d-scichart-parity-baseline",
+  "date": "2026-07-29",
+  "provenance": "Backfilled from goal document table (docs/plans/2026-07-29-surface3d-scichart-parity-goal.md §1). Not a live browser-harness capture in this implementation run; numbers are the problem-statement baseline used for hill-climb targets.",
+  "browser.driver": "n/a (goal archive)",
+  "source": "docs/plans/2026-07-29-surface3d-scichart-parity-goal.md"
+}

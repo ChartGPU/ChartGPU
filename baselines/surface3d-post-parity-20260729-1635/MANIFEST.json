@@ -1,0 +1,24 @@
+{
+  "intent": "surface3d-scichart-parity",
+  "date": "2026-07-29T16:35",
+  "browser.driver": "browser-harness",
+  "suite": "javascript-chart-performance-test-suite",
+  "suiteUrl": "http://localhost:5173/",
+  "suite.test_group_id": 13,
+  "chartgpuDist": "production bun run build \u2192 /local-chartgpu/",
+  "chartgpuVersionTag": "0.3.4-local",
+  "chartgpu.gitCommit": "7e433bb67fdea3404758c0f301a352e7268b869f",
+  "suite.gitCommit": "edc41c8d74f08f6ce1f7584892937cd584beca0e",
+  "dist.sha256": {
+    "index.js": "b488a0ddfefc05ea12f0172a51ee72a6a630429d5bbabf6bc114755f6f98775d",
+    "createChartGPU3D-DAUgY0ub.js": "785b2ffe1739b64c07b123ea91a2238ff38ae8e393163d4599250793541b6529",
+    "index-C9A648N3.js": "c1c4fae4f7b0efd530f0f75898d5d9b016f4053012f104e1b1360520c03cc399"
+  },
+  "machine": {
+    "arch": "arm64",
+    "cpu": "Apple M5",
+    "os": "macOS 26.5"
+  },
+  "note": "Post WS1+WS2 height-only GPU path + replaceY zero-copy. WS1 and WS2 were implemented in one pass; harness FPS measured only at completion (no intermediate ladder artifacts).",
+  "preBaseline": "baselines/surface3d-pre-parity-20260729-goal/"
+}

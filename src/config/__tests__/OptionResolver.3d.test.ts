@@ -128,6 +128,55 @@ describe('OptionResolver 3D modality', () => {
     expect(s.drawable).toBe(true);
     expect(s.lighting).toBe(1);
     expect(s.opacity).toBe(0);
+    expect(s.yDomainExplicit).toBe(false);
+  });
+
+  it('surface3d yDomainExplicit when both yMin and yMax are user-supplied', () => {
+    const cols = 3;
+    const rows = 3;
+    const y = new Float32Array(cols * rows).fill(0.1);
+    const r = resolveOptions({
+      coordinateSystem: 'cartesian3d',
+      series: [
+        {
+          type: 'surface3d',
+          data: { xStart: 0, xStep: 1, zStart: 0, zStep: 1, columns: cols, rows, y },
+          yMin: -0.4,
+          yMax: 0.4,
+        },
+      ],
+    });
+    const s = r.series[0]!;
+    expect(s.type).toBe('surface3d');
+    if (s.type !== 'surface3d') throw new Error('expected surface3d');
+    expect(s.yDomainExplicit).toBe(true);
+    expect(s.yMin).toBe(-0.4);
+    expect(s.yMax).toBe(0.4);
+  });
+
+  it.each([
+    { yMin: 0, yMax: undefined, explicit: false, label: 'only yMin' },
+    { yMin: undefined, yMax: 1, explicit: false, label: 'only yMax' },
+    { yMin: Number.NaN, yMax: 1, explicit: false, label: 'NaN yMin' },
+    { yMin: 0, yMax: Number.POSITIVE_INFINITY, explicit: false, label: 'Inf yMax' },
+    { yMin: 0, yMax: 0, explicit: true, label: 'equal finite both' },
+    { yMin: -1, yMax: 1, explicit: true, label: 'both finite' },
+  ])('yDomainExplicit edges: $label → $explicit', ({ yMin, yMax, explicit }) => {
+    const y = new Float32Array(9).fill(0.5);
+    const series: Record<string, unknown> = {
+      type: 'surface3d',
+      data: { xStart: 0, xStep: 1, zStart: 0, zStep: 1, columns: 3, rows: 3, y },
+    };
+    if (yMin !== undefined) series.yMin = yMin;
+    if (yMax !== undefined) series.yMax = yMax;
+    const r = resolveOptions({
+      coordinateSystem: 'cartesian3d',
+      series: [series as never],
+    });
+    const s = r.series[0]!;
+    expect(s.type).toBe('surface3d');
+    if (s.type !== 'surface3d') throw new Error('expected surface3d');
+    expect(s.yDomainExplicit).toBe(explicit);
   });
 
   it('surface columns:1 is not drawable', () => {
