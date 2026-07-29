@@ -48,6 +48,13 @@ import { resolveCloudValueChannelIdentity, shouldInvalidateCloudPack, type Cloud
 import { packPointCloud3D, appendPackedPointCloud3D, type PackedPointCloud3D } from '../../data/pointCloud3dData';
 import { computeSurface3DAABB, shiftSurface3DAABBColumnScroll } from '../../data/surface3dData';
 import { applySurface3DUpdate, computeSurface3DDomain, shouldClearSurfaceStream } from '../../data/surface3dStream';
+import {
+  resolveReplaceYAABBYextent,
+  resolveSurfaceDomainAction,
+  reuseReplaceYAABB,
+  shouldClearSurfaceDomainOnSetOption,
+  shouldInvalidateSurfaceContoursOnReplaceY,
+} from '../../data/surface3dStreamPolicy';
 import { parseCssColorToGPUColor, parseCssColorToRgba01 } from '../../utils/colors';
 import { createLegend } from '../../components/createLegend';
 import type { Legend } from '../../components/createLegend';
@@ -198,6 +205,20 @@ export function createRenderCoordinator3D(
   const surfaceUserDataByIndex: Array<Surface3DGridData | null> = [];
   /** Colormap domain overrides from updateSurface3D (replaceY yMin/yMax or auto recompute). */
   const surfaceDomainByIndex: Array<{ yMin: number; yMax: number } | null> = [];
+  /**
+   * Last resolved series domain from setOption (for stream-domain clear policy:
+   * transition to explicit / yMin-yMax change — not "already explicit").
+   */
+  const surfaceSeriesDomainByIndex: Array<{
+    yDomainExplicit: boolean;
+    yMin: number;
+    yMax: number;
+  } | null> = [];
+  /**
+   * Stream-owned height scratch for replaceY coerce path (non-Float32 / short payload).
+   * Zero-copy Float32Array replaceY never touches these slots.
+   */
+  const surfaceReplaceYScratchByIndex: Array<Float32Array | null> = [];
   const cloudPickGrids: Array<PointCloudScreenGrid | null> = [];
 
   const axisBox = createAxisBox3DRenderer(device, {
@@ -270,6 +291,8 @@ export function createRenderCoordinator3D(
       data: streamed ?? s.data,
       yMin: domain?.yMin ?? s.yMin,
       yMax: domain?.yMax ?? s.yMax,
+      // Preserve explicit-domain flag for stream hot-path skips (spread already does).
+      yDomainExplicit: s.yDomainExplicit,
     };
   };
 
@@ -324,6 +347,8 @@ export function createRenderCoordinator3D(
     while (surfaceStreamDataByIndex.length < n) surfaceStreamDataByIndex.push(null);
     while (surfaceUserDataByIndex.length < n) surfaceUserDataByIndex.push(null);
     while (surfaceDomainByIndex.length < n) surfaceDomainByIndex.push(null);
+    while (surfaceSeriesDomainByIndex.length < n) surfaceSeriesDomainByIndex.push(null);
+    while (surfaceReplaceYScratchByIndex.length < n) surfaceReplaceYScratchByIndex.push(null);
     while (cloudPickGrids.length < n) cloudPickGrids.push(null);
     for (let i = 0; i < n; i++) {
       const s = currentOptions.series[i]!;
@@ -343,6 +368,8 @@ export function createRenderCoordinator3D(
         surfaceStreamDataByIndex[i] = null;
         surfaceUserDataByIndex[i] = null;
         surfaceDomainByIndex[i] = null;
+        surfaceSeriesDomainByIndex[i] = null;
+        surfaceReplaceYScratchByIndex[i] = null;
       } else if (s.type === 'surface3d') {
         if (!surfaceRenderers[i]) {
           surfaceRenderers[i] = createSurface3DRenderer(device, {
@@ -378,6 +405,8 @@ export function createRenderCoordinator3D(
       surfaceStreamDataByIndex[i] = null;
       surfaceUserDataByIndex[i] = null;
       surfaceDomainByIndex[i] = null;
+      surfaceSeriesDomainByIndex[i] = null;
+      surfaceReplaceYScratchByIndex[i] = null;
       cloudPickGrids[i] = null;
     }
   };
@@ -714,11 +743,33 @@ export function createRenderCoordinator3D(
       if (s.type === 'surface3d') {
         // Stream vs setOption: see shouldClearSurfaceStream (single policy source).
         const prevUser = surfaceUserDataByIndex[i];
-        if (shouldClearSurfaceStream(prevUser, s.data)) {
+        const streamCleared = shouldClearSurfaceStream(prevUser, s.data);
+        if (streamCleared) {
           surfaceStreamDataByIndex[i] = null;
-          surfaceDomainByIndex[i] = null;
-          contourRenderers[i]?.invalidate();
+          surfaceReplaceYScratchByIndex[i] = null;
+          if (s.contours.show) {
+            contourRenderers[i]?.invalidate();
+          }
         }
+        // Drop stream domain only on stream teardown, auto→explicit transition, or
+        // series yMin/yMax change — not every style setOption while already explicit
+        // (preserve intentional replaceY update-level domain).
+        if (
+          shouldClearSurfaceDomainOnSetOption({
+            streamCleared,
+            yDomainExplicit: s.yDomainExplicit,
+            seriesYMin: s.yMin,
+            seriesYMax: s.yMax,
+            prev: surfaceSeriesDomainByIndex[i],
+          })
+        ) {
+          surfaceDomainByIndex[i] = null;
+        }
+        surfaceSeriesDomainByIndex[i] = {
+          yDomainExplicit: s.yDomainExplicit,
+          yMin: s.yMin,
+          yMax: s.yMax,
+        };
         surfaceUserDataByIndex[i] = s.data;
         const effData = surfaceStreamDataByIndex[i] ?? s.data;
         const yRef = effData?.y;
@@ -731,6 +782,8 @@ export function createRenderCoordinator3D(
         surfaceStreamDataByIndex[i] = null;
         surfaceUserDataByIndex[i] = null;
         surfaceDomainByIndex[i] = null;
+        surfaceSeriesDomainByIndex[i] = null;
+        surfaceReplaceYScratchByIndex[i] = null;
       }
     }
     for (let i = resolved.series.length; i < cloudPackedByIndex.length; i++) {
@@ -740,6 +793,8 @@ export function createRenderCoordinator3D(
       surfaceStreamDataByIndex[i] = null;
       surfaceUserDataByIndex[i] = null;
       surfaceDomainByIndex[i] = null;
+      surfaceSeriesDomainByIndex[i] = null;
+      surfaceReplaceYScratchByIndex[i] = null;
       cloudPickGrids[i] = null;
     }
     syncRenderers();
@@ -967,19 +1022,28 @@ export function createRenderCoordinator3D(
       if (surfaceUserDataByIndex[seriesIndex] == null) {
         surfaceUserDataByIndex[seriesIndex] = s.data;
       }
-      const result = applySurface3DUpdate(base, update);
+      // Coerce-path scratch only — never allocate on the Float32 zero-copy path.
+      let replaceOpts: { targetY: Float32Array } | undefined;
+      if (update.mode === 'replaceY') {
+        const need = Math.max(0, Math.floor(base.columns) * Math.floor(base.rows));
+        const canZeroCopy = update.y instanceof Float32Array && update.y.length >= need;
+        if (!canZeroCopy && need > 0) {
+          let replaceScratch = surfaceReplaceYScratchByIndex[seriesIndex];
+          if (!replaceScratch || replaceScratch.length < need) {
+            replaceScratch = new Float32Array(need);
+            surfaceReplaceYScratchByIndex[seriesIndex] = replaceScratch;
+          }
+          replaceOpts = { targetY: replaceScratch };
+        }
+      }
+      const result = applySurface3DUpdate(base, update, replaceOpts);
       surfaceStreamDataByIndex[seriesIndex] = result.data;
 
-      // Domain: explicit replaceY; single-column scroll expands from new strip only;
-      // full recompute when multi-column or replaceY without explicit domain.
-      if (result.yMin != null && result.yMax != null && !result.recomputeDomain) {
-        surfaceDomainByIndex[seriesIndex] = { yMin: result.yMin, yMax: result.yMax };
-      } else if (
-        update.mode === 'appendColumns' &&
-        update.scrollX !== false &&
-        update.columns === 1 &&
-        !result.recomputeDomain
-      ) {
+      // Domain policy (pure helpers): update domain / strip expand / series explicit / full walk.
+      const domainAction = resolveSurfaceDomainAction(update, result, s.yDomainExplicit);
+      if (domainAction.kind === 'setFromUpdate') {
+        surfaceDomainByIndex[seriesIndex] = { yMin: domainAction.yMin, yMax: domainAction.yMax };
+      } else if (domainAction.kind === 'expandStrip' && update.mode === 'appendColumns') {
         const prev = surfaceDomainByIndex[seriesIndex];
         const col = update.y;
         let lo = prev?.yMin ?? Infinity;
@@ -1000,7 +1064,10 @@ export function createRenderCoordinator3D(
           yMin: lo,
           yMax: hi > lo ? hi : lo + 1,
         };
-      } else if (result.recomputeDomain) {
+      } else if (domainAction.kind === 'clearToSeriesExplicit') {
+        // Fixed colormap domain from series config — no full-field walk.
+        surfaceDomainByIndex[seriesIndex] = null;
+      } else if (domainAction.kind === 'autoFull') {
         const auto = computeSurface3DDomain(result.data.y, result.data.columns * result.data.rows);
         const yMin = result.yMin ?? auto.yMin;
         const yMax = result.yMax ?? auto.yMax;
@@ -1011,7 +1078,7 @@ export function createRenderCoordinator3D(
       }
 
       // AABB: single-column scroll shifts prior bounds by +dx and expands Y from the new strip.
-      // Avoid a full height walk every tick at 30–60 Hz.
+      // replaceY with fixed XZ reuses prior XZ + colormap/domain Y (no full height walk).
       if (update.mode === 'appendColumns' && update.scrollX !== false && update.columns === 1 && result.scrolled) {
         const prevCache = surfaceAabbCacheByIndex[seriesIndex];
         const dx = result.data.xStep * Math.max(0, Math.floor(update.columns));
@@ -1025,13 +1092,24 @@ export function createRenderCoordinator3D(
         } else {
           surfaceAabbCacheByIndex[seriesIndex] = null;
         }
+      } else if (update.mode === 'replaceY' && !result.dimsChanged) {
+        const prevCache = surfaceAabbCacheByIndex[seriesIndex];
+        const yExtent = resolveReplaceYAABBYextent({
+          resultYMin: result.yMin,
+          resultYMax: result.yMax,
+          streamDomain: surfaceDomainByIndex[seriesIndex],
+          yDomainExplicit: s.yDomainExplicit,
+          seriesYMin: s.yMin,
+          seriesYMax: s.yMax,
+        });
+        const reused = reuseReplaceYAABB(prevCache?.aabb ?? null, yExtent, result.data, result.data.y);
+        surfaceAabbCacheByIndex[seriesIndex] = reused;
       } else {
         surfaceAabbCacheByIndex[seriesIndex] = null;
       }
 
-      // Contours rebuild with an internal time throttle during strip stream;
-      // force immediate rebuild on full field replace.
-      if (update.mode === 'replaceY') {
+      // Contours: no-op invalidate when unused (default off); strip path self-throttles.
+      if (shouldInvalidateSurfaceContoursOnReplaceY({ mode: update.mode, contoursShow: s.contours.show })) {
         contourRenderers[seriesIndex]?.invalidate();
       }
       callbacks?.onRequestRender?.();

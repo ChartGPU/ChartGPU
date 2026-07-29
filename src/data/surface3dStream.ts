@@ -70,23 +70,52 @@ export function computeSurface3DDomain(y: ArrayLike<number>, length: number): { 
   return { yMin: lo, yMax: hi };
 }
 
+export type ApplySurface3DReplaceYOptions = Readonly<{
+  /**
+   * Optional stream-owned scratch for the coerce/copy path (non-Float32 or short payload).
+   * Reused across frames to avoid allocate-per-replaceY GC pressure.
+   * Ignored on the zero-copy Float32Array path.
+   */
+  readonly targetY?: Float32Array;
+}>;
+
 /**
  * Apply replaceY: new full field, same grid meta.
  * Missing cells → NaN. Optional yMin/yMax pass through for colormap domain.
+ *
+ * **Zero-copy fast path:** when `update.y` is a `Float32Array` of length ≥ columns×rows,
+ * the stream retains that buffer (or a `subarray(0, n)` view) without allocating or scanning.
+ * Callers that mutate the same typed array in place each frame (then call replaceY) get
+ * identity-stable heights and no extra full-field copy. Non-Float32 / short payloads still
+ * coerce via `heightOrNaN` into a stream-owned buffer (`targetY` when provided).
  */
 export function applySurface3DReplaceY(
   data: Surface3DGridData,
-  update: Extract<Surface3DUpdate, { mode: 'replaceY' }>
+  update: Extract<Surface3DUpdate, { mode: 'replaceY' }>,
+  options?: ApplySurface3DReplaceYOptions
 ): Surface3DStreamResult {
   const grid = sanitizeSurface3DGrid(data);
   if (!grid) {
     return { data, dimsChanged: false, scrolled: false, recomputeDomain: true };
   }
   const n = grid.columns * grid.rows;
-  const nextY = new Float32Array(n);
   const src = update.y;
-  for (let i = 0; i < n; i++) {
-    nextY[i] = i < src.length ? heightOrNaN(src[i]) : Number.NaN;
+  let nextY: Float32Array;
+  // Zero-copy: full finite-typed height field already in GPU-friendly form.
+  // length > n → retain a view of the first n cells (shared buffer).
+  if (src instanceof Float32Array && src.length >= n) {
+    nextY = src.length === n ? src : src.subarray(0, n);
+  } else {
+    const scratch = options?.targetY;
+    nextY =
+      scratch && scratch.length >= n
+        ? scratch.length === n
+          ? scratch
+          : scratch.subarray(0, n)
+        : new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      nextY[i] = i < src.length ? heightOrNaN(src[i]) : Number.NaN;
+    }
   }
   const explicitMin = typeof update.yMin === 'number' && Number.isFinite(update.yMin) ? update.yMin : undefined;
   const explicitMax = typeof update.yMax === 'number' && Number.isFinite(update.yMax) ? update.yMax : undefined;
@@ -310,8 +339,12 @@ export function applySurface3DAppendRows(
   };
 }
 
-export function applySurface3DUpdate(data: Surface3DGridData, update: Surface3DUpdate): Surface3DStreamResult {
-  if (update.mode === 'replaceY') return applySurface3DReplaceY(data, update);
+export function applySurface3DUpdate(
+  data: Surface3DGridData,
+  update: Surface3DUpdate,
+  options?: ApplySurface3DReplaceYOptions
+): Surface3DStreamResult {
+  if (update.mode === 'replaceY') return applySurface3DReplaceY(data, update, options);
   if (update.mode === 'appendColumns') return applySurface3DAppendColumns(data, update);
   return applySurface3DAppendRows(data, update);
 }

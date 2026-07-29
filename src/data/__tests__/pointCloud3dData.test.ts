@@ -6,7 +6,12 @@ import {
   POINT_CLOUD_GROW_MIN_CAPACITY,
   POINT_CLOUD_GROW_FACTOR,
 } from '../pointCloud3dData';
-import { packSurface3D, packSurface3DWireframeIndices, sanitizeSurface3DGrid } from '../surface3dData';
+import {
+  packSurface3D,
+  packSurface3DWireframeIndices,
+  sanitizeSurface3DGrid,
+  shiftSurface3DAABBColumnScroll,
+} from '../surface3dData';
 
 describe('packPointCloud3D', () => {
   it('packs split arrays and computes AABB', () => {
@@ -395,5 +400,40 @@ describe('packSurface3D', () => {
     expect(packed!.vertexCount).toBe(9);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('y length'));
     warn.mockRestore();
+  });
+});
+
+describe('shiftSurface3DAABBColumnScroll', () => {
+  const prev = {
+    min: [0, -1, 0] as [number, number, number],
+    max: [10, 1, 5] as [number, number, number],
+  };
+
+  it('shifts X by dx and expands Y from new column', () => {
+    const col = new Float32Array([0, 3, -2]);
+    const next = shiftSurface3DAABBColumnScroll(prev, 1, col, 3);
+    expect(next.min[0]).toBe(1);
+    expect(next.max[0]).toBe(11);
+    expect(next.min[2]).toBe(0);
+    expect(next.max[2]).toBe(5);
+    expect(next.min[1]).toBe(-2);
+    expect(next.max[1]).toBe(3);
+  });
+
+  it('ignores NaN in new column and keeps prior Y when no finite expand', () => {
+    const col = new Float32Array([Number.NaN, Number.NaN]);
+    const next = shiftSurface3DAABBColumnScroll(prev, 2, col, 2);
+    expect(next.min[0]).toBe(2);
+    expect(next.max[0]).toBe(12);
+    expect(next.min[1]).toBe(-1);
+    expect(next.max[1]).toBe(1);
+  });
+
+  it('clamps newColumnY walk to rows', () => {
+    const long = new Float32Array([10, 20, 30, 40, 50]);
+    const next = shiftSurface3DAABBColumnScroll(prev, 0, long, 2);
+    // Only first 2 samples (10, 20) expand Y
+    expect(next.min[1]).toBe(-1);
+    expect(next.max[1]).toBe(20);
   });
 });
