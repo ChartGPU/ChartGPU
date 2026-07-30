@@ -7,6 +7,7 @@
 
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { createLinearScale } from '../../utils/scales';
+import { generateNiceAxisTicks } from '../../utils/niceAxisTicks';
 import type { GridArea } from '../createGridRenderer';
 
 beforeAll(() => {
@@ -133,7 +134,7 @@ describe('AxisRenderer explicit tick values (#161)', () => {
     renderer.dispose();
   });
 
-  it('falls back to linear domain splits when tickValues omitted', () => {
+  it('falls back to nice ladder ticks when tickValues omitted', () => {
     const device = createMockDevice();
     const renderer = createAxisRenderer(device);
     const domainMin = 0;
@@ -142,6 +143,7 @@ describe('AxisRenderer explicit tick values (#161)', () => {
     const plotRightClip = 0.95;
     const scale = createLinearScale().domain(domainMin, domainMax).range(plotLeftClip, plotRightClip);
     const tickCount = 5;
+    const nice = generateNiceAxisTicks(domainMin, domainMax, tickCount);
 
     renderer.prepare(
       { type: 'value', min: domainMin, max: domainMax },
@@ -154,9 +156,10 @@ describe('AxisRenderer explicit tick values (#161)', () => {
     );
 
     const verts = readVertexFloats(device);
-    for (let i = 0; i < tickCount; i++) {
-      const t = i / (tickCount - 1);
-      const expectedX = scale.scale(domainMin + t * (domainMax - domainMin));
+    // Axis line (4 floats) + one tick segment (4 floats) per nice major.
+    expect(nice.length).toBeGreaterThanOrEqual(2);
+    for (let i = 0; i < nice.length; i++) {
+      const expectedX = scale.scale(nice[i]!);
       const tickBase = 4 + i * 4;
       expect(verts[tickBase]).toBeCloseTo(expectedX, 5);
     }

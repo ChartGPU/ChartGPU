@@ -15,12 +15,7 @@ import {
 import { finiteOrNull, finiteOrUndefined, isTupleDataPoint, getPointXY, isTupleOHLCDataPoint } from '../dataPointUtils';
 import { normalizeDomain } from '../boundsComputation';
 import { clamp01 } from '../axisUtils';
-import {
-  generateLinearTicks,
-  resolvePieCenterPlotCss,
-  resolvePieRadiiCss,
-  computeAdaptiveTimeXAxisTicks,
-} from '../timeAxisUtils';
+import { resolvePieCenterPlotCss, resolvePieRadiiCss, computeAdaptiveTimeXAxisTicks } from '../timeAxisUtils';
 
 describe('Data Point Utilities', () => {
   it('finiteOrNull returns number for finite values', () => {
@@ -112,14 +107,6 @@ describe('Time Axis Utilities', () => {
     const r = resolvePieRadiiCss('50%', 100);
     expect(r.outer).toBe(50);
     expect(r.inner).toBe(0);
-  });
-
-  it('generateLinearTicks generates evenly-spaced ticks', () => {
-    const ticks = generateLinearTicks(0, 100, 5);
-    expect(ticks).toHaveLength(5);
-    expect(ticks[0]).toBe(0);
-    expect(ticks[4]).toBe(100);
-    expect(ticks[2]).toBe(50);
   });
 });
 

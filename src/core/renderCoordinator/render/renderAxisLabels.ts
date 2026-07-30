@@ -19,14 +19,44 @@ import {
   createTickFormatter,
   formatLogTickValue,
   generateLogTicksForVisibleDomain,
-  generateLinearTicks,
+  generateValueAxisTicks,
 } from '../axis/computeAxisTicks';
 import { AXIS_TITLE_FONT_WEIGHT, getAxisTitleFontSize, styleAxisLabelSpan } from '../../../utils/axisLabelStyling';
-import { getRightYAxisLabelX, getYAxisLabelX, getRightYAxisTitleX, getYAxisTitleX } from '../axis/axisLabelHelpers';
+import {
+  getRightYAxisLabelX,
+  getYAxisLabelX,
+  getRightYAxisTitleX,
+  getYAxisTitleX,
+  resolveXTickLabelAnchor,
+} from '../axis/axisLabelHelpers';
 
 const DEFAULT_TICK_LENGTH_CSS_PX = 6;
 const LABEL_PADDING_CSS_PX = 4;
 const DEFAULT_TICK_COUNT = 5;
+
+/** Cached 2d measure context — avoid createElement('canvas') on every Y label pass. */
+let sharedMeasureCanvas: HTMLCanvasElement | null = null;
+let sharedMeasureCtx: CanvasRenderingContext2D | null = null;
+let sharedMeasureFontKey = '';
+
+function getSharedMeasureCtx(fontSize: number, fontFamily: string): CanvasRenderingContext2D | null {
+  if (typeof document === 'undefined') return null;
+  try {
+    if (!sharedMeasureCanvas) {
+      sharedMeasureCanvas = document.createElement('canvas');
+      sharedMeasureCtx = sharedMeasureCanvas.getContext('2d');
+    }
+    if (!sharedMeasureCtx) return null;
+    const key = `${fontSize}|${fontFamily}`;
+    if (key !== sharedMeasureFontKey) {
+      sharedMeasureCtx.font = `${fontSize}px ${fontFamily}`;
+      sharedMeasureFontKey = key;
+    }
+    return sharedMeasureCtx;
+  } catch {
+    return null;
+  }
+}
 
 /** Context for rendering X-axis labels and titles. */
 interface AxisLabelRenderContext {
@@ -97,7 +127,10 @@ export function renderAxisLabels(
 
   // X-axis tick labels
   const xTickLengthCssPx = currentOptions.xAxis.tickLength ?? DEFAULT_TICK_LENGTH_CSS_PX;
-  const xLabelY = plotBottomCss + xTickLengthCssPx + LABEL_PADDING_CSS_PX + currentOptions.theme.fontSize * 0.5;
+  const xFontSize = currentOptions.theme.fontSize;
+  // textBaseline middle: keep full glyph inside canvas (overflow:hidden shells clip flush bottoms).
+  const maxXLabelCenterY = canvasCssHeight - xFontSize * 0.5 - 1;
+  const xLabelY = Math.min(plotBottomCss + xTickLengthCssPx + LABEL_PADDING_CSS_PX + xFontSize * 0.5, maxXLabelCenterY);
   const isTimeXAxis = currentOptions.xAxis.type === 'time';
   const isLogXAxis = currentOptions.xAxis.type === 'log';
   const xLogBase = currentOptions.xAxis.logBase ?? 10;
@@ -121,8 +154,11 @@ export function renderAxisLabels(
     const xClip = xScale.scale(v);
     const xCss = clipXToCanvasCssPx(xClip, canvasCssWidth);
 
+    // Anchor by proximity to the plot rails — not by first/last index. Nice
+    // majors (streaming value X) sit inset from domain ends; index-based
+    // start/end shifted those labels off the GPU tick / grid line.
     const anchor: TextOverlayAnchor =
-      xTickValues.length === 1 ? 'middle' : i === 0 ? 'start' : i === xTickValues.length - 1 ? 'end' : 'middle';
+      xTickValues.length === 1 ? 'middle' : resolveXTickLabelAnchor(xCss, plotLeftCss, plotRightCss);
     const label = xTickFormatter
       ? xTickFormatter(v)
       : isTimeXAxis
@@ -133,7 +169,7 @@ export function renderAxisLabels(
     if (label == null) continue;
 
     const span = axisLabelOverlay.addLabel(label, offsetX + xCss, offsetY + xLabelY, {
-      fontSize: currentOptions.theme.fontSize,
+      fontSize: xFontSize,
       color: currentOptions.theme.textColor,
       fontFamily: currentOptions.theme.fontFamily,
       anchor,
@@ -142,15 +178,22 @@ export function renderAxisLabels(
   }
 
   // X-axis title
-  const axisNameFontSize = getAxisTitleFontSize(currentOptions.theme.fontSize);
+  const axisNameFontSize = getAxisTitleFontSize(xFontSize);
   const xAxisName = currentOptions.xAxis.name?.trim() ?? '';
   if (xAxisName.length > 0) {
     const xCenter = (plotLeftCss + plotRightCss) / 2;
-    const xTickLabelsBottom = xLabelY + currentOptions.theme.fontSize * 0.5;
+    const xTickLabelsBottom = xLabelY + xFontSize * 0.5;
     const hasSliderZoom = currentOptions.dataZoom?.some((z) => z?.type === 'slider') ?? false;
     const sliderTrackHeightCssPx = 32;
     const bottomLimitCss = hasSliderZoom ? canvasCssHeight - sliderTrackHeightCssPx : canvasCssHeight;
-    const xTitleY = (xTickLabelsBottom + bottomLimitCss) / 2;
+    const maxXTitleCenterY = bottomLimitCss - axisNameFontSize * 0.5 - 1;
+    const xTitleY = Math.min(
+      Math.max(
+        xTickLabelsBottom + LABEL_PADDING_CSS_PX + axisNameFontSize * 0.5,
+        (xTickLabelsBottom + bottomLimitCss) / 2
+      ),
+      maxXTitleCenterY
+    );
 
     const span = axisLabelOverlay.addLabel(xAxisName, offsetX + xCenter, offsetY + xTitleY, {
       fontSize: axisNameFontSize,
@@ -204,13 +247,10 @@ export function renderYAxisLabels(ctx: YAxisLabelRenderContext): void {
       ? yTickValuesOpt
       : isLogY
         ? generateLogTicksForVisibleDomain(yDomainMin, yDomainMax, logBase)
-        : generateLinearTicks(
-            yDomainMin,
-            yDomainMax,
-            (yAxisConfig as { tickCount?: number }).tickCount ?? DEFAULT_TICK_COUNT
-          );
+        : generateValueAxisTicks(yDomainMin, yDomainMax, yAxisConfig.tickCount ?? DEFAULT_TICK_COUNT);
   const yTickCount = yTickValues.length;
-  const yTickStep = yTickCount <= 1 ? 0 : (yDomainMax - yDomainMin) / (yTickCount - 1);
+  // Prefer actual nice step between majors for decimal precision (not domain / (n-1)).
+  const yTickStep = yTickCount <= 1 ? 0 : Math.abs(yTickValues[Math.min(1, yTickCount - 1)]! - yTickValues[0]!);
   const yFormatter = isLogY ? null : createTickFormatter(yTickStep);
 
   const yLabelX = isRight
@@ -218,18 +258,9 @@ export function renderYAxisLabels(ctx: YAxisLabelRenderContext): void {
     : getYAxisLabelX(plotLeftCss, yTickLengthCssPx);
 
   const yTickFormatter = yAxisConfig.tickFormatter;
-  // Canvas text overlay returns a dummy span — measure tick widths via 2d context
-  // (getBoundingClientRect on pooled/dummy spans is 0).
-  let measureCtx: CanvasRenderingContext2D | null = null;
-  try {
-    const c = document.createElement('canvas');
-    measureCtx = c.getContext('2d');
-    if (measureCtx) {
-      measureCtx.font = `${theme.fontSize}px ${theme.fontFamily}`;
-    }
-  } catch {
-    measureCtx = null;
-  }
+  // Canvas text overlay returns a dummy span — measure tick widths via cached 2d context
+  // (getBoundingClientRect on pooled/dummy spans is 0). Avoid per-call createElement.
+  const measureCtx = getSharedMeasureCtx(theme.fontSize, theme.fontFamily);
   let maxTickLabelWidth = 0;
 
   for (let i = 0; i < yTickCount; i++) {

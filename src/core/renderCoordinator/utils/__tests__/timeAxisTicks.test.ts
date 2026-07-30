@@ -7,7 +7,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { generateLinearTicks, computeAdaptiveTimeXAxisTicks, formatTimeTickValue } from '../timeAxisUtils';
+import { computeAdaptiveTimeXAxisTicks, formatTimeTickValue } from '../timeAxisUtils';
+import { generateLinearTicks } from '../../axis/computeAxisTicks';
 
 const makeLinearScale = (min: number, max: number) =>
   ({

@@ -105,7 +105,7 @@ Chart-level option controlling dense draw fidelity:
 - Dense mountain under auto may use **sampleCount:1** for dense fill/stroke (post-resolve, or a direct swapchain SS1 path when every series layer is deferred and there are no annotations / pointer overlays). Overlay axes stay correct; main 4× MSAA is skipped only on that narrow dense-only path
 - Dense scatter: density LO `0.08` / HI `0.30` points per plot pixel, plus N ≥ `250_000` full-compact floor; **only fully compact** const-radius draws sampleCount:1 post-resolve (partial blends stay main 4×); deferred only on pure-scatter charts (any visible line keeps scatter on main for z-order — see `scatterDrawPolicy.ts`)
 
-Use `performance: { lod: 'strict' }` for fidelity-sensitive benchmarks or when SciChart harness geometry (width 2 / full markers) must match. Default `'auto'` remains the product FPS path.
+Use `performance: { lod: 'strict' }` for fidelity-sensitive benchmarks or when comparing against fixed stroke width 2 / full-marker geometry. Default `'auto'` remains the product FPS path.
 
 ```ts
 ChartGPU.create(el, {

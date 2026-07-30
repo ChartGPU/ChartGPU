@@ -124,7 +124,8 @@ const createOptions = (
 ): ChartGPUOptions => {
   const n = data.line.length;
   return {
-    grid: { left: 70, right: 120, top: 24, bottom: 56 },
+    // bottom ≥ ticks + labels + xAxis.name (shell overflow:hidden clips flush bottoms)
+    grid: { left: 70, right: 120, top: 24, bottom: 80 },
     xAxis: { type: 'value', min: 0, max: Math.max(1, n - 1), name: 'Index (match-by-index)' },
     yAxis: { type: 'value', name: 'Value (auto domain)' },
     theme,

@@ -1,6 +1,7 @@
 import gridWgsl from '../shaders/grid.wgsl?raw';
 import type { AxisConfig } from '../config/types';
 import type { ContinuousScale } from '../utils/scales';
+import { generateNiceAxisTicks } from '../utils/niceAxisTicks';
 import { createRenderPipeline, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
 import type { GridArea } from './createGridRenderer';
 import { parseCssColorToRgba01 } from '../utils/colors';
@@ -19,7 +20,7 @@ export interface AxisRenderer {
      * Optional explicit tick domain values (e.g. nice time ticks).
      * When provided and non-empty, marks are placed at `scale.scale(tickValues[i])`
      * and `tickCount` is ignored in favor of `tickValues.length`.
-     * When omitted, evenly spaced linear domain splits use `tickCount`.
+     * When omitted, falls back to a 1–2–5 × 10ⁿ nice ladder (domain-clamped) using `tickCount` as a hint.
      */
     tickValues?: readonly number[]
   ): void;
@@ -96,7 +97,8 @@ const normalizeDomain = (
 
 /**
  * Domain values for axis tick marks: explicit nice ticks when provided,
- * otherwise evenly spaced linear splits of [domainMin, domainMax].
+ * otherwise 1–2–5 nice ladder (presentation fallback). Prefer always passing
+ * tickValues from the coordinator so labels/grid/marks share one list.
  */
 const resolveTickDomainValues = (
   tickCountOverride: number | undefined,
@@ -118,12 +120,7 @@ const resolveTickDomainValues = (
   if (!Number.isFinite(tickCountRaw) || tickCount < 1) {
     throw new Error('AxisRenderer.prepare: tickCount must be a finite number >= 1.');
   }
-  const values = new Array<number>(tickCount);
-  for (let i = 0; i < tickCount; i++) {
-    const t = tickCount === 1 ? 0.5 : i / (tickCount - 1);
-    values[i] = domainMin + t * (domainMax - domainMin);
-  }
-  return values;
+  return generateNiceAxisTicks(domainMin, domainMax, tickCount, { clampToDomain: true });
 };
 
 const generateAxisVertices = (

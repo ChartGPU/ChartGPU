@@ -3,8 +3,7 @@
  * Dual-series pattern: errorBar under line through centers.
  *
  * Vertical: x = dose, y = response, high/low = response ± SEM.
- * Horizontal: remaps so y = dose (category), x/high/low = response extents
- * (SciChart EErrorDirection.Horizontal contract).
+ * Horizontal: remaps so y = dose (category), x/high/low = response extents.
  */
 import { ChartGPU, darkTheme } from '../../src/index';
 import type {
@@ -60,7 +59,7 @@ function makeAssay(): {
 }
 
 /**
- * Map vertical assay HLC → horizontal SciChart layout:
+ * Map vertical assay HLC → horizontal layout:
  * - category (dose) on Y
  * - response center on X, high/low as absolute X whiskers
  */

@@ -373,12 +373,6 @@ const generateTimeTicks = (domainMin: number, domainMax: number, targetCount: nu
 };
 
 /**
- * Generates evenly-spaced tick values across domain.
- * Single implementation lives in `axis/computeAxisTicks` (re-exported here).
- */
-export const generateLinearTicks = generateLinearTicksCanonical;
-
-/**
  * Subsamples a nice tick set by keeping every `stride`-th value (1-based stride).
  * Used when adjacent adaptive targetCounts map to the same ladder step so density
  * can thin step-wise without waiting for the next larger nice step.
@@ -440,7 +434,8 @@ export const computeAdaptiveTimeXAxisTicks = (params: {
     const tickValues = generateTimeTicks(domainMin, domainMax, DEFAULT_TICK_COUNT);
     return {
       tickCount: tickValues.length > 0 ? tickValues.length : DEFAULT_TICK_COUNT,
-      tickValues: tickValues.length > 0 ? tickValues : generateLinearTicks(domainMin, domainMax, DEFAULT_TICK_COUNT),
+      tickValues:
+        tickValues.length > 0 ? tickValues : generateLinearTicksCanonical(domainMin, domainMax, DEFAULT_TICK_COUNT),
     };
   }
 
@@ -510,6 +505,7 @@ export const computeAdaptiveTimeXAxisTicks = (params: {
   const fallback = generateTimeTicks(domainMin, domainMax, MIN_TIME_X_TICK_COUNT);
   return {
     tickCount: fallback.length > 0 ? fallback.length : MIN_TIME_X_TICK_COUNT,
-    tickValues: fallback.length > 0 ? fallback : generateLinearTicks(domainMin, domainMax, MIN_TIME_X_TICK_COUNT),
+    tickValues:
+      fallback.length > 0 ? fallback : generateLinearTicksCanonical(domainMin, domainMax, MIN_TIME_X_TICK_COUNT),
   };
 };

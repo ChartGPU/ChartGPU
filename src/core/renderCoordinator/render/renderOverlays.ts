@@ -24,7 +24,7 @@ import {
   buildAxisPrepareSignature,
   axisPrepareSignaturesEqual,
 } from './overlayPrepareMemo';
-import { generateLinearTicks, generateLogTicksForVisibleDomain } from '../axis/computeAxisTicks';
+import { generateValueAxisTicks, generateLogTicksForVisibleDomain } from '../axis/computeAxisTicks';
 
 const DEFAULT_TICK_COUNT = 5;
 const DEFAULT_CROSSHAIR_LINE_WIDTH_CSS_PX = 1;
@@ -58,8 +58,9 @@ interface OverlayPrepareContext {
    */
   xTickValues?: readonly number[];
   /**
-   * Optional per-axis Y tick domain values (log majors). Keyed by y-axis id.
-   * When omitted, log Y axes compute ticks here; linear Y uses even count.
+   * Optional per-axis Y tick domain values (log majors or value nice ticks).
+   * Keyed by y-axis id. When omitted, log Y uses densified majors; value Y uses
+   * domain-clamped 1–2–5 nice ticks (`tickCount` hint).
    */
   yTickValuesByAxis?: ReadonlyMap<string, readonly number[]>;
   hasCartesianSeries: boolean;
@@ -118,7 +119,7 @@ export function prepareOverlays(renderers: OverlayRenderers, context: OverlayPre
     overlayPrepareMemo: memo,
   } = context;
 
-  // Resolve Y tick values (log majors or linear even splits) for primary + multi axes.
+  // Resolve Y tick values (log majors or value nice ticks) for primary + multi axes.
   const resolvedYTickValuesByAxis = new Map<string, readonly number[]>();
   for (const yAxisConfig of currentOptions.yAxes) {
     const axisId = yAxisConfig.id!;
@@ -134,11 +135,11 @@ export function prepareOverlays(renderers: OverlayRenderers, context: OverlayPre
     if (yAxisConfig.type === 'log') {
       resolvedYTickValuesByAxis.set(axisId, generateLogTicksForVisibleDomain(dMin, dMax, yAxisConfig.logBase ?? 10));
     } else {
-      const yTickCount = (yAxisConfig as { tickCount?: number }).tickCount ?? DEFAULT_TICK_COUNT;
-      resolvedYTickValuesByAxis.set(axisId, generateLinearTicks(dMin, dMax, yTickCount));
+      const yTickCount = yAxisConfig.tickCount ?? DEFAULT_TICK_COUNT;
+      resolvedYTickValuesByAxis.set(axisId, generateValueAxisTicks(dMin, dMax, yTickCount));
     }
   }
-  // Primary Y axis drives horizontal grid (log or linear tick-aligned when we have values).
+  // Primary Y axis drives horizontal grid (tick-aligned for log + linear value axes).
   const primaryYId = currentOptions.yAxes[0]?.id ?? 'y';
   const primaryYTicks = resolvedYTickValuesByAxis.get(primaryYId) ?? [];
   const primaryYScale = yScales.get(primaryYId) ?? yScales.values().next().value;
@@ -149,20 +150,17 @@ export function prepareOverlays(renderers: OverlayRenderers, context: OverlayPre
   const wantHorizontal = gridLinesConfig.show && gridLinesConfig.horizontal.show;
   const wantVertical = gridLinesConfig.show && gridLinesConfig.vertical.show;
 
-  // Tick-aligned positions for log axes (and any axis with explicit tick values).
+  // Tick-aligned clip positions: primary Y ticks → H grid; X tick values → V grid
+  // (value, time, and log — single tick list co-moves with labels / GPU marks).
   const horizontalClipYs: number[] = [];
   if (wantHorizontal && primaryYScale && primaryYTicks.length > 0) {
-    // Prefer tick-aligned for log primary; for linear keep even count unless log X/Y needs co-location.
-    const primaryIsLog = currentOptions.yAxes[0]?.type === 'log';
-    if (primaryIsLog) {
-      for (let i = 0; i < primaryYTicks.length; i++) {
-        const clip = primaryYScale.scale(primaryYTicks[i]!);
-        if (Number.isFinite(clip)) horizontalClipYs.push(clip);
-      }
+    for (let i = 0; i < primaryYTicks.length; i++) {
+      const clip = primaryYScale.scale(primaryYTicks[i]!);
+      if (Number.isFinite(clip)) horizontalClipYs.push(clip);
     }
   }
   const verticalClipXs: number[] = [];
-  if (wantVertical && xTickValues != null && xTickValues.length > 0 && currentOptions.xAxis.type === 'log') {
+  if (wantVertical && xTickValues != null && xTickValues.length > 0) {
     for (let i = 0; i < xTickValues.length; i++) {
       const clip = xScale.scale(xTickValues[i]!);
       if (Number.isFinite(clip)) verticalClipXs.push(clip);

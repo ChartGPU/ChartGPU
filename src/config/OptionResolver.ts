@@ -1292,6 +1292,39 @@ const normalizeAxisAutoBounds = (value: unknown): AxisConfig['autoBounds'] | und
   return v === 'global' || v === 'visible' ? (v as AxisConfig['autoBounds']) : undefined;
 };
 
+const normalizeAxisAutoRange = (value: unknown): AxisConfig['autoRange'] | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const v = value.trim().toLowerCase();
+  return v === 'sticky' || v === 'continuous' || v === 'animated' ? (v as AxisConfig['autoRange']) : undefined;
+};
+
+const normalizeAxisGrowBy = (value: unknown): AxisConfig['growBy'] | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    return value;
+  }
+  if (Array.isArray(value) && value.length >= 2) {
+    const a = value[0];
+    const b = value[1];
+    if (
+      typeof a === 'number' &&
+      Number.isFinite(a) &&
+      a >= 0 &&
+      typeof b === 'number' &&
+      Number.isFinite(b) &&
+      b >= 0
+    ) {
+      return [a, b] as const;
+    }
+  }
+  return undefined;
+};
+
+const normalizeAxisTickCount = (value: unknown): number | undefined => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  const n = Math.floor(value);
+  return n >= 2 ? Math.min(20, n) : undefined;
+};
+
 const VALID_AXIS_TYPES = new Set(['value', 'time', 'category', 'log']);
 
 const normalizeAxisType = (value: unknown, fallback: AxisConfig['type']): AxisConfig['type'] => {
@@ -1318,8 +1351,26 @@ const resolveAxisLogBase = (type: AxisConfig['type'], logBase: unknown): number 
 const finalizeAxisConfig = (axis: AxisConfig): AxisConfig => {
   const type = normalizeAxisType(axis.type, 'value');
   const logBase = resolveAxisLogBase(type, axis.logBase);
-  if (type === axis.type && logBase === axis.logBase) return axis;
-  return logBase !== undefined ? { ...axis, type, logBase } : { ...axis, type };
+  // Normalize additive presentation fields when present (unknown → drop / default).
+  const autoRange = normalizeAxisAutoRange((axis as { readonly autoRange?: unknown }).autoRange);
+  const growBy = normalizeAxisGrowBy((axis as { readonly growBy?: unknown }).growBy);
+  const tickCount = normalizeAxisTickCount((axis as { readonly tickCount?: unknown }).tickCount);
+
+  let next: AxisConfig = axis;
+  if (type !== axis.type || logBase !== axis.logBase) {
+    next = logBase !== undefined ? { ...next, type, logBase } : { ...next, type };
+  }
+  // Preserve omitted autoRange (default sticky at runtime) but clamp invalid user values.
+  if ((axis as { readonly autoRange?: unknown }).autoRange !== undefined) {
+    next = { ...next, autoRange: autoRange ?? 'sticky' };
+  }
+  if ((axis as { readonly growBy?: unknown }).growBy !== undefined) {
+    next = growBy !== undefined ? { ...next, growBy } : { ...next, growBy: undefined };
+  }
+  if ((axis as { readonly tickCount?: unknown }).tickCount !== undefined) {
+    next = tickCount !== undefined ? { ...next, tickCount } : { ...next, tickCount: undefined };
+  }
+  return next;
 };
 
 const isTupleOHLCDataPoint = (p: OHLCDataPoint): p is OHLCDataPointTuple => Array.isArray(p);
