@@ -98,7 +98,8 @@ function flattenPagesPlugin() {
 }
 
 export default defineConfig(({ command }) => ({
-  // Project Pages: https://chartgpu.github.io/ChartGPU/
+  // Local preview of the former GH Pages layout only (`npm run build:pages`).
+  // Live GitHub Pages now serves pages-redirect/ → https://chartgpu.io/
   // Dev keeps base `/` so /examples/... resolves from the Vite root (repo).
   base: command === 'build' ? '/ChartGPU/' : '/',
   root: repoRoot,
