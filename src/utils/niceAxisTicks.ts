@@ -87,9 +87,7 @@ export function generateNiceAxisTicks(
   // - unclamped (3D): keep the classic expand-then-step so nice endpoints can sit
   //   slightly outside the raw domain.
   const span = hi - lo;
-  const step = clampToDomain
-    ? niceNum(span / (count - 1), true)
-    : niceNum(niceNum(span, false) / (count - 1), true);
+  const step = clampToDomain ? niceNum(span / (count - 1), true) : niceNum(niceNum(span, false) / (count - 1), true);
   if (!(step > 0) || !Number.isFinite(step)) {
     return [lo, hi];
   }

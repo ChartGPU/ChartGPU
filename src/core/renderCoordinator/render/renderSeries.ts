@@ -436,9 +436,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
           setSeriesIfChanged(i, areaData, { xOffset: packingXOffset });
         }
         const areaBuffer = dataStore.getSeriesBuffer(i);
-        const areaRingLayout = areaConnectNulls
-          ? { start: 0, capacity: 0 }
-          : dataStore.getSeriesRingLayout(i);
+        const areaRingLayout = areaConnectNulls ? { start: 0, capacity: 0 } : dataStore.getSeriesRingLayout(i);
         const areaUploadCount = getPointCount(areaData as CartesianSeriesData);
         // Shared storage when chronological: capacity 0 (unbounded) OR ringStart===0
         // (identity modular map). After modular wrap (start≠0), private-pack.
@@ -831,9 +829,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
         const lineSeriesForRenderer = uploadData !== s.data ? { ...s, data: uploadData } : s;
         // Full-raw / CPU path may still be modular after maxPoints wrap — pass ring.
         // Step / connectNulls uploads are chronological linear (not modular raw).
-        const cpuPathRingLayout = nonRawUpload
-          ? { start: 0, capacity: 0 }
-          : dataStore.getSeriesRingLayout(i);
+        const cpuPathRingLayout = nonRawUpload ? { start: 0, capacity: 0 } : dataStore.getSeriesRingLayout(i);
         const uploadPointCount = getPointCount(uploadData);
         renderers.lineRenderers[i].prepare(
           lineSeriesForRenderer,

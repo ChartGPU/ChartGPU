@@ -201,9 +201,7 @@ describe('decimation dense-bucket candidate cap (FIFO multi-M LTTB Phase B)', ()
 
     const candCount = bucketCandidateCount(rangeLen10M);
     expect(candidateRawIndex(rangeStart, rangeLen10M, 0, candCount)).toBe(rangeStart);
-    expect(candidateRawIndex(rangeStart, rangeLen10M, candCount - 1, candCount)).toBe(
-      rangeStart + rangeLen10M - 1
-    );
+    expect(candidateRawIndex(rangeStart, rangeLen10M, candCount - 1, candCount)).toBe(rangeStart + rangeLen10M - 1);
     // Monotonic non-decreasing candidate indices
     let prev = -1;
     for (let s = 0; s < candCount; s++) {

@@ -147,9 +147,7 @@ describe('resolveReplaceYAABBYextent + reuseReplaceYAABB', () => {
 
   it('reuseReplaceYAABB returns null without prev or Y extent', () => {
     expect(reuseReplaceYAABB(null, { yMin: 0, yMax: 1 }, {}, null)).toBeNull();
-    expect(
-      reuseReplaceYAABB({ min: [0, 0, 0], max: [1, 1, 1] }, null, {}, null)
-    ).toBeNull();
+    expect(reuseReplaceYAABB({ min: [0, 0, 0], max: [1, 1, 1] }, null, {}, null)).toBeNull();
   });
 });
 

@@ -14,8 +14,6 @@
  */
 export type RenderCallback = (deltaTime: number) => void;
 
-
-
 /**
  * Represents the state of a render scheduler.
  * All properties are readonly to ensure immutability.

@@ -103,9 +103,13 @@ describe('ohlcBarQuads', () => {
 
 describe('getOHLC', () => {
   it('reads object OHLC fields', () => {
-    expect(
-      getOHLC({ timestamp: 1, open: 2, close: 3, low: 0, high: 4 })
-    ).toEqual({ timestamp: 1, open: 2, close: 3, low: 0, high: 4 });
+    expect(getOHLC({ timestamp: 1, open: 2, close: 3, low: 0, high: 4 })).toEqual({
+      timestamp: 1,
+      open: 2,
+      close: 3,
+      low: 0,
+      high: 4,
+    });
   });
 
   it('reads tuple [t,o,c,l,h]', () => {
@@ -164,4 +168,3 @@ describe('computeOhlcCategoryStep', () => {
     expect(computeOhlcCategoryStep(data)).toBe(1);
   });
 });
-

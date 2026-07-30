@@ -2091,9 +2091,7 @@ export function resolveOptions(
   };
   const grid: ResolvedGridConfig = {
     left: userOptions.grid?.left ?? (candlePrimary ? candleLeftDefault : defaultOptions.grid.left),
-    right: candlePrimary
-      ? resolveCandlePrimaryRight()
-      : (userOptions.grid?.right ?? defaultOptions.grid.right),
+    right: candlePrimary ? resolveCandlePrimaryRight() : (userOptions.grid?.right ?? defaultOptions.grid.right),
     top: userOptions.grid?.top ?? defaultOptions.grid.top,
     bottom: userOptions.grid?.bottom ?? defaultOptions.grid.bottom,
   };

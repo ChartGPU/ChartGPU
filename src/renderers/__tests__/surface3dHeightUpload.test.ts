@@ -33,10 +33,7 @@ import { createSurface3DRenderer } from '../createSurface3DRenderer';
 import type { ResolvedSurface3DSeriesConfig } from '../../config/OptionResolver';
 import { createMat4 } from '../../core/3d/mat4';
 
-function createMockDevice(limits?: {
-  maxStorageBufferBindingSize?: number;
-  maxBufferSize?: number;
-}): GPUDevice {
+function createMockDevice(limits?: { maxStorageBufferBindingSize?: number; maxBufferSize?: number }): GPUDevice {
   const writeBuffer = vi.fn();
   const buffers: Array<{ size: number; usage: number; destroy: ReturnType<typeof vi.fn> }> = [];
   return {

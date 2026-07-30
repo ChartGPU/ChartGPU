@@ -486,5 +486,3 @@ export function createImpulseRenderer(device: GPUDevice, options?: ImpulseRender
     didRewritePointsLastPrepare: didRewritePointsLastPrepareFn,
   } as ImpulseRenderer & { didRewritePointsLastPrepare(): boolean };
 }
-
-

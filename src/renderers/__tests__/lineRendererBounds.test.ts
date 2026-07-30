@@ -595,22 +595,7 @@ describe('createLineRenderer bounds (P2-5)', () => {
     const dataBuffer = { label: 'data' } as GPUBuffer;
     // 30k raw would trip the 25k hairline floor if residency were ungated;
     // multi-M gate (1M) ignores mid-N policyPointCount → standard AA on 5k buckets.
-    renderer.prepare(
-      series,
-      dataBuffer,
-      xScale,
-      yScale,
-      0,
-      1,
-      800,
-      600,
-      5_000,
-      1,
-      undefined,
-      false,
-      800,
-      30_000
-    );
+    renderer.prepare(series, dataBuffer, xScale, yScale, 0, 1, 800, 600, 5_000, 1, undefined, false, 800, 30_000);
     expect(renderer.isDenseHairline()).toBe(false);
 
     const draws: Array<{ v: number; i: number }> = [];

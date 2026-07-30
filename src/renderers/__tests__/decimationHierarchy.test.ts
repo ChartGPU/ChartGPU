@@ -305,8 +305,7 @@ describe('CPU tile aggregates', () => {
         const rangeLen = sHi - sLo;
         const candCount = Math.min(8, rangeLen);
         for (let s = 0; s < candCount; s++) {
-          const i =
-            candCount <= 1 ? sLo : sLo + Math.floor((s * (rangeLen - 1)) / (candCount - 1));
+          const i = candCount <= 1 ? sLo : sLo + Math.floor((s * (rangeLen - 1)) / (candCount - 1));
           const y = xy[i * 2 + 1]!;
           if (y > bestY) {
             bestY = y;

@@ -29,9 +29,9 @@ describe('zoomResampleScheduleAction (M4)', () => {
   it('apply debounce action throws (forbids reintroducing multi-frame lag)', () => {
     const state = { zoomResampleDue: false };
     const scheduleFlush = vi.fn();
-    expect(() =>
-      applyZoomResampleScheduleAction({ kind: 'debounce', ms: 100 }, state, scheduleFlush)
-    ).toThrow(/period=1|forbidden|debounce/i);
+    expect(() => applyZoomResampleScheduleAction({ kind: 'debounce', ms: 100 }, state, scheduleFlush)).toThrow(
+      /period=1|forbidden|debounce/i
+    );
     expect(state.zoomResampleDue).toBe(false);
     expect(scheduleFlush).not.toHaveBeenCalled();
   });

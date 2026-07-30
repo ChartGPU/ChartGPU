@@ -70,9 +70,7 @@ describe('plotMetrics', () => {
     it('returns null when dpr invalid or plot non-positive', () => {
       expect(computePlotSizeCssPx(fixtureGrid({ devicePixelRatio: 0 }))).toBeNull();
       expect(
-        computePlotSizeCssPx(
-          fixtureGrid({ left: 300, right: 300, canvasWidth: 400, devicePixelRatio: 1 })
-        )
+        computePlotSizeCssPx(fixtureGrid({ left: 300, right: 300, canvasWidth: 400, devicePixelRatio: 1 }))
       ).toBeNull();
     });
   });
