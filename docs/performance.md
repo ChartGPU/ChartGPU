@@ -19,6 +19,20 @@ Optimize ChartGPU for large datasets and real-time streaming.
 
 **GPU decimation (line, `lttb`/`min`/`max`, null-gap-free):** compute shaders replace CPU sampling. When points-per-bucket exceed **512**, LTTB/min/max evaluate a uniform **128-candidate** set (endpoints included) and the averages pre-pass uses **64** samples for coarse triangle anchors — exact below 512 pts/bucket (covers 1M × 2500 ≈ 400); approximate extrema/shape at extreme N (5M–10M pts / 2500 buckets). This bounds GPU bandwidth so period=1 present fidelity stays interactive without multi-frame cadence.
 
+**Tile hierarchy (Phase B multi‑M FIFO):** **physical** tiles of size **1024** (buffer index space, not logical chronology) store min/max/sum aggregates. On append/wrap, **maintain** rebuilds only touched tiles — modular seam wraps use up to **two** phys ranges (no min/max collapse across the ring). Cold full rebuilds chunk (2048 tiles/encode); maintain may continue while present SIG is clean until ready. When hierarchy is ready and policy enables it (**modular multi‑K even when pts/bucket ≤ 512**, or pts/bucket &gt; 512, or N ≥ 250k), **present** LTTB/min/max reads tile aggregates instead of cold full-ring scans — still **period=1** every `SIG` change (G0–G2). Warm hierarchy never skips present encode. Falls back to legacy present same frame if hierarchy is not ready. Memory: ~0.3–0.6 MiB tiles per 10M-point series.
+
+**G4 hierarchy residual magnitude:** present scores tile min/max (and mid) candidates plus ≤8 uniform samples on partial edge tiles — not full-tile raw refine. Averages on partial tiles use fractionally scaled tile means. Same residual class as the 128-candidate dense cap; harness-validated on G7 1M/5M.
+
+**Streaming gap-scan cache:** `hasNullGaps` for modular rings must not full-scan N every append. Finite-only appends (and staging thin-path batches with **x and y** finite) refresh an O(append) gap cache so GPU-decimation eligibility stays cheap at multi‑M FIFO rates. This was a primary multi‑M FPS unlock alongside hierarchy present.
+
+**GPU `targetBuckets` vs `samplingThreshold` (intentional screen-space LOD):** GPU prepare sets
+`targetBuckets = min(samplingThreshold, pixelCap, rawPointCount)` where
+`pixelCap = max(128, 2 × plotWidthDevicePx)`. On narrow multi-chart slots this can yield fewer
+LTTB/min/max samples than the configured `samplingThreshold` alone (e.g. ~400 vs 2500). This is
+**screen-space LOD**, not a multi-frame amortization residual: the encode still runs every streaming
+`SIG` (G0–G2). CPU sampling paths use the configured / zoom-scaled threshold **without** that pixel
+cap. Prefer a wider plot or a lower threshold when comparing GPU vs CPU sample counts side-by-side.
+
 **Golden encode-signature fidelity (foundation):** the present path never draws decimation samples computed for a different prepare input than this frame.
 
 | Rule | Meaning |
@@ -29,9 +43,9 @@ Optimize ChartGPU for large datasets and real-time streaming.
 
 **Period-flash (forbidden):** multi-frame freeze of geometry for a prior streaming `SIG` while ring/N/window/version moved, then a hard snap when encode finally runs. Max frames presenting a prior streaming `SIG` = **0**.
 
-**Allowed residual motion:** honest LTTB reselection every streaming frame (polyline may move slightly frame-to-frame without freeze), 128-candidate (averages 64) approximation at extreme pts/bucket, dense-hairline / draw-LOD policy. These are not golden-rule failures.
+**Allowed residual motion:** honest LTTB reselection every streaming frame (polyline may move slightly frame-to-frame without freeze), 128-candidate (averages 64) approximation at extreme pts/bucket, **hierarchy tile-rep LTTB** (min/max tile extrema + partial-edge subsample; G4 extension of the dense-cap residual), dense-hairline / draw-LOD policy. These are not golden-rule failures.
 
-**Phase B multi‑M cost model (still G0–G2):** every streaming `SIG` change re-encodes this frame. Speed comes from cheaper honest recompute (dense candidate caps, O(1) cold multi‑M content stamp on `setSeries`, modular ring index without integer `%` in WGSL) — **not** multi-frame present lag.
+**Phase B multi‑M cost model (still G0–G2):** every streaming `SIG` change re-encodes this frame. Speed comes from cheaper honest recompute — **tile hierarchy maintain O(append) + hierarchy-backed present**, dense candidate caps on the legacy path, O(1) cold multi‑M content stamp on `setSeries`, modular ring index without integer `%` in WGSL — **not** multi-frame present lag.
 
 Equal-N content rewrites (same N + same ringStart, version bump) and bind-group/output rebuilds always recompute. Domain scales are **not** in `SIG` — they update every frame on the line/area draw path.
 
@@ -41,7 +55,9 @@ Multi‑M FIFO rows re-encode LTTB every append frame after this foundation; Avg
 
 ## Zoom-aware resampling
 
-Zoom triggers resampling on visible range only. Target scales with zoom level (capped at 200K points). Debounce ~100ms.
+Zoom triggers resampling on the visible range only. Target scales with zoom level (capped at 200K points).
+
+**Period=1 while zoom is live:** CPU-sampled series recompute zoom samples on every zoom change (coalesced to the next flush/frame). ChartGPU does **not** present a multi-frame slice of prior full-span samples as the zoomed window (that under-sampled window would miss local extrema until a delayed resample). GPU-decimation series keep full raw resident and scope buckets via `visibleStart`/`visibleEnd` every frame.
 
 **Y-axis bounds:** `yAxis.autoBounds: 'visible'` (default) rescales to visible data; `'global'` uses full dataset bounds.
 
@@ -55,6 +71,8 @@ Zoom triggers resampling on visible range only. Target scales with zoom level (c
 
 **Memory (preferred):** Stream with a fixed-capacity ring via `appendData(index, newPoints, { maxPoints })` — GPU modular ring writes, O(append), no full retained-window rewrite. Prefer this over sliding-window full `setOption` for high-rate FIFO.
 
+**Cold FIFO seed (G7 / multi‑M setup):** create the chart with empty series (styles/axes only), then seed with `appendData(i, fullColumns, { maxPoints: N })` when the batch length is ≥ `N`. That is a **strict replace into capacity** — one ring allocation at `N`, one pack/upload per series, ring mode active immediately. Do **not** cold-load multi‑M via full-data `setOption` then switch to `appendData` + `maxPoints` on the stream (linear residency + later promote was the G7 10M setup hang path). Suite group 7 uses this idiomatic path; SciChart parity is `fifoCapacity` at first real ingest.
+
 **Memory (fallback):** When you must fully replace series data, trim client-side then `setOption({ series: [{ data: rawData.slice(-maxPoints) }] })`. See [`examples/live-streaming/`](../examples/live-streaming/) and [Chart API — appendData](https://chartgpu.io/docs/api/streaming/#appenddata).
 
 ### Hover / hit-test during multi‑M streaming
@@ -66,7 +84,7 @@ Pointer-in-plot work (highlight ring + optional tooltip) must stay cheap while a
 | **Shared nearest-point** | One `findNearestPoint` result feeds **highlight + item tooltip**. **Time-only rate limit (~60 Hz / 16 ms)** — pointer move does **not** bypass the throttle. Each allowed sample uses the **latest** pointer; suppressed frames reuse the last match and schedule a follow-up render. Crosshair still tracks every frame. |
 | **findNearest multi‑M** | Above ~8k points: **skip mono check entirely**, domain x-window for the hit radius, then expand. When that window still has **≫4k** points (full-span multi‑M: points-per-pixel × maxDist), **stride + local refine** so hover stays O(thousands) not O(100k+). At ~**16M** (128 MiB storage bind / 8 bytes per f32 xy) device auto-window engages ring FIFO — without dense-stride expand, hover freezes streaming even with binary search. |
 | **Tooltip dual-store ring bounds** | When `tooltip.show: true` and device/`maxPoints` ring wraps, hit-test bounds use **O(1) endpoint x + batch y** (same as coordinator) — not a full O(n) rescan of the ~16M ring every append. |
-| **Monotonic X cache** | **Growing XY / arrays** (owned MutableXYColumns): `{ mono, count, lastX }` — pure mono growth re-checks **only the new tail**. First visit of n ≫ 250k uses strided sample + endpoints (avoids multi-second full scan on first hover). **Ring / staging**: generation-aware cache + `contentEpoch`. |
+| **Monotonic X cache** | **Growing XY / arrays** (owned MutableXYColumns): `{ mono, count, lastX, proven }` — pure mono growth re-checks **only the new tail** after proven mono. First visit of n ≫ 250k: strided sample may only **reject** mono; otherwise progressive full-scan in 250k chunks until proven (then tight binary windows). Never mono=true from stride alone. **Ring / staging**: generation-aware cache + `contentEpoch`; same progressive proof for multi-M first visit. |
 | **`tooltip.show: false`** | Skips dual hit-test columnar store maintenance on `appendData` (GPU/coordinator only). Highlight/crosshair still use the shared gated path above — turning tooltips off alone does **not** disable hit-test. |
 | **`tooltip.show: true`** | Dual store kept for history/hit APIs; tooltip DOM updates share the same ~60 Hz gate as highlight. |
 

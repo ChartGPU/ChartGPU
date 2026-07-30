@@ -71,7 +71,10 @@ export interface DataStore {
    * - Peak GPU reservation under ring capacity is **`maxPoints`** points.
    * - Maintains `pointCount` for render path queries.
    *
-   * Throws if the series has not been set yet.
+   * **Cold seed:** when no series entry exists yet, callers may pass `{ maxPoints }` to
+   * allocate a ring at capacity and pack once (empty chart → first `appendData`).
+   * Without `maxPoints`, throws if the series has not been set yet (coordinator
+   * dual-pack fallthrough must seed from series config + this batch).
    */
   appendSeries(index: number, newPoints: CartesianSeriesData, options?: Readonly<{ maxPoints?: number }>): void;
   removeSeries(index: number): void;
@@ -83,18 +86,22 @@ export interface DataStore {
    */
   getSeriesPointCount(index: number): number;
   /**
-   * Modular ring layout for GPU consumers (decimation). When `capacity === 0`,
-   * points are packed linearly at the start of the buffer.
+   * Modular ring layout for GPU consumers (decimation / line ring remap).
    *
-   * Note: during the pre-wrap fill phase `capacity` is still reported as `0`
-   * so decimation can index linearly; use {@link isSeriesRingMode} to detect
-   * whether the series is under maxPoints ring residency (including pre-wrap).
+   * - `capacity === 0`: unbounded linear storage (no maxPoints ring).
+   * - `capacity > 0`: fixed-capacity ring mode. `start` is the physical index of
+   *   logical 0. When `start === 0`, physical layout is chronological (identity
+   *   map); area/line+areaStyle may share the GPU buffer. When `start !== 0`,
+   *   storage is modular after wrap — consumers must remap or private-pack.
+   *
+   * Capacity is always exposed while ring mode is active (including pre-wrap
+   * `start === 0`) so hierarchy maintain keeps a stable ringCap across FIFO
+   * cycles. Use {@link isSeriesRingMode} for residency checks.
    */
   getSeriesRingLayout(index: number): SeriesRingLayout;
   /**
    * True when the series is under maxPoints modular-ring residency
-   * (`ringCapacityPoints > 0`), including the pre-wrap fill phase where
-   * {@link getSeriesRingLayout} still reports `capacity === 0`.
+   * (`ringCapacityPoints > 0`), including the pre-wrap fill phase.
    *
    * Callers must not linearize via `setSeries` while this is true unless an
    * intentional full rebuild is desired (issue 0.2).
@@ -123,9 +130,12 @@ export interface DataStore {
    *     `skipContentHash` use an O(1) stamp bump when an entry already exists.
    * - **`appendSeries`**: O(1) version stamp (not FNV of the new floats). Append
    *   always mutates residency; hashing 250k×5 floats/frame was pure tax.
+   *   Warm multi‑M strict replace / rebuild **chains** `bumpContentVersion(existing)`
+   *   so successive equal-N replaces dirty decimation. Absolute multi‑M stamp
+   *   (fixed base) is **only** for true cold first write.
    *
    * Changes whenever packed content is rewritten (including same-N appends),
-   * except cold multi‑M stamps which key on N only for the first write.
+   * except cold multi‑M first-write stamps which key on N/plan counts only.
    * Throws if the series has not been set yet.
    */
   getSeriesContentHash(index: number): number;
@@ -542,6 +552,102 @@ export function createDataStore(device: GPUDevice): DataStore {
     return entry;
   };
 
+  /**
+   * Cold multi‑M content stamp threshold. Full FNV of 10M×2 floats is multi-second
+   * tax on the G7 hang budget; O(1) stamp is enough for decimation dirty on first
+   * write (equal-content early-out does not apply on cold first write).
+   */
+  const MULTI_M_CONTENT_STAMP_POINTS = 1_000_000;
+
+  /**
+   * Content version for a packed window.
+   *
+   * - **Cold** (`existingHash == null`): multi‑M → absolute O(1) stamp; else FNV.
+   * - **Warm** (`existingHash` set): multi‑M → **chain** `bumpContentVersion(existing)`
+   *   so successive equal-N full replaces dirty present; else FNV of packed floats.
+   */
+  const contentHashForPackedWindow = (
+    packedView: Float32Array,
+    pointCount: number,
+    keepNewCount: number,
+    dropPrevCount: number,
+    existingHash?: number | null
+  ): number => {
+    if (pointCount >= MULTI_M_CONTENT_STAMP_POINTS) {
+      const base = existingHash != null ? existingHash >>> 0 : 0x811c9dc5;
+      return bumpContentVersion(base, keepNewCount, dropPrevCount);
+    }
+    return hashFloat32ArrayBits(packedView);
+  };
+
+  /**
+   * First ingest when no series entry exists yet and `maxPoints` is set
+   * (empty create → `appendData(..., { maxPoints })`).
+   * One-shot allocate at exact ring capacity, single pack + writeBuffer.
+   * Caller must pass a valid `maxPoints` (appendSeries gates unbounded cold throw).
+   */
+  const seedSeriesCold = (
+    index: number,
+    newPoints: CartesianSeriesData,
+    options?: Readonly<{ maxPoints?: number }>
+  ): void => {
+    const newPointCount = getPointCount(newPoints);
+    if (newPointCount === 0) return;
+
+    const maxPoints = normalizeMaxPoints(options?.maxPoints);
+    // Defensive: appendSeries only invokes this when maxPoints is set.
+    if (maxPoints == null) {
+      throw new Error(`Series ${index} has no data. Call setSeries(${index}, data) first.`);
+    }
+    const plan = planMaxPointsWindow(0, newPointCount, maxPoints);
+    const nextPointCount = plan.nextCount;
+    const newSrcOffset = plan.newSrcOffset;
+    const keepNewCount = plan.keepNewCount;
+    const ringCapacity = plan.ringCapacity;
+
+    // Exact ring capacity (no 2× multi-M headroom — that blew 128 MiB binding on 10M).
+    const reservePoints = Math.max(nextPointCount, maxPointsPeakRetention(ringCapacity));
+    const requiredBytes = roundUpToMultipleOf4(reservePoints * 2 * 4);
+    const targetBytes = Math.max(MIN_BUFFER_BYTES, requiredBytes);
+    const maxBufferSize = device.limits.maxBufferSize;
+    const maxStorageBinding = device.limits.maxStorageBufferBindingSize;
+    const hardCap = Math.min(maxBufferSize, maxStorageBinding);
+    if (targetBytes > hardCap) {
+      throw new Error(
+        `DataStore.appendSeries(${index}): required buffer size ${targetBytes} exceeds ` +
+          `min(maxBufferSize=${maxBufferSize}, maxStorageBufferBindingSize=${maxStorageBinding}).`
+      );
+    }
+
+    const capacityBytes = clampSeriesCapacityBytes(targetBytes, targetBytes, maxBufferSize, maxStorageBinding);
+    const buffer = device.createBuffer({
+      size: capacityBytes,
+      usage: seriesBufferUsage(),
+    });
+    const stagingBuffer = new Float32Array(capacityBytes / 4);
+    const xOffset = 0;
+
+    if (keepNewCount > 0) {
+      packXYInto(stagingBuffer, 0, newPoints, newSrcOffset, keepNewCount, xOffset);
+    }
+    writeFullPointsToGpu(device, buffer, stagingBuffer, nextPointCount);
+
+    const packedView = nextPointCount > 0 ? stagingBuffer.subarray(0, nextPointCount * 2) : new Float32Array(0);
+    // True cold first write: absolute multi‑M stamp (no existing.hash32).
+    const hash32 = contentHashForPackedWindow(packedView, nextPointCount, keepNewCount, plan.dropPrevCount, null);
+
+    series.set(index, {
+      buffer,
+      capacityBytes,
+      pointCount: nextPointCount,
+      hash32,
+      xOffset,
+      stagingBuffer,
+      ringStart: 0,
+      ringCapacityPoints: ringCapacity > 0 ? ringCapacity : 0,
+    });
+  };
+
   const setSeries = (
     index: number,
     data: CartesianSeriesData,
@@ -635,10 +741,7 @@ export function createDataStore(device: GPUDevice): DataStore {
 
     // Issue 2.1 / Track C: y-only already proved y changed — skip full O(N) FNV.
     // Stamp hash so decimation still dirties. Issue 2.6: skipContentHash same.
-    // Phase B: cold multi-M seeds (FIFO 5M/10M×5 setup) — full FNV over 10M×2
-    // floats × 5 series is multi-second pure tax on the hang budget; stamp is
-    // enough for decimation dirty (append path already uses O(1) bump).
-    const MULTI_M_CONTENT_STAMP_POINTS = 1_000_000;
+    // Phase B / G7 cold: multi-M seeds stamp O(1) (see contentHashForPackedWindow).
     const skipHash = yOnlyChanged || options?.skipContentHash === true;
     let hash32: number;
     if (skipHash && existing) {
@@ -689,6 +792,18 @@ export function createDataStore(device: GPUDevice): DataStore {
     assertNotDisposed();
     const newPointCount = getPointCount(newPoints);
     if (newPointCount === 0) return;
+
+    // Cold seed: empty chart → first appendData with maxPoints (G7 FIFO idiomatic path).
+    // Without maxPoints, still require setSeries first so appendFlush can dual-pack
+    // series seed data + this batch (unbounded cold append of only newPoints would
+    // drop prior setOption raw that is not yet GPU-resident).
+    if (!series.has(index)) {
+      if (normalizeMaxPoints(options?.maxPoints) != null) {
+        seedSeriesCold(index, newPoints, options);
+        return;
+      }
+      throw new Error(`Series ${index} has no data. Call setSeries(${index}, data) first.`);
+    }
 
     const existing = getSeriesEntry(index);
     const prevPointCount = existing.pointCount;
@@ -834,7 +949,14 @@ export function createDataStore(device: GPUDevice): DataStore {
         buffer,
         capacityBytes,
         pointCount: nextPointCount,
-        hash32: hashFloat32ArrayBits(fullPacked),
+        // Warm: chain existing.hash32 so successive multi‑M full replaces dirty present.
+        hash32: contentHashForPackedWindow(
+          fullPacked,
+          nextPointCount,
+          keepNewCount,
+          dropPrevCount,
+          existing.hash32
+        ),
         xOffset: existing.xOffset,
         stagingBuffer,
         ringStart: 0,
@@ -932,7 +1054,14 @@ export function createDataStore(device: GPUDevice): DataStore {
       buffer,
       capacityBytes,
       pointCount: nextPointCount,
-      hash32: hashFloat32ArrayBits(fullPacked),
+      // Warm rebuild: chain existing.hash32 (multi‑M absolute stamp is cold-only).
+      hash32: contentHashForPackedWindow(
+        fullPacked,
+        nextPointCount,
+        keepNewCount,
+        dropPrevCount,
+        existing.hash32
+      ),
       xOffset: existing.xOffset,
       stagingBuffer,
       ringStart: 0,
@@ -964,10 +1093,10 @@ export function createDataStore(device: GPUDevice): DataStore {
 
   const getSeriesRingLayout = (index: number): SeriesRingLayout => {
     const entry = getSeriesEntry(index);
-    // Modular indexing is only required once the write head has wrapped
-    // (ringStart !== 0). Linear fill under maxPoints still uses capacity 0
-    // so decimation can read raw[i] directly.
-    if (entry.ringCapacityPoints > 0 && entry.ringStart !== 0) {
+    // Always expose fixed-capacity ring layout when maxPoints ring mode is active,
+    // including ringStart === 0 (identity map: phys = logical). Chronological
+    // share for area uses `capacity===0 || start===0` (see renderSeries).
+    if (entry.ringCapacityPoints > 0) {
       return { start: entry.ringStart, capacity: entry.ringCapacityPoints };
     }
     return { start: 0, capacity: 0 };

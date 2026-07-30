@@ -49,12 +49,39 @@ type ArrayMonoCacheEntry = {
   mono: boolean;
   count: number;
   lastX: number;
+  /**
+   * When false, a progressive full-scan is in progress for n ≫ soft cap.
+   * mono=true is only returned when proven (full scan completed under/over soft cap).
+   * Never treat unproven partial progress as mono for binary-search consumers (M2).
+   */
+  proven: boolean;
+  /** Next chronological index to full-scan when !proven. */
+  scanNext: number;
 };
 const monotonicXCache = new WeakMap<object, ArrayMonoCacheEntry>();
 const monotonicTimestampCache = new WeakMap<ReadonlyArray<OHLCDataPoint>, boolean>();
 
-/** Cap one-shot full mono scans so first hover at multi‑M cannot freeze the tab. */
+/** Cap one-shot / progressive chunk size so multi‑M first visits do not freeze the tab. */
 const MONO_FULL_SCAN_SOFT_CAP = 250_000;
+
+/**
+ * Strided sample may only **reject** mono (never prove it). Catches unsorted multi-M
+ * quickly without trusting sparse samples as mono=true.
+ */
+function stridedMonoRejects(data: CoordinatorCartesianData, n: number): boolean {
+  let prevX = Number.NEGATIVE_INFINITY;
+  const stride = Math.max(1, Math.floor(n / 2048));
+  for (let i = 0; i < n; i += stride) {
+    const x = getX(data, i);
+    if (!Number.isFinite(x) || x < prevX) return true;
+    prevX = x;
+  }
+  if (n > 0) {
+    const lastX = getX(data, n - 1);
+    if (!Number.isFinite(lastX) || lastX < prevX) return true;
+  }
+  return false;
+}
 
 /**
  * Generation-aware mono state for mutable ring / staging storage.
@@ -82,6 +109,9 @@ type MutableMonoCacheEntry = {
   staging: Float32Array | null;
   /** Last chronological x when mono (or −∞ when empty). */
   lastX: number;
+  /** Progressive multi-M full scan proven (see ArrayMonoCacheEntry). */
+  proven: boolean;
+  scanNext: number;
 };
 
 const mutableMonoCache = new WeakMap<object, MutableMonoCacheEntry>();
@@ -135,9 +165,10 @@ function isMonotonicMutableRingOrStaging(data: RingXYColumns | StagingRingView):
 
   const cached = mutableMonoCache.get(data as object);
 
-  // Same generation (layout + contentEpoch + rewriteGen) → reuse.
+  // Same generation (layout + contentEpoch + rewriteGen) + proven → reuse.
   if (
     cached &&
+    cached.proven &&
     cached.start === start &&
     cached.count === count &&
     cached.capacity === capacity &&
@@ -149,7 +180,12 @@ function isMonotonicMutableRingOrStaging(data: RingXYColumns | StagingRingView):
     return cached.mono;
   }
 
-  const store = (mono: boolean, lastX: number): boolean => {
+  const store = (
+    mono: boolean,
+    lastX: number,
+    opts?: { proven?: boolean; scanNext?: number }
+  ): boolean => {
+    const proven = opts?.proven ?? true;
     mutableMonoCache.set(data as object, {
       mono,
       start,
@@ -160,45 +196,67 @@ function isMonotonicMutableRingOrStaging(data: RingXYColumns | StagingRingView):
       rewriteGen,
       staging,
       lastX,
+      proven,
+      scanNext: opts?.scanNext ?? (proven ? count : 0),
     });
-    return mono;
+    return proven ? mono : false;
   };
 
-  // Soft-cap: never full-scan multi‑M rings on the hover hot path (device
-  // auto-window is ~16M points at 128 MiB). Strided sample + endpoints.
-  const maybeSoftMono = (): boolean => {
+  /**
+   * Multi-M first visit / full replace: strided sample may only reject; otherwise
+   * progressive full-scan in soft-cap chunks until proven (M2).
+   */
+  const maybeSoftOrProgressiveMono = (): boolean => {
     if (count <= MONO_FULL_SCAN_SOFT_CAP) {
       const scanned = fullScanMonotonicX(data);
-      return store(scanned.mono, scanned.lastX);
+      return store(scanned.mono, scanned.lastX, { proven: true, scanNext: count });
     }
-    let prevX = Number.NEGATIVE_INFINITY;
-    let ok = true;
-    const stride = Math.max(1, Math.floor(count / 2048));
-    for (let i = 0; i < count; i += stride) {
+    // Same-gen progressive continuation.
+    const continuing =
+      cached &&
+      !cached.proven &&
+      cached.start === start &&
+      cached.count === count &&
+      cached.capacity === capacity &&
+      cached.xOffset === xOffset &&
+      cached.staging === staging &&
+      cached.contentEpoch === contentEpoch &&
+      cached.rewriteGen === rewriteGen;
+
+    if (!continuing) {
+      // Fast reject unsorted multi-M (never prove mono from stride alone).
+      if (stridedMonoRejects(data, count)) {
+        return store(false, Number.NEGATIVE_INFINITY, { proven: true, scanNext: count });
+      }
+    }
+
+    let scanFrom = continuing ? cached!.scanNext : 0;
+    let prevX = continuing ? cached!.lastX : Number.NEGATIVE_INFINITY;
+    const scanEnd = Math.min(count, scanFrom + MONO_FULL_SCAN_SOFT_CAP);
+    for (let i = scanFrom; i < scanEnd; i++) {
       const x = getX(data, i);
       if (!Number.isFinite(x) || x < prevX) {
-        ok = false;
-        break;
+        return store(false, prevX, { proven: true, scanNext: count });
       }
       prevX = x;
     }
-    if (ok && count > 0) {
-      const lastX = getX(data, count - 1);
-      if (!Number.isFinite(lastX) || lastX < prevX) ok = false;
-      else prevX = lastX;
+    if (scanEnd >= count) {
+      return store(true, prevX, { proven: true, scanNext: count });
     }
-    return store(ok, ok ? prevX : Number.NEGATIVE_INFINITY);
+    // Not yet proven — return false for this call; next poll continues.
+    return store(true, prevX, { proven: false, scanNext: scanEnd });
   };
 
   // Full-clear rewrite: retained prefix is invalid — soft/full scan.
   if (cached && cached.rewriteGen !== rewriteGen) {
-    return maybeSoftMono();
+    return maybeSoftOrProgressiveMono();
   }
 
-  // Incremental pure append: start unchanged, count grew, prior mono.
+  // Incremental pure append: start unchanged, count grew, prior **proven** mono.
   // contentEpoch may advance by >1 if mono was not polled between appends.
   if (
     cached &&
+    cached.proven &&
     cached.mono &&
     cached.capacity === capacity &&
     cached.xOffset === xOffset &&
@@ -208,8 +266,8 @@ function isMonotonicMutableRingOrStaging(data: RingXYColumns | StagingRingView):
     contentEpoch > cached.contentEpoch
   ) {
     const last = verifyMonoRange(data, cached.count, count, cached.lastX);
-    if (last == null) return store(false, cached.lastX);
-    return store(true, last);
+    if (last == null) return store(false, cached.lastX, { proven: true });
+    return store(true, last, { proven: true });
   }
 
   // Incremental FIFO at capacity: start advanced by total drops since last
@@ -217,6 +275,7 @@ function isMonotonicMutableRingOrStaging(data: RingXYColumns | StagingRingView):
   // tail — O(dropped), not O(capacity). Device auto-window hover depends on this.
   if (
     cached &&
+    cached.proven &&
     cached.mono &&
     cached.capacity === capacity &&
     capacity > 0 &&
@@ -232,15 +291,15 @@ function isMonotonicMutableRingOrStaging(data: RingXYColumns | StagingRingView):
     if (dropped > 0 && dropped < count) {
       const retainedLastIdx = count - dropped - 1;
       const prevX = getX(data, retainedLastIdx);
-      if (!Number.isFinite(prevX)) return store(false, cached.lastX);
+      if (!Number.isFinite(prevX)) return store(false, cached.lastX, { proven: true });
       const last = verifyMonoRange(data, count - dropped, count, prevX);
-      if (last == null) return store(false, prevX);
-      return store(true, last);
+      if (last == null) return store(false, prevX, { proven: true });
+      return store(true, last, { proven: true });
     }
   }
 
-  // Unrecognized transition, first visit, or full replace: soft-capped scan.
-  return maybeSoftMono();
+  // Unrecognized transition, first visit, progressive continue, or full replace.
+  return maybeSoftOrProgressiveMono();
 }
 
 /**
@@ -255,8 +314,10 @@ function isMonotonicMutableRingOrStaging(data: RingXYColumns | StagingRingView):
  * xOffset/staging/`contentEpoch`). Pure mono append and partial FIFO drop+append
  * re-verify only new points; strict full replace full-scans.
  *
- * First visit of huge series (n ≫ soft cap): strided sample + endpoints rather
- * than a multi-second full scan (streaming line contract is mono-increasing x).
+ * First visit of huge series (n ≫ soft cap): strided sample may only **reject**
+ * mono; otherwise progressive full-scan in soft-cap chunks until proven mono.
+ * Never return mono=true from optimistic stride alone (M2). Sorted multi-M gains
+ * tight binary windows after progressive proof completes (not permanent full-span).
  */
 export function isMonotonicNonDecreasingFiniteX(data: CartesianSeriesData): boolean {
   if (isRingXYColumns(data) || isStagingRingView(data)) {
@@ -265,69 +326,77 @@ export function isMonotonicNonDecreasingFiniteX(data: CartesianSeriesData): bool
 
   const cacheKey = typeof data === 'object' && data !== null ? (data as object) : null;
   const n = getPointCount(data);
+  const cart = data as CoordinatorCartesianData;
+
+  const storeArray = (
+    mono: boolean,
+    lastX: number,
+    opts: { proven: boolean; scanNext: number }
+  ): boolean => {
+    if (cacheKey) {
+      monotonicXCache.set(cacheKey, {
+        mono,
+        count: n,
+        lastX,
+        proven: opts.proven,
+        scanNext: opts.scanNext,
+      });
+    }
+    return opts.proven ? mono : false;
+  };
 
   if (cacheKey) {
     const cached = monotonicXCache.get(cacheKey);
     if (cached) {
-      if (cached.count === n) return cached.mono;
-      // Pure mono growth: verify only the new chronological tail.
-      if (cached.mono && n > cached.count) {
-        const last = verifyMonoRange(data as CoordinatorCartesianData, cached.count, n, cached.lastX);
+      if (cached.count === n && cached.proven) return cached.mono;
+      // Pure mono growth after **proven** mono: verify only the new chronological tail.
+      if (cached.proven && cached.mono && n > cached.count) {
+        const last = verifyMonoRange(cart, cached.count, n, cached.lastX);
         if (last == null) {
-          monotonicXCache.set(cacheKey, { mono: false, count: n, lastX: cached.lastX });
-          return false;
+          return storeArray(false, cached.lastX, { proven: true, scanNext: n });
         }
-        monotonicXCache.set(cacheKey, { mono: true, count: n, lastX: last });
-        return true;
+        return storeArray(true, last, { proven: true, scanNext: n });
       }
-      // Shrink, mono=false with growth, or other transitions → rescan below.
+      // Same-n progressive continue handled below; shrink / mono=false growth → rescan.
     }
   }
 
-  // Soft-cap full scan: multi‑M first hover must not block streaming for seconds.
-  if (n > MONO_FULL_SCAN_SOFT_CAP) {
+  // Under soft cap: one-shot full scan (proves mono or not).
+  if (n <= MONO_FULL_SCAN_SOFT_CAP) {
     let prevX = Number.NEGATIVE_INFINITY;
-    let ok = true;
-    const stride = Math.max(1, Math.floor(n / 2048));
-    for (let i = 0; i < n; i += stride) {
-      const x = getX(data as CoordinatorCartesianData, i);
+    for (let i = 0; i < n; i++) {
+      const x = getX(cart, i);
       if (!Number.isFinite(x) || x < prevX) {
-        ok = false;
-        break;
+        return storeArray(false, prevX, { proven: true, scanNext: n });
       }
       prevX = x;
     }
-    if (ok) {
-      const lastX = getX(data as CoordinatorCartesianData, n - 1);
-      if (!Number.isFinite(lastX) || lastX < prevX) ok = false;
-      else prevX = lastX;
-    }
-    if (cacheKey) {
-      monotonicXCache.set(cacheKey, {
-        mono: ok,
-        count: n,
-        lastX: ok ? prevX : Number.NEGATIVE_INFINITY,
-      });
-    }
-    return ok;
+    return storeArray(true, prevX, { proven: true, scanNext: n });
   }
 
-  let prevX = Number.NEGATIVE_INFINITY;
-  for (let i = 0; i < n; i++) {
-    const x = getX(data as CoordinatorCartesianData, i);
+  // Multi-M: progressive full scan. Stride may only reject.
+  const cached = cacheKey ? monotonicXCache.get(cacheKey) : undefined;
+  const continuing = !!(cached && cached.count === n && !cached.proven);
+
+  if (!continuing && stridedMonoRejects(cart, n)) {
+    return storeArray(false, Number.NEGATIVE_INFINITY, { proven: true, scanNext: n });
+  }
+
+  let scanFrom = continuing ? cached!.scanNext : 0;
+  let prevX = continuing ? cached!.lastX : Number.NEGATIVE_INFINITY;
+  const scanEnd = Math.min(n, scanFrom + MONO_FULL_SCAN_SOFT_CAP);
+  for (let i = scanFrom; i < scanEnd; i++) {
+    const x = getX(cart, i);
     if (!Number.isFinite(x) || x < prevX) {
-      if (cacheKey) {
-        monotonicXCache.set(cacheKey, { mono: false, count: n, lastX: prevX });
-      }
-      return false;
+      return storeArray(false, prevX, { proven: true, scanNext: n });
     }
     prevX = x;
   }
-
-  if (cacheKey) {
-    monotonicXCache.set(cacheKey, { mono: true, count: n, lastX: prevX });
+  if (scanEnd >= n) {
+    return storeArray(true, prevX, { proven: true, scanNext: n });
   }
-  return true;
+  // Not proven yet — safe full-span consumers until progressive completes.
+  return storeArray(true, prevX, { proven: false, scanNext: scanEnd });
 }
 
 /**

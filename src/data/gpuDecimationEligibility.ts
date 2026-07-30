@@ -57,12 +57,21 @@ export function mapSamplingToDecimationAlgorithm(sampling: SeriesSampling): Deci
  * Returns `true` when the given series + raw-data pair should run through the
  * GPU compute decimation path instead of CPU `sampleSeriesDataPoints`.
  *
- * The predicate is reference-cheap: the only potentially O(n) check is
- * `hasNullGaps`, which short-circuits on the first non-null entry and is only
- * reached when the earlier gates pass.
+ * The predicate is reference-cheap when earlier gates fail; the only potentially
+ * O(n) check is `hasNullGaps` (null + non-finite x/y across all cartesian formats,
+ * sticky per data identity after first true — H1).
+ *
+ * **Single gate:** all coordinator sites (baseline recompute, zoom recompute,
+ * prepareSeries buffer-swap) must call this predicate (or a thin wrapper that
+ * only adds intentional extra gates documented in the agreement matrix test).
  */
-export function isGpuDecimationEligible(series: ResolvedSeriesConfig, rawData: CoordinatorCartesianData): boolean {
+export function isGpuDecimationEligible(
+  series: ResolvedSeriesConfig,
+  rawData: CoordinatorCartesianData | null | undefined
+): boolean {
   if (series.type !== 'line') return false;
+  // Missing raw is never GPU-decimation eligible (pathological / cold).
+  if (rawData == null || typeof rawData !== 'object') return false;
   // Stacked mountain composition requires full peer alignment — not GPU-decimation eligible (D9).
   // Stroke-only lines with inert stack (no areaStyle) remain eligible.
   if (isStackedMountainSeries(series)) return false;

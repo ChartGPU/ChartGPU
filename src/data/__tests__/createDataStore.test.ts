@@ -316,7 +316,9 @@ describe('createDataStore', () => {
 
       expect(store.getSeriesPointCount(0)).toBe(6);
       expect(store.getSeriesBuffer(0)).toBe(bufferBefore);
-      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 0 });
+      // Ring mode active under maxPoints: capacity exposed even at ringStart=0
+      // (identity modular map; hierarchy maintain needs stable ringCap).
+      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 8 });
       const writes = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
       expect(writes).toHaveBeenCalledTimes(1);
       // Appended range starts at point index 4 → byteOffset 32.
@@ -623,7 +625,7 @@ describe('createDataStore', () => {
         { maxPoints: 3 }
       );
       expect(store.getSeriesPointCount(0)).toBe(3);
-      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 0 });
+      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 3 });
       const staging = store.getSeriesStagingBuffer(0);
       expect(staging[0]).toBe(11);
       expect(staging[1]).toBe(11);
@@ -658,6 +660,227 @@ describe('createDataStore', () => {
       expect(staging[1]).toBe(10);
       expect(staging[6]).toBe(13);
       expect(staging[7]).toBe(13);
+    });
+
+    it('cold seed: empty → appendData full N with maxPoints N is one-shot ring', () => {
+      // G7 idiomatic FIFO: create empty series, first append fills capacity.
+      // No prior setSeries — allocate ring once at maxPoints, pack once, ring mode on.
+      const store = createDataStore(device);
+      const N = 8;
+      const x = new Float64Array(N);
+      const y = new Float64Array(N);
+      for (let i = 0; i < N; i++) {
+        x[i] = i;
+        y[i] = i * 2;
+      }
+      (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mockClear();
+      (device.createBuffer as ReturnType<typeof vi.fn>).mockClear();
+
+      expect(() => store.appendSeries(0, { x, y }, { maxPoints: N })).not.toThrow();
+
+      expect(store.getSeriesPointCount(0)).toBe(N);
+      expect(store.isSeriesRingMode(0)).toBe(true);
+      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: N });
+      expect(store.getSeriesEffectiveMaxPoints(0)).toBe(N);
+
+      // One buffer at exact ring capacity (N × 8 bytes), one full writeBuffer.
+      expect(device.createBuffer).toHaveBeenCalledTimes(1);
+      const bufDesc = (device.createBuffer as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+        size: number;
+      };
+      expect(bufDesc.size).toBe(N * 8);
+      expect(device.queue.writeBuffer).toHaveBeenCalledTimes(1);
+
+      const staging = store.getSeriesStagingBuffer(0);
+      expect(staging[0]).toBe(0);
+      expect(staging[1]).toBe(0);
+      expect(staging[(N - 1) * 2]).toBe(N - 1);
+      expect(staging[(N - 1) * 2 + 1]).toBe((N - 1) * 2);
+    });
+
+    it('unbounded cold appendSeries without maxPoints still throws (dual-pack fallthrough)', () => {
+      // Without maxPoints, cold append must not invent residency from the batch alone —
+      // coordinator dual-pack recovers seed config + batch after this throw.
+      const store = createDataStore(device);
+      expect(() =>
+        store.appendSeries(0, {
+          x: new Float64Array([0, 1]),
+          y: new Float64Array([0, 1]),
+        })
+      ).toThrow(/Call setSeries\(0, data\) first/);
+    });
+
+    it('cold seed under-capacity fill (batch < maxPoints) allocates full ring capacity', () => {
+      const store = createDataStore(device);
+      const cap = 8;
+      (device.createBuffer as ReturnType<typeof vi.fn>).mockClear();
+      store.appendSeries(
+        0,
+        {
+          x: new Float64Array([0, 1, 2]),
+          y: new Float64Array([10, 20, 30]),
+        },
+        { maxPoints: cap }
+      );
+      expect(store.getSeriesPointCount(0)).toBe(3);
+      expect(store.isSeriesRingMode(0)).toBe(true);
+      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: cap });
+      const bufDesc = (device.createBuffer as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+        size: number;
+      };
+      // Peak reservation is maxPoints, not fill count.
+      expect(bufDesc.size).toBe(cap * 8);
+      const staging = store.getSeriesStagingBuffer(0);
+      expect(staging[0]).toBe(0);
+      expect(staging[1]).toBe(10);
+      expect(staging[4]).toBe(2);
+      expect(staging[5]).toBe(30);
+
+      // Pure fill under capacity remains O(append).
+      const bufferBefore = store.getSeriesBuffer(0);
+      (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mockClear();
+      store.appendSeries(
+        0,
+        {
+          x: new Float64Array([3, 4]),
+          y: new Float64Array([40, 50]),
+        },
+        { maxPoints: cap }
+      );
+      expect(store.getSeriesPointCount(0)).toBe(5);
+      expect(store.getSeriesBuffer(0)).toBe(bufferBefore);
+      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: cap });
+    });
+
+    it('cold seed then modular wrap stays O(append) at capacity N', () => {
+      const store = createDataStore(device);
+      const N = 4;
+      store.appendSeries(
+        0,
+        {
+          x: new Float64Array([0, 1, 2, 3]),
+          y: new Float64Array([0, 1, 2, 3]),
+        },
+        { maxPoints: N }
+      );
+      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: N });
+      const bufferBefore = store.getSeriesBuffer(0);
+      (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mockClear();
+
+      // Wrap by k=2: ringStart advances, capacity stable, no realloc.
+      store.appendSeries(
+        0,
+        {
+          x: new Float64Array([4, 5]),
+          y: new Float64Array([40, 50]),
+        },
+        { maxPoints: N }
+      );
+
+      expect(store.getSeriesPointCount(0)).toBe(N);
+      expect(store.getSeriesBuffer(0)).toBe(bufferBefore);
+      expect(store.getSeriesRingLayout(0)).toEqual({ start: 2, capacity: N });
+      // Modular write only (not full N re-upload).
+      expect(device.queue.writeBuffer).toHaveBeenCalledTimes(1);
+      const staging = store.getSeriesStagingBuffer(0);
+      // Physical: [4,40], [5,50], [2,2], [3,3] after overwrite of slots 0..1
+      expect(staging[0]).toBe(4);
+      expect(staging[1]).toBe(40);
+      expect(staging[2]).toBe(5);
+      expect(staging[3]).toBe(50);
+    });
+
+    it('cold seed batch > maxPoints keeps tail only', () => {
+      const store = createDataStore(device);
+      store.appendSeries(
+        0,
+        {
+          x: new Float64Array([0, 1, 2, 3, 4, 5]),
+          y: new Float64Array([0, 10, 20, 30, 40, 50]),
+        },
+        { maxPoints: 3 }
+      );
+      expect(store.getSeriesPointCount(0)).toBe(3);
+      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 3 });
+      const staging = store.getSeriesStagingBuffer(0);
+      expect(staging[0]).toBe(3);
+      expect(staging[1]).toBe(30);
+      expect(staging[2]).toBe(4);
+      expect(staging[3]).toBe(40);
+      expect(staging[4]).toBe(5);
+      expect(staging[5]).toBe(50);
+    });
+
+    it('cold multi-M append seed stamps content version without full FNV; warm replace dirties', () => {
+      const N = 1_000_000;
+      const xA = new Float64Array(N);
+      const yA = new Float64Array(N);
+      const xB = new Float64Array(N);
+      const yB = new Float64Array(N);
+      for (let i = 0; i < N; i++) {
+        xA[i] = i;
+        yA[i] = i * 0.001;
+        xB[i] = i + 0.5;
+        yB[i] = 999 - i * 0.002;
+      }
+      const storeA = createDataStore(device);
+      (device.createBuffer as ReturnType<typeof vi.fn>).mockClear();
+      storeA.appendSeries(0, { x: xA, y: yA }, { maxPoints: N });
+      // Exact capacity: N × 8 bytes (no 2× multi-M headroom on ring seed).
+      const coldBuf = (device.createBuffer as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+        size: number;
+      };
+      expect(coldBuf.size).toBe(N * 8);
+
+      const storeB = createDataStore(device);
+      storeB.appendSeries(0, { x: xB, y: yB }, { maxPoints: N });
+      // Cold absolute O(1) stamp keys on plan counts — equal N first write shares stamp.
+      const hColdA = storeA.getSeriesContentHash(0);
+      const hColdB = storeB.getSeriesContentHash(0);
+      expect(hColdA).toBe(hColdB);
+      expect(storeA.getSeriesPointCount(0)).toBe(N);
+      expect(storeA.isSeriesRingMode(0)).toBe(true);
+
+      // Warm multi-M strict replace with different y must chain-bump contentVersion
+      // (absolute stamp would false-equal and leave decimation present stale).
+      const yA2 = new Float64Array(N);
+      for (let i = 0; i < N; i++) yA2[i] = i * 0.007 + 1;
+      storeA.appendSeries(0, { x: xA, y: yA2 }, { maxPoints: N });
+      const hWarm1 = storeA.getSeriesContentHash(0);
+      expect(hWarm1).not.toBe(hColdA);
+
+      // Second warm full replace with different y dirties again.
+      const yA3 = new Float64Array(N);
+      for (let i = 0; i < N; i++) yA3[i] = 42 + i * 0.0001;
+      storeA.appendSeries(0, { x: xA, y: yA3 }, { maxPoints: N });
+      const hWarm2 = storeA.getSeriesContentHash(0);
+      expect(hWarm2).not.toBe(hWarm1);
+
+      // Sub-threshold cold append seed still uses FNV — different floats → different hash.
+      const storeLo = createDataStore(device);
+      storeLo.appendSeries(
+        0,
+        {
+          x: new Float64Array([0, 1, 2]),
+          y: new Float64Array([1, 2, 3]),
+        },
+        { maxPoints: 3 }
+      );
+      const hLo1 = storeLo.getSeriesContentHash(0);
+      const storeLo2 = createDataStore(device);
+      storeLo2.appendSeries(
+        0,
+        {
+          x: new Float64Array([0, 1, 2]),
+          y: new Float64Array([10, 20, 30]),
+        },
+        { maxPoints: 3 }
+      );
+      expect(storeLo2.getSeriesContentHash(0)).not.toBe(hLo1);
+
+      // Post-seed modular wrap bumps content version (O(1) stamp, not FNV of floats).
+      storeLo.appendSeries(0, { x: new Float64Array([3]), y: new Float64Array([4]) }, { maxPoints: 3 });
+      expect(storeLo.getSeriesContentHash(0)).not.toBe(hLo1);
     });
 
     it('growth GPU-copies retained prefix and ranged-writes only new points (1.1 A)', () => {
@@ -758,7 +981,7 @@ describe('createDataStore', () => {
       expect(device.queue.submit).toHaveBeenCalled();
     });
 
-    it('isSeriesRingMode true during pre-wrap fill while layout.capacity is 0', () => {
+    it('isSeriesRingMode true during pre-wrap fill; layout exposes capacity at ringStart=0', () => {
       const store = createDataStore(device);
       store.setSeries(0, [
         [0, 0],
@@ -768,8 +991,8 @@ describe('createDataStore', () => {
       store.appendSeries(0, [[2, 2]], { maxPoints: 8 });
       expect(store.getSeriesPointCount(0)).toBe(3);
       expect(store.isSeriesRingMode(0)).toBe(true);
-      // Decimation layout still reports linear until wrap.
-      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 0 });
+      // Capacity is always exposed in ring mode (identity map when start=0).
+      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 8 });
     });
 
     it('skipContentHash stamps and writes without full FNV short-circuit (2.6)', () => {
@@ -804,8 +1027,8 @@ describe('createDataStore', () => {
       // Append 1 with maxPoints=4 → keep last 3 of prev + new = [7,8,9,100]
       store.appendSeries(0, [[100, 999]], { maxPoints: 4 });
       expect(store.getSeriesPointCount(0)).toBe(4);
-      // Rebuild leaves linear layout at start=0.
-      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 0 });
+      // Rebuild leaves chronological layout at start=0 with ring capacity.
+      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 4 });
       const staging = store.getSeriesStagingBuffer(0);
       // Chronological: x=7,8,9,100
       expect(staging[0]).toBe(7);
@@ -892,7 +1115,8 @@ describe('createDataStore', () => {
         { maxPoints: 4 }
       );
       expect(store.getSeriesPointCount(0)).toBe(4);
-      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 0 });
+      // Strict full-window replace resets start=0 but stays in ring mode.
+      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 4 });
       const st = store.getSeriesStagingBuffer(0);
       expect(st[0]).toBe(20);
       expect(st[6]).toBe(23);

@@ -18,6 +18,7 @@ import type { ResolvedSeriesConfig } from '../../../config/OptionResolver';
 import type { CartesianSeriesData, SeriesSampling, SeriesType } from '../../../config/types';
 import { isGpuDecimationEligible } from '../../../data/gpuDecimationEligibility';
 import { isStackedMountainSeries } from '../../../data/stackedArea';
+import { resolveStepMode } from '../../../data/stepGeometry';
 
 /** What DataStore currently holds for a series index (written by prepareSeries). */
 export type DataStoreBufferKind = 'unknown' | 'fullRawLine' | 'gpuDecimationRaw' | 'other';
@@ -43,6 +44,21 @@ export function canRangedAppendLine(input: CanRangedAppendLineInput): boolean {
   // Stacked mountain private-packs yBottom/yTop and may upload yTop stroke columns —
   // ranged contribution append would desync stack baselines (issue 7).
   if (input.series != null && isStackedMountainSeries(input.series)) return false;
+
+  // Step (digital): prepare expands stairs (N_draw ≠ N_source). Cold unknown +
+  // sampling:'none' must not ranged-append raw while prepare binds expanded geometry
+  // (M1 / C1 family: pointCount must agree with bound buffer).
+  if (input.series != null) {
+    const step = (input.series as { readonly step?: unknown }).step;
+    if (resolveStepMode(step as boolean | string | null | undefined) != null) return false;
+  }
+
+  // connectNulls may strip gap markers before upload (filtered N ≠ raw GPU N).
+  // Ranged full-raw append + skip-setSeries would bind unfiltered buffer against
+  // filtered draw count (C1 G0). Force full setSeries path whenever connectNulls.
+  if (input.series != null && (input.series as { readonly connectNulls?: boolean }).connectNulls === true) {
+    return false;
+  }
 
   const kind = input.kind;
   const isGpuDecimationActive = kind === 'gpuDecimationRaw';

@@ -28,6 +28,7 @@ beforeAll(() => {
 import { prepareSeries } from '../renderSeries';
 import type { SeriesPrepareContext, SeriesRenderers } from '../renderSeries';
 import { createStackedMountainCache } from '../stackedMountainCache';
+import { createStepExpandCache } from '../stepExpandCache';
 import type { ResolvedSeriesConfig } from '../../../../config/OptionResolver';
 import type { DataStore } from '../../../../data/createDataStore';
 import type { LinearScale } from '../../../../utils/scales';
@@ -369,9 +370,9 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
     expect(args.visibleEnd).toBeGreaterThan(args.visibleStart);
   });
 
-  it('falls back to full visible range when rawDataForGpu is null and still forwards ring uniforms', () => {
-    // hasNullGaps(null) returns false → eligibility can pass with rawData null.
-    // Skip setSeries (would getPointCount(null)) via appendedGpuThisFrame.
+  it('rejects null rawData for GPU decimation (L2) and takes CPU path', () => {
+    // Nullish raw is never GPU-eligible (isGpuDecimationEligible). Historical
+    // footgun: hasNullGaps(null)===false unlocked full-range decimation.
     const points: Array<[number, number]> = [];
     for (let i = 0; i < 64; i++) {
       points.push([i, Math.sin(i / 5)]);
@@ -383,17 +384,16 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
     };
 
     const rawBuffer = { label: 'raw' } as unknown as GPUBuffer;
-    const decimatedBuffer = { label: 'decimated' } as unknown as GPUBuffer;
     const linePrepare = vi.fn();
     const decimationPrepare = vi.fn(() => 8);
-    const rawPointCount = 64;
+    const setSeries = vi.fn();
 
     const dataStore: DataStore = {
-      setSeries: vi.fn(),
+      setSeries,
       appendSeries: vi.fn(),
       removeSeries: vi.fn(),
       getSeriesBuffer: vi.fn(() => rawBuffer),
-      getSeriesPointCount: vi.fn(() => rawPointCount),
+      getSeriesPointCount: vi.fn(() => 64),
       getSeriesRingLayout: vi.fn(() => ({ start: 5, capacity: 32 })),
       isSeriesRingMode: vi.fn(() => true),
       getSeriesEffectiveMaxPoints: vi.fn(() => null),
@@ -402,6 +402,10 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
       getSeriesXOffset: vi.fn(() => 0),
       dispose: vi.fn(),
     };
+
+    const gpuSeriesKindByIndex: Array<'fullRawLine' | 'gpuDecimationRaw' | 'other' | 'unknown'> = [
+      'unknown',
+    ];
 
     prepareSeries(
       {
@@ -431,7 +435,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
             prepare: decimationPrepare,
             needsEncode: vi.fn(() => false),
             encodeCompute: vi.fn(),
-            getOutputBuffer: vi.fn(() => decimatedBuffer),
+            getOutputBuffer: vi.fn(() => rawBuffer),
             getOutputPointCount: vi.fn(() => 8),
             dispose: vi.fn(),
           },
@@ -448,8 +452,8 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
         yScales: new Map([['y', makeScale(-1, 1)]]),
         gridArea: makeGridArea(),
         dataStore,
-        appendedGpuThisFrame: new Set([0]),
-        gpuSeriesKindByIndex: ['gpuDecimationRaw'],
+        appendedGpuThisFrame: new Set(),
+        gpuSeriesKindByIndex,
         zoomState: null,
         visibleXDomain: { min: 10, max: 40 },
         introPhase: 'done',
@@ -462,18 +466,9 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
       }
     );
 
-    expect(decimationPrepare).toHaveBeenCalled();
-    const args = decimationPrepare.mock.calls[0]![0] as {
-      ringStart?: number;
-      ringCapacity?: number;
-      visibleStart: number;
-      visibleEnd: number;
-    };
-    expect(args.ringStart).toBe(5);
-    expect(args.ringCapacity).toBe(32);
-    // Full-range fallback when raw is null (ignores zoom domain).
-    expect(args.visibleStart).toBe(0);
-    expect(args.visibleEnd).toBe(rawPointCount);
+    expect(decimationPrepare).not.toHaveBeenCalled();
+    expect(linePrepare).toHaveBeenCalled();
+    expect(gpuSeriesKindByIndex[0]).not.toBe('gpuDecimationRaw');
   });
 
   it('never setSeries when rawData is a StagingRingView (already GPU-backed)', () => {
@@ -897,6 +892,98 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
     expect(areaPrepare).toHaveBeenCalled();
     // prepare(series, data, xScale, yScale, baseline, storageBuffer, pointCount, xOffset)
     const areaArgs = areaPrepare.mock.calls[0]!;
+    expect(areaArgs[5]).toBe(decimatedBuffer);
+    expect(areaArgs[6]).toBe(64);
+  });
+
+  it('line+areaStyle shares decimation buffer under maxPoints pre-wrap {start:0, capacity:N}', () => {
+    // Always-expose ring capacity: chronological when start===0 even if capacity>0.
+    const n = 10_000;
+    const points: Array<[number, number]> = [];
+    for (let i = 0; i < n; i++) points.push([i, Math.sin(i / 10)]);
+    const series = {
+      ...makeLineSeries(points),
+      sampling: 'lttb',
+      samplingThreshold: 64,
+      areaStyle: { opacity: 0.3, color: '#0af' },
+    } as any;
+
+    const rawBuffer = { label: 'raw-ring-prewrap' } as unknown as GPUBuffer;
+    const decimatedBuffer = { label: 'decimated' } as unknown as GPUBuffer;
+    const areaPrepare = vi.fn();
+    const decimationPrepare = vi.fn(() => 64);
+
+    prepareSeries(
+      {
+        lineRenderers: [{ prepare: vi.fn(), render: vi.fn(), dispose: vi.fn() } as any],
+        areaRenderers: [{ prepare: areaPrepare, render: vi.fn(), dispose: vi.fn() } as any],
+        barRenderer: {
+          prepare: vi.fn(),
+          render: vi.fn(),
+          dispose: vi.fn(),
+        } as any,
+        scatterRenderers: [],
+        scatterDensityRenderers: [],
+        pieRenderers: [],
+        heatmapRenderers: [],
+        candlestickRenderers: [],
+        ohlcRenderers: [],
+        errorBarRenderers: [],
+        impulseRenderers: [],
+        decimationComputes: [
+          {
+            prepare: decimationPrepare,
+            needsEncode: vi.fn(() => true),
+            encodeCompute: vi.fn(),
+            getOutputBuffer: vi.fn(() => decimatedBuffer),
+            getOutputPointCount: vi.fn(() => 64),
+            dispose: vi.fn(),
+          },
+        ],
+      },
+      {
+        currentOptions: {
+          xAxis: { type: 'value' },
+          yAxes: [{ id: 'y', min: -1 }],
+          series: [series],
+        } as any,
+        seriesForRender: [series],
+        xScale: makeScale(0, n),
+        yScales: new Map([['y', makeScale(-1, 1)]]),
+        gridArea: makeGridArea(),
+        dataStore: {
+          setSeries: vi.fn(),
+          appendSeries: vi.fn(),
+          removeSeries: vi.fn(),
+          getSeriesBuffer: vi.fn(() => rawBuffer),
+          getSeriesPointCount: vi.fn(() => n),
+          getSeriesRingLayout: vi.fn(() => ({ start: 0, capacity: n })),
+          isSeriesRingMode: vi.fn(() => true),
+          getSeriesEffectiveMaxPoints: vi.fn(() => n),
+          getSeriesContentHash: vi.fn(() => 0x42),
+          getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
+          getSeriesXOffset: vi.fn(() => 0),
+          dispose: vi.fn(),
+        },
+        appendedGpuThisFrame: new Set(),
+        gpuSeriesKindByIndex: ['gpuDecimationRaw'],
+        zoomState: null,
+        visibleXDomain: { min: 0, max: n },
+        introPhase: 'done',
+        introProgress01: 1,
+        withAlpha: (c: string) => c,
+        maxRadiusCss: 4,
+        lastSetSeriesCache: new Map(),
+        filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
+      }
+    );
+
+    expect(decimationPrepare).toHaveBeenCalled();
+    expect(areaPrepare).toHaveBeenCalled();
+    const areaArgs = areaPrepare.mock.calls[0]!;
+    // Shared chronological path: storage is decimation output, not private pack
+    // (private pack passes undefined storage / different signature).
     expect(areaArgs[5]).toBe(decimatedBuffer);
     expect(areaArgs[6]).toBe(64);
   });
@@ -1716,5 +1803,403 @@ describe('prepareSeries stacked mountain D9', () => {
     expect(areaArgs[8]).toBeDefined();
     expect(areaArgs[8].yBottom).toBeDefined();
     expect(areaArgs[8].yTop).toBeDefined();
+  });
+
+  it('C1: connectNulls + append skip forces setSeries of filtered N and tags other', () => {
+    // Full raw has a null gap; connectNulls strips it → filtered N = 3, raw N = 4.
+    // Even when appendedGpuThisFrame claims a ranged full-raw write, prepare must
+    // re-upload filtered data so draw N matches the bound buffer.
+    const rawWithGap = [
+      [0, 1],
+      [1, 2],
+      null,
+      [3, 4],
+    ] as unknown as Array<readonly [number, number]>;
+    const series = {
+      type: 'line',
+      id: 's0',
+      name: 's0',
+      data: rawWithGap,
+      rawData: rawWithGap,
+      sampling: 'none',
+      samplingThreshold: 5000,
+      connectNulls: true,
+      show: true,
+      lineStyle: { color: '#0f0', width: 1 },
+      yAxis: 'y',
+    } as unknown as ResolvedSeriesConfig;
+
+    const setSeries = vi.fn();
+    const linePrepare = vi.fn();
+    const rawBuffer = { label: 'raw' } as unknown as GPUBuffer;
+    // Simulate residual full-raw GPU count from a prior ranged append (unfiltered).
+    let storeCount = 4;
+    const dataStore: DataStore = {
+      setSeries: ((idx: number, data: unknown) => {
+        setSeries(idx, data);
+        // After setSeries, count follows uploaded filtered length.
+        storeCount = Array.isArray(data) ? (data as unknown[]).length : 3;
+      }) as any,
+      appendSeries: vi.fn(),
+      removeSeries: vi.fn(),
+      getSeriesBuffer: vi.fn(() => rawBuffer),
+      getSeriesPointCount: vi.fn(() => storeCount),
+      getSeriesRingLayout: vi.fn(() => ({ start: 0, capacity: 0 })),
+      isSeriesRingMode: vi.fn(() => false),
+      getSeriesEffectiveMaxPoints: vi.fn(() => null),
+      getSeriesContentHash: vi.fn(() => 1),
+      getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
+      getSeriesXOffset: vi.fn(() => 0),
+      dispose: vi.fn(),
+    };
+
+    const gpuSeriesKindByIndex: Array<'fullRawLine' | 'gpuDecimationRaw' | 'other' | 'unknown'> = [
+      'fullRawLine',
+    ];
+
+    prepareSeries(
+      {
+        lineRenderers: [{ prepare: linePrepare, render: vi.fn(), dispose: vi.fn() } as any],
+        areaRenderers: [],
+        barRenderer: { prepare: vi.fn(), render: vi.fn(), dispose: vi.fn() } as any,
+        scatterRenderers: [],
+        scatterDensityRenderers: [],
+        pieRenderers: [],
+        heatmapRenderers: [],
+        candlestickRenderers: [],
+        ohlcRenderers: [],
+        errorBarRenderers: [],
+        impulseRenderers: [],
+        decimationComputes: [],
+      },
+      {
+        currentOptions: {
+          xAxis: { type: 'value' },
+          yAxes: [{ id: 'y', min: 0 }],
+          series: [series],
+          performance: { lod: 'auto' },
+        } as any,
+        seriesForRender: [series as any],
+        xScale: makeScale(0, 4),
+        yScales: new Map([['y', makeScale(0, 5)]]),
+        gridArea: makeGridArea(),
+        dataStore,
+        // Append path claimed GPU write this frame — historically skipped setSeries.
+        appendedGpuThisFrame: new Set([0]),
+        gpuSeriesKindByIndex,
+        zoomState: null,
+        visibleXDomain: { min: 0, max: 4 },
+        introPhase: 'done',
+        introProgress01: 1,
+        withAlpha: (c: string) => c,
+        maxRadiusCss: 4,
+        lastSetSeriesCache: new Map(),
+        filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
+      }
+    );
+
+    // Must re-upload filtered points despite appendedGpuThisFrame.
+    expect(setSeries).toHaveBeenCalled();
+    const uploaded = setSeries.mock.calls[0]![1] as ReadonlyArray<unknown>;
+    expect(Array.isArray(uploaded)).toBe(true);
+    expect(uploaded.length).toBe(3);
+    // Kind must not stay fullRawLine (filtered residency ≠ full raw).
+    expect(gpuSeriesKindByIndex[0]).toBe('other');
+    expect(linePrepare).toHaveBeenCalled();
+    // Both series.data N and pointCountOverride must be filtered N=3 (no soft OR).
+    const prepareSeriesArg = linePrepare.mock.calls[0]![0] as { data: unknown };
+    const pointCountOverride = linePrepare.mock.calls[0]![8] as number | undefined;
+    const dataN = Array.isArray(prepareSeriesArg.data)
+      ? (prepareSeriesArg.data as unknown[]).length
+      : -1;
+    expect(dataN).toBe(3);
+    expect(pointCountOverride).toBe(3);
+  });
+
+  it('C1: connectNulls + modular ring forces linear ring layout on line.prepare', () => {
+    const rawWithGap = [
+      [0, 1],
+      [1, 2],
+      null,
+      [3, 4],
+    ] as unknown as Array<readonly [number, number]>;
+    const series = {
+      type: 'line',
+      id: 's0',
+      name: 's0',
+      data: rawWithGap,
+      rawData: rawWithGap,
+      sampling: 'none',
+      samplingThreshold: 5000,
+      connectNulls: true,
+      show: true,
+      lineStyle: { color: '#0f0', width: 1 },
+      yAxis: 'y',
+    } as unknown as ResolvedSeriesConfig;
+
+    const linePrepare = vi.fn();
+    const setSeries = vi.fn();
+    const modularRing = { start: 2, capacity: 8 };
+    const dataStore: DataStore = {
+      setSeries: setSeries as any,
+      appendSeries: vi.fn(),
+      removeSeries: vi.fn(),
+      getSeriesBuffer: vi.fn(() => ({ label: 'raw' }) as unknown as GPUBuffer),
+      getSeriesPointCount: vi.fn(() => 4),
+      getSeriesRingLayout: vi.fn(() => modularRing),
+      isSeriesRingMode: vi.fn(() => true),
+      getSeriesEffectiveMaxPoints: vi.fn(() => 8),
+      getSeriesContentHash: vi.fn(() => 1),
+      getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
+      getSeriesXOffset: vi.fn(() => 0),
+      dispose: vi.fn(),
+    };
+    const gpuSeriesKindByIndex: Array<'fullRawLine' | 'gpuDecimationRaw' | 'other' | 'unknown'> = [
+      'fullRawLine',
+    ];
+
+    prepareSeries(
+      {
+        lineRenderers: [{ prepare: linePrepare, render: vi.fn(), dispose: vi.fn() } as any],
+        areaRenderers: [],
+        barRenderer: { prepare: vi.fn(), render: vi.fn(), dispose: vi.fn() } as any,
+        scatterRenderers: [],
+        scatterDensityRenderers: [],
+        pieRenderers: [],
+        heatmapRenderers: [],
+        candlestickRenderers: [],
+        ohlcRenderers: [],
+        errorBarRenderers: [],
+        impulseRenderers: [],
+        decimationComputes: [],
+      },
+      {
+        currentOptions: {
+          xAxis: { type: 'value' },
+          yAxes: [{ id: 'y', min: 0 }],
+          series: [series],
+          performance: { lod: 'auto' },
+        } as any,
+        seriesForRender: [series as any],
+        xScale: makeScale(0, 4),
+        yScales: new Map([['y', makeScale(0, 5)]]),
+        gridArea: makeGridArea(),
+        dataStore,
+        appendedGpuThisFrame: new Set([0]),
+        gpuSeriesKindByIndex,
+        zoomState: null,
+        visibleXDomain: { min: 0, max: 4 },
+        introPhase: 'done',
+        introProgress01: 1,
+        withAlpha: (c: string) => c,
+        maxRadiusCss: 4,
+        lastSetSeriesCache: new Map(),
+        filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
+      }
+    );
+
+    expect(linePrepare).toHaveBeenCalled();
+    const ringLayout = linePrepare.mock.calls[0]![10] as { start: number; capacity: number };
+    expect(ringLayout).toEqual({ start: 0, capacity: 0 });
+    expect(gpuSeriesKindByIndex[0]).toBe('other');
+  });
+
+  it('M1: step + appendedGpuThisFrame expands stairs, tags other, pins override N', () => {
+    // Source N=3 → step after expands to more corner points.
+    const points: Array<[number, number]> = [
+      [0, 1],
+      [1, 2],
+      [2, 3],
+    ];
+    const series = {
+      type: 'line',
+      id: 's0',
+      name: 's0',
+      data: points,
+      rawData: points,
+      sampling: 'none',
+      samplingThreshold: 5000,
+      connectNulls: false,
+      step: true,
+      show: true,
+      lineStyle: { color: '#0f0', width: 1 },
+      yAxis: 'y',
+    } as unknown as ResolvedSeriesConfig;
+
+    const setSeries = vi.fn();
+    const linePrepare = vi.fn();
+    const dataStore: DataStore = {
+      setSeries: setSeries as any,
+      appendSeries: vi.fn(),
+      removeSeries: vi.fn(),
+      getSeriesBuffer: vi.fn(() => ({ label: 'raw' }) as unknown as GPUBuffer),
+      getSeriesPointCount: vi.fn(() => 3),
+      getSeriesRingLayout: vi.fn(() => ({ start: 0, capacity: 0 })),
+      isSeriesRingMode: vi.fn(() => false),
+      getSeriesEffectiveMaxPoints: vi.fn(() => null),
+      getSeriesContentHash: vi.fn(() => 1),
+      getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
+      getSeriesXOffset: vi.fn(() => 0),
+      dispose: vi.fn(),
+    };
+    const gpuSeriesKindByIndex: Array<'fullRawLine' | 'gpuDecimationRaw' | 'other' | 'unknown'> = [
+      'unknown',
+    ];
+
+    prepareSeries(
+      {
+        lineRenderers: [{ prepare: linePrepare, render: vi.fn(), dispose: vi.fn() } as any],
+        areaRenderers: [],
+        barRenderer: { prepare: vi.fn(), render: vi.fn(), dispose: vi.fn() } as any,
+        scatterRenderers: [],
+        scatterDensityRenderers: [],
+        pieRenderers: [],
+        heatmapRenderers: [],
+        candlestickRenderers: [],
+        ohlcRenderers: [],
+        errorBarRenderers: [],
+        impulseRenderers: [],
+        decimationComputes: [],
+      },
+      {
+        currentOptions: {
+          xAxis: { type: 'value' },
+          yAxes: [{ id: 'y', min: 0 }],
+          series: [series],
+          performance: { lod: 'auto' },
+        } as any,
+        seriesForRender: [series as any],
+        xScale: makeScale(0, 4),
+        yScales: new Map([['y', makeScale(0, 5)]]),
+        gridArea: makeGridArea(),
+        dataStore,
+        appendedGpuThisFrame: new Set([0]),
+        gpuSeriesKindByIndex,
+        zoomState: null,
+        visibleXDomain: { min: 0, max: 4 },
+        introPhase: 'done',
+        introProgress01: 1,
+        withAlpha: (c: string) => c,
+        maxRadiusCss: 4,
+        lastSetSeriesCache: new Map(),
+        filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
+        stepExpandCache: createStepExpandCache(),
+      }
+    );
+
+    // Must setSeries expanded geometry despite appendedGpuThisFrame.
+    expect(setSeries).toHaveBeenCalled();
+    const uploaded = setSeries.mock.calls[0]![1] as { x?: ArrayLike<number>; length?: number };
+    const expandedN = uploaded && typeof uploaded === 'object' && 'x' in uploaded
+      ? (uploaded.x as ArrayLike<number>).length
+      : Array.isArray(uploaded)
+        ? (uploaded as unknown[]).length
+        : 0;
+    expect(expandedN).toBeGreaterThan(3);
+    expect(gpuSeriesKindByIndex[0]).toBe('other');
+    expect(linePrepare).toHaveBeenCalled();
+    const pointCountOverride = linePrepare.mock.calls[0]![8] as number;
+    expect(pointCountOverride).toBe(expandedN);
+    expect(pointCountOverride).toBeGreaterThan(3);
+  });
+
+  it('C1: pure area + connectNulls + append skip uploads filtered N and tags other', () => {
+    const rawWithGap = [
+      [0, 1],
+      [1, 2],
+      null,
+      [3, 4],
+    ] as unknown as Array<readonly [number, number]>;
+    const series = {
+      type: 'area',
+      id: 'a0',
+      name: 'a0',
+      data: rawWithGap,
+      rawData: rawWithGap,
+      sampling: 'none',
+      samplingThreshold: 5000,
+      connectNulls: true,
+      show: true,
+      areaStyle: { opacity: 0.3, color: '#0af' },
+      yAxis: 'y',
+    } as unknown as ResolvedSeriesConfig;
+
+    const setSeries = vi.fn();
+    const areaPrepare = vi.fn();
+    let storeCount = 4;
+    const dataStore: DataStore = {
+      setSeries: ((idx: number, data: unknown) => {
+        setSeries(idx, data);
+        storeCount = Array.isArray(data) ? (data as unknown[]).length : 3;
+      }) as any,
+      appendSeries: vi.fn(),
+      removeSeries: vi.fn(),
+      getSeriesBuffer: vi.fn(() => ({ label: 'raw' }) as unknown as GPUBuffer),
+      getSeriesPointCount: vi.fn(() => storeCount),
+      getSeriesRingLayout: vi.fn(() => ({ start: 1, capacity: 8 })),
+      isSeriesRingMode: vi.fn(() => true),
+      getSeriesEffectiveMaxPoints: vi.fn(() => 8),
+      getSeriesContentHash: vi.fn(() => 1),
+      getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
+      getSeriesXOffset: vi.fn(() => 0),
+      dispose: vi.fn(),
+    };
+    const gpuSeriesKindByIndex: Array<'fullRawLine' | 'gpuDecimationRaw' | 'other' | 'unknown'> = [
+      'fullRawLine',
+    ];
+
+    prepareSeries(
+      {
+        lineRenderers: [],
+        areaRenderers: [{ prepare: areaPrepare, render: vi.fn(), dispose: vi.fn() } as any],
+        barRenderer: { prepare: vi.fn(), render: vi.fn(), dispose: vi.fn() } as any,
+        scatterRenderers: [],
+        scatterDensityRenderers: [],
+        pieRenderers: [],
+        heatmapRenderers: [],
+        candlestickRenderers: [],
+        ohlcRenderers: [],
+        errorBarRenderers: [],
+        impulseRenderers: [],
+        decimationComputes: [],
+      },
+      {
+        currentOptions: {
+          xAxis: { type: 'value' },
+          yAxes: [{ id: 'y', min: 0 }],
+          series: [series],
+          performance: { lod: 'auto' },
+        } as any,
+        seriesForRender: [series as any],
+        xScale: makeScale(0, 4),
+        yScales: new Map([['y', makeScale(0, 5)]]),
+        gridArea: makeGridArea(),
+        dataStore,
+        appendedGpuThisFrame: new Set([0]),
+        gpuSeriesKindByIndex,
+        zoomState: null,
+        visibleXDomain: { min: 0, max: 4 },
+        introPhase: 'done',
+        introProgress01: 1,
+        withAlpha: (c: string) => c,
+        maxRadiusCss: 4,
+        lastSetSeriesCache: new Map(),
+        filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
+      }
+    );
+
+    expect(setSeries).toHaveBeenCalled();
+    const uploaded = setSeries.mock.calls[0]![1] as ReadonlyArray<unknown>;
+    expect(Array.isArray(uploaded)).toBe(true);
+    expect(uploaded.length).toBe(3);
+    expect(gpuSeriesKindByIndex[0]).toBe('other');
+    expect(areaPrepare).toHaveBeenCalled();
+    // pointCountOverride (arg 6) pinned to filtered N when shared storage.
+    const areaPointCount = areaPrepare.mock.calls[0]![6] as number | undefined;
+    expect(areaPointCount).toBe(3);
   });
 });

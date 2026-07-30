@@ -482,18 +482,16 @@ function flushPendingAppendsImplInner(d: any): boolean {
             const count = d.dataStore.getSeriesPointCount(seriesIndex);
             const xOffset = d.dataStore.getSeriesXOffset(seriesIndex);
             const prevView = d.isStagingRingView(raw) ? raw : null;
-            raw = d.createStagingRingView(staging, layout.start, layout.capacity, count, xOffset, prevView);
-            d.runtimeRawDataByIndex[seriesIndex] = raw;
-
             // O(1) x endpoints from any (staging is mirrored) +
             // O(append) y scan of the new batch. Never shrinks y on drop —
             // same conservative product policy as any path.
-            const x0 = d.getX(raw as unknown as CartesianSeriesData, 0);
-            const x1 = d.getX(raw as unknown as CartesianSeriesData, Math.max(0, count - 1));
+            // Scan batch first so we can refresh staging gap-scan cache O(append)
+            // (avoids hasNullGaps full-scan of multi‑M rings every contentEpoch).
             const prevB = d.runtimeRawBoundsByIndex[seriesIndex];
             let yMin = prevB?.yMin ?? Number.POSITIVE_INFINITY;
             let yMax = prevB?.yMax ?? Number.NEGATIVE_INFINITY;
             const end = plan.newSrcOffset + plan.keepNewCount;
+            let newBatchAllFinite = true;
             // FIFO / compression suite: shared Float64 y columns — scan column
             // directly (avoid d.getY dispatch × large append batches / frame).
             const yCol =
@@ -505,9 +503,22 @@ function flushPendingAppendsImplInner(d: any): boolean {
               'y' in cartesianData
                 ? (cartesianData as { y: ArrayLike<number> }).y
                 : null;
+            const xCol =
+              typeof cartesianData === 'object' &&
+              cartesianData !== null &&
+              !Array.isArray(cartesianData) &&
+              !d.isStagingRingView(cartesianData) &&
+              !d.isRingXYColumns(cartesianData) &&
+              'x' in cartesianData
+                ? (cartesianData as { x: ArrayLike<number> }).x
+                : null;
             if (yCol != null) {
               for (let i = plan.newSrcOffset; i < end; i++) {
                 const y = yCol[i] as number;
+                const x = xCol != null ? (xCol[i] as number) : d.getX(cartesianData, i);
+                if (!Number.isFinite(x) || !Number.isFinite(y)) {
+                  newBatchAllFinite = false;
+                }
                 if (Number.isFinite(y)) {
                   if (y < yMin) yMin = y;
                   if (y > yMax) yMax = y;
@@ -516,12 +527,28 @@ function flushPendingAppendsImplInner(d: any): boolean {
             } else {
               for (let i = plan.newSrcOffset; i < end; i++) {
                 const y = d.getY(cartesianData, i);
+                const x = d.getX(cartesianData, i);
+                if (!Number.isFinite(x) || !Number.isFinite(y)) {
+                  newBatchAllFinite = false;
+                }
                 if (Number.isFinite(y)) {
                   if (y < yMin) yMin = y;
                   if (y > yMax) yMax = y;
                 }
               }
             }
+            raw = d.createStagingRingView(
+              staging,
+              layout.start,
+              layout.capacity,
+              count,
+              xOffset,
+              prevView,
+              { newBatchAllFinite }
+            );
+            d.runtimeRawDataByIndex[seriesIndex] = raw;
+            const x0 = d.getX(raw as unknown as CartesianSeriesData, 0);
+            const x1 = d.getX(raw as unknown as CartesianSeriesData, Math.max(0, count - 1));
             if (Number.isFinite(x0) && Number.isFinite(x1) && Number.isFinite(yMin) && Number.isFinite(yMax)) {
               let xMin = x0;
               let xMax = x1;

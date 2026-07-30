@@ -1334,6 +1334,91 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
     await chart.dispose();
   });
 
+  it('cold seed: empty series → append full N with maxPoints N (G7 idiomatic FIFO)', async () => {
+    // Suite path: create empty styles, seed via appendData + maxPoints (no setOption data).
+    // Domain must be the full seed batch; subsequent wrap drops oldest.
+    const chart = await ChartGPU.create(mockContainer, {
+      animation: false,
+      tooltip: { show: true },
+      grid: { left: 0, right: 0, top: 0, bottom: 0 },
+      yAxis: { min: -10, max: 60 },
+      series: [{ type: 'line', data: [], sampling: 'lttb', samplingThreshold: 2500 }],
+    });
+
+    const N = 4;
+    const x = new Float64Array([0, 1, 2, 3]);
+    const y = new Float64Array([0, 10, 20, 50]);
+    expect(() => chart.appendData(0, { x, y }, { maxPoints: N })).not.toThrow();
+    await Promise.resolve();
+
+    // Right edge of domain [0,3] at y≈50 → newest seed point.
+    const hitSeed = chart.hitTest(makePointer(799, 86));
+    expect(hitSeed.isInGrid).toBe(true);
+    expect(hitSeed.match).not.toBeNull();
+    expect(hitSeed.match?.value[0]).toBeCloseTo(3, 0);
+
+    // Stream wrap: append 2 more → retained [2,3,4,5].
+    chart.appendData(
+      0,
+      {
+        x: new Float64Array([4, 5]),
+        y: new Float64Array([40, 50]),
+      },
+      { maxPoints: N }
+    );
+    await Promise.resolve();
+
+    const hitWrap = chart.hitTest(makePointer(799, 86));
+    expect(hitWrap.isInGrid).toBe(true);
+    expect(hitWrap.match).not.toBeNull();
+    expect(hitWrap.match?.value[0]).toBeCloseTo(5, 0);
+    // Domain [2,5] after wrap; left retained is (2,20).
+    // yAxis [-10,60], h=600 → y=20 maps to gridY ≈ (1 - 30/70)*600 ≈ 343.
+    // Hard assert (no soft if): must match retained oldest, not discarded x=0.
+    const hitLeft = chart.hitTest(makePointer(1, 343));
+    expect(hitLeft.isInGrid).toBe(true);
+    expect(hitLeft.match).not.toBeNull();
+    expect(hitLeft.match!.value[0]).toBeCloseTo(2, 0);
+    expect(hitLeft.match!.value[0]).not.toBe(0);
+
+    await chart.dispose();
+  });
+
+  it('cold seed batch > maxPoints keeps only tail in hit-test domain', async () => {
+    const chart = await ChartGPU.create(mockContainer, {
+      animation: false,
+      tooltip: { show: true },
+      grid: { left: 0, right: 0, top: 0, bottom: 0 },
+      yAxis: { min: -10, max: 60 },
+      series: [{ type: 'line', data: [], sampling: 'none' }],
+    });
+
+    // Batch of 6 with maxPoints 3 → keep tail [3,4,5] (strict replace).
+    chart.appendData(
+      0,
+      {
+        x: new Float64Array([0, 1, 2, 3, 4, 5]),
+        y: new Float64Array([0, 10, 20, 30, 40, 50]),
+      },
+      { maxPoints: 3 }
+    );
+    await Promise.resolve();
+
+    const hitRight = chart.hitTest(makePointer(799, 86));
+    expect(hitRight.isInGrid).toBe(true);
+    expect(hitRight.match).not.toBeNull();
+    expect(hitRight.match?.value[0]).toBeCloseTo(5, 0);
+
+    // Domain [3,5]; left retained is (3,30) → gridY ≈ (1 - 40/70)*600 ≈ 257.
+    const hitLeft = chart.hitTest(makePointer(1, 257));
+    expect(hitLeft.isInGrid).toBe(true);
+    expect(hitLeft.match).not.toBeNull();
+    expect(hitLeft.match!.value[0]).toBeCloseTo(3, 0);
+    expect(hitLeft.match!.value[0]).not.toBe(0);
+
+    await chart.dispose();
+  });
+
   it('maxPoints: 1 retains a single hit-testable point after several appends', async () => {
     const chart = await ChartGPU.create(mockContainer, {
       animation: false,

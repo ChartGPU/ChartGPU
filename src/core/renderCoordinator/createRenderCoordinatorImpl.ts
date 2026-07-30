@@ -40,6 +40,7 @@ import { canRangedAppendLine, type DataStoreBufferKind } from './data/canRangedA
 import { buildRuntimeBaseSeries, buildSetOptionsReuseSeries, resolveZoomedSeriesEntry } from './data/seriesPipeline';
 import { createAppendFlush, type AppendFlushDeps } from './data/appendFlush';
 import { sliceVisibleRangeByX, sliceVisibleRangeByOHLC, isTupleOHLCDataPoint } from './data/computeVisibleSlice';
+import { applyZoomResampleScheduleAction, zoomResampleScheduleAction } from './data/zoomResamplePolicy';
 import {
   getPointCount,
   getX,
@@ -1518,9 +1519,8 @@ export function createRenderCoordinator(
   let flushRafId: number | null = null;
   let flushTimeoutId: number | null = null;
 
-  // Zoom changes are debounced to avoid churn while wheel/drag is active.
-  // When the debounce fires, we mark resampling "due" and schedule a unified flush.
-  let zoomResampleDebounceTimer: number | null = null;
+  // Zoom re-sample: period=1 honesty (M4). Mark due immediately and flush —
+  // no multi-frame debounce of CPU zoom samples.
   let zoomResampleDue = false;
 
   // Zoom changes can fire multiple times per frame; slicing and visible-bounds recompute can be O(n).
@@ -1804,13 +1804,6 @@ export function createRenderCoordinator(
     flushScheduled = false;
   };
 
-  const cancelZoomResampleDebounce = (): void => {
-    if (zoomResampleDebounceTimer !== null) {
-      clearTimeout(zoomResampleDebounceTimer);
-      zoomResampleDebounceTimer = null;
-    }
-  };
-
   // Append flush ownership: data/appendFlush.ts
   const flushPendingAppends = createAppendFlush(
     () =>
@@ -1890,10 +1883,9 @@ export function createRenderCoordinator(
 
     let didResample = false;
 
-    // Zoom changes (debounced): apply on flush.
+    // Zoom changes (period=1): apply honest re-sample on flush.
     if (zoomResampleDue) {
       zoomResampleDue = false;
-      cancelZoomResampleDebounce();
 
       if (!zoomRange || zoomIsFullSpan) {
         renderSeries = runtimeBaseSeries;
@@ -1907,7 +1899,6 @@ export function createRenderCoordinator(
       // Appends during an active zoom window require resampling the visible range.
       // (Avoid doing this work when zoom is full-span or disabled.)
       zoomResampleDue = false;
-      cancelZoomResampleDebounce();
       recomputeRenderSeries();
       didResample = true;
     }
@@ -1966,18 +1957,16 @@ export function createRenderCoordinator(
     }, 16);
   };
 
+  /**
+   * Period=1 zoom honesty (M4): mark resample due immediately and coalesce via flush.
+   * Policy: {@link zoomResampleScheduleAction} + {@link applyZoomResampleScheduleAction}
+   * (never arms a multi-frame debounce timer).
+   */
   const scheduleZoomResample = (): void => {
     if (disposed) return;
-
-    cancelZoomResampleDebounce();
-    zoomResampleDue = false;
-
-    zoomResampleDebounceTimer = (typeof self !== 'undefined' ? self : window).setTimeout(() => {
-      zoomResampleDebounceTimer = null;
-      if (disposed) return;
-      zoomResampleDue = true;
-      scheduleFlush();
-    }, 100);
+    const dueState = { zoomResampleDue };
+    applyZoomResampleScheduleAction(zoomResampleScheduleAction(), dueState, scheduleFlush);
+    zoomResampleDue = dueState.zoomResampleDue;
   };
 
   const getPlotSizeCssPx = (
@@ -2504,7 +2493,7 @@ export function createRenderCoordinator(
         sliceRenderSeriesDue = true;
         // Immediate render for UI feedback (axes/crosshair/slider).
         requestRender();
-        // Debounce resampling; the unified flush will do the work.
+        // Period=1 honest re-sample (coalesced on next flush/frame).
         scheduleZoomResample();
         // Capture source kind for this change; clear after emit so listeners see it.
         const sourceKind = pendingZoomSourceKind;
@@ -2966,7 +2955,6 @@ export function createRenderCoordinator(
       renderSeries = resolvedOptions.series;
       gpuSeriesKindByIndex = new Array(resolvedOptions.series.length).fill('unknown');
       lastSampledData = new Array(resolvedOptions.series.length).fill(null);
-      cancelZoomResampleDebounce();
       zoomResampleDue = false;
       cancelScheduledFlush();
       initRuntimeSeriesFromOptions();
@@ -4966,7 +4954,6 @@ export function createRenderCoordinator(
     updateTransition = null;
 
     cancelScheduledFlush();
-    cancelZoomResampleDebounce();
     cancelPendingTooltipFollowup();
     zoomResampleDue = false;
 
