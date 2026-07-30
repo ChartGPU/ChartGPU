@@ -896,6 +896,98 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
     expect(areaArgs[6]).toBe(64);
   });
 
+  it('line+areaStyle shares decimation buffer under maxPoints pre-wrap {start:0, capacity:N}', () => {
+    // Always-expose ring capacity: chronological when start===0 even if capacity>0.
+    const n = 10_000;
+    const points: Array<[number, number]> = [];
+    for (let i = 0; i < n; i++) points.push([i, Math.sin(i / 10)]);
+    const series = {
+      ...makeLineSeries(points),
+      sampling: 'lttb',
+      samplingThreshold: 64,
+      areaStyle: { opacity: 0.3, color: '#0af' },
+    } as any;
+
+    const rawBuffer = { label: 'raw-ring-prewrap' } as unknown as GPUBuffer;
+    const decimatedBuffer = { label: 'decimated' } as unknown as GPUBuffer;
+    const areaPrepare = vi.fn();
+    const decimationPrepare = vi.fn(() => 64);
+
+    prepareSeries(
+      {
+        lineRenderers: [{ prepare: vi.fn(), render: vi.fn(), dispose: vi.fn() } as any],
+        areaRenderers: [{ prepare: areaPrepare, render: vi.fn(), dispose: vi.fn() } as any],
+        barRenderer: {
+          prepare: vi.fn(),
+          render: vi.fn(),
+          dispose: vi.fn(),
+        } as any,
+        scatterRenderers: [],
+        scatterDensityRenderers: [],
+        pieRenderers: [],
+        heatmapRenderers: [],
+        candlestickRenderers: [],
+        ohlcRenderers: [],
+        errorBarRenderers: [],
+        impulseRenderers: [],
+        decimationComputes: [
+          {
+            prepare: decimationPrepare,
+            needsEncode: vi.fn(() => true),
+            encodeCompute: vi.fn(),
+            getOutputBuffer: vi.fn(() => decimatedBuffer),
+            getOutputPointCount: vi.fn(() => 64),
+            dispose: vi.fn(),
+          },
+        ],
+      },
+      {
+        currentOptions: {
+          xAxis: { type: 'value' },
+          yAxes: [{ id: 'y', min: -1 }],
+          series: [series],
+        } as any,
+        seriesForRender: [series],
+        xScale: makeScale(0, n),
+        yScales: new Map([['y', makeScale(-1, 1)]]),
+        gridArea: makeGridArea(),
+        dataStore: {
+          setSeries: vi.fn(),
+          appendSeries: vi.fn(),
+          removeSeries: vi.fn(),
+          getSeriesBuffer: vi.fn(() => rawBuffer),
+          getSeriesPointCount: vi.fn(() => n),
+          getSeriesRingLayout: vi.fn(() => ({ start: 0, capacity: n })),
+          isSeriesRingMode: vi.fn(() => true),
+          getSeriesEffectiveMaxPoints: vi.fn(() => n),
+          getSeriesContentHash: vi.fn(() => 0x42),
+          getSeriesStagingBuffer: vi.fn(() => new Float32Array(0)),
+          getSeriesXOffset: vi.fn(() => 0),
+          dispose: vi.fn(),
+        },
+        appendedGpuThisFrame: new Set(),
+        gpuSeriesKindByIndex: ['gpuDecimationRaw'],
+        zoomState: null,
+        visibleXDomain: { min: 0, max: n },
+        introPhase: 'done',
+        introProgress01: 1,
+        withAlpha: (c: string) => c,
+        maxRadiusCss: 4,
+        lastSetSeriesCache: new Map(),
+        filterGapsCache: createFilterGapsCache(),
+        stackedMountainCache: createStackedMountainCache(),
+      }
+    );
+
+    expect(decimationPrepare).toHaveBeenCalled();
+    expect(areaPrepare).toHaveBeenCalled();
+    const areaArgs = areaPrepare.mock.calls[0]!;
+    // Shared chronological path: storage is decimation output, not private pack
+    // (private pack passes undefined storage / different signature).
+    expect(areaArgs[5]).toBe(decimatedBuffer);
+    expect(areaArgs[6]).toBe(64);
+  });
+
   it('line+areaStyle does not share modular raw buffer (wrap → private pack)', () => {
     const points: Array<[number, number]> = [
       [1, 1],

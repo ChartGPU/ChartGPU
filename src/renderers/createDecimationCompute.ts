@@ -24,8 +24,13 @@
  * are approximate extrema, not guaranteed true bucket min/max. Cap is a G4
  * residual — still period=1 honest recompute for this frame's `SIG` (G0–G2).
  *
- * All entry points live in `src/shaders/decimation.wgsl` — that file documents
- * the per-bucket indexing convention and the output layout contract.
+ * **Tile hierarchy (Phase B multi‑M FIFO):** physical tiles of size 1024 store
+ * min/max/sum aggregates. Maintain is O(touched tiles) on append/wrap; present
+ * reads hierarchy when policy enables it (modular multi‑K or pts/bucket > 512).
+ * Hierarchy never skips present encode when `SIG ≠ lastEncodedSIG`.
+ *
+ * All entry points live in `src/shaders/decimation.wgsl` (+ maintain in
+ * `decimationHierarchy.wgsl`).
  *
  * ---
  *
@@ -54,11 +59,21 @@
  * 1. `SIG != lastEncodedSIG` and draw binds decimation output.
  * 2. Update lastEncoded / clear dirty without encode (permanent stale).
  * 3. Dirty/encode without rewriting uniforms for the new `SIG`.
+ * 4. Skip present because hierarchy is warm while SIG changed.
  */
 
 import decimationWgsl from '../shaders/decimation.wgsl?raw';
+import decimationHierarchyWgsl from '../shaders/decimationHierarchy.wgsl?raw';
 import type { PipelineCache } from '../core/PipelineCache';
 import { createComputePipeline, createShaderModule, createUniformBuffer, writeUniformBuffer } from './rendererUtils';
+import {
+  HIERARCHY_TILE,
+  HIERARCHY_TILE_BYTES,
+  modularOverwriteRanges,
+  shouldUseHierarchyPresent,
+  tileCountForCapacity,
+  tilesOverlappingPhysical,
+} from './decimationHierarchy';
 
 /**
  * Algorithm selected by the caller. Mirrors the CPU `SeriesSampling` values
@@ -111,6 +126,15 @@ export interface DecimationComputePrepareParams {
   readonly ringCapacity?: number;
 }
 
+/** @internal Harness / unit diagnostics for hierarchy maintain + present path. */
+export interface DecimationHierarchyDebug {
+  readonly hierarchyReady: boolean;
+  readonly lastPresentHierarchy: boolean;
+  readonly lastMaintainTileCount: number;
+  readonly preparedRawPointCount: number;
+  readonly preparedRingCapacity: number;
+}
+
 export interface DecimationCompute {
   /**
    * Updates uniforms + dirty-gating for the next call to {@link encodeCompute}.
@@ -126,19 +150,24 @@ export interface DecimationCompute {
   prepare(params: DecimationComputePrepareParams): number;
 
   /**
-   * True when the next {@link encodeCompute} will dispatch work (prepared + dirty).
+   * True when the next {@link encodeCompute} will dispatch work — present SIG
+   * dirty **or** hierarchy maintain still pending (cold chunk / range dirty).
    * Used by the coordinator to open a shared compute pass only when needed.
    */
   needsEncode(): boolean;
 
   /**
    * Encodes the compute pass(es) onto {@link encoder}. No-op if no eligible
-   * `prepare()` has been called, or if the dirty flag is clear (no inputs
-   * changed this frame).
+   * `prepare()` has been called and hierarchy does not need maintain.
    *
    * When `intoPass` is provided, dispatches into that shared pass (caller owns
    * begin/end). Used by the coordinator to batch all series decimation into one
    * compute pass instead of 5× beginComputePass per frame.
+   *
+   * Order: (1) hierarchy maintain if dirty, (2) present select into output when
+   * present SIG is dirty, (3) set lastEncodedSIG only after present write.
+   * Maintain-only encodes (cold chunk while present SIG clean) do **not**
+   * advance lastEncodedSIG.
    */
   encodeCompute(encoder: GPUCommandEncoder, intoPass?: GPUComputePassEncoder): void;
 
@@ -155,6 +184,11 @@ export interface DecimationCompute {
    */
   getOutputPointCount(): number;
 
+  /**
+   * @internal Hierarchy path diagnostics for unit tests / harness — not a public API.
+   */
+  getHierarchyDebug(): DecimationHierarchyDebug;
+
   dispose(): void;
 }
 
@@ -163,6 +197,7 @@ export interface DecimationComputeOptions {
 }
 
 const MIN_OUTPUT_CAPACITY = 64;
+const MIN_HIERARCHY_TILE_CAPACITY = 8;
 
 const nextPow2 = (v: number): number => {
   if (!Number.isFinite(v) || v <= 0) return 1;
@@ -170,9 +205,10 @@ const nextPow2 = (v: number): number => {
   return 2 ** Math.ceil(Math.log2(n));
 };
 
-// Uniforms struct in decimation.wgsl: 8 × u32 = 32 bytes. Round up to the 16-byte
-// alignment required for uniform buffers. 32 bytes already meets that bound.
-const DECIMATION_UNIFORM_BYTES = 32;
+// Uniforms struct in decimation.wgsl: 12 × u32 = 48 bytes (multiple of 16).
+const DECIMATION_UNIFORM_BYTES = 48;
+// Hierarchy maintain uniforms: 8 × u32 = 32 bytes.
+const HIERARCHY_MAINTAIN_UNIFORM_BYTES = 32;
 
 // Mode bits consumed by `minMaxDecimate` (bit 0: 0 = min, 1 = max).
 const MODE_MIN = 0;
@@ -205,33 +241,71 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
         visibility: GPUShaderStage.COMPUTE,
         buffer: { type: 'storage' },
       },
+      {
+        binding: 4,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: 'read-only-storage' },
+      },
+    ],
+  });
+
+  const maintainBindGroupLayout = device.createBindGroupLayout({
+    label: 'decimationCompute/maintainBindGroupLayout',
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: 'uniform' },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: 'read-only-storage' },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: 'storage' },
+      },
     ],
   });
 
   const module = createShaderModule(device, decimationWgsl, 'decimation.wgsl', pipelineCache);
-  // Best-effort: surface WGSL compile errors with line-level precision (issue 3.3).
-  // Without this, Chrome's pipeline-creation error is just "ShaderModule
-  // invalid due to a previous error". Single getCompilationInfo block only.
-  const getCompilationInfo = module.getCompilationInfo?.bind(module);
-  if (getCompilationInfo) {
+  const hierarchyModule = createShaderModule(
+    device,
+    decimationHierarchyWgsl,
+    'decimationHierarchy.wgsl',
+    pipelineCache
+  );
+
+  // Best-effort: surface WGSL compile errors with line-level precision.
+  const logCompilation = (mod: GPUShaderModule, label: string): void => {
+    const getCompilationInfo = mod.getCompilationInfo?.bind(mod);
+    if (!getCompilationInfo) return;
     getCompilationInfo()
       .then((info) => {
         for (const msg of info.messages) {
           if (msg.type === 'error') {
             // eslint-disable-next-line no-console
-            console.error(`[decimation.wgsl:${msg.lineNum ?? 0}:${msg.linePos ?? 0}] ${msg.message}`);
+            console.error(`[${label}:${msg.lineNum ?? 0}:${msg.linePos ?? 0}] ${msg.message}`);
           } else if (msg.type === 'warning') {
             // eslint-disable-next-line no-console
-            console.warn(`[decimation.wgsl:${msg.lineNum ?? 0}:${msg.linePos ?? 0}] ${msg.message}`);
+            console.warn(`[${label}:${msg.lineNum ?? 0}:${msg.linePos ?? 0}] ${msg.message}`);
           }
         }
       })
       .catch(() => {
         // Ignore — best effort only.
       });
-  }
+  };
+  logCompilation(module, 'decimation.wgsl');
+  logCompilation(hierarchyModule, 'decimationHierarchy.wgsl');
+
   const pipelineLayout = device.createPipelineLayout({
     bindGroupLayouts: [bindGroupLayout],
+  });
+  const maintainPipelineLayout = device.createPipelineLayout({
+    bindGroupLayouts: [maintainBindGroupLayout],
   });
 
   const minMaxPipeline = createComputePipeline(
@@ -261,6 +335,42 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
     },
     pipelineCache
   );
+  const hierarchyMinMaxPipeline = createComputePipeline(
+    device,
+    {
+      label: 'decimationCompute/hierarchyMinMaxPipeline',
+      layout: pipelineLayout,
+      compute: { module, entryPoint: 'hierarchyMinMaxDecimate' },
+    },
+    pipelineCache
+  );
+  const hierarchyAveragesPipeline = createComputePipeline(
+    device,
+    {
+      label: 'decimationCompute/hierarchyAveragesPipeline',
+      layout: pipelineLayout,
+      compute: { module, entryPoint: 'hierarchyBucketAverages' },
+    },
+    pipelineCache
+  );
+  const hierarchyLttbPipeline = createComputePipeline(
+    device,
+    {
+      label: 'decimationCompute/hierarchyLttbPipeline',
+      layout: pipelineLayout,
+      compute: { module, entryPoint: 'hierarchyParallelLttb' },
+    },
+    pipelineCache
+  );
+  const maintainPipeline = createComputePipeline(
+    device,
+    {
+      label: 'decimationCompute/maintainPipeline',
+      layout: maintainPipelineLayout,
+      compute: { module: hierarchyModule, entryPoint: 'maintainTiles' },
+    },
+    pipelineCache
+  );
 
   const uniformBuffer = createUniformBuffer(device, DECIMATION_UNIFORM_BYTES, {
     label: 'decimationCompute/uniforms',
@@ -268,13 +378,30 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
   const uniformScratch = new ArrayBuffer(DECIMATION_UNIFORM_BYTES);
   const uniformScratchU32 = new Uint32Array(uniformScratch);
 
-  // Output + averages buffers. Grown geometrically (power-of-two) to match the
-  // DataStore buffer-growth policy (see `createDataStore.ts` -> `nextPow2`).
+  // Dual maintain uniforms so seam wraps (two phys ranges) can dispatch in one
+  // pass without queue.writeBuffer clobber (same hazard as grid FS colors).
+  const maintainUniformBuffer0 = createUniformBuffer(device, HIERARCHY_MAINTAIN_UNIFORM_BYTES, {
+    label: 'decimationCompute/maintainUniforms0',
+  });
+  const maintainUniformBuffer1 = createUniformBuffer(device, HIERARCHY_MAINTAIN_UNIFORM_BYTES, {
+    label: 'decimationCompute/maintainUniforms1',
+  });
+  const maintainUniformScratch = new ArrayBuffer(HIERARCHY_MAINTAIN_UNIFORM_BYTES);
+  const maintainUniformU32 = new Uint32Array(maintainUniformScratch);
+
+  // Output + averages buffers. Grown geometrically (power-of-two).
   let outputBuffer: GPUBuffer | null = null;
   let averagesBuffer: GPUBuffer | null = null;
   let bufferCapacityPoints = 0; // counts `vec2<f32>` elements, not bytes
   let bindGroup: GPUBindGroup | null = null;
   let boundRawBuffer: GPUBuffer | null = null;
+
+  // Hierarchy tile storage (physical tiles).
+  let tilesBuffer: GPUBuffer | null = null;
+  let tilesCapacity = 0; // number of Tile slots
+  let maintainBindGroup0: GPUBindGroup | null = null;
+  let maintainBindGroup1: GPUBindGroup | null = null;
+  let maintainBoundRaw: GPUBuffer | null = null;
 
   // Prepared state: uniforms + dispatch params for the next encode (G1 current SIG).
   let hasPrepared = false;
@@ -289,13 +416,12 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
   let preparedContentVersion: number | undefined = undefined;
   let preparedRingStart = 0;
   let preparedRingCapacity = 0;
+  let preparedUseHierarchy = false;
   let lastOutputPointCount = 0;
 
   /**
    * `lastEncodedSIG` — what the GPU output buffer actually represents.
    * Updated **only** after a successful `encodeCompute` dispatch (G1).
-   * Comparing prepare inputs against these fields is the sole dirty gate;
-   * period-flash amortization (skip encode while freezing last*) is forbidden.
    */
   let hasEncoded = false;
   let lastEncodedAlgorithm: DecimationAlgorithm | null = null;
@@ -310,6 +436,96 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
 
   /** Set when output/raw bind-group resources change; forces a compute re-dispatch. */
   let bindGroupResourcesChanged = false;
+
+  // Hierarchy maintain stamp + dirty tile ranges (physical tile indices).
+  // Full cold rebuild uses coldProgressTile..nTiles (chunked). Incremental uses
+  // up to two non-merged tile ranges (modular wrap seam).
+  let hierarchyReady = false;
+  let hierarchyDirtyFull = true;
+  /** Next tile index for an in-progress full cold rebuild (always advances). */
+  let coldProgressTile = 0;
+  /** Incremental dirty tile ranges (max 2). Ignored when hierarchyDirtyFull. */
+  let dirtyTileRanges: Array<{ start: number; endExclusive: number }> = [];
+  let lastMaintainedRawBuffer: GPUBuffer | null = null;
+  let lastMaintainedRawPointCount = -1;
+  let lastMaintainedRingStart = 0;
+  let lastMaintainedRingCapacity = 0;
+  let lastMaintainedContentVersion: number | undefined = undefined;
+
+  /** Last successful encode diagnostics (for harness / unit checks). */
+  let lastEncodeUsedHierarchyPresent = false;
+  let lastEncodeMaintainTileCount = 0;
+
+  /** Cap cold full-rebuild tiles per encode (setup budget). Incremental is uncapped. */
+  const MAX_COLD_MAINTAIN_TILES_PER_ENCODE = 2048;
+
+  const physicalCapacityOf = (rawCount: number, ringCap: number): number => {
+    if (ringCap > 0) return ringCap;
+    return Math.max(0, rawCount);
+  };
+
+  const markFullDirty = (nTiles: number): void => {
+    hierarchyDirtyFull = true;
+    coldProgressTile = 0;
+    dirtyTileRanges = [];
+    hierarchyReady = false;
+    if (nTiles <= 0) {
+      coldProgressTile = 0;
+    }
+  };
+
+  const addIncrementalTileRange = (startTile: number, endTileExclusive: number, nTiles: number): void => {
+    const lo = Math.max(0, Math.min(nTiles, startTile));
+    const hi = Math.max(lo, Math.min(nTiles, endTileExclusive));
+    if (hi <= lo) return;
+    if (hierarchyDirtyFull) {
+      // Overwrite during cold rebuild: re-maintain from the earliest dirty tile.
+      if (lo < coldProgressTile) coldProgressTile = lo;
+      return;
+    }
+    // Merge into existing ranges (coalesce overlapping / adjacent).
+    const next: Array<{ start: number; endExclusive: number }> = [];
+    let a = lo;
+    let b = hi;
+    for (const r of dirtyTileRanges) {
+      if (b < r.start || a > r.endExclusive) {
+        next.push(r);
+        continue;
+      }
+      a = Math.min(a, r.start);
+      b = Math.max(b, r.endExclusive);
+    }
+    next.push({ start: a, endExclusive: b });
+    next.sort((x, y) => x.start - y.start);
+    // Coalesce sorted
+    const merged: Array<{ start: number; endExclusive: number }> = [];
+    for (const r of next) {
+      const last = merged[merged.length - 1];
+      if (!last || r.start > last.endExclusive) {
+        merged.push({ ...r });
+      } else {
+        last.endExclusive = Math.max(last.endExclusive, r.endExclusive);
+      }
+    }
+    if (merged.length <= 2) {
+      dirtyTileRanges = merged;
+    } else {
+      // More than two disjoint ranges → full rebuild (rare).
+      markFullDirty(nTiles);
+    }
+  };
+
+  const remainingMaintainTiles = (nTiles: number): number => {
+    if (nTiles <= 0) return 0;
+    if (hierarchyDirtyFull) {
+      return Math.max(0, nTiles - coldProgressTile);
+    }
+    let total = 0;
+    for (const r of dirtyTileRanges) {
+      total += Math.max(0, r.endExclusive - r.start);
+    }
+    return total;
+  };
 
   const ensureBuffers = (capacityPoints: number): void => {
     const required = Math.max(MIN_OUTPUT_CAPACITY, capacityPoints);
@@ -337,7 +553,6 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
 
     outputBuffer = device.createBuffer({
       label: 'decimationCompute/outputBuffer',
-      // STORAGE for compute + line storage-read; COPY_SRC for tests/debug readback.
       size: byteSize,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     });
@@ -347,15 +562,46 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     });
 
-    // Buffer identity changed → rebuild bind group (old BG references destroyed outputs).
     bindGroup = null;
     boundRawBuffer = null;
     bindGroupResourcesChanged = true;
   };
 
+  const ensureHierarchyBuffers = (physicalCapacity: number): void => {
+    const neededTiles = Math.max(
+      MIN_HIERARCHY_TILE_CAPACITY,
+      tileCountForCapacity(Math.max(physicalCapacity, HIERARCHY_TILE))
+    );
+    if (tilesBuffer && neededTiles <= tilesCapacity) {
+      return;
+    }
+    tilesCapacity = Math.max(tilesCapacity, nextPow2(neededTiles));
+    const byteSize = tilesCapacity * HIERARCHY_TILE_BYTES;
+    if (tilesBuffer) {
+      try {
+        tilesBuffer.destroy();
+      } catch {
+        // best-effort
+      }
+    }
+    tilesBuffer = device.createBuffer({
+      label: 'decimationCompute/tilesBuffer',
+      size: byteSize,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+    });
+    // New tiles buffer → must full rebuild + rebind.
+    markFullDirty(tilesCapacity > 0 ? tilesCapacity : neededTiles);
+    bindGroup = null;
+    boundRawBuffer = null;
+    maintainBindGroup0 = null;
+    maintainBindGroup1 = null;
+    maintainBoundRaw = null;
+    bindGroupResourcesChanged = true;
+  };
+
   const ensureBindGroup = (rawBuffer: GPUBuffer): void => {
     if (bindGroup && boundRawBuffer === rawBuffer) return;
-    if (!outputBuffer || !averagesBuffer) return;
+    if (!outputBuffer || !averagesBuffer || !tilesBuffer) return;
 
     bindGroup = device.createBindGroup({
       label: 'decimationCompute/bindGroup',
@@ -365,10 +611,182 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
         { binding: 1, resource: { buffer: rawBuffer } },
         { binding: 2, resource: { buffer: outputBuffer } },
         { binding: 3, resource: { buffer: averagesBuffer } },
+        { binding: 4, resource: { buffer: tilesBuffer } },
       ],
     });
     boundRawBuffer = rawBuffer;
     bindGroupResourcesChanged = true;
+  };
+
+  const ensureMaintainBindGroups = (rawBuffer: GPUBuffer): void => {
+    if (maintainBindGroup0 && maintainBindGroup1 && maintainBoundRaw === rawBuffer) return;
+    if (!tilesBuffer) return;
+    maintainBindGroup0 = device.createBindGroup({
+      label: 'decimationCompute/maintainBindGroup0',
+      layout: maintainBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: maintainUniformBuffer0 } },
+        { binding: 1, resource: { buffer: rawBuffer } },
+        { binding: 2, resource: { buffer: tilesBuffer } },
+      ],
+    });
+    maintainBindGroup1 = device.createBindGroup({
+      label: 'decimationCompute/maintainBindGroup1',
+      layout: maintainBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: maintainUniformBuffer1 } },
+        { binding: 1, resource: { buffer: rawBuffer } },
+        { binding: 2, resource: { buffer: tilesBuffer } },
+      ],
+    });
+    maintainBoundRaw = rawBuffer;
+  };
+
+  /**
+   * Update hierarchy dirty ranges from prepare delta vs last maintain stamp.
+   * Physical tile indexing: modular wrap invalidates up to two phys ranges
+   * (no min/max collapse across the seam).
+   */
+  const updateHierarchyDirty = (
+    rawBuffer: GPUBuffer,
+    rawCount: number,
+    ringStart: number,
+    ringCap: number,
+    version: number | undefined
+  ): void => {
+    const physCap = physicalCapacityOf(rawCount, ringCap);
+    ensureHierarchyBuffers(physCap);
+    const nTiles = tileCountForCapacity(physCap);
+
+    // Stamp comparisons only apply after a successful maintain stamped lastMaintained*.
+    // During cold rebuild lastMaintained* is unset — must not restart every prepare.
+    const hasMaintainStamp = lastMaintainedRawBuffer != null;
+    const bufferChanged = hasMaintainStamp && lastMaintainedRawBuffer !== rawBuffer;
+    // Ring capacity change forces full rebuild. Linear physCap tracks N and is
+    // handled by the growth path — do not treat N↑ as capChanged.
+    const capChanged = hasMaintainStamp && lastMaintainedRingCapacity !== ringCap;
+    const equalNRewrite =
+      hasMaintainStamp &&
+      hierarchyReady &&
+      !bufferChanged &&
+      !capChanged &&
+      lastMaintainedRawPointCount === rawCount &&
+      lastMaintainedRingStart === ringStart &&
+      lastMaintainedContentVersion !== version;
+
+    if (nTiles === 0) {
+      markFullDirty(0);
+      return;
+    }
+
+    if (bufferChanged || capChanged || equalNRewrite) {
+      markFullDirty(nTiles);
+      return;
+    }
+
+    // In-progress cold rebuild: keep coldProgressTile (advanced only in encodeMaintain).
+    if (!hierarchyReady && hierarchyDirtyFull) {
+      if (coldProgressTile > nTiles) coldProgressTile = 0;
+      // Equal-N content rewrite mid-cold (stable geometry, version bump) must
+      // restart — otherwise mixed V1/V2 tiles stamp ready (Issue 2 round 2).
+      if (
+        hasPrevPrepareStamp &&
+        prevPrepareContentVersion !== version &&
+        rawCount === prevPrepareRawCount &&
+        ringStart === prevPrepareRingStart &&
+        ringCap === prevPrepareRingCap
+      ) {
+        markFullDirty(nTiles);
+        return;
+      }
+      // Overwrite rewind applied via applyColdOverwriteRewind (prev-prepare stamp).
+      return;
+    }
+
+    if (!hierarchyReady) {
+      markFullDirty(nTiles);
+      return;
+    }
+
+    // Linear / ring fill growth: new physical points at [oldN, newN).
+    if (rawCount > lastMaintainedRawPointCount && ringStart === lastMaintainedRingStart) {
+      const ov = tilesOverlappingPhysical(lastMaintainedRawPointCount, rawCount);
+      if (ov) {
+        addIncrementalTileRange(ov.startTile, Math.min(nTiles, ov.endTileExclusive), nTiles);
+      }
+      return;
+    }
+
+    // Modular full-ring wrap: up to two physical spans (no seam min/max collapse).
+    if (
+      ringCap > 0 &&
+      rawCount >= ringCap &&
+      lastMaintainedRawPointCount >= ringCap &&
+      ringStart !== lastMaintainedRingStart
+    ) {
+      const ranges = modularOverwriteRanges(lastMaintainedRingStart, ringStart, ringCap);
+      for (const r of ranges) {
+        const ov = tilesOverlappingPhysical(r.start, r.end);
+        if (!ov) continue;
+        addIncrementalTileRange(ov.startTile, Math.min(nTiles, ov.endTileExclusive), nTiles);
+      }
+      return;
+    }
+
+    // N shrink or unexpected layout: full rebuild.
+    if (rawCount !== lastMaintainedRawPointCount || ringStart !== lastMaintainedRingStart) {
+      markFullDirty(nTiles);
+      return;
+    }
+
+    // Content version-only with same geometry already handled as equalNRewrite.
+    // Pure window/bucket present — no hierarchy dirty.
+  };
+
+  /**
+   * During cold full rebuild, FIFO may overwrite physical tiles already
+   * maintained in earlier chunks. Call after updateHierarchyDirty with the
+   * previous-frame ring stamp (preparedRingStart before assign).
+   */
+  let prevPrepareRingStart = 0;
+  let prevPrepareRingCap = 0;
+  let prevPrepareRawCount = -1;
+  let prevPrepareContentVersion: number | undefined = undefined;
+  let hasPrevPrepareStamp = false;
+
+  const applyColdOverwriteRewind = (
+    rawCount: number,
+    ringStart: number,
+    ringCap: number
+  ): void => {
+    if (!hierarchyDirtyFull || hierarchyReady || !hasPrevPrepareStamp) return;
+    if (ringCap <= 0 || prevPrepareRingCap <= 0) return;
+    if (rawCount < ringCap || prevPrepareRawCount < prevPrepareRingCap) return;
+    if (ringStart === prevPrepareRingStart) return;
+    const ranges = modularOverwriteRanges(prevPrepareRingStart, ringStart, ringCap);
+    for (const r of ranges) {
+      const ov = tilesOverlappingPhysical(r.start, r.end);
+      if (!ov) continue;
+      if (ov.startTile < coldProgressTile) {
+        coldProgressTile = ov.startTile;
+      }
+    }
+  };
+
+  const hierarchyNeedsMaintain = (): boolean => {
+    // Do not gate on preparedRawBuffer: prepare() computes willMaintain *before*
+    // assigning prepared* fields. tilesBuffer existence is enough for the policy
+    // decision; encodeMaintain still requires preparedRawBuffer at encode time.
+    if (!tilesBuffer) return false;
+    // Before first prepare assigns counts, use tilesCapacity as upper bound.
+    const nTiles =
+      preparedRawPointCount >= 0
+        ? tileCountForCapacity(physicalCapacityOf(preparedRawPointCount, preparedRingCapacity))
+        : tilesCapacity;
+    if (hierarchyDirtyFull) {
+      return coldProgressTile < Math.max(nTiles, 1) || !hierarchyReady;
+    }
+    return dirtyTileRanges.some((r) => r.endExclusive > r.start);
   };
 
   const assertNotDisposed = (): void => {
@@ -393,23 +811,20 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
     const rawCount = Math.max(0, rawPointCount | 0);
     const vs = Math.min(rawCount, Math.max(0, visibleStart | 0));
     const ve = Math.min(rawCount, Math.max(vs, visibleEnd | 0));
-    // `targetBuckets` must leave room for both anchors, so require at least 2.
     const buckets = Math.max(2, targetBuckets | 0);
-    // Treat omitted contentVersion as "unknown / force dirty once" only when it
-    // transitions; stable undefined keeps skip behavior for tests that omit it.
     const version = contentVersion;
     const ringCap = Math.max(0, (ringCapacityIn ?? 0) | 0);
     const ringStart = ringCap > 0 ? Math.max(0, (ringStartIn ?? 0) | 0) % ringCap : 0;
 
     bindGroupResourcesChanged = false;
     ensureBuffers(buckets);
+    const physCap = physicalCapacityOf(rawCount, ringCap);
+    ensureHierarchyBuffers(Math.max(physCap, 1));
     ensureBindGroup(rawBuffer);
+    ensureMaintainBindGroups(rawBuffer);
     const resourcesChanged = bindGroupResourcesChanged;
     const span = Math.max(0, ve - vs);
 
-    // Output/bind rebuild destroys or detaches previously encoded storage — lastEncoded
-    // no longer describes GPU contents. Invalidate so a later SIG match cannot restore
-    // a non-zero present count without re-encode (empty-span growth edge case).
     if (resourcesChanged) {
       hasEncoded = false;
       lastEncodedAlgorithm = null;
@@ -423,28 +838,35 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
       lastEncodedRingCapacity = 0;
     }
 
-    // G0 cold / empty span: never present prior lastEncoded output as current.
-    // needsEncode stays false. lastEncoded only survives when resources did not change.
+    // Hierarchy dirty tracking vs last maintain stamp (independent of present SIG).
+    updateHierarchyDirty(rawBuffer, rawCount, ringStart, ringCap, version);
+    applyColdOverwriteRewind(rawCount, ringStart, ringCap);
+
+    // Assign prepared* early so hierarchyNeedsMaintain / encode can use them.
+    preparedAlgorithm = algorithm;
+    preparedRawBuffer = rawBuffer;
+    preparedRawPointCount = rawCount;
+    preparedVisibleStart = vs;
+    preparedVisibleEnd = ve;
+    preparedTargetBuckets = buckets;
+    preparedContentVersion = version;
+    preparedRingStart = ringStart;
+    preparedRingCapacity = ringCap;
+
+    prevPrepareRingStart = ringStart;
+    prevPrepareRingCap = ringCap;
+    prevPrepareRawCount = rawCount;
+    prevPrepareContentVersion = version;
+    hasPrevPrepareStamp = true;
+
     if (span <= 0) {
       hasPrepared = true;
       dirty = false;
-      preparedAlgorithm = algorithm;
-      preparedRawBuffer = rawBuffer;
-      preparedRawPointCount = rawCount;
-      preparedVisibleStart = vs;
-      preparedVisibleEnd = ve;
-      preparedTargetBuckets = buckets;
-      preparedContentVersion = version;
-      preparedRingStart = ringStart;
-      preparedRingCapacity = ringCap;
+      preparedUseHierarchy = false;
       lastOutputPointCount = 0;
       return 0;
     }
 
-    // G0/G1/G2: compare this prepare's SIG against lastEncodedSIG only.
-    // Any mismatch → must accept this frame (period = 1). No density table,
-    // no highDensitySkipStreak, no onlyStreamingAppend amortization.
-    // resourcesChanged already invalidated lastEncoded above → forces re-encode.
     const sigMatchesLastEncoded =
       hasEncoded &&
       lastEncodedAlgorithm === algorithm &&
@@ -457,20 +879,30 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
       lastEncodedRingStart === ringStart &&
       lastEncodedRingCapacity === ringCap;
 
+    // Hierarchy present only when already ready, or maintain will *finish* this
+    // frame (no optimistic partial-cold hierarchy path — Issue 11).
+    const nTiles = tileCountForCapacity(physicalCapacityOf(rawCount, ringCap));
+    const remain = remainingMaintainTiles(nTiles);
+    const willCompleteCold =
+      hierarchyDirtyFull && remain > 0 && remain <= MAX_COLD_MAINTAIN_TILES_PER_ENCODE;
+    const willCompleteIncremental = !hierarchyDirtyFull && remain > 0;
+    const hierarchyReadyAfterEncode = hierarchyReady || willCompleteCold || willCompleteIncremental;
+    const useHierarchy = shouldUseHierarchyPresent({
+      rawPointCount: rawCount,
+      targetBuckets: buckets,
+      visibleStart: vs,
+      visibleEnd: ve,
+      ringCapacity: ringCap,
+      hierarchyReady: hierarchyReadyAfterEncode,
+    });
+
     if (!sigMatchesLastEncoded) {
       dirty = true;
-      // Prepared (pending) SIG for encode — do NOT copy into lastEncoded here (G1).
-      preparedAlgorithm = algorithm;
-      preparedRawBuffer = rawBuffer;
-      preparedRawPointCount = rawCount;
-      preparedVisibleStart = vs;
-      preparedVisibleEnd = ve;
-      preparedTargetBuckets = buckets;
-      preparedContentVersion = version;
-      preparedRingStart = ringStart;
-      preparedRingCapacity = ringCap;
+      preparedUseHierarchy = useHierarchy;
 
-      // Pack uniforms for the new SIG before encode (illegal to encode without rewrite).
+      const physCapU = physicalCapacityOf(rawCount, ringCap);
+      const tileCount = tileCountForCapacity(physCapU);
+
       uniformScratchU32[0] = rawCount >>> 0;
       uniformScratchU32[1] = vs >>> 0;
       uniformScratchU32[2] = ve >>> 0;
@@ -478,13 +910,19 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
       uniformScratchU32[4] = algorithm === 'max' ? MODE_MAX : algorithm === 'min' ? MODE_MIN : 0;
       uniformScratchU32[5] = ringStart >>> 0;
       uniformScratchU32[6] = ringCap >>> 0;
+      // Reserved (pipelines selected in TS; flag unused in WGSL).
       uniformScratchU32[7] = 0;
+      uniformScratchU32[8] = tileCount >>> 0;
+      uniformScratchU32[9] = physCapU >>> 0;
+      uniformScratchU32[10] = 0;
+      uniformScratchU32[11] = 0;
       writeUniformBuffer(device, uniformBuffer, uniformScratch);
       lastOutputPointCount = buckets;
     } else {
-      // Output buffer already represents this SIG — present last encoded count.
       dirty = false;
+      preparedUseHierarchy = useHierarchy;
       lastOutputPointCount = lastEncodedTargetBuckets;
+      // Present SIG clean; hierarchy may still need maintain (cold chunks).
     }
 
     hasPrepared = true;
@@ -492,26 +930,178 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
   };
 
   const needsEncode: DecimationCompute['needsEncode'] = () => {
-    if (disposed || !hasPrepared || !dirty || !bindGroup) return false;
+    if (disposed || !hasPrepared || !bindGroup) return false;
     const buckets = preparedTargetBuckets;
     const span = preparedVisibleEnd - preparedVisibleStart;
-    return buckets >= 2 && span > 0;
+    // Empty / degenerate window: never open a compute pass (G0 cold).
+    if (buckets < 2 || span <= 0) return false;
+    // Present SIG dirty or hierarchy maintain still pending (cold chunk / range).
+    if (dirty) return true;
+    return hierarchyNeedsMaintain();
   };
+
+  /**
+   * Dispatch one maintain range using dedicated uniform slot `slot` (0 or 1).
+   * Dual slots avoid queue.writeBuffer clobber when two seam ranges share a pass.
+   */
+  const dispatchMaintainRange = (
+    pass: GPUComputePassEncoder,
+    slot: 0 | 1,
+    startTile: number,
+    count: number,
+    rawCount: number,
+    ringStart: number,
+    ringCap: number,
+    physCap: number
+  ): void => {
+    if (count <= 0 || !preparedRawBuffer) return;
+    ensureMaintainBindGroups(preparedRawBuffer);
+    const uniformBuffer = slot === 0 ? maintainUniformBuffer0 : maintainUniformBuffer1;
+    const bg = slot === 0 ? maintainBindGroup0 : maintainBindGroup1;
+    if (!bg) return;
+    maintainUniformU32[0] = rawCount >>> 0;
+    maintainUniformU32[1] = ringStart >>> 0;
+    maintainUniformU32[2] = ringCap >>> 0;
+    maintainUniformU32[3] = physCap >>> 0;
+    maintainUniformU32[4] = startTile >>> 0;
+    maintainUniformU32[5] = count >>> 0;
+    maintainUniformU32[6] = 0;
+    maintainUniformU32[7] = 0;
+    writeUniformBuffer(device, uniformBuffer, maintainUniformScratch);
+    pass.setPipeline(maintainPipeline);
+    pass.setBindGroup(0, bg);
+    pass.dispatchWorkgroups(count);
+  };
+
+  const encodeMaintain = (pass: GPUComputePassEncoder): number => {
+    if (!preparedRawBuffer || !tilesBuffer) return 0;
+    if (!hierarchyNeedsMaintain()) return 0;
+
+    const rawCount = preparedRawPointCount;
+    const ringCap = preparedRingCapacity;
+    const ringStart = preparedRingStart;
+    const physCap = physicalCapacityOf(rawCount, ringCap);
+    const nTiles = tileCountForCapacity(physCap);
+    if (nTiles <= 0) return 0;
+
+    let tilesDispatched = 0;
+
+    if (hierarchyDirtyFull) {
+      let startTile = Math.max(0, Math.min(nTiles, coldProgressTile));
+      let endTile = nTiles;
+      let count = endTile - startTile;
+      if (count <= 0) {
+        hierarchyDirtyFull = false;
+        dirtyTileRanges = [];
+        coldProgressTile = 0;
+        hierarchyReady = true;
+        lastMaintainedRawBuffer = preparedRawBuffer;
+        lastMaintainedRawPointCount = rawCount;
+        lastMaintainedRingStart = ringStart;
+        lastMaintainedRingCapacity = ringCap;
+        lastMaintainedContentVersion = preparedContentVersion;
+        return 0;
+      }
+
+      // Chunk cold full rebuilds; advance coldProgressTile (Issue 1).
+      if (count > MAX_COLD_MAINTAIN_TILES_PER_ENCODE) {
+        endTile = startTile + MAX_COLD_MAINTAIN_TILES_PER_ENCODE;
+        count = MAX_COLD_MAINTAIN_TILES_PER_ENCODE;
+      }
+
+      dispatchMaintainRange(pass, 0, startTile, count, rawCount, ringStart, ringCap, physCap);
+      tilesDispatched = count;
+      coldProgressTile = endTile;
+
+      if (coldProgressTile < nTiles) {
+        hierarchyReady = false;
+        hierarchyDirtyFull = true;
+        return tilesDispatched;
+      }
+
+      // Full cold complete.
+      hierarchyDirtyFull = false;
+      coldProgressTile = 0;
+      dirtyTileRanges = [];
+      hierarchyReady = true;
+      lastMaintainedRawBuffer = preparedRawBuffer;
+      lastMaintainedRawPointCount = rawCount;
+      lastMaintainedRingStart = ringStart;
+      lastMaintainedRingCapacity = ringCap;
+      lastMaintainedContentVersion = preparedContentVersion;
+      return tilesDispatched;
+    }
+
+    // Incremental: up to two disjoint tile ranges (modular seam).
+    // Each range uses its own uniform buffer so both dispatches see correct
+    // startTile/count after queue.writeBuffer reordering (AGENTS grid hazard).
+    const ranges = dirtyTileRanges.slice();
+    dirtyTileRanges = [];
+    let slot: 0 | 1 = 0;
+    for (const r of ranges) {
+      const startTile = Math.max(0, Math.min(nTiles, r.start));
+      const endTile = Math.max(startTile, Math.min(nTiles, r.endExclusive));
+      const count = endTile - startTile;
+      if (count <= 0) continue;
+      dispatchMaintainRange(pass, slot, startTile, count, rawCount, ringStart, ringCap, physCap);
+      tilesDispatched += count;
+      slot = 1; // second range uses slot 1; >2 ranges already collapsed to full dirty
+    }
+
+    hierarchyReady = true;
+    lastMaintainedRawBuffer = preparedRawBuffer;
+    lastMaintainedRawPointCount = rawCount;
+    lastMaintainedRingStart = ringStart;
+    lastMaintainedRingCapacity = ringCap;
+    lastMaintainedContentVersion = preparedContentVersion;
+    return tilesDispatched;
+  };
+
+  const encodePresent = (pass: GPUComputePassEncoder): void => {
+    if (!bindGroup) return;
+    const buckets = preparedTargetBuckets;
+    const useH = preparedUseHierarchy && hierarchyReady;
+
+    pass.setBindGroup(0, bindGroup);
+
+    if (preparedAlgorithm === 'min' || preparedAlgorithm === 'max') {
+      pass.setPipeline(useH ? hierarchyMinMaxPipeline : minMaxPipeline);
+      const dispatch = Math.max(1, buckets - 2);
+      pass.dispatchWorkgroups(dispatch);
+    } else {
+      pass.setPipeline(useH ? hierarchyAveragesPipeline : averagesPipeline);
+      pass.dispatchWorkgroups(buckets);
+      pass.setPipeline(useH ? hierarchyLttbPipeline : lttbPipeline);
+      pass.dispatchWorkgroups(buckets);
+    }
+  };
+
+  const getHierarchyDebug = (): DecimationHierarchyDebug => ({
+    hierarchyReady,
+    lastPresentHierarchy: lastEncodeUsedHierarchyPresent,
+    lastMaintainTileCount: lastEncodeMaintainTileCount,
+    preparedRawPointCount,
+    preparedRingCapacity,
+  });
 
   const encodeCompute: DecimationCompute['encodeCompute'] = (encoder, intoPass) => {
     assertNotDisposed();
     if (!hasPrepared) return;
-    if (!dirty) return;
     if (!bindGroup) return;
 
     const buckets = preparedTargetBuckets;
     const span = preparedVisibleEnd - preparedVisibleStart;
-
+    // Degenerate window: clear present dirty and skip (no maintain-only either).
     if (buckets < 2 || span <= 0) {
-      // No successful write of decimation output — do not advance lastEncodedSIG.
       dirty = false;
       return;
     }
+
+    const needMaintain = hierarchyNeedsMaintain();
+    const needPresent = dirty;
+    if (!needMaintain && !needPresent) return;
+
+    const canPresent = needPresent;
 
     const ownsPass = intoPass == null;
     const pass =
@@ -519,48 +1109,42 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
       encoder.beginComputePass({
         label: 'decimationCompute/computePass',
       });
-    pass.setBindGroup(0, bindGroup);
 
-    if (preparedAlgorithm === 'min' || preparedAlgorithm === 'max') {
-      // `minMaxDecimate` dispatches `max(buckets - 2, 1)` workgroups. Workgroup
-      // 0 is responsible for both fixed anchors (first + last) via tid 0, so a
-      // lone bucket still runs a single workgroup.
-      pass.setPipeline(minMaxPipeline);
-      const dispatch = Math.max(1, buckets - 2);
-      pass.dispatchWorkgroups(dispatch);
-    } else {
-      // Parallel LTTB: two dispatches. Phase A writes averages, phase B reads
-      // averages + raw points and writes the final decimated output.
-      pass.setPipeline(averagesPipeline);
-      pass.dispatchWorkgroups(buckets);
+    // (1) Hierarchy maintain if dirty — may run without present (Issue 4).
+    lastEncodeMaintainTileCount = needMaintain ? encodeMaintain(pass) : 0;
 
-      pass.setPipeline(lttbPipeline);
-      pass.dispatchWorkgroups(buckets);
+    // If hierarchy was planned but not ready, fall back to legacy present.
+    if (preparedUseHierarchy && !hierarchyReady) {
+      preparedUseHierarchy = false;
+    }
+
+    // (2) Present only when present SIG is dirty (G1: lastEncoded only after write).
+    if (canPresent) {
+      lastEncodeUsedHierarchyPresent = preparedUseHierarchy && hierarchyReady;
+      encodePresent(pass);
+
+      dirty = false;
+      hasEncoded = true;
+      lastEncodedAlgorithm = preparedAlgorithm;
+      lastEncodedRawBuffer = preparedRawBuffer;
+      lastEncodedRawPointCount = preparedRawPointCount;
+      lastEncodedVisibleStart = preparedVisibleStart;
+      lastEncodedVisibleEnd = preparedVisibleEnd;
+      lastEncodedTargetBuckets = preparedTargetBuckets;
+      lastEncodedContentVersion = preparedContentVersion;
+      lastEncodedRingStart = preparedRingStart;
+      lastEncodedRingCapacity = preparedRingCapacity;
     }
 
     if (ownsPass) {
       pass.end();
     }
-
-    // G1: lastEncodedSIG updates only after a successful dispatch that wrote output.
-    dirty = false;
-    hasEncoded = true;
-    lastEncodedAlgorithm = preparedAlgorithm;
-    lastEncodedRawBuffer = preparedRawBuffer;
-    lastEncodedRawPointCount = preparedRawPointCount;
-    lastEncodedVisibleStart = preparedVisibleStart;
-    lastEncodedVisibleEnd = preparedVisibleEnd;
-    lastEncodedTargetBuckets = preparedTargetBuckets;
-    lastEncodedContentVersion = preparedContentVersion;
-    lastEncodedRingStart = preparedRingStart;
-    lastEncodedRingCapacity = preparedRingCapacity;
   };
 
   const getOutputBuffer: DecimationCompute['getOutputBuffer'] = () => {
     if (!outputBuffer) {
-      // First call before ensureBuffers runs: allocate the minimum so the
-      // renderer has a real buffer identity to cache its bind group against.
       ensureBuffers(MIN_OUTPUT_CAPACITY);
+      ensureHierarchyBuffers(HIERARCHY_TILE);
     }
     return outputBuffer!;
   };
@@ -573,6 +1157,16 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
 
     try {
       uniformBuffer.destroy();
+    } catch {
+      // best-effort
+    }
+    try {
+      maintainUniformBuffer0.destroy();
+    } catch {
+      // best-effort
+    }
+    try {
+      maintainUniformBuffer1.destroy();
     } catch {
       // best-effort
     }
@@ -590,14 +1184,32 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
         // best-effort
       }
     }
+    if (tilesBuffer) {
+      try {
+        tilesBuffer.destroy();
+      } catch {
+        // best-effort
+      }
+    }
     outputBuffer = null;
     averagesBuffer = null;
+    tilesBuffer = null;
     bindGroup = null;
+    maintainBindGroup0 = null;
+    maintainBindGroup1 = null;
     boundRawBuffer = null;
+    maintainBoundRaw = null;
     bufferCapacityPoints = 0;
+    tilesCapacity = 0;
     hasPrepared = false;
     dirty = false;
     hasEncoded = false;
+    hierarchyReady = false;
+    hierarchyDirtyFull = true;
+    coldProgressTile = 0;
+    dirtyTileRanges = [];
+    hasPrevPrepareStamp = false;
+    prevPrepareContentVersion = undefined;
     lastEncodedAlgorithm = null;
     lastEncodedRawBuffer = null;
     lastEncodedRawPointCount = -1;
@@ -617,6 +1229,11 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
     preparedRingStart = 0;
     preparedRingCapacity = 0;
     lastOutputPointCount = 0;
+    lastMaintainedRawBuffer = null;
+    lastMaintainedRawPointCount = -1;
+    lastMaintainedRingStart = 0;
+    lastMaintainedRingCapacity = 0;
+    lastMaintainedContentVersion = undefined;
   };
 
   return {
@@ -625,6 +1242,7 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
     encodeCompute,
     getOutputBuffer,
     getOutputPointCount,
+    getHierarchyDebug,
     dispose,
   };
 }

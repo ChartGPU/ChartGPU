@@ -37,21 +37,40 @@ struct DecimationUniforms {
   visibleStart  : u32,
   visibleEnd    : u32,
   targetBuckets : u32,
-  // Mode bit 0: 0 = min, 1 = max. Only consulted by `minMaxDecimate`.
+  // Mode bit 0: 0 = min, 1 = max. Only consulted by min/max entry points.
   mode          : u32,
   // Fixed-capacity ring FIFO: physical index of the oldest logical point.
   // When ringCapacity == 0, raw storage is linear chronological (raw[i] = logical i).
   ringStart     : u32,
   ringCapacity  : u32,
-  // Struct padded up to 32 bytes so its size is a multiple of 16 (the minimum
-  // alignment for uniform-buffer-backed structs in WGSL).
-  padC          : u32,
+  // Bit 0: hierarchy present path is active for this encode (TS sets from policy).
+  hierarchyFlags : u32,
+  // Number of valid physical tiles in `tiles` storage (ceil(physicalCap / 1024)).
+  tileCount     : u32,
+  // Physical capacity used to bound tile physical ranges (ringCapacity or N).
+  physicalCapacity : u32,
+  pad1          : u32,
+  pad2          : u32,
+};
+
+// Physical tile aggregate (matches decimationHierarchy.wgsl `Tile`, 32 bytes).
+struct HierarchyTile {
+  minY   : f32,
+  maxY   : f32,
+  minIdx : u32,
+  maxIdx : u32,
+  sumX   : f32,
+  sumY   : f32,
+  count  : u32,
+  pad    : u32,
 };
 
 @group(0) @binding(0) var<uniform> uni : DecimationUniforms;
 @group(0) @binding(1) var<storage, read> rawPoints : array<vec2<f32>>;
 @group(0) @binding(2) var<storage, read_write> output : array<vec2<f32>>;
 @group(0) @binding(3) var<storage, read_write> averages : array<vec2<f32>>;
+// Hierarchy tiles (physical). Always bound; legacy entry points ignore them.
+@group(0) @binding(4) var<storage, read> tiles : array<HierarchyTile>;
 
 // Map a chronological (logical) raw index into physical storage. Ring mode
 // stores points modularly after FIFO wrap; linear mode is a no-op.
@@ -530,4 +549,408 @@ fn parallelLttbDecimate(
   if (isInterior && tid == 0u) {
     output[bucketId] = rawAt(sharedIdx[0]);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hierarchy-backed present (Phase B multi‑M FIFO)
+//
+// Tiles are physical (buffer index). Logical bucket ranges map to ≤2 physical
+// spans via ringStart. Full tiles contribute aggregates without raw re-scan;
+// partial edge tiles scan raw on tid 0 (≤ TILE points per edge).
+//
+// Present kernels are **tid-0 only** and **O(tiles per bucket)** — never
+// full-scan partial tiles (that path was as expensive as legacy at 1M×2500
+// where each bucket is ~1 partial tile). Candidates:
+//   - tile min/max when arg index falls in the bucket physical range
+//   - else tile min/max y still used as shape proxy for LTTB (G4 residual)
+//   - partial edges: ≤8 uniform raw samples + endpoints (not ≤128/full)
+//
+// This is the G4 hierarchy residual class: approximate extrema/shape vs full
+// scan, same intent as the 128-candidate dense cap, but much cheaper at multi‑M.
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn physicalAt(physIdx : u32) -> vec2<f32> {
+  return rawPoints[physIdx];
+}
+
+fn logicalToPhysical(logicalIdx : u32) -> u32 {
+  if (uni.ringCapacity == 0u) {
+    return logicalIdx;
+  }
+  let sum = uni.ringStart + logicalIdx;
+  return select(sum, sum - uni.ringCapacity, sum >= uni.ringCapacity);
+}
+
+fn logicalSpanPhysical(rangeStart : u32, rangeEnd : u32, spanIdx : u32) -> vec3<u32> {
+  let logLen = rangeEnd - rangeStart;
+  if (logLen == 0u) {
+    return vec3<u32>(0u, 0u, 0u);
+  }
+  if (uni.ringCapacity == 0u) {
+    if (spanIdx == 0u) {
+      return vec3<u32>(rangeStart, rangeEnd, 1u);
+    }
+    return vec3<u32>(0u, 0u, 0u);
+  }
+  let phys0 = logicalToPhysical(rangeStart);
+  if (phys0 + logLen <= uni.ringCapacity) {
+    if (spanIdx == 0u) {
+      return vec3<u32>(phys0, phys0 + logLen, 1u);
+    }
+    return vec3<u32>(0u, 0u, 0u);
+  }
+  let firstLen = uni.ringCapacity - phys0;
+  if (spanIdx == 0u) {
+    return vec3<u32>(phys0, uni.ringCapacity, 1u);
+  }
+  if (spanIdx == 1u) {
+    return vec3<u32>(0u, logLen - firstLen, 1u);
+  }
+  return vec3<u32>(0u, 0u, 0u);
+}
+
+@compute @workgroup_size(64)
+fn hierarchyMinMaxDecimate(
+  @builtin(workgroup_id) wgid : vec3<u32>,
+  @builtin(local_invocation_id) lid : vec3<u32>,
+) {
+  let tid      = lid.x;
+  let bucketId = wgid.x;
+  let buckets  = uni.targetBuckets;
+  let visStart = uni.visibleStart;
+  let visEnd   = uni.visibleEnd;
+
+  if (tid != 0u) {
+    return;
+  }
+
+  if (bucketId == 0u && buckets >= 1u && visEnd > visStart) {
+    output[0] = rawAt(visStart);
+    if (buckets >= 2u) {
+      output[buckets - 1u] = rawAt(visEnd - 1u);
+    }
+  }
+
+  if (buckets < 3u || bucketId > buckets - 3u) {
+    return;
+  }
+
+  let range      = interiorBucketRange(bucketId);
+  let rangeStart = range.x;
+  let rangeEnd   = range.y;
+  let wantMax    = (uni.mode & 1u) == 1u;
+
+  var bestY : f32 = 3.4e38;
+  if (wantMax) {
+    bestY = -3.4e38;
+  }
+  var bestPhys : u32 = logicalToPhysical(rangeStart);
+
+  let cap = select(uni.rawPointCount, uni.ringCapacity, uni.ringCapacity > 0u);
+  let tileCap = uni.tileCount;
+
+  for (var spanIdx = 0u; spanIdx < 2u; spanIdx = spanIdx + 1u) {
+    let sp = logicalSpanPhysical(rangeStart, rangeEnd, spanIdx);
+    if (sp.z == 0u) { continue; }
+    let pLo = sp.x;
+    let pHi = sp.y;
+    if (pHi <= pLo) { continue; }
+
+    var tStart = pLo / 1024u;
+    var tEnd = (pHi - 1u) / 1024u + 1u;
+    if (tEnd > tileCap) { tEnd = tileCap; }
+    var t = tStart;
+    while (t < tEnd) {
+      let tilePhys0 = t * 1024u;
+      var tilePhys1 = tilePhys0 + 1024u;
+      if (tilePhys1 > cap) { tilePhys1 = cap; }
+      let fullyCovered = tilePhys0 >= pLo && tilePhys1 <= pHi;
+      let tile = tiles[t];
+      if (tile.count > 0u) {
+        // Prefer tile arg if it lands in this bucket's physical span.
+        if (wantMax) {
+          if (tile.maxIdx >= pLo && tile.maxIdx < pHi && tile.maxY > bestY) {
+            bestY = tile.maxY;
+            bestPhys = tile.maxIdx;
+          } else if (fullyCovered && tile.maxY > bestY) {
+            bestY = tile.maxY;
+            bestPhys = tile.maxIdx;
+          }
+        } else {
+          if (tile.minIdx >= pLo && tile.minIdx < pHi && tile.minY < bestY) {
+            bestY = tile.minY;
+            bestPhys = tile.minIdx;
+          } else if (fullyCovered && tile.minY < bestY) {
+            bestY = tile.minY;
+            bestPhys = tile.minIdx;
+          }
+        }
+      }
+      if (!fullyCovered) {
+        let sLo = select(pLo, tilePhys0, tilePhys0 > pLo);
+        let sHi = select(pHi, tilePhys1, tilePhys1 < pHi);
+        if (sHi > sLo) {
+          let rangeLen = sHi - sLo;
+          var candCount = rangeLen;
+          if (candCount > 8u) { candCount = 8u; }
+          var s = 0u;
+          while (s < candCount) {
+            var i = sLo;
+            if (candCount > 1u && rangeLen > 1u) {
+              i = sLo + mulDivU32(rangeLen - 1u, s, candCount - 1u);
+            }
+            let p = physicalAt(i);
+            if (isFiniteVec2(p)) {
+              if (wantMax) {
+                if (p.y > bestY) { bestY = p.y; bestPhys = i; }
+              } else {
+                if (p.y < bestY) { bestY = p.y; bestPhys = i; }
+              }
+            }
+            s = s + 1u;
+          }
+        }
+      }
+      t = t + 1u;
+    }
+  }
+
+  output[bucketId + 1u] = physicalAt(bestPhys);
+}
+
+@compute @workgroup_size(64)
+fn hierarchyBucketAverages(
+  @builtin(workgroup_id) wgid : vec3<u32>,
+  @builtin(local_invocation_id) lid : vec3<u32>,
+) {
+  let tid      = lid.x;
+  let bucketId = wgid.x;
+  let buckets  = uni.targetBuckets;
+  let visStart = uni.visibleStart;
+  let visEnd   = uni.visibleEnd;
+
+  if (tid != 0u) {
+    return;
+  }
+
+  let isFirstAnchor = buckets >= 1u && bucketId == 0u;
+  let isLastAnchor  = buckets >= 2u && bucketId + 1u == buckets;
+  let isInterior    = buckets >= 3u && bucketId >= 1u && bucketId + 1u < buckets;
+
+  if (isFirstAnchor && visEnd > visStart) {
+    averages[0] = rawAt(visStart);
+  }
+  if (isLastAnchor && visEnd > visStart) {
+    averages[buckets - 1u] = rawAt(visEnd - 1u);
+  }
+  if (!isInterior) {
+    return;
+  }
+
+  let range      = interiorBucketRange(bucketId - 1u);
+  let rangeStart = range.x;
+  let rangeEnd   = range.y;
+
+  var sumX : f32 = 0.0;
+  var sumY : f32 = 0.0;
+  var cnt  : u32 = 0u;
+
+  let cap = select(uni.rawPointCount, uni.ringCapacity, uni.ringCapacity > 0u);
+  let tileCap = uni.tileCount;
+
+  for (var spanIdx = 0u; spanIdx < 2u; spanIdx = spanIdx + 1u) {
+    let sp = logicalSpanPhysical(rangeStart, rangeEnd, spanIdx);
+    if (sp.z == 0u) { continue; }
+    let pLo = sp.x;
+    let pHi = sp.y;
+    if (pHi <= pLo) { continue; }
+
+    var tStart = pLo / 1024u;
+    var tEnd = (pHi - 1u) / 1024u + 1u;
+    if (tEnd > tileCap) { tEnd = tileCap; }
+    var t = tStart;
+    while (t < tEnd) {
+      let tilePhys0 = t * 1024u;
+      var tilePhys1 = tilePhys0 + 1024u;
+      if (tilePhys1 > cap) { tilePhys1 = cap; }
+      let fullyCovered = tilePhys0 >= pLo && tilePhys1 <= pHi;
+      let tile = tiles[t];
+      if (fullyCovered) {
+        sumX = sumX + tile.sumX;
+        sumY = sumY + tile.sumY;
+        cnt = cnt + tile.count;
+      } else if (tile.count > 0u) {
+        // Partial: scale tile mean by overlap count estimate (no full raw scan).
+        let sLo = select(pLo, tilePhys0, tilePhys0 > pLo);
+        let sHi = select(pHi, tilePhys1, tilePhys1 < pHi);
+        let overlap = sHi - sLo;
+        let tileLen = tilePhys1 - tilePhys0;
+        if (tileLen > 0u && overlap > 0u) {
+          let frac = f32(overlap) / f32(tileLen);
+          let estCount = u32(f32(tile.count) * frac + 0.5);
+          let useCount = select(1u, estCount, estCount > 0u);
+          let inv = 1.0 / f32(tile.count);
+          let meanX = tile.sumX * inv;
+          let meanY = tile.sumY * inv;
+          sumX = sumX + meanX * f32(useCount);
+          sumY = sumY + meanY * f32(useCount);
+          cnt = cnt + useCount;
+        }
+      }
+      t = t + 1u;
+    }
+  }
+
+  if (cnt == 0u) {
+    averages[bucketId] = rawAt(rangeStart);
+  } else {
+    let inv = 1.0 / f32(cnt);
+    averages[bucketId] = vec2<f32>(sumX * inv, sumY * inv);
+  }
+}
+
+@compute @workgroup_size(64)
+fn hierarchyParallelLttb(
+  @builtin(workgroup_id) wgid : vec3<u32>,
+  @builtin(local_invocation_id) lid : vec3<u32>,
+) {
+  let tid      = lid.x;
+  let bucketId = wgid.x;
+  let buckets  = uni.targetBuckets;
+  let visStart = uni.visibleStart;
+  let visEnd   = uni.visibleEnd;
+
+  if (tid != 0u) {
+    return;
+  }
+
+  let isFirstAnchor = buckets >= 1u && bucketId == 0u;
+  let isLastAnchor  = buckets >= 2u && bucketId + 1u == buckets;
+  let isInterior    = buckets >= 3u && bucketId >= 1u && bucketId + 1u < buckets;
+
+  if (isFirstAnchor && visEnd > visStart) {
+    output[0] = rawAt(visStart);
+  }
+  if (isLastAnchor && visEnd > visStart) {
+    output[buckets - 1u] = rawAt(visEnd - 1u);
+  }
+  if (!isInterior) {
+    return;
+  }
+
+  let range      = interiorBucketRange(bucketId - 1u);
+  let rangeStart = range.x;
+  let rangeEnd   = range.y;
+  let anchor     = averages[bucketId - 1u];
+  let nextRef    = averages[bucketId + 1u];
+
+  var bestScore : f32 = -1.0;
+  var bestPhys  : u32 = logicalToPhysical(rangeStart);
+
+  let cap = select(uni.rawPointCount, uni.ringCapacity, uni.ringCapacity > 0u);
+  let tileCap = uni.tileCount;
+
+  for (var spanIdx = 0u; spanIdx < 2u; spanIdx = spanIdx + 1u) {
+    let sp = logicalSpanPhysical(rangeStart, rangeEnd, spanIdx);
+    if (sp.z == 0u) { continue; }
+    let pLo = sp.x;
+    let pHi = sp.y;
+    if (pHi <= pLo) { continue; }
+
+    var tStart = pLo / 1024u;
+    var tEnd = (pHi - 1u) / 1024u + 1u;
+    if (tEnd > tileCap) { tEnd = tileCap; }
+    var t = tStart;
+    while (t < tEnd) {
+      let tilePhys0 = t * 1024u;
+      var tilePhys1 = tilePhys0 + 1024u;
+      if (tilePhys1 > cap) { tilePhys1 = cap; }
+      let fullyCovered = tilePhys0 >= pLo && tilePhys1 <= pHi;
+      let tile = tiles[t];
+      if (tile.count > 0u) {
+        // Always score tile min/max as LTTB candidates (O(1) per tile).
+        // If arg is outside the bucket span, still use it as a shape proxy (G4)
+        // but prefer clamping pick to an in-range endpoint when needed.
+        var i0 = tile.minIdx;
+        var i1 = tile.maxIdx;
+        if (i0 < pLo || i0 >= pHi) {
+          i0 = pLo;
+        }
+        if (i1 < pLo || i1 >= pHi) {
+          i1 = select(pLo, pHi - 1u, pHi > pLo);
+        }
+        let c0 = physicalAt(i0);
+        let c1 = physicalAt(i1);
+        // Also score true tile extrema samples when in range (already handled)
+        // and tile mean snapped to mid physical of overlap.
+        let sLo = select(pLo, tilePhys0, tilePhys0 > pLo);
+        let sHi = select(pHi, tilePhys1, tilePhys1 < pHi);
+        let mid = sLo + (sHi - sLo) / 2u;
+        let cMid = physicalAt(mid);
+
+        let candidates = array<vec2<f32>, 3>(c0, c1, cMid);
+        let candIdx = array<u32, 3>(i0, i1, mid);
+        for (var ci = 0u; ci < 3u; ci = ci + 1u) {
+          let c = candidates[ci];
+          if (isFiniteVec2(c)) {
+            let area2 = abs((anchor.x - nextRef.x) * (c.y - anchor.y)
+                          - (anchor.x - c.x) * (nextRef.y - anchor.y));
+            if (area2 > bestScore) {
+              bestScore = area2;
+              bestPhys = candIdx[ci];
+            }
+          }
+        }
+
+        // When tile arg is inside range, also score the exact tile extreme point
+        // (may differ from clamped i0/i1 when we replaced out-of-range args).
+        if (tile.minIdx >= pLo && tile.minIdx < pHi) {
+          let c = physicalAt(tile.minIdx);
+          let area2 = abs((anchor.x - nextRef.x) * (c.y - anchor.y)
+                        - (anchor.x - c.x) * (nextRef.y - anchor.y));
+          if (area2 > bestScore) {
+            bestScore = area2;
+            bestPhys = tile.minIdx;
+          }
+        }
+        if (tile.maxIdx >= pLo && tile.maxIdx < pHi) {
+          let c = physicalAt(tile.maxIdx);
+          let area2 = abs((anchor.x - nextRef.x) * (c.y - anchor.y)
+                        - (anchor.x - c.x) * (nextRef.y - anchor.y));
+          if (area2 > bestScore) {
+            bestScore = area2;
+            bestPhys = tile.maxIdx;
+          }
+        }
+      }
+      if (!fullyCovered) {
+        // Bounded edge refine: ≤8 samples (not 128 / not full tile).
+        let sLo = select(pLo, tilePhys0, tilePhys0 > pLo);
+        let sHi = select(pHi, tilePhys1, tilePhys1 < pHi);
+        let rangeLen = sHi - sLo;
+        var candCount = rangeLen;
+        if (candCount > 8u) { candCount = 8u; }
+        var s = 0u;
+        while (s < candCount) {
+          var i = sLo;
+          if (candCount > 1u && rangeLen > 1u) {
+            i = sLo + mulDivU32(rangeLen - 1u, s, candCount - 1u);
+          }
+          let c = physicalAt(i);
+          if (isFiniteVec2(c)) {
+            let area2 = abs((anchor.x - nextRef.x) * (c.y - anchor.y)
+                          - (anchor.x - c.x) * (nextRef.y - anchor.y));
+            if (area2 > bestScore) {
+              bestScore = area2;
+              bestPhys = i;
+            }
+          }
+          s = s + 1u;
+        }
+      }
+      t = t + 1u;
+    }
+  }
+
+  output[bucketId] = physicalAt(bestPhys);
 }

@@ -440,10 +440,10 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
           ? { start: 0, capacity: 0 }
           : dataStore.getSeriesRingLayout(i);
         const areaUploadCount = getPointCount(areaData as CartesianSeriesData);
-        // Shared storage only when linear (capacity 0). After modular ring wrap,
-        // private-pack chronological areaData (same contract as line+areaStyle).
+        // Shared storage when chronological: capacity 0 (unbounded) OR ringStart===0
+        // (identity modular map). After modular wrap (start≠0), private-pack.
         // connectNulls always pins draw N to filtered upload count.
-        if (areaRingLayout.capacity === 0) {
+        if (areaRingLayout.capacity === 0 || areaRingLayout.start === 0) {
           renderers.areaRenderers[i].prepare(
             s,
             areaData,
@@ -746,10 +746,11 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
               yAxis: (s as { yAxis?: string }).yAxis ?? 'y',
               rawBounds: (s as { rawBounds?: ResolvedAreaSeriesConfig['rawBounds'] }).rawBounds,
             };
-            // Decimated buffer is always chronological; raw only when layout.capacity===0.
+            // Decimated buffer is always chronological; raw share when chronological layout
+            // (capacity===0 unbounded, or ringStart===0 identity map under maxPoints).
             const strokeIsDecimated = strokeBuffer !== rawBuffer;
-            const rawIsLinear = ringLayout.capacity === 0;
-            if (strokeIsDecimated || rawIsLinear) {
+            const rawIsChronological = ringLayout.capacity === 0 || ringLayout.start === 0;
+            if (strokeIsDecimated || rawIsChronological) {
               renderers.areaRenderers[i].prepare(
                 areaLike,
                 areaLike.data,
@@ -884,7 +885,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
           };
 
           const cpuRingLayout = nonRawUpload ? { start: 0, capacity: 0 } : dataStore.getSeriesRingLayout(i);
-          if (cpuRingLayout.capacity === 0) {
+          if (cpuRingLayout.capacity === 0 || cpuRingLayout.start === 0) {
             renderers.areaRenderers[i].prepare(
               areaLike,
               areaLike.data,

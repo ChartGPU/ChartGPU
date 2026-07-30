@@ -19,6 +19,12 @@ Optimize ChartGPU for large datasets and real-time streaming.
 
 **GPU decimation (line, `lttb`/`min`/`max`, null-gap-free):** compute shaders replace CPU sampling. When points-per-bucket exceed **512**, LTTB/min/max evaluate a uniform **128-candidate** set (endpoints included) and the averages pre-pass uses **64** samples for coarse triangle anchors — exact below 512 pts/bucket (covers 1M × 2500 ≈ 400); approximate extrema/shape at extreme N (5M–10M pts / 2500 buckets). This bounds GPU bandwidth so period=1 present fidelity stays interactive without multi-frame cadence.
 
+**Tile hierarchy (Phase B multi‑M FIFO):** **physical** tiles of size **1024** (buffer index space, not logical chronology) store min/max/sum aggregates. On append/wrap, **maintain** rebuilds only touched tiles — modular seam wraps use up to **two** phys ranges (no min/max collapse across the ring). Cold full rebuilds chunk (2048 tiles/encode); maintain may continue while present SIG is clean until ready. When hierarchy is ready and policy enables it (**modular multi‑K even when pts/bucket ≤ 512**, or pts/bucket &gt; 512, or N ≥ 250k), **present** LTTB/min/max reads tile aggregates instead of cold full-ring scans — still **period=1** every `SIG` change (G0–G2). Warm hierarchy never skips present encode. Falls back to legacy present same frame if hierarchy is not ready. Memory: ~0.3–0.6 MiB tiles per 10M-point series.
+
+**G4 hierarchy residual magnitude:** present scores tile min/max (and mid) candidates plus ≤8 uniform samples on partial edge tiles — not full-tile raw refine. Averages on partial tiles use fractionally scaled tile means. Same residual class as the 128-candidate dense cap; harness-validated on G7 1M/5M.
+
+**Streaming gap-scan cache:** `hasNullGaps` for modular rings must not full-scan N every append. Finite-only appends (and staging thin-path batches with **x and y** finite) refresh an O(append) gap cache so GPU-decimation eligibility stays cheap at multi‑M FIFO rates. This was a primary multi‑M FPS unlock alongside hierarchy present.
+
 **GPU `targetBuckets` vs `samplingThreshold` (intentional screen-space LOD):** GPU prepare sets
 `targetBuckets = min(samplingThreshold, pixelCap, rawPointCount)` where
 `pixelCap = max(128, 2 × plotWidthDevicePx)`. On narrow multi-chart slots this can yield fewer
@@ -37,9 +43,9 @@ cap. Prefer a wider plot or a lower threshold when comparing GPU vs CPU sample c
 
 **Period-flash (forbidden):** multi-frame freeze of geometry for a prior streaming `SIG` while ring/N/window/version moved, then a hard snap when encode finally runs. Max frames presenting a prior streaming `SIG` = **0**.
 
-**Allowed residual motion:** honest LTTB reselection every streaming frame (polyline may move slightly frame-to-frame without freeze), 128-candidate (averages 64) approximation at extreme pts/bucket, dense-hairline / draw-LOD policy. These are not golden-rule failures.
+**Allowed residual motion:** honest LTTB reselection every streaming frame (polyline may move slightly frame-to-frame without freeze), 128-candidate (averages 64) approximation at extreme pts/bucket, **hierarchy tile-rep LTTB** (min/max tile extrema + partial-edge subsample; G4 extension of the dense-cap residual), dense-hairline / draw-LOD policy. These are not golden-rule failures.
 
-**Phase B multi‑M cost model (still G0–G2):** every streaming `SIG` change re-encodes this frame. Speed comes from cheaper honest recompute (dense candidate caps, O(1) cold multi‑M content stamp on `setSeries`, modular ring index without integer `%` in WGSL) — **not** multi-frame present lag.
+**Phase B multi‑M cost model (still G0–G2):** every streaming `SIG` change re-encodes this frame. Speed comes from cheaper honest recompute — **tile hierarchy maintain O(append) + hierarchy-backed present**, dense candidate caps on the legacy path, O(1) cold multi‑M content stamp on `setSeries`, modular ring index without integer `%` in WGSL — **not** multi-frame present lag.
 
 Equal-N content rewrites (same N + same ringStart, version bump) and bind-group/output rebuilds always recompute. Domain scales are **not** in `SIG` — they update every frame on the line/area draw path.
 

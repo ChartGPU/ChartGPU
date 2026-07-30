@@ -100,6 +100,72 @@ describe('hasNullGaps (H1 — null + NaN across formats)', () => {
     appendIntoRingXY(ring, { x: [2, 3], y: [3, 4] }, 0, 2, 0);
     expect(hasNullGaps(ring as any)).toBe(false);
   });
+
+  it('ring: multi-M finite FIFO append stays O(append) for hasNullGaps (structural)', () => {
+    const N = 200_000;
+    const ring = createRingXYColumns(N);
+    const seedX = new Float64Array(N);
+    const seedY = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      seedX[i] = i;
+      seedY[i] = i * 0.001;
+    }
+    appendIntoRingXY(ring, { x: seedX, y: seedY }, 0, N, 0);
+    expect(hasNullGaps(ring as any)).toBe(false);
+    const epochAfterSeed = ring.contentEpoch;
+
+    const batch = 10_000;
+    const bx = new Float64Array(batch);
+    const by = new Float64Array(batch);
+    for (let i = 0; i < batch; i++) {
+      bx[i] = N + i;
+      by[i] = 1;
+    }
+    appendIntoRingXY(ring, { x: bx, y: by }, 0, batch, batch);
+    // Content epoch advanced; cache still clean without full scan side effects.
+    expect(ring.contentEpoch).toBeGreaterThan(epochAfterSeed);
+    expect(hasNullGaps(ring as any)).toBe(false);
+    // Second append still clean
+    appendIntoRingXY(ring, { x: bx, y: by }, 0, batch, batch);
+    expect(hasNullGaps(ring as any)).toBe(false);
+  });
+
+  it('ring: NaN in new batch marks hadGaps true immediately', () => {
+    const ring = createRingXYColumns(16);
+    appendIntoRingXY(ring, { x: [0, 1], y: [1, 2] }, 0, 2, 0);
+    expect(hasNullGaps(ring as any)).toBe(false);
+    appendIntoRingXY(ring, { x: [2, 3], y: [3, Number.NaN] }, 0, 2, 0);
+    expect(hasNullGaps(ring as any)).toBe(true);
+  });
+
+  it('staging: newBatchAllFinite refreshes gap cache across contentEpoch', () => {
+    const staging = new Float32Array(8);
+    staging[0] = 0;
+    staging[1] = 1;
+    staging[2] = 1;
+    staging[3] = 2;
+    const a = createStagingRingView(staging, 0, 0, 2, 0, null, { newBatchAllFinite: true });
+    expect(hasNullGaps(a as any)).toBe(false);
+    staging[4] = 2;
+    staging[5] = 3;
+    const b = createStagingRingView(staging, 0, 0, 3, 0, a, { newBatchAllFinite: true });
+    expect(b).toBe(a);
+    expect(hasNullGaps(b as any)).toBe(false);
+  });
+
+  it('staging: newBatchAllFinite false marks gapped; finite later still correct after rescan path', () => {
+    const staging = new Float32Array(8);
+    staging[0] = 0;
+    staging[1] = 1;
+    const a = createStagingRingView(staging, 0, 0, 1, 0, null, { newBatchAllFinite: false });
+    expect(hasNullGaps(a as any)).toBe(true);
+    // Mark finite batch but prior had gaps → cache not force-clean (stale allowed rescan).
+    staging[2] = 1;
+    staging[3] = 2;
+    createStagingRingView(staging, 0, 0, 2, 0, a, { newBatchAllFinite: true });
+    // Without clearing NaN/non-finite, full scan of staging points still finite now.
+    expect(hasNullGaps(a as any)).toBe(false);
+  });
 });
 
 describe('hasAnyPerPointSize', () => {

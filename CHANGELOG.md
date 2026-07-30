@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **GPU decimation tile hierarchy (Phase B multi‑M FIFO)** — modular FIFO / extreme-N line `lttb`/`min`/`max` no longer cold full-ring scans every streaming frame. Physical tiles (1024 pts) store min/max/sum; maintain is O(touched tiles) on append/wrap; period=1 present reads hierarchy when pts/bucket &gt; 512, modular multi‑K, or N ≥ 250k (fallback to legacy present if hierarchy not ready). Preserves G0–G2 encode-signature fidelity (no multi-frame amortization). G4 residual: hierarchy LTTB uses tile extrema candidates. Companion fix: ring/`hasNullGaps` O(append) cache so eligibility does not full-scan N every FIFO frame. Docs: `docs/performance.md`.
+
 ### Added
 - **Step / digital line + mountain** (`step?: boolean | StepMode` on `line` / `area`) — stairs instead of diagonals (`true` ≡ `'after'`; also `'before'` / `'middle'`). Stroke + mountain fill follow the stepped top edge; works with `stack`. Hit-test/tooltip use **source samples** (not densified corners). Not GPU-decimation eligible; forces standard AA when step active (not dense hairline). SciChart `isDigitalLine` parity. Example: `examples/step-line/`. Docs: `docs/api/options.md` LineSeriesConfig `step`.
 - **Impulse / stem series** (`type: 'impulse'`) — vertical stems from `baseline` → y per sample, optional lollipop markers (`showMarker` default true). XY data only (not errorBar HLC / not OHLC). Stem width CSS px; bounds include baseline; tooltip `baseline`; `appendData` + FIFO. SciChart `FastImpulseRenderableSeries` parity. Example: `examples/impulse/`. Docs: `docs/api/options.md` ImpulseSeriesConfig.

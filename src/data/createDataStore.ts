@@ -83,18 +83,22 @@ export interface DataStore {
    */
   getSeriesPointCount(index: number): number;
   /**
-   * Modular ring layout for GPU consumers (decimation). When `capacity === 0`,
-   * points are packed linearly at the start of the buffer.
+   * Modular ring layout for GPU consumers (decimation / line ring remap).
    *
-   * Note: during the pre-wrap fill phase `capacity` is still reported as `0`
-   * so decimation can index linearly; use {@link isSeriesRingMode} to detect
-   * whether the series is under maxPoints ring residency (including pre-wrap).
+   * - `capacity === 0`: unbounded linear storage (no maxPoints ring).
+   * - `capacity > 0`: fixed-capacity ring mode. `start` is the physical index of
+   *   logical 0. When `start === 0`, physical layout is chronological (identity
+   *   map); area/line+areaStyle may share the GPU buffer. When `start !== 0`,
+   *   storage is modular after wrap — consumers must remap or private-pack.
+   *
+   * Capacity is always exposed while ring mode is active (including pre-wrap
+   * `start === 0`) so hierarchy maintain keeps a stable ringCap across FIFO
+   * cycles. Use {@link isSeriesRingMode} for residency checks.
    */
   getSeriesRingLayout(index: number): SeriesRingLayout;
   /**
    * True when the series is under maxPoints modular-ring residency
-   * (`ringCapacityPoints > 0`), including the pre-wrap fill phase where
-   * {@link getSeriesRingLayout} still reports `capacity === 0`.
+   * (`ringCapacityPoints > 0`), including the pre-wrap fill phase.
    *
    * Callers must not linearize via `setSeries` while this is true unless an
    * intentional full rebuild is desired (issue 0.2).
@@ -964,10 +968,10 @@ export function createDataStore(device: GPUDevice): DataStore {
 
   const getSeriesRingLayout = (index: number): SeriesRingLayout => {
     const entry = getSeriesEntry(index);
-    // Modular indexing is only required once the write head has wrapped
-    // (ringStart !== 0). Linear fill under maxPoints still uses capacity 0
-    // so decimation can read raw[i] directly.
-    if (entry.ringCapacityPoints > 0 && entry.ringStart !== 0) {
+    // Always expose fixed-capacity ring layout when maxPoints ring mode is active,
+    // including ringStart === 0 (identity map: phys = logical). Chronological
+    // share for area uses `capacity===0 || start===0` (see renderSeries).
+    if (entry.ringCapacityPoints > 0) {
       return { start: entry.ringStart, capacity: entry.ringCapacityPoints };
     }
     return { start: 0, capacity: 0 };

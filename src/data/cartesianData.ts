@@ -136,15 +136,33 @@ export function isStagingRingView(data: unknown): data is StagingRingView {
  *
  * Always bumps {@link StagingRingView.contentEpoch} so generation-aware mono
  * caches re-evaluate after in-place float rewrites under stable layout fields.
+ *
+ * When {@link StagingRingGapOpts.newBatchAllFinite} is true and the ring was
+ * previously clean (or first visit), updates the gap-scan cache O(1) so
+ * {@link hasNullGaps} does not full-scan multi‑M rings every append frame.
+ *
+ * **Contract:** `newBatchAllFinite` must mean every new point has finite **x and y**
+ * (not y-only). Callers (e.g. appendFlush thin path) must scan both channels.
+ * `false` marks the view gapped immediately; omit to leave cache untouched.
  */
+export type StagingRingGapOpts = {
+  /**
+   * True when every newly written point in this append is finite in **x and y**.
+   * Callers that already O(append)-scan the batch for bounds should pass this.
+   */
+  readonly newBatchAllFinite?: boolean;
+};
+
 export function createStagingRingView(
   staging: Float32Array,
   start: number,
   capacity: number,
   count: number,
   xOffset: number,
-  reuse?: StagingRingView | null
+  reuse?: StagingRingView | null,
+  gapOpts?: StagingRingGapOpts | null
 ): StagingRingView {
+  let view: StagingRingView;
   if (reuse && reuse.__stagingRing) {
     reuse.staging = staging;
     reuse.start = start;
@@ -152,17 +170,40 @@ export function createStagingRingView(
     reuse.count = count;
     reuse.xOffset = xOffset;
     reuse.contentEpoch = (reuse.contentEpoch | 0) + 1;
-    return reuse;
+    view = reuse;
+  } else {
+    view = {
+      __stagingRing: true,
+      staging,
+      start,
+      capacity,
+      count,
+      xOffset,
+      contentEpoch: 1,
+    };
   }
-  return {
-    __stagingRing: true,
-    staging,
-    start,
-    capacity,
-    count,
-    xOffset,
-    contentEpoch: 1,
-  };
+
+  if (gapOpts?.newBatchAllFinite === true) {
+    const prev = gapScanByData.get(view as object);
+    if (!prev || prev.hadGaps === false) {
+      gapScanByData.set(view as object, {
+        hadGaps: false,
+        sticky: false,
+        count: view.count,
+        contentEpoch: view.contentEpoch,
+      });
+    }
+    // prev.hadGaps true: leave stale so hasNullGaps may rescan (NaN scroll-out).
+  } else if (gapOpts?.newBatchAllFinite === false) {
+    gapScanByData.set(view as object, {
+      hadGaps: true,
+      sticky: false,
+      count: view.count,
+      contentEpoch: view.contentEpoch,
+    });
+  }
+
+  return view;
 }
 
 /**
@@ -271,6 +312,7 @@ export function appendIntoRingXY(
   if (dropPrevCount > 0 || keepNewCount > 0) {
     ring.contentEpoch = (ring.contentEpoch | 0) + 1;
   }
+  let fullClear = false;
   if (dropPrevCount > 0) {
     if (dropPrevCount >= ring.count) {
       ring.start = 0;
@@ -279,20 +321,51 @@ export function appendIntoRingXY(
       // full-scan (partial FIFO multi-append can advance contentEpoch by >1
       // without rewriting the retained prefix).
       ring.rewriteGen = (ring.rewriteGen | 0) + 1;
+      fullClear = true;
     } else {
       ring.start = (ring.start + dropPrevCount) % cap;
       ring.count -= dropPrevCount;
     }
   }
-  if (keepNewCount <= 0) return;
+  if (keepNewCount <= 0) {
+    // Drop-only: gap cache may be stale if NaNs left the window — invalidate
+    // so hasNullGaps re-evaluates (do not leave a clean sticky across epoch).
+    if (dropPrevCount > 0) {
+      const prev = gapScanByData.get(ring as object);
+      if (prev && prev.hadGaps === false && !fullClear) {
+        // Clean ring lost only finite points → still clean.
+        gapScanByData.set(ring as object, {
+          hadGaps: false,
+          sticky: false,
+          count: ring.count,
+          contentEpoch: ring.contentEpoch,
+        });
+      } else if (fullClear) {
+        gapScanByData.set(ring as object, {
+          hadGaps: false,
+          sticky: false,
+          count: 0,
+          contentEpoch: ring.contentEpoch,
+        });
+      }
+      // hadGaps true: leave stale epoch so hasNullGaps full-scans (NaN may have left).
+    }
+    return;
+  }
   // After drop, free space is enough for keepNewCount (plan guarantees
   // count + keepNewCount <= capacity). Write head is the first free slot.
   let write = (ring.start + ring.count) % cap;
   let sizeChannel = ring.size;
+  let newHasNonFinite = false;
   for (let i = 0; i < keepNewCount; i++) {
     const srcIdx = newSrcOffset + i;
-    ring.x[write] = getX(src, srcIdx);
-    ring.y[write] = getY(src, srcIdx);
+    const x = getX(src, srcIdx);
+    const y = getY(src, srcIdx);
+    ring.x[write] = x;
+    ring.y[write] = y;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      newHasNonFinite = true;
+    }
     const sz = getSize(src, srcIdx);
     if (sz !== undefined) {
       if (!sizeChannel) sizeChannel = ensureRingSizeChannel(ring);
@@ -304,6 +377,37 @@ export function appendIntoRingXY(
     if (write >= cap) write = 0;
   }
   ring.count = Math.min(cap, ring.count + keepNewCount);
+
+  // Maintain gap-scan cache O(append): multi‑M FIFO was full-scanning N every
+  // contentEpoch bump inside hasNullGaps (eligibility every frame). When the
+  // ring was previously clean and new points are finite, stay clean without O(N).
+  const prev = gapScanByData.get(ring as object);
+  if (newHasNonFinite) {
+    gapScanByData.set(ring as object, {
+      hadGaps: true,
+      sticky: false,
+      count: ring.count,
+      contentEpoch: ring.contentEpoch,
+    });
+  } else if (fullClear || ring.count === keepNewCount) {
+    // Whole ring content is exactly the new batch (or empty→fill) — safe O(1) clean.
+    gapScanByData.set(ring as object, {
+      hadGaps: false,
+      sticky: false,
+      count: ring.count,
+      contentEpoch: ring.contentEpoch,
+    });
+  } else if (prev && prev.hadGaps === false) {
+    // Previously clean + finite append → still clean without scanning retained prefix.
+    gapScanByData.set(ring as object, {
+      hadGaps: false,
+      sticky: false,
+      count: ring.count,
+      contentEpoch: ring.contentEpoch,
+    });
+  }
+  // !prev with retained prefix, or prev.hadGaps: leave unset/stale so hasNullGaps
+  // full-scans once (unknown retained content / NaN may have scrolled out).
 }
 
 /**

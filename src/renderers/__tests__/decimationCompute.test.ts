@@ -141,20 +141,31 @@ describe('createDecimationCompute', () => {
   });
 
   describe('pipeline creation', () => {
-    it('creates three compute pipelines (min/max + averages + lttb)', () => {
+    it('creates legacy + hierarchy present + maintain compute pipelines', () => {
       createDecimationCompute(device);
 
       const entryPoints = device.__created.computePipelines.map((p) => (p.compute as GPUProgrammableStage).entryPoint);
-      expect(entryPoints).toEqual(['minMaxDecimate', 'computeBucketAverages', 'parallelLttbDecimate']);
+      expect(entryPoints).toEqual([
+        'minMaxDecimate',
+        'computeBucketAverages',
+        'parallelLttbDecimate',
+        'hierarchyMinMaxDecimate',
+        'hierarchyBucketAverages',
+        'hierarchyParallelLttb',
+        'maintainTiles',
+      ]);
     });
 
-    it('creates one bind-group layout with 4 entries (uniform + raw + output + averages)', () => {
+    it('creates present bind-group layout with 5 entries (uniform + raw + output + averages + tiles)', () => {
       const createBindGroupLayout = device.createBindGroupLayout as Mock;
       createDecimationCompute(device);
 
-      expect(createBindGroupLayout).toHaveBeenCalledTimes(1);
-      const desc = createBindGroupLayout.mock.calls[0]![0] as GPUBindGroupLayoutDescriptor;
-      expect(Array.from(desc.entries)).toHaveLength(4);
+      // Present layout + maintain layout.
+      expect(createBindGroupLayout).toHaveBeenCalledTimes(2);
+      const presentDesc = createBindGroupLayout.mock.calls[0]![0] as GPUBindGroupLayoutDescriptor;
+      expect(Array.from(presentDesc.entries)).toHaveLength(5);
+      const maintainDesc = createBindGroupLayout.mock.calls[1]![0] as GPUBindGroupLayoutDescriptor;
+      expect(Array.from(maintainDesc.entries)).toHaveLength(3);
     });
   });
 
@@ -218,7 +229,7 @@ describe('createDecimationCompute', () => {
       // Buffer identity should have changed so the caller rebuilds its bind
       // group (matching the line renderer's `boundDataBuffer` pattern).
       expect(afterGrow).not.toBe(firstOutputBufferBefore);
-      // New output + new averages buffer = 2 new buffers total.
+      // New output + new averages (tiles already allocated for capacity) = 2.
       expect(device.__created.buffers.length - smallBufferCount).toBe(2);
 
       // Same target again should NOT reallocate.
@@ -236,7 +247,7 @@ describe('createDecimationCompute', () => {
   });
 
   describe('encodeCompute() dispatch topology', () => {
-    it('dispatches a single min/max pipeline with `max(buckets - 2, 1)` workgroups', () => {
+    it('dispatches min/max present with `max(buckets - 2, 1)` workgroups (maintain may precede)', () => {
       const d = createDecimationCompute(device);
       const rawBuffer = createMockBuffer({ size: 800000 });
 
@@ -254,15 +265,13 @@ describe('createDecimationCompute', () => {
 
       expect(encoder.__passes).toHaveLength(1);
       const pass = encoder.__passes[0]!;
-      // One pipeline set (minMaxDecimate).
-      expect(pass.setPipeline).toHaveBeenCalledTimes(1);
-      expect(pass.dispatchWorkgroups).toHaveBeenCalledTimes(1);
-      // `max(targetBuckets - 2, 1)` interior-bucket workgroups.
+      // Cold hierarchy maintain (1) + minMax present (1).
+      expect(pass.setPipeline.mock.calls.length).toBeGreaterThanOrEqual(1);
       expect(pass.dispatchWorkgroups).toHaveBeenCalledWith(1022);
       expect(pass.end).toHaveBeenCalledTimes(1);
     });
 
-    it('dispatches two pipelines for LTTB (averages then decimate), each with `targetBuckets` workgroups', () => {
+    it('dispatches LTTB averages then decimate (maintain may precede on cold hierarchy)', () => {
       const d = createDecimationCompute(device);
       const rawBuffer = createMockBuffer({ size: 8_000_000 });
 
@@ -280,11 +289,11 @@ describe('createDecimationCompute', () => {
 
       expect(encoder.__passes).toHaveLength(1);
       const pass = encoder.__passes[0]!;
-      // averages + lttb.
-      expect(pass.setPipeline).toHaveBeenCalledTimes(2);
-      expect(pass.dispatchWorkgroups).toHaveBeenCalledTimes(2);
-      expect(pass.dispatchWorkgroups).toHaveBeenNthCalledWith(1, 2048);
-      expect(pass.dispatchWorkgroups).toHaveBeenNthCalledWith(2, 2048);
+      // maintain? + averages + lttb — last two dispatches are present buckets.
+      const dispatches = pass.dispatchWorkgroups.mock.calls.map((c: unknown[]) => c[0]);
+      expect(dispatches[dispatches.length - 2]).toBe(2048);
+      expect(dispatches[dispatches.length - 1]).toBe(2048);
+      expect(pass.setPipeline.mock.calls.length).toBeGreaterThanOrEqual(2);
     });
 
     it('short-circuits encodeCompute when inputs have not changed (dirty-gating)', () => {
@@ -999,8 +1008,8 @@ describe('createDecimationCompute', () => {
       // Caller-owned pass: no beginComputePass, no end().
       expect(encoder.beginComputePass).not.toHaveBeenCalled();
       expect(sharedPass.end).not.toHaveBeenCalled();
-      expect(sharedPass.setBindGroup).toHaveBeenCalledTimes(1);
-      expect(sharedPass.setPipeline).toHaveBeenCalledTimes(1);
+      // maintain bind + present bind (at least present).
+      expect(sharedPass.setBindGroup.mock.calls.length).toBeGreaterThanOrEqual(1);
       expect(sharedPass.dispatchWorkgroups).toHaveBeenCalledWith(254);
       expect(d.needsEncode()).toBe(false);
     });
@@ -1038,12 +1047,311 @@ describe('createDecimationCompute', () => {
       pass.end();
 
       expect(encoder.beginComputePass).toHaveBeenCalledTimes(1);
-      expect(pass.setBindGroup).toHaveBeenCalledTimes(2);
-      // LTTB: 2 pipeline sets; min/max: 1 → total 3.
-      expect(pass.setPipeline).toHaveBeenCalledTimes(3);
+      // Each series: maintain bind + present bind (order flexible).
+      expect((pass.setBindGroup as Mock).mock.calls.length).toBeGreaterThanOrEqual(2);
+      // LTTB present 2 + min present 1 (+ optional maintain pipelines).
+      expect((pass.setPipeline as Mock).mock.calls.length).toBeGreaterThanOrEqual(3);
       expect(pass.end).toHaveBeenCalledTimes(1);
       expect(a.needsEncode()).toBe(false);
       expect(b.needsEncode()).toBe(false);
+    });
+
+    it('G2 hierarchy: modular wrap still encodes present every ringStart advance', () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 40_000_000 });
+      const base = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        rawPointCount: 1_000_000,
+        visibleStart: 0,
+        visibleEnd: 1_000_000,
+        targetBuckets: 2500,
+        ringCapacity: 1_000_000,
+      };
+      d.prepare({ ...base, ringStart: 0, contentVersion: 1 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+
+      for (let i = 1; i <= 8; i++) {
+        d.prepare({ ...base, ringStart: i * 10_000, contentVersion: 1 + i });
+        expect(d.needsEncode()).toBe(true);
+        const enc = createMockEncoder();
+        d.encodeCompute(enc as unknown as GPUCommandEncoder);
+        expect(enc.__passes).toHaveLength(1);
+        // Present still runs (averages+lttb dispatches present); maintain is O(tiles).
+        const dispatches = enc.__passes[0]!.dispatchWorkgroups.mock.calls.map((c: unknown[]) => c[0] as number);
+        expect(dispatches).toContain(2500);
+        expect(d.needsEncode()).toBe(false);
+      }
+    });
+
+    it('suite-shaped modular wrap: maintain is O(append tiles) not full ring every frame', () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 40_000_000 });
+      const N = 1_000_000;
+      const buckets = 2500;
+      const append = 100_000; // suite G7 1M increment
+      const base = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        rawPointCount: N,
+        visibleStart: 0,
+        visibleEnd: N,
+        targetBuckets: buckets,
+        ringCapacity: N,
+      };
+
+      // Cold fill / first present
+      d.prepare({ ...base, ringStart: 0, contentVersion: 1 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      const cold = d.getHierarchyDebug();
+      expect(cold.lastPresentHierarchy).toBe(true);
+      // Full rebuild once: ~N/1024 tiles
+      expect(cold.lastMaintainTileCount).toBeGreaterThan(900);
+      expect(cold.lastMaintainTileCount).toBeLessThan(1100);
+
+      // Steady-state wraps: only overwritten physical range (~append/TILE tiles)
+      for (let i = 1; i <= 5; i++) {
+        d.prepare({ ...base, ringStart: i * append, contentVersion: 1 + i });
+        expect(d.needsEncode()).toBe(true);
+        d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+        const dbg = d.getHierarchyDebug();
+        expect(dbg.lastPresentHierarchy).toBe(true);
+        expect(dbg.preparedRingCapacity).toBe(N);
+        // 100k append → ~98 tiles (+1 edge), never full 976
+        expect(dbg.lastMaintainTileCount).toBeGreaterThan(0);
+        expect(dbg.lastMaintainTileCount).toBeLessThan(200);
+      }
+    });
+
+    it('capacity-seam wrap: dual physical ranges keep maintain O(append) not full ring', () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 40_000_000 });
+      const N = 1_000_000;
+      const base = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        rawPointCount: N,
+        visibleStart: 0,
+        visibleEnd: N,
+        targetBuckets: 2500,
+        ringCapacity: N,
+      };
+      d.prepare({ ...base, ringStart: 0, contentVersion: 1 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      expect(d.getHierarchyDebug().hierarchyReady).toBe(true);
+
+      // Cross capacity seam: 950k → 50k overwrites [950k,1M) U [0,50k)
+      d.prepare({ ...base, ringStart: 950_000, contentVersion: 2 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      d.prepare({ ...base, ringStart: 50_000, contentVersion: 3 });
+      expect(d.needsEncode()).toBe(true);
+      const writeBuffer = device.queue.writeBuffer as Mock;
+      writeBuffer.mockClear();
+      const enc = createMockEncoder();
+      d.encodeCompute(enc as unknown as GPUCommandEncoder);
+      const dbg = d.getHierarchyDebug();
+      expect(dbg.lastPresentHierarchy).toBe(true);
+      // ~100k points total overwrite → ~100 tiles, not ~976
+      expect(dbg.lastMaintainTileCount).toBeGreaterThan(0);
+      expect(dbg.lastMaintainTileCount).toBeLessThan(250);
+
+      // Dual-uniform hazard: two maintain ranges must write distinct GPU uniform
+      // buffers (not the same buffer twice with clobbered scratch).
+      const maintainUniformWrites = writeBuffer.mock.calls.filter((c) => {
+        const label = (c[0] as MockBuffer).label ?? '';
+        return label.includes('maintainUniforms');
+      });
+      const distinctUniforms = new Set(maintainUniformWrites.map((c) => c[0]));
+      expect(distinctUniforms.size).toBe(2);
+    });
+
+    it('cold chunked hierarchy: partial then ready; legacy present until ready', () => {
+      const d = createDecimationCompute(device);
+      // nTiles = ceil(3e6/1024) = 2929 > 2048 cold chunk cap
+      const N = 3_000_000;
+      const rawBuffer = createMockBuffer({ size: N * 8 });
+      const base = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        rawPointCount: N,
+        visibleStart: 0,
+        visibleEnd: N,
+        targetBuckets: 2500,
+        ringCapacity: N,
+        ringStart: 0,
+      };
+
+      d.prepare({ ...base, contentVersion: 1 });
+      expect(d.needsEncode()).toBe(true);
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      const e1 = d.getHierarchyDebug();
+      expect(e1.lastMaintainTileCount).toBeLessThanOrEqual(2048);
+      expect(e1.lastMaintainTileCount).toBe(2048);
+      expect(e1.hierarchyReady).toBe(false);
+      expect(e1.lastPresentHierarchy).toBe(false); // legacy present while cold
+
+      // Present SIG clean; maintain-only should still progress cold chunks (Issue 4).
+      d.prepare({ ...base, contentVersion: 1 });
+      expect(d.needsEncode()).toBe(true);
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      const e2 = d.getHierarchyDebug();
+      expect(e2.hierarchyReady).toBe(true);
+      expect(e2.lastMaintainTileCount).toBeGreaterThan(0);
+      expect(e2.lastMaintainTileCount).toBeLessThanOrEqual(2048);
+
+      // After ready, SIG change uses hierarchy present
+      d.prepare({ ...base, ringStart: 10_000, contentVersion: 2 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      expect(d.getHierarchyDebug().lastPresentHierarchy).toBe(true);
+    });
+
+    it('cold concurrent ringStart overwrite rewinds progress before ready', () => {
+      const d = createDecimationCompute(device);
+      const N = 3_000_000; // >2048 tiles
+      const rawBuffer = createMockBuffer({ size: N * 8 });
+      const base = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        rawPointCount: N,
+        visibleStart: 0,
+        visibleEnd: N,
+        targetBuckets: 2500,
+        ringCapacity: N,
+      };
+
+      d.prepare({ ...base, ringStart: 0, contentVersion: 1 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      expect(d.getHierarchyDebug().hierarchyReady).toBe(false);
+      expect(d.getHierarchyDebug().lastMaintainTileCount).toBe(2048);
+
+      // Overwrite physical [0, 100k) while cold progress is at tile 2048 —
+      // rewind so tiles 0..97 are re-maintained (extra work before ready).
+      d.prepare({ ...base, ringStart: 100_000, contentVersion: 2 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      const mid = d.getHierarchyDebug();
+      expect(mid.hierarchyReady).toBe(false);
+      // Still chunking (rewound + continues); not finished in one more 2048 chunk
+      // because rewind + remaining span exceeds one chunk from 0.
+      expect(mid.lastMaintainTileCount).toBe(2048);
+
+      // Drain remaining cold chunks (stable ringStart) until ready.
+      let guard = 0;
+      while (!d.getHierarchyDebug().hierarchyReady && guard < 10) {
+        d.prepare({ ...base, ringStart: 100_000, contentVersion: 2 });
+        d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+        guard++;
+      }
+      expect(d.getHierarchyDebug().hierarchyReady).toBe(true);
+      // Needed more than one chunk after rewind (progress was reset into early tiles).
+      expect(guard).toBeGreaterThanOrEqual(1);
+    });
+
+    it('equal-N contentVersion mid-cold restarts full rebuild', () => {
+      const d = createDecimationCompute(device);
+      const N = 3_000_000;
+      const rawBuffer = createMockBuffer({ size: N * 8 });
+      const base = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        rawPointCount: N,
+        visibleStart: 0,
+        visibleEnd: N,
+        targetBuckets: 2500,
+        ringCapacity: N,
+        ringStart: 0,
+      };
+
+      d.prepare({ ...base, contentVersion: 1 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      expect(d.getHierarchyDebug().hierarchyReady).toBe(false);
+
+      // Same geometry, version bump mid-cold → restart (not continue from 2048).
+      d.prepare({ ...base, contentVersion: 2 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      const after = d.getHierarchyDebug();
+      expect(after.hierarchyReady).toBe(false);
+      expect(after.lastMaintainTileCount).toBe(2048);
+      // Still not ready after one more chunk (restarted from 0, 2929 tiles).
+      d.prepare({ ...base, contentVersion: 2 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      expect(d.getHierarchyDebug().hierarchyReady).toBe(true);
+    });
+
+    it('equal-N content rewrite triggers full hierarchy maintain tile spike', () => {
+      const d = createDecimationCompute(device);
+      const N = 100_000;
+      const rawBuffer = createMockBuffer({ size: N * 8 });
+      const base = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        rawPointCount: N,
+        visibleStart: 0,
+        visibleEnd: N,
+        targetBuckets: 512,
+        ringCapacity: N,
+        ringStart: 0,
+      };
+      d.prepare({ ...base, contentVersion: 1 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      d.prepare({ ...base, ringStart: 5_000, contentVersion: 2 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      const steady = d.getHierarchyDebug().lastMaintainTileCount;
+      expect(steady).toBeLessThan(20);
+
+      d.prepare({ ...base, ringStart: 5_000, contentVersion: 3 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      const rewrite = d.getHierarchyDebug().lastMaintainTileCount;
+      // Full rebuild ≈ ceil(100k/1024) = 98
+      expect(rewrite).toBeGreaterThan(90);
+      expect(rewrite).toBeLessThan(110);
+    });
+
+    it('linear growth maintain is O(new tiles) not full N', () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 8_000_000 });
+      const base = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        visibleStart: 0,
+        targetBuckets: 512,
+        ringCapacity: 0,
+        ringStart: 0,
+      };
+      d.prepare({ ...base, rawPointCount: 100_000, visibleEnd: 100_000, contentVersion: 1 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      expect(d.getHierarchyDebug().hierarchyReady).toBe(true);
+
+      d.prepare({ ...base, rawPointCount: 110_000, visibleEnd: 110_000, contentVersion: 2 });
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      const dbg = d.getHierarchyDebug();
+      // 10k new points → ~10 tiles
+      expect(dbg.lastMaintainTileCount).toBeGreaterThan(0);
+      expect(dbg.lastMaintainTileCount).toBeLessThan(20);
+    });
+
+    it('hierarchy maintain dirties on wrap but lastEncoded only advances after present encode', () => {
+      const d = createDecimationCompute(device);
+      const rawBuffer = createMockBuffer({ size: 40_000_000 });
+      const base = {
+        algorithm: 'lttb' as const,
+        rawBuffer,
+        rawPointCount: 1_000_000,
+        visibleStart: 0,
+        visibleEnd: 1_000_000,
+        targetBuckets: 2500,
+        ringCapacity: 1_000_000,
+        ringStart: 0,
+        contentVersion: 1,
+      };
+      d.prepare(base);
+      expect(d.needsEncode()).toBe(true);
+      // Prepare without encode — still dirty (G1).
+      d.prepare({ ...base, ringStart: 5000, contentVersion: 2 });
+      expect(d.needsEncode()).toBe(true);
+      d.encodeCompute(createMockEncoder() as unknown as GPUCommandEncoder);
+      expect(d.needsEncode()).toBe(false);
+      d.prepare({ ...base, ringStart: 5000, contentVersion: 2 });
+      expect(d.needsEncode()).toBe(false);
     });
   });
 
@@ -1075,7 +1383,7 @@ describe('createDecimationCompute', () => {
       expect(callsAfterSecond).toBe(callsAfterFirst);
     });
 
-    it('rebuilds the bind group when the raw buffer identity changes', () => {
+    it('rebuilds present + dual maintain bind groups when the raw buffer identity changes', () => {
       const d = createDecimationCompute(device);
       const rawBuffer1 = createMockBuffer({ size: 800000 });
       const rawBuffer2 = createMockBuffer({ size: 800000 });
@@ -1099,12 +1407,13 @@ describe('createDecimationCompute', () => {
         targetBuckets: 256,
       });
 
-      expect((device.createBindGroup as Mock).mock.calls.length).toBe(callsAfterFirst + 1);
+      // Present BG + maintain0 + maintain1 all key on raw buffer identity.
+      expect((device.createBindGroup as Mock).mock.calls.length).toBe(callsAfterFirst + 3);
     });
   });
 
   describe('disposal', () => {
-    it('destroys owned uniform + output + averages buffers on dispose()', () => {
+    it('destroys owned uniform + output + averages + hierarchy buffers on dispose()', () => {
       const d = createDecimationCompute(device);
       const rawBuffer = createMockBuffer({ size: 800000 });
 
@@ -1117,9 +1426,9 @@ describe('createDecimationCompute', () => {
         targetBuckets: 256,
       });
 
-      // Own buffers = uniform + output + averages (3 total by this point).
+      // Own: present uniform + maintain uniform + output + averages + tiles ≥ 5.
       const ownedBuffers = device.__created.buffers.filter((b) => b !== rawBuffer);
-      expect(ownedBuffers.length).toBeGreaterThanOrEqual(3);
+      expect(ownedBuffers.length).toBeGreaterThanOrEqual(5);
 
       d.dispose();
       for (const b of ownedBuffers) {

@@ -316,7 +316,9 @@ describe('createDataStore', () => {
 
       expect(store.getSeriesPointCount(0)).toBe(6);
       expect(store.getSeriesBuffer(0)).toBe(bufferBefore);
-      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 0 });
+      // Ring mode active under maxPoints: capacity exposed even at ringStart=0
+      // (identity modular map; hierarchy maintain needs stable ringCap).
+      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 8 });
       const writes = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
       expect(writes).toHaveBeenCalledTimes(1);
       // Appended range starts at point index 4 → byteOffset 32.
@@ -623,7 +625,7 @@ describe('createDataStore', () => {
         { maxPoints: 3 }
       );
       expect(store.getSeriesPointCount(0)).toBe(3);
-      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 0 });
+      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 3 });
       const staging = store.getSeriesStagingBuffer(0);
       expect(staging[0]).toBe(11);
       expect(staging[1]).toBe(11);
@@ -758,7 +760,7 @@ describe('createDataStore', () => {
       expect(device.queue.submit).toHaveBeenCalled();
     });
 
-    it('isSeriesRingMode true during pre-wrap fill while layout.capacity is 0', () => {
+    it('isSeriesRingMode true during pre-wrap fill; layout exposes capacity at ringStart=0', () => {
       const store = createDataStore(device);
       store.setSeries(0, [
         [0, 0],
@@ -768,8 +770,8 @@ describe('createDataStore', () => {
       store.appendSeries(0, [[2, 2]], { maxPoints: 8 });
       expect(store.getSeriesPointCount(0)).toBe(3);
       expect(store.isSeriesRingMode(0)).toBe(true);
-      // Decimation layout still reports linear until wrap.
-      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 0 });
+      // Capacity is always exposed in ring mode (identity map when start=0).
+      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 8 });
     });
 
     it('skipContentHash stamps and writes without full FNV short-circuit (2.6)', () => {
@@ -804,8 +806,8 @@ describe('createDataStore', () => {
       // Append 1 with maxPoints=4 → keep last 3 of prev + new = [7,8,9,100]
       store.appendSeries(0, [[100, 999]], { maxPoints: 4 });
       expect(store.getSeriesPointCount(0)).toBe(4);
-      // Rebuild leaves linear layout at start=0.
-      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 0 });
+      // Rebuild leaves chronological layout at start=0 with ring capacity.
+      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 4 });
       const staging = store.getSeriesStagingBuffer(0);
       // Chronological: x=7,8,9,100
       expect(staging[0]).toBe(7);
@@ -892,7 +894,8 @@ describe('createDataStore', () => {
         { maxPoints: 4 }
       );
       expect(store.getSeriesPointCount(0)).toBe(4);
-      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 0 });
+      // Strict full-window replace resets start=0 but stays in ring mode.
+      expect(store.getSeriesRingLayout(0)).toEqual({ start: 0, capacity: 4 });
       const st = store.getSeriesStagingBuffer(0);
       expect(st[0]).toBe(20);
       expect(st[6]).toBe(23);
