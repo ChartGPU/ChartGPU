@@ -2075,11 +2075,25 @@ export function resolveOptions(
 
   // Soft gutters for candle-primary: per-key only when user left that key undefined.
   // Dual-Y safety: keep left 60 when any Y remains on the left after position defaults.
+  // Right rail floor: when any Y is on the right, never honor a positive-but-too-small
+  // `grid.right` (common left-Y template is right:20/24) — that clips tick labels and
+  // the last-price badge (canvas text overlay cannot paint past the container edge).
+  // `grid.right: 0` stays full-bleed; larger explicit rights still win.
   const hasLeftY = yAxes.some((a) => (a.position ?? 'left') === 'left');
+  const hasRightY = yAxes.some((a) => (a.position ?? 'left') === 'right');
   const candleLeftDefault = hasLeftY ? candlePrimaryGridDefaults.leftWithLeftY : candlePrimaryGridDefaults.leftNoLeftY;
+  const candleRightSoft = candlePrimaryGridDefaults.right;
+  const resolveCandlePrimaryRight = (): number => {
+    const userRight = userOptions.grid?.right;
+    if (userRight === undefined) return candleRightSoft;
+    if (hasRightY && userRight > 0 && userRight < candleRightSoft) return candleRightSoft;
+    return userRight;
+  };
   const grid: ResolvedGridConfig = {
     left: userOptions.grid?.left ?? (candlePrimary ? candleLeftDefault : defaultOptions.grid.left),
-    right: userOptions.grid?.right ?? (candlePrimary ? candlePrimaryGridDefaults.right : defaultOptions.grid.right),
+    right: candlePrimary
+      ? resolveCandlePrimaryRight()
+      : (userOptions.grid?.right ?? defaultOptions.grid.right),
     top: userOptions.grid?.top ?? defaultOptions.grid.top,
     bottom: userOptions.grid?.bottom ?? defaultOptions.grid.bottom,
   };

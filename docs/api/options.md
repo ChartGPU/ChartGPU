@@ -508,15 +508,18 @@ Example: [`examples/impulse/`](../../examples/impulse/). Step digital line: [`ex
 - **Finance-primary layout defaults** (when `series[0].type === 'candlestick'` or `'ohlc'`):
   - **Predicate**: only the first series type matters. Overlay lines as `series[0]` mean the chart is **not** candle-primary (set `position: 'right'` explicitly if needed). Helper: `isCandlePrimaryChart(userOptions)`.
   - **Y position**: the **first** Y axis defaults to `position: 'right'` when the user leaves `position` unset (`yAxis` or `axes.y[0]`). Secondary Y axes still default to `'left'`. Explicit `position` always wins.
-  - **Soft grid gutters** (per-key only — each of `grid.left` / `grid.right` is set only when that key is `undefined` on user options; `0` is preserved):
+  - **Soft grid gutters** (per-key only for most cases — each of `grid.left` / `grid.right` is set only when that key is `undefined` on user options; `0` is preserved):
 
     | Scenario | `grid.left` if unset | `grid.right` if unset |
     |----------|----------------------|------------------------|
-    | Single candle, price on right | `20` | `70` |
-    | Candle + volume (left Y remains) | `60` | `70` |
+    | Single candle, price on right | `20` | `80` |
+    | Candle + volume (left Y remains) | `60` | `80` |
     | User set `grid.left: 80` only | `80` (kept) | `70` |
-    | User set both margins | unchanged | unchanged |
+    | User set both margins (right ≥ 80 or 0) | unchanged | unchanged |
+    | User set both with small right (e.g. `right: 24`) and a right Y | unchanged | **floored to `80`** |
     | Non-candle-primary | `60` | `20` |
+
+  - **Right-rail floor**: when candle-primary and any Y is on the right, a **positive** `grid.right` below `80` is raised to `80` so left-Y line-chart templates (`left: 70, right: 24`) do not clip tick labels or the last-price badge. Explicit `right: 0` (full-bleed) and `right ≥ 80` are unchanged.
 
   - Non-candle-primary charts keep the standard grid defaults and left Y.
   - **Migration (P1 default badge)**: candle-primary charts also **auto-enable** `priceLabel` (last-price badge + price line) when `priceLabel` is omitted. This is a **default visual change** for existing candle consumers. Opt out with `priceLabel: false`. To restore a pre-upgrade left-axis look:
@@ -529,11 +532,11 @@ Example: [`examples/impulse/`](../../examples/impulse/). Step digital line: [`ex
 }
 ```
 
-  - Recommended candle + volume dual-Y (or omit both gutters — dual-Y policy yields left `60` / right `70`):
+  - Recommended candle + volume dual-Y (or omit both gutters — dual-Y policy yields left `60` / right `80`):
 
 ```ts
 {
-  grid: { left: 60, right: 70 },
+  grid: { left: 60, right: 80 },
   axes: {
     y: [
       { id: 'price', position: 'right', type: 'value', header: 'USDT' },
@@ -554,10 +557,10 @@ Example: [`examples/impulse/`](../../examples/impulse/). Step digital line: [`ex
 ```
 
   - **Visual / acceptance checklist** (manual or example review):
-    1. Candle-only, no axis/grid overrides → right price rail, thicker right gutter (~70), last-price badge + horizontal line at last close.
+    1. Candle-only, no axis/grid overrides → right price rail, thicker right gutter (~80), last-price badge + horizontal line at last close.
     2. `priceLabel: false` → no badge/line; axis defaults still apply unless you also set `position` / `grid`.
     3. Explicit `yAxis.position: 'left'` → left rail; badge anchors on the left when still shown.
-    4. Dual-Y volume on left → left gutter ≥ 60, right 70; badge follows the **price** candlestick series only.
+    4. Dual-Y volume on left → left gutter ≥ 60, right 80; badge follows the **price** candlestick series only.
     5. Streaming with `intervalMs` + stable `nowMs` → countdown ticks under the price without extra GPU frames.
     6. `yAxis.header: 'USDT'` (or quote unit) → non-rotated top-rail label (not the rotated `name` title).
     7. Unit tests / acceptance: [`src/config/__tests__/OptionResolver.test.ts`](../../src/config/__tests__/OptionResolver.test.ts), [`resolvePriceLabel.test.ts`](../../src/config/__tests__/resolvePriceLabel.test.ts), [`examples/acceptance/candle-price-axis.ts`](../../examples/acceptance/candle-price-axis.ts).
@@ -760,7 +763,7 @@ See [`defaults.ts`](../../src/config/defaults.ts) for the defaults (including gr
 
 **Behavior notes (essential):**
 
-- **Default grid**: `left: 60`, `right: 20`, `top: 40`, `bottom: 40` (non-candle-primary). Candle-primary soft gutters: see **Candle-primary layout defaults** under Axis Configuration (`right: 70`; `left: 20` or `60` depending on left Y axes).
+- **Default grid**: `left: 60`, `right: 20`, `top: 40`, `bottom: 40` (non-candle-primary). Candle-primary soft gutters: see **Candle-primary layout defaults** under Axis Configuration (`right: 80`; `left: 20` or `60` depending on left Y axes).
 - **Palette / series colors**: `ChartGPUOptions.palette` acts as an override for the resolved theme palette (`resolvedOptions.theme.colorPalette`). When `series[i].color` is missing, the default series color comes from `resolvedOptions.theme.colorPalette[i % ...]`. For backward compatibility, the resolved `palette` is the resolved theme palette. See [`resolveOptions`](../../src/config/OptionResolver.ts) and [`ThemeConfig`](themes.md#themeconfig).
 - **Line series stroke color precedence**: for `type: 'line'`, effective stroke color follows: `lineStyle.color` → `series.color` → theme palette. See [`resolveOptions`](../../src/config/OptionResolver.ts).
 - **Line series fill color precedence**: for `type: 'line'` with `areaStyle`, effective fill color follows: `areaStyle.color` → resolved stroke color (from above precedence). See [`resolveOptions`](../../src/config/OptionResolver.ts).

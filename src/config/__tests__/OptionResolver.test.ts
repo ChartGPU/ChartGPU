@@ -1087,7 +1087,7 @@ describe('OptionResolver ohlc series', () => {
       expect(s.rawData).toBe(data);
     }
     expect(resolved.yAxes[0]!.position).toBe('right');
-    expect(resolved.grid.right).toBe(70);
+    expect(resolved.grid.right).toBe(80);
   });
 
   it('falls back sampling to default when invalid mode provided', () => {
@@ -1108,11 +1108,11 @@ describe('OptionResolver - candle-primary Y-axis and grid defaults', () => {
     data: [[1_700_000_000_000, 100, 101, 99, 102]] as const satisfies ReadonlyArray<OHLCDataPoint>,
   };
 
-  it('defaults first Y position to right and gutters left=20 / right=70 when unset', () => {
+  it('defaults first Y position to right and gutters left=20 / right=80 when unset', () => {
     const resolved = resolveOptions({ series: [candleSeries] });
     expect(resolved.yAxes[0]!.position).toBe('right');
     expect(resolved.grid.left).toBe(20);
-    expect(resolved.grid.right).toBe(70);
+    expect(resolved.grid.right).toBe(80);
     // Non-gutter keys still use standard defaults
     expect(resolved.grid.top).toBe(40);
     expect(resolved.grid.bottom).toBe(40);
@@ -1124,22 +1124,22 @@ describe('OptionResolver - candle-primary Y-axis and grid defaults', () => {
       yAxis: { type: 'value', position: 'left' },
     });
     expect(resolved.yAxes[0]!.position).toBe('left');
-    // Left Y remains → dual-Y-safe left gutter 60; right still soft-defaults to 70
+    // Left Y remains → dual-Y-safe left gutter 60; right still soft-defaults to 80
     expect(resolved.grid.left).toBe(60);
-    expect(resolved.grid.right).toBe(70);
+    expect(resolved.grid.right).toBe(80);
   });
 
-  it('soft-sets only unset grid keys (user left only → keep left, right 70)', () => {
+  it('soft-sets only unset grid keys (user left only → keep left, right 80)', () => {
     const resolved = resolveOptions({
       series: [candleSeries],
       grid: { left: 80 },
     });
     expect(resolved.grid.left).toBe(80);
-    expect(resolved.grid.right).toBe(70);
+    expect(resolved.grid.right).toBe(80);
     expect(resolved.yAxes[0]!.position).toBe('right');
   });
 
-  it('soft-sets only unset grid keys (user right only → keep right, left 20)', () => {
+  it('soft-sets only unset grid keys (user right only ≥ soft → keep right, left 20)', () => {
     const resolved = resolveOptions({
       series: [candleSeries],
       grid: { right: 90 },
@@ -1148,16 +1148,35 @@ describe('OptionResolver - candle-primary Y-axis and grid defaults', () => {
     expect(resolved.grid.right).toBe(90);
   });
 
-  it('honors both explicit grid margins', () => {
+  it('honors both explicit grid margins when right is large enough for the price rail', () => {
     const resolved = resolveOptions({
       series: [candleSeries],
-      grid: { left: 12, right: 34 },
+      grid: { left: 12, right: 90 },
     });
     expect(resolved.grid.left).toBe(12);
-    expect(resolved.grid.right).toBe(34);
+    expect(resolved.grid.right).toBe(90);
   });
 
-  it('dual-Y with left secondary keeps left gutter 60 and right 70', () => {
+  it('floors undersized right gutters on candle-primary with right Y (left-Y template footgun)', () => {
+    // Common line-chart gutters clip tick labels + last-price badge when Y defaults to right.
+    const resolved = resolveOptions({
+      series: [candleSeries],
+      grid: { left: 70, right: 24, top: 24, bottom: 44 },
+    });
+    expect(resolved.yAxes[0]!.position).toBe('right');
+    expect(resolved.grid.left).toBe(70);
+    expect(resolved.grid.right).toBe(80);
+  });
+
+  it('preserves grid.right: 0 full-bleed on candle-primary', () => {
+    const resolved = resolveOptions({
+      series: [candleSeries],
+      grid: { right: 0 },
+    });
+    expect(resolved.grid.right).toBe(0);
+  });
+
+  it('dual-Y with left secondary keeps left gutter 60 and right 80', () => {
     const resolved = resolveOptions({
       series: [
         { ...candleSeries, yAxis: 'price' },
@@ -1173,7 +1192,7 @@ describe('OptionResolver - candle-primary Y-axis and grid defaults', () => {
     expect(resolved.yAxes[0]!.position).toBe('right');
     expect(resolved.yAxes[1]!.position).toBe('left');
     expect(resolved.grid.left).toBe(60);
-    expect(resolved.grid.right).toBe(70);
+    expect(resolved.grid.right).toBe(80);
   });
 
   it('does not flip secondary Y position when first is candle-primary', () => {
@@ -1238,7 +1257,7 @@ describe('OptionResolver - candle-primary Y-axis and grid defaults', () => {
     });
     expect(resolved.yAxes.every((a) => a.position === 'right')).toBe(true);
     expect(resolved.grid.left).toBe(20);
-    expect(resolved.grid.right).toBe(70);
+    expect(resolved.grid.right).toBe(80);
   });
 
   it('preserves grid.left: 0 (nullish only — zero is not missing)', () => {
@@ -1247,10 +1266,10 @@ describe('OptionResolver - candle-primary Y-axis and grid defaults', () => {
       grid: { left: 0 },
     });
     expect(resolved.grid.left).toBe(0);
-    expect(resolved.grid.right).toBe(70);
+    expect(resolved.grid.right).toBe(80);
   });
 
-  it('axes.y-only single axis defaults first Y to right with left 20 / right 70', () => {
+  it('axes.y-only single axis defaults first Y to right with left 20 / right 80', () => {
     const resolved = resolveOptions({
       series: [candleSeries],
       axes: {
@@ -1261,7 +1280,7 @@ describe('OptionResolver - candle-primary Y-axis and grid defaults', () => {
     expect(resolved.yAxes[0]!.id).toBe('price');
     expect(resolved.yAxes[0]!.position).toBe('right');
     expect(resolved.grid.left).toBe(20);
-    expect(resolved.grid.right).toBe(70);
+    expect(resolved.grid.right).toBe(80);
   });
 
   it('passes through AxisConfig.header on yAxis and axes.y', () => {

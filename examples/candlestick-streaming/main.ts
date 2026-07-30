@@ -143,7 +143,7 @@ async function init() {
   lastSimPerfNow = performance.now();
 
   // Create chart
-  // Candle-primary defaults: first Y → right, grid left=20 / right=70 (no grid override needed).
+  // Candle-primary defaults: first Y → right, grid left=20 / right=80 (no grid override needed).
   fullChartOptions = {
     // Darker than built-in dark (#1a1a2e) — metallic near-black plot field
     theme: {
