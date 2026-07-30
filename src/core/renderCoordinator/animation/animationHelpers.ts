@@ -352,6 +352,30 @@ export function interpolateCartesianData(
 }
 
 /**
+ * Attach index-aligned update-animation samples to a cartesian series config.
+ *
+ * Spreading the **to** series alone leaves `rawData` at the target rewrite.
+ * Line prepare then prefers `rawData` on the GPU-decimation path and for
+ * `sampling: 'none'`, so the stroke snaps to the end state for the whole
+ * transition while only domains (and bar `data`) appear to animate.
+ *
+ * Both `data` and `rawData` must reference the animated samples for the
+ * duration of the transition. `rawBounds` is cleared so nothing treats the
+ * target extents as current geometry mid-lerp.
+ */
+export function withAnimatedCartesianSeriesData<T extends Record<string, unknown>>(
+  toSeries: T,
+  animatedData: unknown
+): T {
+  return {
+    ...toSeries,
+    data: animatedData,
+    rawData: animatedData,
+    rawBounds: null,
+  };
+}
+
+/**
  * Interpolates pie series data between from and to states.
  *
  * Returns the toSeries unchanged if data array lengths don't match.

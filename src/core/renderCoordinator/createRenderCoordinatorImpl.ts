@@ -198,6 +198,7 @@ import {
   isSnapOnlyUpdateAnimationSeries,
   createEasingWithDelay,
   interpolateCartesianData,
+  withAnimatedCartesianSeriesData,
   interpolatePieData,
   computeNextIntroPhase,
   applyBarIntroProgress,
@@ -1321,7 +1322,10 @@ export function createRenderCoordinator(
       }
       if (caches) caches.cartesianDataBySeriesIndex[i] = animatedData;
 
-      out[i] = { ...(b as any), data: animatedData };
+      // Keep rawData on the animated samples (not the target rewrite). Line GPU
+      // decimation and sampling:'none' upload rawData — leaving target rawData
+      // caused a pre-tween snap to the end state on every setOption update.
+      out[i] = withAnimatedCartesianSeriesData(b as any, animatedData) as (typeof out)[number];
     }
 
     return out;
