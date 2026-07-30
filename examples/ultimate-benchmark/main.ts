@@ -302,7 +302,7 @@ async function createChart(dataType: DataType, seriesData: Array<DataPoint[] | O
   const container = document.getElementById('chart');
   if (!container) throw new Error('Missing #chart container');
 
-  // ChartGPU brand palette (dev-site)
+  // ChartGPU brand palette
   const palette = [
     '#D4A520',
     '#3B7DD8',

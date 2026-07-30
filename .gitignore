@@ -14,7 +14,6 @@ baselines/
 # Build output
 dist/
 examples/dist/
-pages-dist/
 *.tsbuildinfo
 *.tgz
 
