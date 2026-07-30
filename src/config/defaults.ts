@@ -25,8 +25,11 @@ export const candlePrimaryGridDefaults = {
   leftNoLeftY: 20,
   /** At least one left-positioned Y (e.g. volume dual-Y). */
   leftWithLeftY: 60,
-  /** Room for right-side price ladder labels. */
-  right: 70,
+  /**
+   * Room for right-side price ladder labels + last-price badge.
+   * ~70 was tight for 6-sig badge text (padding + tick) and clipped at the canvas edge.
+   */
+  right: 80,
 } as const;
 
 export const defaultPalette = [

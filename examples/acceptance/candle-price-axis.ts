@@ -76,7 +76,7 @@ console.log('[acceptance:candle-price-axis] candle-primary Y + grid defaults...'
   const resolved = resolveOptions({ series: [candleSeries] });
   assertEqual('synthetic y position right', resolved.yAxes[0]!.position, 'right');
   assertEqual('left gutter single candle', resolved.grid.left, 20);
-  assertEqual('right gutter candle', resolved.grid.right, 70);
+  assertEqual('right gutter candle', resolved.grid.right, 80);
   assertEqual('top unchanged', resolved.grid.top, 40);
   assertEqual('bottom unchanged', resolved.grid.bottom, 40);
 }
@@ -88,7 +88,7 @@ console.log('[acceptance:candle-price-axis] candle-primary Y + grid defaults...'
   });
   assertEqual('explicit left wins', resolved.yAxes[0]!.position, 'left');
   assertEqual('left Y → left gutter 60', resolved.grid.left, 60);
-  assertEqual('right still soft 70', resolved.grid.right, 70);
+  assertEqual('right still soft 80', resolved.grid.right, 80);
 }
 
 {
@@ -97,7 +97,7 @@ console.log('[acceptance:candle-price-axis] candle-primary Y + grid defaults...'
     grid: { left: 80 },
   });
   assertEqual('user left kept', resolved.grid.left, 80);
-  assertEqual('right soft default', resolved.grid.right, 70);
+  assertEqual('right soft default', resolved.grid.right, 80);
 }
 
 {
@@ -106,7 +106,7 @@ console.log('[acceptance:candle-price-axis] candle-primary Y + grid defaults...'
     grid: { left: 0 },
   });
   assertEqual('grid.left 0 preserved (not missing)', resolved.grid.left, 0);
-  assertEqual('right soft default with left 0', resolved.grid.right, 70);
+  assertEqual('right soft default with left 0', resolved.grid.right, 80);
 }
 
 {
@@ -125,7 +125,7 @@ console.log('[acceptance:candle-price-axis] candle-primary Y + grid defaults...'
   assertEqual('dual-Y price right', resolved.yAxes[0]!.position, 'right');
   assertEqual('dual-Y vol left', resolved.yAxes[1]!.position, 'left');
   assertEqual('dual-Y left gutter 60', resolved.grid.left, 60);
-  assertEqual('dual-Y right gutter 70', resolved.grid.right, 70);
+  assertEqual('dual-Y right gutter 80', resolved.grid.right, 80);
 }
 
 {

@@ -104,6 +104,27 @@ describe('generateNiceAxisTicks', () => {
       expect(Number.isFinite(t)).toBe(true);
     }
   });
+
+  it('does not cliff mid-majors when domain grows just past a nice end (2D clamp)', () => {
+    // Regression: continuous/animated auto-range grows max from 2 → 2.1 and used to
+    // jump step 0.5 → 1, dropping 0.5 / 1.5 mid labels in one frame.
+    const at2 = generateNiceAxisTicks(0, 2, 5, { clampToDomain: true });
+    const past2 = generateNiceAxisTicks(0, 2.1, 5, { clampToDomain: true });
+    expect(at2).toEqual([0, 0.5, 1, 1.5, 2]);
+    expect(past2).toContain(0.5);
+    expect(past2).toContain(1.5);
+    // Still a 1–2–5 ladder (step 0.5), not equal-split endpoints alone.
+    expect(past2).toEqual([0, 0.5, 1, 1.5, 2]);
+  });
+
+  it('keeps 0.5 mid label across a dense rising-max sequence (2D clamp)', () => {
+    for (const max of [1.5, 1.6, 1.8, 2, 2.05, 2.1, 2.2, 2.4]) {
+      const ticks = generateNiceAxisTicks(0, max, 5, { clampToDomain: true });
+      if (max >= 0.5) {
+        expect(ticks.some((t) => Math.abs(t - 0.5) < 1e-9)).toBe(true);
+      }
+    }
+  });
 });
 
 describe('generateValueAxisTicks', () => {

@@ -78,8 +78,18 @@ export function generateNiceAxisTicks(
     hi = t;
   }
 
-  const range = niceNum(hi - lo, false);
-  const step = niceNum(range / (count - 1), true);
+  // Step selection:
+  // - clampToDomain (2D presentation): derive step from the *raw* span.
+  //   The classic Graphics Gems path first ceils the span (`niceNum(span, false)`),
+  //   which cliffs under continuous auto-range — e.g. domain [0, 2] → step 0.5
+  //   (labels 0, 0.5, 1, 1.5, 2) but [0, 2.1] → expanded range 5 → step 1
+  //   (labels 0, 1, 2 only) so mid-majors like 0.5 vanish on the tiniest grow.
+  // - unclamped (3D): keep the classic expand-then-step so nice endpoints can sit
+  //   slightly outside the raw domain.
+  const span = hi - lo;
+  const step = clampToDomain
+    ? niceNum(span / (count - 1), true)
+    : niceNum(niceNum(span, false) / (count - 1), true);
   if (!(step > 0) || !Number.isFinite(step)) {
     return [lo, hi];
   }
