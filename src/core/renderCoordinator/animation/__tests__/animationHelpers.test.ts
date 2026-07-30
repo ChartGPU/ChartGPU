@@ -13,6 +13,7 @@ import {
   lerpDomain,
   lerpLogDomain,
   interpolateCartesianData,
+  withAnimatedCartesianSeriesData,
   interpolatePieData,
   isDomainEqual,
   computeNextIntroPhase,
@@ -434,6 +435,56 @@ describe('interpolateCartesianData', () => {
     const result = interpolateCartesianData(from, to, 1, null);
 
     expect(result![0]).toEqual([0, 100]);
+  });
+});
+
+describe('withAnimatedCartesianSeriesData', () => {
+  it('points both data and rawData at the animated samples (line GPU upload path)', () => {
+    const targetRaw = [
+      [0, 100],
+      [1, 200],
+    ] as const;
+    const animated = [
+      [0, 10],
+      [1, 20],
+    ];
+    const toSeries = {
+      type: 'line',
+      name: 'Line',
+      data: targetRaw,
+      rawData: targetRaw,
+      rawBounds: { xMin: 0, xMax: 1, yMin: 100, yMax: 200 },
+      sampling: 'lttb',
+      color: '#ff00aa',
+    };
+
+    const result = withAnimatedCartesianSeriesData(toSeries, animated);
+
+    expect(result.data).toBe(animated);
+    expect(result.rawData).toBe(animated);
+    expect(result.rawBounds).toBe(null);
+    // Presentation fields preserved from target.
+    expect(result.type).toBe('line');
+    expect(result.color).toBe('#ff00aa');
+    expect(result.sampling).toBe('lttb');
+    // Target rewrite must not leak into upload paths mid-transition.
+    expect(result.rawData).not.toBe(targetRaw);
+  });
+
+  it('does not mutate the target series object', () => {
+    const targetRaw = [[0, 1]] as const;
+    const toSeries = {
+      type: 'line',
+      data: targetRaw,
+      rawData: targetRaw,
+      rawBounds: { xMin: 0, xMax: 0, yMin: 1, yMax: 1 },
+    };
+    const animated = [[0, 0.5]];
+
+    withAnimatedCartesianSeriesData(toSeries, animated);
+
+    expect(toSeries.data).toBe(targetRaw);
+    expect(toSeries.rawData).toBe(targetRaw);
   });
 });
 
