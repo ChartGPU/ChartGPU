@@ -491,7 +491,7 @@ export function errorBarBounds(data: ErrorBarSeriesData, direction: ErrorBarDire
     const p = getErrorBarPoint(hlc, i);
     if (!p) continue;
     if (direction === 'horizontal') {
-      // high/low are X extents; center is (x,y) but SciChart uses high/low as left/right absolute X.
+      // high/low are absolute X extents; center is (x, y) with high/low as left/right X.
       // ChartGPU: x is still the "anchor" sample x often equal to midpoint; include x + high + low in X.
       if (Number.isFinite(p.x)) {
         if (p.x < xMin) xMin = p.x;

@@ -1,84 +1,20 @@
 /**
  * Nice ticks for 3D axis domains (AABB or fixed min/max).
+ *
+ * Tick math is shared with 2D via {@link ../utils/niceAxisTicks} — re-exported
+ * here so existing 3D call sites keep stable import paths.
  */
 
-/**
- * Classic "nice number" for axis domains (Graphics Gems / d3-array style).
- */
-export function niceNum(range: number, round: boolean): number {
-  if (!(range > 0) || !Number.isFinite(range)) return 1;
-  const exp = Math.floor(Math.log10(range));
-  const f = range / 10 ** exp;
-  let nf: number;
-  if (round) {
-    if (f < 1.5) nf = 1;
-    else if (f < 3) nf = 2;
-    else if (f < 7) nf = 5;
-    else nf = 10;
-  } else {
-    if (f <= 1) nf = 1;
-    else if (f <= 2) nf = 2;
-    else if (f <= 5) nf = 5;
-    else nf = 10;
-  }
-  return nf * 10 ** exp;
-}
+import { niceNum, generateNiceAxisTicks } from '../../utils/niceAxisTicks';
+
+export { niceNum };
 
 /**
- * Generate ascending nice tick values covering [min, max] with ~tickCount majors.
- * Always returns at least 2 values when domain is finite (endpoints may be nice-expanded).
+ * 3D nice ticks — may include slightly-outside nice endpoints for readable axis boxes
+ * (historical 3D behavior; 2D presentation clamps via {@link generateValueAxisTicks}).
  */
 export function generateNiceAxisTicks3D(min: number, max: number, tickCount = 5): number[] {
-  const count = Math.max(2, Math.min(20, Math.floor(tickCount) || 5));
-  let lo = min;
-  let hi = max;
-  if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
-    return [0, 1];
-  }
-  if (lo === hi) {
-    const pad = Math.abs(lo) > 1e-6 ? Math.abs(lo) * 0.1 : 0.5;
-    lo -= pad;
-    hi += pad;
-  }
-  if (lo > hi) {
-    const t = lo;
-    lo = hi;
-    hi = t;
-  }
-
-  const range = niceNum(hi - lo, false);
-  const step = niceNum(range / (count - 1), true);
-  if (!(step > 0) || !Number.isFinite(step)) {
-    return [lo, hi];
-  }
-  const niceMin = Math.floor(lo / step) * step;
-  const niceMax = Math.ceil(hi / step) * step;
-  const ticks: number[] = [];
-  // Guard against infinite loops on pathological float steps
-  const maxIter = 64;
-  let v = niceMin;
-  for (let i = 0; i < maxIter && v <= niceMax + step * 0.5; i++) {
-    // Snap tiny float noise
-    const snapped = Math.abs(v) < step * 1e-12 ? 0 : v;
-    if (snapped >= lo - step * 1e-9 && snapped <= hi + step * 1e-9) {
-      ticks.push(snapped);
-    } else if (snapped >= niceMin - step * 1e-9 && snapped <= niceMax + step * 1e-9) {
-      // Include nice endpoints slightly outside raw domain for readable grids
-      ticks.push(snapped);
-    }
-    v += step;
-  }
-  if (ticks.length < 2) {
-    return [lo, hi];
-  }
-  // Dedupe
-  const out: number[] = [];
-  for (const t of ticks) {
-    if (out.length === 0 || Math.abs(out[out.length - 1]! - t) > step * 1e-9) {
-      out.push(t);
-    }
-  }
-  return out.length >= 2 ? out : [lo, hi];
+  return generateNiceAxisTicks(min, max, tickCount, { clampToDomain: false });
 }
 
 /** Compact tick label for 3D overlays. */

@@ -24,7 +24,7 @@ export type SeriesType =
  * Step (digital) connection mode for line / area mountain.
  *
  * - `'after'`  — hold y_i until x_{i+1}, then vertical to y_{i+1}
- *                (SciChart `isDigitalLine` default; D3 `curveStepAfter`)
+ *                (default digital step; D3 `curveStepAfter`)
  * - `'before'` — vertical first at x_i to y_{i+1}, then horizontal to x_{i+1}
  *                (D3 `curveStepBefore`)
  * - `'middle'` — horizontal to midpoint, vertical, horizontal to next
@@ -302,6 +302,30 @@ export interface AxisConfig {
    */
   readonly autoBounds?: 'global' | 'visible';
   /**
+   * Auto-range **motion** when both ends are free (no explicit `min`/`max`).
+   * **Y axes only** in the paint path today — setting this on `xAxis` is accepted
+   * by the resolver but ignored (X keeps sticky headroom 0 / autoScroll policy).
+   * - `'sticky'` (default): hold domain until data breaches, then expand with headroom
+   * - `'continuous'`: track data bounds every paint (+ optional {@link growBy})
+   * - `'animated'`: track a target domain; paint domain lerps toward it
+   *
+   * Explicit `min`/`max` (including one-sided) still disable pad past locked edges.
+   * Sticky remains the multi-chart-safe default.
+   */
+  readonly autoRange?: 'sticky' | 'continuous' | 'animated';
+  /**
+   * Padding as a fraction of data span for continuous/animated auto-range (**Y only**).
+   * Single number applies to both edges; tuple is `[minEdge, maxEdge]`.
+   * Default ~5% when continuous/animated and omitted. Sticky uses internal headroom instead.
+   * Ignored on X (X sticky headroom stays 0).
+   */
+  readonly growBy?: number | readonly [number, number];
+  /**
+   * Hint for nice major tick count on **value** axes (generator may adjust). Default ~5.
+   * Clamped 2–20 at resolve/generation time. Category X uses equal splits with this count.
+   */
+  readonly tickCount?: number;
+  /**
    * Custom formatter for axis tick labels.
    * When provided, replaces the built-in tick label formatting.
    * For time axes, `value` is a timestamp in milliseconds (epoch-ms).
@@ -390,7 +414,7 @@ export interface LineSeriesConfig extends SeriesConfigBase {
   /**
    * When set, connect samples with stairs instead of diagonals (digital / step line).
    * Applies to stroke and to mountain fill when `areaStyle` is present.
-   * `true` ≡ `'after'` (SciChart `isDigitalLine`). See {@link StepMode}.
+   * `true` ≡ `'after'`. See {@link StepMode}.
    */
   readonly step?: boolean | StepMode;
 }
@@ -786,7 +810,7 @@ export type BandDataPointObject = Readonly<{
 export type BandDataPoint = BandDataPointTuple | BandDataPointObject;
 
 /**
- * Separate arrays for band series (SciChart Xyy-style).
+ * Separate arrays for band series (Xyy-style split channels).
  * All arrays must have the same length (resolver uses min length and may warn).
  */
 export type BandXYYArraysData = Readonly<{
@@ -944,7 +968,7 @@ export interface Surface3DSeriesConfig {
 }
 
 /**
- * Absolute HLC sample (SciChart HlcDataSeries parity).
+ * Absolute HLC sample (center y + high/low endpoints).
  * `high` / `low` are data-space endpoints (resolver swaps if low > high).
  */
 export type ErrorBarPointTuple = readonly [x: number, y: number, high: number, low: number];
@@ -1004,7 +1028,7 @@ export interface ErrorBarItemStyleConfig {
 
 /**
  * Error bar series — per-point high/low whiskers around a center value.
- * SciChart HLC-style; not band fill and not OHLC open/close ticks.
+ * HLC-style; not band fill and not OHLC open/close ticks.
  *
  * Sampling is `'none'` only (sparse science series). Other modes warn + ignore.
  */
@@ -1033,7 +1057,7 @@ export interface ErrorBarSeriesConfig {
 
   /**
    * `'vertical'` (default): high/low along Y at x.
-   * `'horizontal'`: high/low along X at y (SciChart EErrorDirection.Horizontal).
+   * `'horizontal'`: high/low along X at y (whiskers on X at category Y).
    */
   readonly direction?: ErrorBarDirection;
 
@@ -1041,7 +1065,7 @@ export interface ErrorBarSeriesConfig {
   readonly drawWhiskers?: boolean;
 
   /**
-   * Draw the stem connecting low↔high (SciChart drawConnector).
+   * Draw the stem connecting low↔high.
    * Default true. If false and drawWhiskers true, only caps are drawn.
    */
   readonly drawConnector?: boolean;
@@ -1061,7 +1085,7 @@ export interface ErrorBarSeriesConfig {
 
 /**
  * Impulse / stem series — one vertical stem per sample from baseline to y.
- * SciChart FastImpulseRenderableSeries parity. XY data only (not HLC).
+ * XY data only (not HLC).
  */
 export interface ImpulseSeriesConfig extends SeriesConfigBase {
   readonly type: 'impulse';
@@ -1070,7 +1094,7 @@ export interface ImpulseSeriesConfig extends SeriesConfigBase {
   /** Stem stroke. Width default ~1.5–2 CSS px; color falls back to series color. */
   readonly lineStyle?: LineStyleConfig;
   /**
-   * Draw a marker at (x, y) (lollipop head). Default true to match SciChart demos;
+   * Draw a marker at (x, y) (lollipop head). Default true;
    * set false for pure stems.
    */
   readonly showMarker?: boolean;

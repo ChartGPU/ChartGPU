@@ -245,6 +245,23 @@ describe('overlayPrepareMemo signatures (P1-6)', () => {
     });
     expect(axisPrepareSignaturesEqual(a, c)).toBe(false);
   });
+
+  it('gridPrepareSignaturesEqual: same length different horizontalClipYs → not equal', () => {
+    const area = makeGridArea();
+    const base = {
+      gridArea: area,
+      show: true,
+      horizontalCount: 3,
+      verticalCount: 0,
+      horizontalColor: '#111',
+      verticalColor: '#111',
+    };
+    const a = buildGridPrepareSignature({ ...base, horizontalClipYs: [0.1, 0.2, 0.3] });
+    const b = buildGridPrepareSignature({ ...base, horizontalClipYs: [0.1, 0.2, 0.3] });
+    const c = buildGridPrepareSignature({ ...base, horizontalClipYs: [0.15, 0.25, 0.35] });
+    expect(gridPrepareSignaturesEqual(a, b)).toBe(true);
+    expect(gridPrepareSignaturesEqual(a, c)).toBe(false);
+  });
 });
 
 describe('prepareOverlays with OverlayPrepareMemo (P1-6)', () => {
@@ -374,5 +391,34 @@ describe('prepareOverlays with OverlayPrepareMemo (P1-6)', () => {
     expect(renderers.gridRenderer.prepare).toHaveBeenCalledTimes(1);
     expect(renderers.crosshairRenderer.prepare).toHaveBeenCalledTimes(2);
     expect(renderers.crosshairRenderer.setVisible).toHaveBeenCalledWith(true);
+  });
+
+  it('re-prepares grid when clip Y positions shift (same tick count, streaming domain)', () => {
+    const memo = createOverlayPrepareMemo();
+    const renderers = makeMockRenderers();
+    const yScaleA = createLinearScale().domain(0, 100).range(-1, 1);
+    const yScaleB = createLinearScale().domain(10, 110).range(-1, 1);
+    const ticks = [20, 40, 60, 80];
+    const xScale = createLinearScale().domain(0, 10).range(-1, 1);
+
+    const ctxA = {
+      ...baseContext(renderers, memo, {
+        xTickValues: [0, 5, 10],
+        xTickCount: 3,
+        yTickValuesByAxis: new Map([['y', ticks]]),
+      }),
+      xScale,
+      yScales: new Map([['y', yScaleA]]),
+    };
+    prepareOverlays(renderers as any, ctxA as any);
+    expect(renderers.gridRenderer.prepare).toHaveBeenCalledTimes(1);
+
+    // Same ticks, shifted domain → clip positions change → re-prepare
+    const ctxB = {
+      ...ctxA,
+      yScales: new Map([['y', yScaleB]]),
+    };
+    prepareOverlays(renderers as any, ctxB as any);
+    expect(renderers.gridRenderer.prepare).toHaveBeenCalledTimes(2);
   });
 });

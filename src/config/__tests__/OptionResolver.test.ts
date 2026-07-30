@@ -2223,3 +2223,85 @@ describe('OptionResolver - stacked mountain/area stack', () => {
     warn.mockRestore();
   });
 });
+
+describe('OptionResolver - axis autoRange / growBy / tickCount', () => {
+  const series = [
+    {
+      type: 'line' as const,
+      data: [
+        [0, 1],
+        [1, 2],
+      ],
+    },
+  ];
+
+  it('omitted autoRange stays omitted (runtime sticky default)', () => {
+    const r = resolveOptions({ series });
+    expect(r.yAxes[0]!.autoRange).toBeUndefined();
+    expect(r.xAxis.autoRange).toBeUndefined();
+  });
+
+  it('passthrough sticky | continuous | animated (case-insensitive)', () => {
+    const cont = resolveOptions({
+      series,
+      yAxis: { type: 'value', autoRange: 'CONTINUOUS' as 'continuous' },
+    });
+    // normalize lowercases via trim+toLowerCase
+    expect(cont.yAxes[0]!.autoRange).toBe('continuous');
+
+    const anim = resolveOptions({ series, yAxis: { type: 'value', autoRange: 'animated' } });
+    expect(anim.yAxes[0]!.autoRange).toBe('animated');
+
+    const sticky = resolveOptions({ series, yAxis: { type: 'value', autoRange: 'sticky' } });
+    expect(sticky.yAxes[0]!.autoRange).toBe('sticky');
+  });
+
+  it('invalid autoRange → sticky', () => {
+    const r = resolveOptions({
+      series,
+      yAxis: { type: 'value', autoRange: 'bounce' as 'sticky' },
+    });
+    expect(r.yAxes[0]!.autoRange).toBe('sticky');
+  });
+
+  it('growBy number and tuple; bad growBy cleared', () => {
+    const n = resolveOptions({ series, yAxis: { type: 'value', growBy: 0.08 } });
+    expect(n.yAxes[0]!.growBy).toBe(0.08);
+
+    const t = resolveOptions({ series, yAxis: { type: 'value', growBy: [0, 0.15] } });
+    expect(t.yAxes[0]!.growBy).toEqual([0, 0.15]);
+
+    const bad = resolveOptions({
+      series,
+      yAxis: { type: 'value', growBy: -1 as unknown as number },
+    });
+    expect(bad.yAxes[0]!.growBy).toBeUndefined();
+
+    const badTuple = resolveOptions({
+      series,
+      yAxis: { type: 'value', growBy: [1, -2] as unknown as [number, number] },
+    });
+    expect(badTuple.yAxes[0]!.growBy).toBeUndefined();
+  });
+
+  it('tickCount clamp 2–20; invalid cleared', () => {
+    const ok = resolveOptions({ series, yAxis: { type: 'value', tickCount: 8 } });
+    expect(ok.yAxes[0]!.tickCount).toBe(8);
+
+    const hi = resolveOptions({ series, yAxis: { type: 'value', tickCount: 100 } });
+    expect(hi.yAxes[0]!.tickCount).toBe(20);
+
+    const lo = resolveOptions({ series, yAxis: { type: 'value', tickCount: 1 } });
+    expect(lo.yAxes[0]!.tickCount).toBeUndefined();
+  });
+
+  it('xAxis continuous is accepted but documented as Y-only at paint (characterization)', () => {
+    // Resolver stores the value; paint ignores X autoRange (no assertion on paint here).
+    const r = resolveOptions({
+      series,
+      xAxis: { type: 'value', autoRange: 'continuous', growBy: 0.2 },
+    });
+    expect(r.xAxis.autoRange).toBe('continuous');
+    expect(r.xAxis.growBy).toBe(0.2);
+  });
+});

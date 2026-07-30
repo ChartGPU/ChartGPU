@@ -200,12 +200,14 @@ export {
 export type { LinearScale, ContinuousScale, CategoryScale } from './utils/scales';
 export {
   generateLinearTicks,
+  generateValueAxisTicks,
   generateLogTicks,
   generateLogTicksForVisibleDomain,
   formatLogTickValue,
   createTickFormatter,
   formatTickValue,
 } from './core/renderCoordinator/axis/computeAxisTicks';
+export { niceNum, generateNiceAxisTicks } from './utils/niceAxisTicks';
 
 // Chart sync (interaction)
 export { connectCharts } from './interaction/createChartSync';

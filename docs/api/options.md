@@ -17,7 +17,7 @@ Chart configuration. Full types: [`types.ts`](../../src/config/types.ts).
 ## Series Configuration
 
 - **`SeriesType`**: `'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick' | 'ohlc' | 'heatmap' | 'band' | 'errorBar' | 'impulse' | 'pointCloud3d' | 'surface3d'`. See [`types.ts`](../../src/config/types.ts).
-- **`StepMode`**: `'before' | 'middle' | 'after'` — digital / step connection for line and area (not a series type). Boolean `step: true` ≡ `'after'` (SciChart `isDigitalLine`).
+- **`StepMode`**: `'before' | 'middle' | 'after'` — digital / step connection for line and area (not a series type). Boolean `step: true` ≡ `'after'`.
 - **`coordinateSystem`**: `'cartesian2d'` (default) | `'cartesian3d'`. 3D charts use a separate depth + camera path; only `pointCloud3d` / `surface3d` are valid there. Full 3D API: [`docs/api/3d.md`](./3d.md).
 - **Sampling (cartesian)**: `sampling?: 'none' | 'lttb' | 'average' | 'max' | 'min'`, `samplingThreshold?: number` (default 5000). Zoom-aware resampling when data zoom enabled. On the **GPU decimation** path (`lttb`/`min`/`max`, gap-free lines), effective bucket count is also capped by plot width (`targetBuckets = min(samplingThreshold, max(128, 2×plotWidthDevicePx), N)`) — intentional screen-space LOD on narrow multi-chart slots; see [performance — GPU targetBuckets](../performance.md#sampling).
 - **`visible?: boolean`**: hide series from rendering and interaction. Legend toggle updates both.
@@ -134,7 +134,7 @@ series: [{
 
 - **`lineStyle?: { width?, opacity?, color? }`** (default width 2). **`areaStyle?`** for fill under line. Color precedence: `lineStyle.color` → `series.color` → palette.
 - **`stack?: string`**: stack group id for **mountain fill composition** (multi-series stacked area). Non-empty + `areaStyle` → this series stacks with peers sharing the same id **and the same `yAxis`**. Stroke-only lines (no `areaStyle`) ignore `stack` for fill (dev warning once). Same string semantics as bar `stack`. Series array order within the stack = **bottom → top**. Omitted / empty / whitespace → unstacked single-series mountain (suite group 8 path).
-- **`step?: boolean | StepMode`**: connect samples with **stairs** instead of diagonals (SciChart `isDigitalLine`). Applies to stroke **and** mountain fill when `areaStyle` is set. **`true` ≡ `'after'`**. Modes:
+- **`step?: boolean | StepMode`**: connect samples with **stairs** instead of diagonals (digital / step connection). Applies to stroke **and** mountain fill when `areaStyle` is set. **`true` ≡ `'after'`**. Modes:
   | Mode | Geometry (consecutive samples \(P_i\), \(P_{i+1}\)) |
   |------|-----------------------------------------------------|
   | **`after`** (default / `true`) | Hold \(y_i\) until \(x_{i+1}\), then vertical to \(y_{i+1}\) |
@@ -172,7 +172,7 @@ series: [{
 
 ### Stacked mountain / area (`stack` on line mountain or area)
 
-Multi-series **composition** fill — each layer’s floor is the sum of layers below (SciChart stacked mountain parity). **Not** single-series mountain (already: `line` + `areaStyle` / `type: 'area'` without `stack`; performance suite group 8 is 1-series only). **Not** `type: 'band'` (dual-curve envelope on one series). **Not** a new `type: 'stackedArea'`.
+Multi-series **composition** fill — each layer’s floor is the sum of layers below (stacked mountain / area). **Not** single-series mountain (already: `line` + `areaStyle` / `type: 'area'` without `stack`; performance suite group 8 is 1-series only). **Not** `type: 'band'` (dual-curve envelope on one series). **Not** a new `type: 'stackedArea'`.
 
 ```ts
 series: [
@@ -344,7 +344,7 @@ Band / range series (`type: 'band'`) fills the region **between two curves that 
 
 - **`data`**: one of:
   - `ReadonlyArray<BandDataPoint | null>` — tuple `[x, y, y1]` or `{ x, y, y1 }`
-  - `{ x, y, y1 }` parallel arrays (SciChart Xyy-style); length = min of the three (mismatch warns)
+  - `{ x, y, y1 }` parallel arrays (Xyy-style split channels); length = min of the three (mismatch warns)
   - Interleaved `ArrayBufferView` stride **3**: `[x0,y0,y1_0, …]` — **do not** use stride-2 `InterleavedXYData` (would drop `y1`). `appendData` rejects interleaved views whose length is not a multiple of 3.
 - **`y` / `y1`**: first and second curves; convention in docs is lower/upper but **crossing is allowed** (`y` may exceed `y1`).
 - **`areaStyle?: { color?, opacity? }`**: fill between curves. Default opacity **0.25**. Color falls back to `series.color` → palette.
@@ -366,7 +366,7 @@ Example: [`examples/band-range/`](../../examples/band-range/). Implementation: [
 
 ### ErrorBarSeriesConfig
 
-Error bars (`type: 'errorBar'`) draw **per-point high/low whiskers around a measured center** — SciChart **HLC** style for scientific uncertainty, SEM/CI, and assay plots.
+Error bars (`type: 'errorBar'`) draw **per-point high/low whiskers around a measured center** (HLC style) for scientific uncertainty, SEM/CI, and assay plots.
 
 **Not** the same as:
 
@@ -396,7 +396,7 @@ Error bars (`type: 'errorBar'`) draw **per-point high/low whiskers around a meas
   - Default `'40%'`. Pure zoom recomputes domain length into uniforms without re-uploading instances.
 - **`itemStyle?: { color?, borderWidth?, opacity? }`**: stem + whisker stroke. `borderWidth` is CSS px (default **1.5**). Color falls back to `series.color` → palette.
 - **`drawWhiskers?: boolean`** (default `true`), **`drawConnector?: boolean`** (default `true` — the stem).
-- **`showCenter?: boolean`** (default `false`) + **`symbolSize?: number`** (default 6): optional center marker. Prefer overlaying a separate scatter/line for the SciChart dual-series pattern.
+- **`showCenter?: boolean`** (default `false`) + **`symbolSize?: number`** (default 6): optional center marker. Prefer overlaying a separate scatter/line for the dual-series mean + whiskers pattern.
 - **`sampling`**: **`'none'` only**. Other modes warn and are ignored (error bars are sparse science series; no LTTB / GPU line decimation).
 - **Null / NaN**: skip sample if `y` non-finite, or if required ends are non-finite for the active `errorMode` (`both` needs both ends; `high` needs high; `low` needs low). `low > high` swaps with a one-shot warn.
 - **Axis auto-bounds**: vertical — X from finite `x`, Y from finite `y`/`high`/`low`. Horizontal — X from `x`/`high`/`low`, Y from `y`. Bounds reuse on `setOption` is direction-keyed (vertical↔horizontal toggles recompute).
@@ -433,7 +433,7 @@ Example: [`examples/error-bars/`](../../examples/error-bars/). Implementation: [
 
 ### ImpulseSeriesConfig
 
-Impulse / stem series (`type: 'impulse'`) draws **one vertical stem per sample from `baseline` → y** — SciChart **FastImpulseRenderableSeries** parity for event trains, DSP stems, and lollipop charts.
+Impulse / stem series (`type: 'impulse'`) draws **one vertical stem per sample from `baseline` → y** — for event trains, DSP stems, and lollipop charts.
 
 **Not** the same as:
 
@@ -469,15 +469,15 @@ series: [{
 
 Example: [`examples/impulse/`](../../examples/impulse/). Step digital line: [`examples/step-line/`](../../examples/step-line/). Implementation: [`createImpulseRenderer.ts`](../../src/renderers/createImpulseRenderer.ts), [`impulseGeometry.ts`](../../src/data/impulseGeometry.ts), [`stepGeometry.ts`](../../src/data/stepGeometry.ts).
 
-**SciChart map**
+**Step / impulse cheatsheet**
 
-| SciChart | ChartGPU |
-|----------|----------|
-| `FastLineRenderableSeries` + `isDigitalLine: true` | `type: 'line'`, `step: true` (≡ `'after'`) |
+| Pattern | ChartGPU |
+|---------|----------|
+| Digital / step line | `type: 'line'`, `step: true` (≡ `'after'`) |
 | Digital mountain | `type: 'line'` + `areaStyle` + `step`, or `type: 'area'` + `step` |
-| `FastImpulseRenderableSeries` | `type: 'impulse'` |
-| `pointMarker` on impulse | `showMarker` + `symbolSize` |
-| `ZeroLineY` | `baseline` (default 0) |
+| Impulse / stem | `type: 'impulse'` |
+| Stem tip marker | `showMarker` + `symbolSize` |
+| Stem floor | `baseline` (default 0) |
 
 ### PieSeriesConfig
 
@@ -504,7 +504,7 @@ Example: [`examples/impulse/`](../../examples/impulse/). Step digital line: [`ex
   - Each axis in `axes.y` may specify an `id: string` (defaults: first axis `"y"`, then `"y1"`, …).
   - Series map to a specific axis via `yAxis` id in their config.
   - Axes can be positioned on the right using `position: "right"`. Default position is `"left"`, except for **candle-primary** charts (see below).
-  - Dual Y may mix log + linear (e.g. log pressure + linear temperature). Horizontal grid follows the **primary** (first) Y axis ticks when that axis is log.
+  - Dual Y may mix log + linear (e.g. log pressure + linear temperature). Horizontal grid follows the **primary** (first) Y axis ticks (log **and** linear value majors).
 - **Finance-primary layout defaults** (when `series[0].type === 'candlestick'` or `'ohlc'`):
   - **Predicate**: only the first series type matters. Overlay lines as `series[0]` mean the chart is **not** candle-primary (set `position: 'right'` explicitly if needed). Helper: `isCandlePrimaryChart(userOptions)`.
   - **Y position**: the **first** Y axis defaults to `position: 'right'` when the user leaves `position` unset (`yAxis` or `axes.y[0]`). Secondary Y axes still default to `'left'`. Explicit `position` always wins.
@@ -566,18 +566,39 @@ Example: [`examples/impulse/`](../../examples/impulse/). Step digital line: [`ex
   - **Precedence**: explicit `min`/`max` always override any auto-bounds behavior.
   - **One-sided explicit**: if only `min` or only `max` is set, the other end is still data-derived; sticky auto-domain headroom (below) is **disabled** whenever either end is explicit so growBy padding never extends past a locked edge.
   - **Log**: both ends must resolve to strictly positive values (see log policy above).
-- **Sticky auto-domain headroom (streaming / multi-chart)**:
+- **Sticky auto-domain headroom (streaming / multi-chart)** — default motion:
   - When **both** ends of an axis are auto (no explicit `min`/`max`), ChartGPU uses a sticky domain: **first establish matches the data extrema exactly** (static column/mountain charts fill the plot).
   - **Y**: ~**10% growBy headroom** is added only when data **breaches** that domain (amortizes overlay rebuild under amplitude noise).
   - **X**: headroom is **0** so unbounded `appendData` tracks data max tightly and the series stays **full plot width**. Non-zero X pad previously left an empty right gutter that filled then re-expanded on every breach (visible as a grow/reset loop in examples like ultimate-benchmark streaming).
   - If the data **min slides upward** (FIFO/`maxPoints` drop-oldest), sticky **follows** the new min instead of freezing the historical origin. Sticky X is off entirely when `autoScroll: true`.
   - Cleared on `setOption` (including axes-only rewrites) and when any end becomes explicit.
   - Does **not** change sampling contracts (`lttb` stays `lttb`).
+- **Auto-range motion (`AxisConfig.autoRange`)** — opt-in continuous / animated rolling **Y** axes:
+  - **Y-only:** paint applies `autoRange` / `growBy` to **Y axes**. Values on `xAxis` are accepted by the option resolver but **ignored** at paint time (X keeps sticky headroom **0** + autoScroll skip).
+  - **`autoRange?: 'sticky' | 'continuous' | 'animated'`** (default **`'sticky'`**). Applies when **both** ends are free; any explicit `min`/`max` still disables pad past locked edges.
+    - **`sticky`**: current headroom hold-until-breach policy (safe multi-chart default).
+    - **`continuous`**: visible domain tracks data bounds **every paint** with optional padding (`growBy`).
+    - **`animated`**: tracks a **target** domain (same pad as continuous); paint domain **lerps** toward the target (time-based) so range motion is smooth.
+  - **`growBy?: number | [minEdge, maxEdge]`**: pad as a fraction of data span for continuous/animated **Y** only (default ~**5%** per edge when omitted). Sticky ignores `growBy` and keeps internal ~10% Y / 0 X headroom.
+  - **Nice value ticks**: linear/`value` majors use a shared **1–2–5 × 10ⁿ** ladder **clamped to the visible domain**. Category X uses equal index splits. Time and log generators stay authoritative for those axis types.
+  - **Tick-aligned grid**: primary Y majors drive horizontal grid lines; X tick values drive vertical grid (value, time, and log) — labels, GPU tick marks, and grid share one tick list per axis.
+  - Demo: [`examples/axis-streaming-smooth/`](../../examples/axis-streaming-smooth/) (`autoRange: 'continuous'`, grid on, rising Y).
+  - Example:
+
+```ts
+{
+  yAxis: { type: 'value', autoRange: 'continuous', growBy: 0.05 },
+  // or: autoRange: 'animated'
+  series: [{ type: 'line', data }],
+}
+```
+
 - **Y-axis auto-bounds during x-zoom (new default)**:
   - **`yAxis.autoBounds?: 'visible' | 'global'`** controls how ChartGPU derives the **y-axis** domain when `yAxis.min`/`yAxis.max` are not set.
     - **`'visible'` (default)**: when x-axis data zoom is active, ChartGPU derives y-bounds from the **visible** (zoomed) x-range (using the same sticky X domain the paint path uses when sticky is active).
     - **`'global'`**: derive y-bounds from the **full dataset** (pre-zoom behavior), even while x-zoomed.
   - This option is intended for `yAxis` (it has no effect on `xAxis`).
+- **`AxisConfig.tickCount?: number`**: hint for nice major count on value axes (clamped ~2–20; generator may adjust).
 - **`AxisConfig.tickFormatter?: (value: number) => string | null`**: custom formatter for axis tick labels. When provided, replaces the built-in tick label formatting for that axis.
   - For `type: 'value'` axes, `value` is the numeric tick value.
   - For `type: 'time'` axes, `value` is a timestamp in milliseconds (epoch-ms, same unit as `new Date(ms)`).

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderAxisLabels, renderYAxisLabels } from '../renderAxisLabels';
+import { generateValueAxisTicks } from '../../axis/computeAxisTicks';
 
 /** Mirror internal arg types via Parameters (contexts are intentionally unexported). */
 type AxisLabelRenderContext = Parameters<typeof renderAxisLabels>[2];
@@ -140,6 +141,45 @@ function createMinimalContext(overrides: Partial<AxisLabelRenderContext> = {}): 
 }
 
 describe('renderAxisLabels', () => {
+  describe('x-axis tick anchors', () => {
+    it('centers first/last labels when nice ticks are inset from plot rails (streaming value X)', () => {
+      const { overlay, labels } = createMockTextOverlay();
+      const container = {} as HTMLElement;
+      // Domain 0..100 → clip -1..+1; nice majors 25/50/75 are well inside plot rails.
+      const context = createMinimalContext({
+        xTickValues: [25, 50, 75],
+        xScale: {
+          scale: (v: number) => -1 + (v / 100) * 2,
+          invert: (c: number) => ((c + 1) / 2) * 100,
+          getDomain: () => ({ min: 0, max: 100 }),
+        } as any,
+      });
+
+      renderAxisLabels(overlay as any, container, context);
+
+      const numeric = labels.filter((l) => /^\d/.test(l.text));
+      expect(numeric.length).toBeGreaterThanOrEqual(3);
+      expect(numeric[0]!.options?.anchor).toBe('middle');
+      expect(numeric[numeric.length - 1]!.options?.anchor).toBe('middle');
+      expect(numeric.every((l) => l.options?.anchor === 'middle')).toBe(true);
+    });
+
+    it('uses start/end only when ticks sit on domain rails (equal-split ends)', () => {
+      const { overlay, labels } = createMockTextOverlay();
+      const container = {} as HTMLElement;
+      // With default plot clip, domain 0 and 100 map near the plot rails → start/end.
+      const context = createMinimalContext({
+        xTickValues: [0, 50, 100],
+      });
+
+      renderAxisLabels(overlay as any, container, context);
+
+      const sorted = [...labels].sort((a, b) => a.x - b.x);
+      expect(sorted[0]?.options?.anchor).toBe('start');
+      expect(sorted[sorted.length - 1]?.options?.anchor).toBe('end');
+    });
+  });
+
   describe('x-axis tickFormatter', () => {
     it('uses custom tickFormatter for x-axis value labels', () => {
       const { overlay, labels } = createMockTextOverlay();
@@ -225,8 +265,44 @@ describe('renderAxisLabels', () => {
       renderYAxisLabels(makeYCtx(overlay, container, context));
 
       const yLabels = labels.filter((l) => l.text.endsWith('%'));
-      expect(yLabels.length).toBeGreaterThan(0);
-      expect(yLabels.length).toBe(5); // DEFAULT_TICK_COUNT
+      const majors = generateValueAxisTicks(0, 100, 5);
+      expect(yLabels.map((l) => l.text)).toEqual(majors.map((v) => `${(v * 100).toFixed(0)}%`));
+    });
+
+    it('uses provided yTickValues (single list with GPU/grid)', () => {
+      const { overlay, labels } = createMockTextOverlay();
+      const container = {} as HTMLElement;
+      const context = createMinimalContext({
+        currentOptions: {
+          ...createMinimalContext().currentOptions,
+          yAxes: [{ id: 'primary', type: 'value' as const }],
+        } as any,
+      });
+      const yTicks = [20, 40, 60, 80];
+      const yCtx = makeYCtx(overlay, container, context);
+      renderYAxisLabels({ ...yCtx, yTickValues: yTicks });
+      // Default domain 0–100 scale; formatter is Intl for value — count matches list.
+      expect(labels.length).toBe(yTicks.length);
+    });
+
+    it('domain 3–97 labels match generateValueAxisTicks majors', () => {
+      const yTicks = generateValueAxisTicks(3, 97, 5);
+      const { overlay, labels } = createMockTextOverlay();
+      const container = {} as HTMLElement;
+      const context = createMinimalContext();
+      const yScale = {
+        scale: (v: number) => -1 + ((v - 3) / (97 - 3)) * 2,
+        invert: () => 0,
+        getDomain: () => ({ min: 3, max: 97 }),
+        kind: 'linear' as const,
+      };
+      renderYAxisLabels({
+        ...makeYCtx(overlay, container, context),
+        yScale: yScale as any,
+        yTickValues: yTicks,
+      });
+      expect(labels.length).toBe(yTicks.length);
+      expect(yTicks).toEqual([20, 40, 60, 80]);
     });
 
     it('suppresses y-axis labels when tickFormatter returns null', () => {

@@ -104,12 +104,12 @@ import { enqueueDeviceSubmit, flushDeviceSubmit } from '../gpu/submitBatcher';
 import {
   applyStickyAutoDomain,
   applyStickyAutoLogDomain,
-  DEFAULT_STICKY_DOMAIN_HEADROOM,
   DEFAULT_STICKY_X_DOMAIN_HEADROOM,
   resolveStickyOrDataDomain,
-  shouldApplyStickyAutoDomain,
   shouldSkipStickyAutoXDomain,
 } from './zoom/stickyAutoDomain';
+import { resolveYAutoDomainForPaint, animatedAlphaFromDtMs } from './zoom/resolveYAutoDomain';
+import { shouldUpdateAxisLabels } from './render/axisLabelUpdatePolicy';
 import {
   isFullSpanZoomRange as isFullSpanZoomRangeHelper,
   scanCartesianVisibleYBounds,
@@ -183,10 +183,14 @@ import {
   DEFAULT_TICK_COUNT as TIME_DEFAULT_TICK_COUNT,
   resolvePieCenterPlotCss,
   resolvePieRadiiCss,
-  generateLinearTicks,
   computeAdaptiveTimeXAxisTicks,
 } from './utils/timeAxisUtils';
-import { generateLogTicks, generateLogTicksForVisibleDomain } from './axis/computeAxisTicks';
+import {
+  generateLogTicks,
+  generateLogTicksForVisibleDomain,
+  generateValueAxisTicks,
+  generateLinearTicks,
+} from './axis/computeAxisTicks';
 import {
   resolveAnimationConfig as resolveAnimationConfigHelper,
   isDomainEqual,
@@ -1405,6 +1409,12 @@ export function createRenderCoordinator(
    */
   let stickyAutoXDomain: { min: number; max: number } | null = null;
   const stickyAutoYDomainByAxis = new Map<string, { min: number; max: number }>();
+  /** Display domains while y-axis `autoRange: 'animated'` is lerping toward target. */
+  const animatedDisplayYDomainByAxis = new Map<string, { min: number; max: number }>();
+  /** True when any Y axis is still lerping (request another paint). */
+  let animatedYDomainNeedsFrame = false;
+  /** Last paint timestamp for time-based animated auto-range alpha. */
+  let lastAnimatedYDomainPaintMs = 0;
   /** X window last used for cachedVisibleYBoundsByAxis (null = full span / no filter). */
   let cachedVisibleYBoundsXWindow: { min: number; max: number } | null = null;
 
@@ -1663,9 +1673,11 @@ export function createRenderCoordinator(
 
   let dataStore = createDataStore(device);
 
-  /** DOM axis-label rebuild signature; skip clear+rebuild when unchanged. */
+  /** DOM axis-label rebuild signature (includes scale affines); skip when unchanged. */
   let lastAxisLabelDomSignature = '';
-  /** Throttle DOM axis label rebuilds during continuous axes-only y animation. */
+  /** Tick set / theme / plot chrome only — excludes affines for position-only updates. */
+  let lastAxisLabelContentSignature = '';
+  /** Throttle structural DOM axis label rebuilds during sticky axes-only y animation. */
   let lastAxisLabelDomUpdateMs = 0;
   /**
    * Bumped on every setOptions so labelSig invalidates when tick formatters,
@@ -2967,6 +2979,7 @@ export function createRenderCoordinator(
     // does not keep a prior streaming headroom domain.
     stickyAutoXDomain = null;
     stickyAutoYDomainByAxis.clear();
+    animatedDisplayYDomainByAxis.clear();
     legend?.update(resolvedOptions.series, resolvedOptions.theme);
     if (needsBaselineResample) {
       // Sampling path may flip (e.g. line areaStyle on/off → GPU vs CPU). Retag
@@ -3430,6 +3443,7 @@ export function createRenderCoordinator(
     // Axis auto-bounds: stream changed grid extent
     stickyAutoXDomain = null;
     stickyAutoYDomainByAxis.clear();
+    animatedDisplayYDomainByAxis.clear();
     cachedVisibleYBoundsByAxis.clear();
     cachedVisibleYBoundsXWindow = null;
 
@@ -3587,20 +3601,41 @@ export function createRenderCoordinator(
     // Compute per-axis y domains (with transition interpolation if active)
     const currentYScales = new Map<string, ContinuousScale>();
     const currentYDomains = new Map<string, { readonly min: number; readonly max: number }>();
+    animatedYDomainNeedsFrame = false;
+    const paintNowMs = performance.now();
+    const animDtMs = lastAnimatedYDomainPaintMs > 0 ? Math.max(0, paintNowMs - lastAnimatedYDomainPaintMs) : 16;
+    lastAnimatedYDomainPaintMs = paintNowMs;
+    const animatedAlpha = animatedAlphaFromDtMs(animDtMs, 120);
     for (const ax of currentOptions.yAxes) {
       const axisId = ax.id!;
       let dom: { min: number; max: number };
       if (updateTransition && updateP < 1) {
         const fromY = updateTransition.from.yBaseDomains.get(axisId) ?? { min: 0, max: 1 };
         const toY = updateTransition.to.yBaseDomains.get(axisId) ?? { min: 0, max: 1 };
+        let transitionDomain: { min: number; max: number };
         if (ax.type === 'log') {
           const base = ax.logBase ?? 10;
           const lerped = lerpLogDomain(fromY, toY, updateP);
-          dom = sanitizeLogDomain(lerped.min, lerped.max, { base, warn: false });
+          transitionDomain = sanitizeLogDomain(lerped.min, lerped.max, { base, warn: false });
         } else {
-          dom = lerpDomain(fromY, toY, updateP);
+          transitionDomain = lerpDomain(fromY, toY, updateP);
         }
+        const resolved = resolveYAutoDomainForPaint({
+          dataDomain: transitionDomain,
+          explicitMin: undefined,
+          explicitMax: undefined,
+          autoRange: ax.autoRange,
+          growBy: ax.growBy,
+          axisType: ax.type,
+          logBase: ax.logBase,
+          updateTransitionActive: true,
+          transitionDomain,
+          sticky: stickyAutoYDomainByAxis.get(axisId) ?? null,
+          animatedDisplay: animatedDisplayYDomainByAxis.get(axisId) ?? null,
+        });
+        dom = resolved.domain;
         stickyAutoYDomainByAxis.delete(axisId);
+        animatedDisplayYDomainByAxis.delete(axisId);
       } else {
         const dataDom = computeBaseYDomainForAxis(
           currentOptions,
@@ -3611,28 +3646,28 @@ export function createRenderCoordinator(
         );
         const yExplicitMin = finiteOrUndefined(ax.min);
         const yExplicitMax = finiteOrUndefined(ax.max);
-        // Any explicit end disables sticky so headroom cannot pad past a locked edge.
-        if (!shouldApplyStickyAutoDomain(yExplicitMin, yExplicitMax)) {
-          dom = dataDom;
-          stickyAutoYDomainByAxis.delete(axisId);
-        } else if (ax.type === 'log') {
-          const next = applyStickyAutoLogDomain(
-            dataDom,
-            stickyAutoYDomainByAxis.get(axisId) ?? null,
-            ax.logBase ?? 10,
-            DEFAULT_STICKY_DOMAIN_HEADROOM
-          );
-          stickyAutoYDomainByAxis.set(axisId, next);
-          dom = next;
+        const resolved = resolveYAutoDomainForPaint({
+          dataDomain: dataDom,
+          explicitMin: yExplicitMin,
+          explicitMax: yExplicitMax,
+          autoRange: ax.autoRange,
+          growBy: ax.growBy,
+          axisType: ax.type,
+          logBase: ax.logBase,
+          updateTransitionActive: false,
+          sticky: stickyAutoYDomainByAxis.get(axisId) ?? null,
+          animatedDisplay: animatedDisplayYDomainByAxis.get(axisId) ?? null,
+          animatedAlpha,
+        });
+        dom = resolved.domain;
+        if (resolved.nextSticky) stickyAutoYDomainByAxis.set(axisId, resolved.nextSticky);
+        else stickyAutoYDomainByAxis.delete(axisId);
+        if (resolved.nextAnimatedDisplay) {
+          animatedDisplayYDomainByAxis.set(axisId, resolved.nextAnimatedDisplay);
         } else {
-          const next = applyStickyAutoDomain(
-            dataDom,
-            stickyAutoYDomainByAxis.get(axisId) ?? null,
-            DEFAULT_STICKY_DOMAIN_HEADROOM
-          );
-          stickyAutoYDomainByAxis.set(axisId, next);
-          dom = next;
+          animatedDisplayYDomainByAxis.delete(axisId);
         }
+        if (resolved.needsFrame) animatedYDomainNeedsFrame = true;
       }
       currentYDomains.set(axisId, dom);
       currentYScales.set(
@@ -3775,12 +3810,37 @@ export function createRenderCoordinator(
       const densified = generateLogTicksForVisibleDomain(domainMin, domainMax, logBase);
       xTickValues = densified.length > 0 ? densified : generateLogTicks(domainMin, domainMax, logBase);
       xTickCount = Math.max(1, xTickValues.length);
+    } else if (currentOptions.xAxis.type === 'category') {
+      // Category: equal index splits (integer-friendly), not value nice ladder.
+      const domainMin = visibleXDomain.min;
+      const domainMax = visibleXDomain.max;
+      const xHint = currentOptions.xAxis.tickCount ?? xTickCount;
+      xTickValues = generateLinearTicks(domainMin, domainMax, xHint);
+      xTickCount = Math.max(1, xTickValues.length);
     } else {
-      // Value / category: tick the visible window so labels stay in-plot under zoom.
+      // Value: nice majors on the visible window (labels + grid co-locate).
       // Without zoom, visibleXDomain matches the base (incl. explicit min/max).
       const domainMin = visibleXDomain.min;
       const domainMax = visibleXDomain.max;
-      xTickValues = generateLinearTicks(domainMin, domainMax, xTickCount);
+      const xHint = currentOptions.xAxis.tickCount ?? xTickCount;
+      xTickValues = generateValueAxisTicks(domainMin, domainMax, xHint);
+      xTickCount = Math.max(1, xTickValues.length);
+    }
+
+    // Per-axis Y ticks — single list for labels, GPU marks, and (primary) H grid.
+    const yTickValuesByAxis = new Map<string, readonly number[]>();
+    for (const yAxisConfig of currentOptions.yAxes) {
+      const axisId = yAxisConfig.id!;
+      const yDom = currentYDomains.get(axisId);
+      if (!yDom) continue;
+      if (yAxisConfig.type === 'log') {
+        yTickValuesByAxis.set(axisId, generateLogTicksForVisibleDomain(yDom.min, yDom.max, yAxisConfig.logBase ?? 10));
+      } else {
+        yTickValuesByAxis.set(
+          axisId,
+          generateValueAxisTicks(yDom.min, yDom.max, yAxisConfig.tickCount ?? DEFAULT_TICK_COUNT)
+        );
+      }
     }
 
     const interactionScales = computeInteractionScalesGridCssPx(gridArea, {
@@ -3947,6 +4007,7 @@ export function createRenderCoordinator(
         gridArea,
         xTickCount,
         xTickValues,
+        yTickValuesByAxis,
         hasCartesianSeries,
         effectivePointer,
         interactionScales,
@@ -4537,20 +4598,9 @@ export function createRenderCoordinator(
           }
           const axisYScale = currentYScales.get(axisId) ?? currentYScales.values().next().value;
           if (!axisYScale) continue;
-          // Match prepareOverlays: resolve tick values from the visible scale domain
-          // (log majors or linear even splits) — never undefined / default-only counts.
-          const { min: dMin, max: dMax } = axisYScale.getDomain();
-          let yTicks: readonly number[];
-          if (yAxisConfig.type === 'log') {
-            yTicks = generateLogTicksForVisibleDomain(dMin, dMax, yAxisConfig.logBase ?? 10);
-          } else {
-            const count = (yAxisConfig as { tickCount?: number }).tickCount ?? DEFAULT_TICK_COUNT;
-            yTicks = generateLinearTicks(dMin, dMax, count);
-          }
-          const yTickCount =
-            yTicks.length > 0
-              ? yTicks.length
-              : ((yAxisConfig as { tickCount?: number }).tickCount ?? DEFAULT_TICK_COUNT);
+          // Same tick list as prepareOverlays / DOM labels (single source of truth).
+          const yTicks = yTickValuesByAxis.get(axisId) ?? [];
+          const yTickCount = yTicks.length > 0 ? yTicks.length : (yAxisConfig.tickCount ?? DEFAULT_TICK_COUNT);
           yr.prepare(yAxisConfig, axisYScale, 'y', gridArea, axisLineColor, axisTickColor, yTickCount, yTicks);
         }
       }
@@ -4758,14 +4808,11 @@ export function createRenderCoordinator(
 
     hasRenderedOnce = true;
 
-    // DOM axis labels: clear+rebuild is expensive (multi-chart × N). Skip when
-    // tick values, scale affines, plot clip, theme, and axis names are unchanged.
-    // Scatter fixed-domain slots and axes-only mountain/column after ticks settle
-    // hit this path every frame.
-    //
-    // Tick values + y domains are folded into a compact FNV-1a hash so we avoid
-    // O(tickCount) string growth every frame while still invalidating when
-    // computed y domains change with matching affine+count (issue 11).
+    // DOM/canvas axis labels: skip when unchanged. Split structural vs position-only:
+    // - Structural (tick set, theme, plot clip, formatter epoch): may throttle ~20 Hz
+    //   under sticky multi-chart expand so layout/GC does not dominate FPS.
+    // - Position-only (scale affine / domain motion with stable tick values): every paint
+    //   so continuous/animated auto-range and pan/zoom slide labels at display rate.
     {
       let tickHash = LABEL_SIG_FNV_OFFSET >>> 0;
       tickHash = mixLabelSigUint(tickHash, xTickValues.length);
@@ -4774,28 +4821,31 @@ export function createRenderCoordinator(
       }
       for (const yAxisConfig of currentOptions.yAxes) {
         const axisId = yAxisConfig.id!;
-        const yScaleForAxis = currentYScales.get(axisId);
-        if (!yScaleForAxis) continue;
-        const yTickCount = (yAxisConfig as { tickCount?: number }).tickCount ?? 5;
-        const yDomain = currentYDomains.get(axisId);
-        tickHash = mixLabelSigUint(tickHash, yTickCount);
-        if (yDomain) {
-          tickHash = mixLabelSigFloat(tickHash, yDomain.min);
-          tickHash = mixLabelSigFloat(tickHash, yDomain.max);
+        const yTicks = yTickValuesByAxis.get(axisId) ?? [];
+        tickHash = mixLabelSigUint(tickHash, yTicks.length);
+        for (let ti = 0; ti < yTicks.length; ti++) {
+          tickHash = mixLabelSigFloat(tickHash, yTicks[ti]!);
         }
         // Explicit config ends (distinct from computed sticky/data domain).
         tickHash = mixLabelSigFloat(tickHash, yAxisConfig.min ?? Number.NaN);
         tickHash = mixLabelSigFloat(tickHash, yAxisConfig.max ?? Number.NaN);
       }
 
-      let labelSig = `${plotClipRect.left},${plotClipRect.right},${plotClipRect.top},${plotClipRect.bottom}|`;
-      labelSig += `${currentOptions.theme.fontSize}|${currentOptions.theme.textColor}|`;
-      labelSig += `${currentOptions.theme.fontFamily ?? ''}|`;
-      // epoch: setOptions bump covers tickFormatter identity / theme font changes.
-      // xr / xt: time-axis formatting depends on visible range and axis type.
-      labelSig += `epoch:${axisLabelContentEpoch}|xr:${visibleXRangeMs}|xt:${currentOptions.xAxis.type ?? ''}|`;
-      labelSig += `x:${currentOptions.xAxis.name ?? ''}|`;
-      labelSig += `th:${tickHash >>> 0}|`;
+      // Content signature: tick set + theme + layout chrome (not scale affines).
+      let contentSig = `${plotClipRect.left},${plotClipRect.right},${plotClipRect.top},${plotClipRect.bottom}|`;
+      contentSig += `${currentOptions.theme.fontSize}|${currentOptions.theme.textColor}|`;
+      contentSig += `${currentOptions.theme.fontFamily ?? ''}|`;
+      contentSig += `epoch:${axisLabelContentEpoch}|xr:${visibleXRangeMs}|xt:${currentOptions.xAxis.type ?? ''}|`;
+      contentSig += `x:${currentOptions.xAxis.name ?? ''}|`;
+      contentSig += `th:${tickHash >>> 0}|`;
+      for (const yAxisConfig of currentOptions.yAxes) {
+        const axisId = yAxisConfig.id!;
+        contentSig += `y:${axisId}:${yAxisConfig.name?.trim() ?? ''}:${yAxisConfig.header?.trim() ?? ''}:${yAxisConfig.position ?? 'left'}:`;
+        contentSig += `yt:${yAxisConfig.type ?? ''};yb:${yAxisConfig.logBase ?? ''};ar:${yAxisConfig.autoRange ?? ''};`;
+      }
+
+      // Full signature adds scale affines (position of labels on screen).
+      let labelSig = contentSig;
       {
         const xd = xScale.getDomain();
         const xs0 = xScale.kind === 'log' ? xScale.scale(xd.min) : xScale.scale(0);
@@ -4806,37 +4856,27 @@ export function createRenderCoordinator(
         const axisId = yAxisConfig.id!;
         const yScaleForAxis = currentYScales.get(axisId);
         if (!yScaleForAxis) continue;
-        const yTickCount = (yAxisConfig as { tickCount?: number }).tickCount ?? 5;
         const yd = yScaleForAxis.getDomain();
         const ys0 = yScaleForAxis.kind === 'log' ? yScaleForAxis.scale(yd.min) : yScaleForAxis.scale(0);
         const ys1 = yScaleForAxis.kind === 'log' ? yScaleForAxis.scale(yd.max) : yScaleForAxis.scale(1);
-        labelSig += `y:${axisId}:${yAxisConfig.name?.trim() ?? ''}:${yAxisConfig.header?.trim() ?? ''}:${yAxisConfig.position ?? 'left'}:`;
-        labelSig += `${ys0},${ys1}:${yTickCount}|`;
-        // Y axis type can affect tick formatting when present.
-        labelSig += `yt:${yAxisConfig.type ?? ''};yb:${yAxisConfig.logBase ?? ''};`;
+        labelSig += `ya:${axisId}:${ys0},${ys1}|`;
       }
+
       if (labelSig !== lastAxisLabelDomSignature) {
-        // Throttle DOM label rebuilds during continuous axes-only animation (suite
-        // mountain/column expand y every frame). Full rebuilds at 60Hz dominate
-        // multi-M Avg FPS via layout/GC; ~20 Hz is still smooth for tick numbers.
         const nowMs = performance.now();
-        const structural =
-          lastAxisLabelDomSignature === '' ||
-          !lastAxisLabelDomSignature.startsWith(
-            `${plotClipRect.left},${plotClipRect.right},${plotClipRect.top},${plotClipRect.bottom}|`
-          ) ||
-          !labelSig.includes(`epoch:${axisLabelContentEpoch}|`);
-        // Compare epoch segment more carefully: force immediate on theme/formatter epoch.
-        const lastEpochIdx = lastAxisLabelDomSignature.indexOf('epoch:');
-        const nextEpochIdx = labelSig.indexOf('epoch:');
-        const epochChanged =
-          lastEpochIdx < 0 ||
-          nextEpochIdx < 0 ||
-          lastAxisLabelDomSignature.slice(lastEpochIdx, lastEpochIdx + 24) !==
-            labelSig.slice(nextEpochIdx, nextEpochIdx + 24);
-        const throttleOk = structural || epochChanged || nowMs - lastAxisLabelDomUpdateMs >= 50;
-        if (throttleOk) {
+        // Tick-set changes rebuild immediately (sync with GPU ticks/grid); other
+        // structural thrash may throttle; position-only (affine) every paint.
+        const decision = shouldUpdateAxisLabels({
+          lastFullSignature: lastAxisLabelDomSignature,
+          lastContentSignature: lastAxisLabelContentSignature,
+          nextFullSignature: labelSig,
+          nextContentSignature: contentSig,
+          nowMs,
+          lastUpdateMs: lastAxisLabelDomUpdateMs,
+        });
+        if (decision.shouldUpdate) {
           lastAxisLabelDomSignature = labelSig;
+          lastAxisLabelContentSignature = contentSig;
           lastAxisLabelDomUpdateMs = nowMs;
           renderAxisLabels(axisLabelOverlay, overlayContainer, {
             gpuContext,
@@ -4868,6 +4908,7 @@ export function createRenderCoordinator(
                 offsetX: offX,
                 offsetY: offY,
                 theme: currentOptions.theme,
+                yTickValues: yTickValuesByAxis.get(axisId),
               });
             }
           }
@@ -4915,6 +4956,11 @@ export function createRenderCoordinator(
         timer.setDesired(frameResult.countdownDesired);
         timer.setBarEndMs(frameResult.barEndMs);
       }
+    }
+
+    // Animated auto-range: keep painting until display domain settles on target.
+    if (animatedYDomainNeedsFrame && !disposed) {
+      requestRender();
     }
   };
 
@@ -4965,6 +5011,7 @@ export function createRenderCoordinator(
     clearOverlayPrepareMemo(overlayPrepareMemo);
     stickyAutoXDomain = null;
     stickyAutoYDomainByAxis.clear();
+    animatedDisplayYDomainByAxis.clear();
     heatmapStreamDataByIndex.length = 0;
     heatmapUserDataByIndex.length = 0;
     heatmapDomainByIndex.length = 0;

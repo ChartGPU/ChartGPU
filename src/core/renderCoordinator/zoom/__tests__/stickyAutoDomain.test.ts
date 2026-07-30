@@ -2,10 +2,17 @@ import { describe, it, expect } from 'vitest';
 import {
   applyStickyAutoDomain,
   applyStickyAutoLogDomain,
+  applyContinuousAutoDomain,
+  applyContinuousAutoLogDomain,
+  stepAnimatedAutoDomain,
+  resolveAutoRangeMode,
   resolveStickyOrDataDomain,
   shouldApplyStickyAutoDomain,
   shouldSkipStickyAutoXDomain,
 } from '../stickyAutoDomain';
+
+/** Keep in sync with stickyAutoDomain.ts private DEFAULT_CONTINUOUS_GROW_BY. */
+const DEFAULT_CONTINUOUS_GROW_BY = 0.05;
 
 describe('applyStickyAutoDomain', () => {
   it('establishes exact data domain (no pad) so static charts fill the plot', () => {
@@ -208,5 +215,137 @@ describe('resolveStickyOrDataDomain (read-path sticky vs data)', () => {
     // both ends auto, autoScroll off → sticky applies
     const allow = shouldSkipStickyAutoXDomain(false, undefined, undefined);
     expect(resolveStickyOrDataDomain(data, sticky, { skipSticky: allow })).toBe(sticky);
+  });
+});
+
+describe('resolveAutoRangeMode', () => {
+  it('defaults unknown / omitted to sticky', () => {
+    expect(resolveAutoRangeMode(undefined)).toBe('sticky');
+    expect(resolveAutoRangeMode('nope')).toBe('sticky');
+    expect(resolveAutoRangeMode(1)).toBe('sticky');
+  });
+
+  it('accepts sticky | continuous | animated', () => {
+    expect(resolveAutoRangeMode('sticky')).toBe('sticky');
+    expect(resolveAutoRangeMode('continuous')).toBe('continuous');
+    expect(resolveAutoRangeMode('animated')).toBe('animated');
+  });
+});
+
+describe('applyContinuousAutoDomain', () => {
+  it('tracks data every call with default growBy pad (not sticky freeze)', () => {
+    const a = applyContinuousAutoDomain({ min: 0, max: 100 });
+    expect(a.min).toBeCloseTo(0 - 100 * DEFAULT_CONTINUOUS_GROW_BY, 10);
+    expect(a.max).toBeCloseTo(100 + 100 * DEFAULT_CONTINUOUS_GROW_BY, 10);
+
+    const b = applyContinuousAutoDomain({ min: 0, max: 120 });
+    expect(b.max).toBeCloseTo(120 + 120 * DEFAULT_CONTINUOUS_GROW_BY, 10);
+    // Unlike sticky, intermediate domain is not held — always derived from data.
+    expect(b.max).toBeGreaterThan(a.max);
+  });
+
+  it('respects growBy number and tuple', () => {
+    const single = applyContinuousAutoDomain({ min: 0, max: 100 }, 0.1);
+    expect(single.min).toBeCloseTo(-10, 10);
+    expect(single.max).toBeCloseTo(110, 10);
+
+    const tuple = applyContinuousAutoDomain({ min: 0, max: 100 }, [0, 0.2]);
+    expect(tuple.min).toBe(0);
+    expect(tuple.max).toBeCloseTo(120, 10);
+  });
+
+  it('handles equal / non-finite domains', () => {
+    const eq = applyContinuousAutoDomain({ min: 5, max: 5 }, 0);
+    expect(eq.min).toBeLessThan(eq.max);
+    const bad = applyContinuousAutoDomain({ min: Number.NaN, max: 1 });
+    expect(Number.isNaN(bad.min)).toBe(true);
+  });
+});
+
+describe('applyContinuousAutoLogDomain', () => {
+  it('pads in log space', () => {
+    const next = applyContinuousAutoLogDomain({ min: 1, max: 100 }, 10, 0.1);
+    expect(next.min).toBeLessThan(1);
+    expect(next.max).toBeGreaterThan(100);
+    expect(next.min).toBeGreaterThan(0);
+  });
+});
+
+describe('stepAnimatedAutoDomain', () => {
+  it('snaps on cold start (null display)', () => {
+    const { domain, settled } = stepAnimatedAutoDomain(null, { min: 0, max: 100 }, 0.22);
+    expect(domain).toEqual({ min: 0, max: 100 });
+    expect(settled).toBe(true);
+  });
+
+  it('lerps toward target and eventually settles', () => {
+    let display: { min: number; max: number } | null = { min: 0, max: 100 };
+    const target = { min: 0, max: 200 };
+    let settled = false;
+    for (let i = 0; i < 40; i++) {
+      const step = stepAnimatedAutoDomain(display, target, 0.22);
+      display = step.domain;
+      settled = step.settled;
+      if (settled) break;
+    }
+    expect(settled).toBe(true);
+    expect(display!.min).toBeCloseTo(0, 6);
+    expect(display!.max).toBeCloseTo(200, 6);
+  });
+
+  it('alpha 1 snaps immediately', () => {
+    const { domain, settled } = stepAnimatedAutoDomain({ min: 0, max: 10 }, { min: 0, max: 100 }, 1);
+    expect(domain).toEqual({ min: 0, max: 100 });
+    expect(settled).toBe(true);
+  });
+});
+
+describe('sticky default vs continuous (multi-layer policy)', () => {
+  it('sticky still freezes inside headroom while continuous tracks', () => {
+    let sticky = applyStickyAutoDomain({ min: 0, max: 100 }, null, 0.1);
+    sticky = applyStickyAutoDomain({ min: 0, max: 101 }, sticky, 0.1);
+    // After breach, sticky holds with pad.
+    const held = applyStickyAutoDomain({ min: 0, max: 105 }, sticky, 0.1);
+    expect(held).toBe(sticky);
+
+    const c1 = applyContinuousAutoDomain({ min: 0, max: 101 }, 0.1);
+    const c2 = applyContinuousAutoDomain({ min: 0, max: 105 }, 0.1);
+    expect(c2.max).toBeGreaterThan(c1.max);
+  });
+});
+
+describe('continuous/animated edge cases', () => {
+  it.each([
+    [undefined, DEFAULT_CONTINUOUS_GROW_BY],
+    [-1, DEFAULT_CONTINUOUS_GROW_BY],
+    [Number.NaN, DEFAULT_CONTINUOUS_GROW_BY],
+    [0, 0],
+  ] as const)('invalid growBy %# falls back or applies', (growBy, expectedFrac) => {
+    const d = applyContinuousAutoDomain({ min: 0, max: 100 }, growBy as number);
+    expect(d.min).toBeCloseTo(0 - 100 * expectedFrac, 8);
+    expect(d.max).toBeCloseTo(100 + 100 * expectedFrac, 8);
+  });
+
+  it('stepAnimatedAutoDomain clamps alpha to [0,1]', () => {
+    const over = stepAnimatedAutoDomain({ min: 0, max: 10 }, { min: 0, max: 100 }, 2);
+    expect(over.domain).toEqual({ min: 0, max: 100 });
+    expect(over.settled).toBe(true);
+
+    const under = stepAnimatedAutoDomain({ min: 0, max: 10 }, { min: 0, max: 100 }, -1);
+    expect(under.domain).toEqual({ min: 0, max: 10 });
+    expect(under.settled).toBe(false);
+  });
+
+  it('stepAnimatedAutoDomain treats non-finite display as cold start', () => {
+    const r = stepAnimatedAutoDomain({ min: Number.NaN, max: 1 }, { min: 0, max: 50 }, 0.1);
+    expect(r.domain).toEqual({ min: 0, max: 50 });
+    expect(r.settled).toBe(true);
+  });
+
+  it('log continuous pad precision (decade span)', () => {
+    const r = applyContinuousAutoLogDomain({ min: 10, max: 1000 }, 10, 0.1);
+    // log10 span = 2; pad 0.1 decades each side → min ~ 10^(1-0.2)=6.309..., max ~ 10^(3+0.2)
+    expect(r.min).toBeCloseTo(10 ** (1 - 0.2), 6);
+    expect(r.max).toBeCloseTo(10 ** (3 + 0.2), 6);
   });
 });

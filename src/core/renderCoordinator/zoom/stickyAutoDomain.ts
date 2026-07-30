@@ -6,6 +6,9 @@
  * (e.g. ultimate-benchmark streaming) keeps the series full-width: non-zero X
  * pad left an empty right gutter that filled then re-jumped on every breach.
  *
+ * Opt-in continuous / animated modes track data every paint (see
+ * {@link resolveAutoRangeMode} / {@link applyContinuousAutoDomain}).
+ *
  * @module stickyAutoDomain
  * @internal
  */
@@ -20,7 +23,17 @@ export const DEFAULT_STICKY_DOMAIN_HEADROOM = 0.1;
  */
 export const DEFAULT_STICKY_X_DOMAIN_HEADROOM = 0;
 
-type StickyDomain = { min: number; max: number };
+/** Default continuous/animated growBy fraction of data span (per edge). */
+const DEFAULT_CONTINUOUS_GROW_BY = 0.05;
+
+/** Auto-range motion when both axis ends are free. */
+type AutoRangeMode = 'sticky' | 'continuous' | 'animated';
+
+/** Continuous/animated pad: single fraction or [minEdge, maxEdge]. */
+type GrowBySpec = number | readonly [number, number];
+
+/** Domain pair used by sticky/continuous/animated helpers and paint resolvers. */
+export type StickyDomain = { min: number; max: number };
 
 /**
  * Sticky auto-domain applies only when **both** axis ends are auto.
@@ -28,6 +41,128 @@ type StickyDomain = { min: number; max: number };
  */
 export function shouldApplyStickyAutoDomain(explicitMin: number | undefined, explicitMax: number | undefined): boolean {
   return explicitMin === undefined && explicitMax === undefined;
+}
+
+/**
+ * Resolve public `autoRange` option; unknown / omitted → sticky (safe default).
+ */
+export function resolveAutoRangeMode(autoRange: unknown): AutoRangeMode {
+  if (autoRange === 'continuous' || autoRange === 'animated' || autoRange === 'sticky') {
+    return autoRange;
+  }
+  return 'sticky';
+}
+
+/**
+ * Parse growBy into per-edge fractions (clamped ≥ 0). Invalid → defaultFrac.
+ */
+function resolveGrowByFractions(
+  growBy: GrowBySpec | undefined,
+  defaultFrac: number = DEFAULT_CONTINUOUS_GROW_BY
+): { min: number; max: number } {
+  const fallback = Number.isFinite(defaultFrac) && defaultFrac >= 0 ? defaultFrac : DEFAULT_CONTINUOUS_GROW_BY;
+  if (growBy == null) {
+    return { min: fallback, max: fallback };
+  }
+  if (typeof growBy === 'number') {
+    const g = Number.isFinite(growBy) && growBy >= 0 ? growBy : fallback;
+    return { min: g, max: g };
+  }
+  if (Array.isArray(growBy) && growBy.length >= 2) {
+    const a = growBy[0];
+    const b = growBy[1];
+    const min = typeof a === 'number' && Number.isFinite(a) && a >= 0 ? a : fallback;
+    const max = typeof b === 'number' && Number.isFinite(b) && b >= 0 ? b : fallback;
+    return { min, max };
+  }
+  return { min: fallback, max: fallback };
+}
+
+function normalizeDomainEnds(nextMin: number, nextMax: number): StickyDomain {
+  if (nextMin === nextMax) {
+    nextMax = nextMin + 1;
+  } else if (nextMin > nextMax) {
+    const t = nextMin;
+    nextMin = nextMax;
+    nextMax = t;
+  }
+  return { min: nextMin, max: nextMax };
+}
+
+/**
+ * Continuous auto-range: visible domain tracks data bounds every paint with optional pad.
+ * Does **not** freeze between breaches (unlike sticky). Call only when both ends are free.
+ *
+ * Cold start and stream use the same pad rule (unlike sticky's exact first establish).
+ */
+export function applyContinuousAutoDomain(
+  dataDomain: { readonly min: number; readonly max: number },
+  growBy?: GrowBySpec,
+  defaultGrowBy: number = DEFAULT_CONTINUOUS_GROW_BY
+): StickyDomain {
+  const { min: dMin, max: dMax } = dataDomain;
+  if (!Number.isFinite(dMin) || !Number.isFinite(dMax)) {
+    return { min: dMin, max: dMax };
+  }
+  const span = Math.max(Math.abs(dMax - dMin), Number.EPSILON);
+  const fr = resolveGrowByFractions(growBy, defaultGrowBy);
+  return normalizeDomainEnds(dMin - span * fr.min, dMax + span * fr.max);
+}
+
+/**
+ * Continuous auto-range with headroom applied in **log space** (for log axes).
+ */
+export function applyContinuousAutoLogDomain(
+  dataDomain: { readonly min: number; readonly max: number },
+  base: number = 10,
+  growBy?: GrowBySpec,
+  defaultGrowBy: number = DEFAULT_CONTINUOUS_GROW_BY
+): StickyDomain {
+  const { min: dMin, max: dMax } = dataDomain;
+  if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || !(dMin > 0) || !(dMax > 0)) {
+    return { min: dMin, max: dMax };
+  }
+  const b = Number.isFinite(base) && base > 0 && base !== 1 ? base : 10;
+  const lnB = Math.log(b);
+  const logResult = applyContinuousAutoDomain(
+    { min: Math.log(dMin) / lnB, max: Math.log(dMax) / lnB },
+    growBy,
+    defaultGrowBy
+  );
+  return {
+    min: b ** logResult.min,
+    max: b ** logResult.max,
+  };
+}
+
+/**
+ * One step of animated auto-range: lerp display toward continuous target.
+ * Returns `{ domain, settled }` — settled when within relative epsilon of target.
+ *
+ * @param alpha - Blend factor in [0, 1] (1 = snap to target)
+ */
+export function stepAnimatedAutoDomain(
+  display: StickyDomain | null,
+  target: StickyDomain,
+  alpha: number
+): { domain: StickyDomain; settled: boolean } {
+  const a = Number.isFinite(alpha) ? Math.min(1, Math.max(0, alpha)) : 1;
+  if (display == null || !Number.isFinite(display.min) || !Number.isFinite(display.max)) {
+    return { domain: { min: target.min, max: target.max }, settled: true };
+  }
+  if (a >= 1) {
+    return { domain: { min: target.min, max: target.max }, settled: true };
+  }
+  const nextMin = display.min + (target.min - display.min) * a;
+  const nextMax = display.max + (target.max - display.max) * a;
+  const domain = normalizeDomainEnds(nextMin, nextMax);
+  const span = Math.max(Math.abs(target.max - target.min), Number.EPSILON);
+  const eps = span * 1e-4;
+  const settled = Math.abs(domain.min - target.min) <= eps && Math.abs(domain.max - target.max) <= eps;
+  return {
+    domain: settled ? { min: target.min, max: target.max } : domain,
+    settled,
+  };
 }
 
 /**

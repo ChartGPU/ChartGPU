@@ -4,7 +4,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { generateLinearTicks, createTickFormatter, formatTickValue } from '../computeAxisTicks';
+import { generateLinearTicks, generateValueAxisTicks, createTickFormatter, formatTickValue } from '../computeAxisTicks';
+import { generateNiceAxisTicks } from '../../../../utils/niceAxisTicks';
 
 describe('generateLinearTicks', () => {
   it('generates single tick at midpoint', () => {
@@ -60,6 +61,28 @@ describe('generateLinearTicks', () => {
 
     expect(ticks).toHaveLength(3);
     expect(ticks.every((t) => t === 50)).toBe(true);
+  });
+});
+
+describe('generateValueAxisTicks', () => {
+  it('parity with domain-clamped generateNiceAxisTicks', () => {
+    expect(generateValueAxisTicks(0, 100, 5)).toEqual(generateNiceAxisTicks(0, 100, 5, { clampToDomain: true }));
+    expect(generateValueAxisTicks(0, 100, 5)).toEqual([0, 20, 40, 60, 80, 100]);
+  });
+
+  it('non-finite domain uses nice safe fallback [0, 1] (not empty)', () => {
+    // generateNiceAxisTicks returns [0,1] for non-finite ends (length >= 2), so
+    // generateValueAxisTicks never reaches the equal-split linear branch here.
+    expect(generateValueAxisTicks(Number.NaN, Number.NaN, 5)).toEqual([0, 1]);
+    expect(generateValueAxisTicks(Number.POSITIVE_INFINITY, 10, 5)).toEqual([0, 1]);
+  });
+
+  it('keeps majors inside domain (presentation contract)', () => {
+    const ticks = generateValueAxisTicks(100, 1000, 5);
+    for (const t of ticks) {
+      expect(t).toBeGreaterThanOrEqual(100 - 1e-9);
+      expect(t).toBeLessThanOrEqual(1000 + 1e-9);
+    }
   });
 });
 

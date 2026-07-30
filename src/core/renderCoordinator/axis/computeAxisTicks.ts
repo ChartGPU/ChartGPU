@@ -9,6 +9,7 @@
  */
 
 import { DEFAULT_LOG_BASE, normalizeLogBase } from '../../../utils/scales';
+import { generateNiceAxisTicks } from '../../../utils/niceAxisTicks';
 
 /**
  * Default maximum fraction digits for tick formatting (single source of truth).
@@ -18,6 +19,9 @@ const DEFAULT_MAX_TICK_FRACTION_DIGITS = 8;
 
 /**
  * Generates evenly-spaced tick values between domain min and max.
+ *
+ * Prefer {@link generateNiceAxisTicks} for value-axis **presentation** (labels,
+ * GPU ticks, grid). Keep this for intentional equal splits / fallbacks.
  *
  * @param domainMin - Minimum value of the domain
  * @param domainMax - Maximum value of the domain
@@ -33,6 +37,17 @@ export function generateLinearTicks(domainMin: number, domainMax: number, tickCo
     ticks[i] = v;
   }
   return ticks;
+}
+
+/**
+ * Value-axis presentation ticks: 1–2–5 × 10ⁿ nice ladder **clamped to the domain**
+ * so labels, GPU marks, and grid stay in-plot. Falls back to equal domain splits
+ * when the nice generator is degenerate.
+ */
+export function generateValueAxisTicks(domainMin: number, domainMax: number, tickCountHint = 5): number[] {
+  const nice = generateNiceAxisTicks(domainMin, domainMax, tickCountHint, { clampToDomain: true });
+  if (nice.length >= 2) return nice;
+  return generateLinearTicks(domainMin, domainMax, Math.max(2, Math.floor(tickCountHint) || 5));
 }
 
 /**

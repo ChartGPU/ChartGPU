@@ -1,5 +1,5 @@
 /**
- * Impulse / stem series example — SciChart FastImpulseRenderableSeries spirit.
+ * Impulse / stem series example — vertical stems from baseline to y.
  */
 import { ChartGPU, darkTheme } from '../../src/index';
 import type { ChartGPUInstance, ChartGPUOptions, ThemeConfig } from '../../src/index';
