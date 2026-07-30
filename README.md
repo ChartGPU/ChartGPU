@@ -13,6 +13,7 @@
   <a href="https://github.com/chartgpu/chartgpu/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow" alt="MIT"></a>
   <a href="https://chartgpu.io/docs/getting-started/"><img src="https://img.shields.io/badge/docs-getting%20started-blue" alt="docs"></a>
   <a href="https://chartgpu.io"><img src="https://img.shields.io/badge/demo-chartgpu.io-brightgreen" alt="demo"></a>
+  <a href="https://github.com/mikbry/awesome-webgpu"><img src="https://awesome.re/mentioned-badge.svg" alt="Featured in Awesome WebGPU" height="20" /></a>
 </p>
 
 <p align="center">
