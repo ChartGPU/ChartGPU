@@ -754,11 +754,7 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
   let prevPrepareContentVersion: number | undefined = undefined;
   let hasPrevPrepareStamp = false;
 
-  const applyColdOverwriteRewind = (
-    rawCount: number,
-    ringStart: number,
-    ringCap: number
-  ): void => {
+  const applyColdOverwriteRewind = (rawCount: number, ringStart: number, ringCap: number): void => {
     if (!hierarchyDirtyFull || hierarchyReady || !hasPrevPrepareStamp) return;
     if (ringCap <= 0 || prevPrepareRingCap <= 0) return;
     if (rawCount < ringCap || prevPrepareRawCount < prevPrepareRingCap) return;
@@ -883,8 +879,7 @@ export function createDecimationCompute(device: GPUDevice, options?: DecimationC
     // frame (no optimistic partial-cold hierarchy path — Issue 11).
     const nTiles = tileCountForCapacity(physicalCapacityOf(rawCount, ringCap));
     const remain = remainingMaintainTiles(nTiles);
-    const willCompleteCold =
-      hierarchyDirtyFull && remain > 0 && remain <= MAX_COLD_MAINTAIN_TILES_PER_ENCODE;
+    const willCompleteCold = hierarchyDirtyFull && remain > 0 && remain <= MAX_COLD_MAINTAIN_TILES_PER_ENCODE;
     const willCompleteIncremental = !hierarchyDirtyFull && remain > 0;
     const hierarchyReadyAfterEncode = hierarchyReady || willCompleteCold || willCompleteIncremental;
     const useHierarchy = shouldUseHierarchyPresent({

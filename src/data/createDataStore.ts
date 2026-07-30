@@ -950,13 +950,7 @@ export function createDataStore(device: GPUDevice): DataStore {
         capacityBytes,
         pointCount: nextPointCount,
         // Warm: chain existing.hash32 so successive multi‑M full replaces dirty present.
-        hash32: contentHashForPackedWindow(
-          fullPacked,
-          nextPointCount,
-          keepNewCount,
-          dropPrevCount,
-          existing.hash32
-        ),
+        hash32: contentHashForPackedWindow(fullPacked, nextPointCount, keepNewCount, dropPrevCount, existing.hash32),
         xOffset: existing.xOffset,
         stagingBuffer,
         ringStart: 0,
@@ -1055,13 +1049,7 @@ export function createDataStore(device: GPUDevice): DataStore {
       capacityBytes,
       pointCount: nextPointCount,
       // Warm rebuild: chain existing.hash32 (multi‑M absolute stamp is cold-only).
-      hash32: contentHashForPackedWindow(
-        fullPacked,
-        nextPointCount,
-        keepNewCount,
-        dropPrevCount,
-        existing.hash32
-      ),
+      hash32: contentHashForPackedWindow(fullPacked, nextPointCount, keepNewCount, dropPrevCount, existing.hash32),
       xOffset: existing.xOffset,
       stagingBuffer,
       ringStart: 0,

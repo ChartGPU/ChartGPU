@@ -108,11 +108,7 @@ export function applySurface3DReplaceY(
   } else {
     const scratch = options?.targetY;
     nextY =
-      scratch && scratch.length >= n
-        ? scratch.length === n
-          ? scratch
-          : scratch.subarray(0, n)
-        : new Float32Array(n);
+      scratch && scratch.length >= n ? (scratch.length === n ? scratch : scratch.subarray(0, n)) : new Float32Array(n);
     for (let i = 0; i < n; i++) {
       nextY[i] = i < src.length ? heightOrNaN(src[i]) : Number.NaN;
     }

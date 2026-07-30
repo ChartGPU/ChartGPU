@@ -473,9 +473,7 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
         ? Math.floor(policyPointCount)
         : 0;
     const policyN =
-      residencyN >= DENSE_DRAW_POINT_THRESHOLD
-        ? Math.max(currentPointCount, residencyN)
-        : currentPointCount;
+      residencyN >= DENSE_DRAW_POINT_THRESHOLD ? Math.max(currentPointCount, residencyN) : currentPointCount;
     const drawPolicy = resolveLineDrawPolicy({
       pointCount: policyN,
       lineWidthCssPx: nominalLineWidthCss,

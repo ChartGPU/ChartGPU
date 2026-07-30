@@ -403,9 +403,7 @@ describe('prepareSeries GPU decimation (WG-P0-1 xOffset)', () => {
       dispose: vi.fn(),
     };
 
-    const gpuSeriesKindByIndex: Array<'fullRawLine' | 'gpuDecimationRaw' | 'other' | 'unknown'> = [
-      'unknown',
-    ];
+    const gpuSeriesKindByIndex: Array<'fullRawLine' | 'gpuDecimationRaw' | 'other' | 'unknown'> = ['unknown'];
 
     prepareSeries(
       {
@@ -1809,12 +1807,7 @@ describe('prepareSeries stacked mountain D9', () => {
     // Full raw has a null gap; connectNulls strips it → filtered N = 3, raw N = 4.
     // Even when appendedGpuThisFrame claims a ranged full-raw write, prepare must
     // re-upload filtered data so draw N matches the bound buffer.
-    const rawWithGap = [
-      [0, 1],
-      [1, 2],
-      null,
-      [3, 4],
-    ] as unknown as Array<readonly [number, number]>;
+    const rawWithGap = [[0, 1], [1, 2], null, [3, 4]] as unknown as Array<readonly [number, number]>;
     const series = {
       type: 'line',
       id: 's0',
@@ -1853,9 +1846,7 @@ describe('prepareSeries stacked mountain D9', () => {
       dispose: vi.fn(),
     };
 
-    const gpuSeriesKindByIndex: Array<'fullRawLine' | 'gpuDecimationRaw' | 'other' | 'unknown'> = [
-      'fullRawLine',
-    ];
+    const gpuSeriesKindByIndex: Array<'fullRawLine' | 'gpuDecimationRaw' | 'other' | 'unknown'> = ['fullRawLine'];
 
     prepareSeries(
       {
@@ -1910,20 +1901,13 @@ describe('prepareSeries stacked mountain D9', () => {
     // Both series.data N and pointCountOverride must be filtered N=3 (no soft OR).
     const prepareSeriesArg = linePrepare.mock.calls[0]![0] as { data: unknown };
     const pointCountOverride = linePrepare.mock.calls[0]![8] as number | undefined;
-    const dataN = Array.isArray(prepareSeriesArg.data)
-      ? (prepareSeriesArg.data as unknown[]).length
-      : -1;
+    const dataN = Array.isArray(prepareSeriesArg.data) ? (prepareSeriesArg.data as unknown[]).length : -1;
     expect(dataN).toBe(3);
     expect(pointCountOverride).toBe(3);
   });
 
   it('C1: connectNulls + modular ring forces linear ring layout on line.prepare', () => {
-    const rawWithGap = [
-      [0, 1],
-      [1, 2],
-      null,
-      [3, 4],
-    ] as unknown as Array<readonly [number, number]>;
+    const rawWithGap = [[0, 1], [1, 2], null, [3, 4]] as unknown as Array<readonly [number, number]>;
     const series = {
       type: 'line',
       id: 's0',
@@ -1955,9 +1939,7 @@ describe('prepareSeries stacked mountain D9', () => {
       getSeriesXOffset: vi.fn(() => 0),
       dispose: vi.fn(),
     };
-    const gpuSeriesKindByIndex: Array<'fullRawLine' | 'gpuDecimationRaw' | 'other' | 'unknown'> = [
-      'fullRawLine',
-    ];
+    const gpuSeriesKindByIndex: Array<'fullRawLine' | 'gpuDecimationRaw' | 'other' | 'unknown'> = ['fullRawLine'];
 
     prepareSeries(
       {
@@ -2044,9 +2026,7 @@ describe('prepareSeries stacked mountain D9', () => {
       getSeriesXOffset: vi.fn(() => 0),
       dispose: vi.fn(),
     };
-    const gpuSeriesKindByIndex: Array<'fullRawLine' | 'gpuDecimationRaw' | 'other' | 'unknown'> = [
-      'unknown',
-    ];
+    const gpuSeriesKindByIndex: Array<'fullRawLine' | 'gpuDecimationRaw' | 'other' | 'unknown'> = ['unknown'];
 
     prepareSeries(
       {
@@ -2093,11 +2073,12 @@ describe('prepareSeries stacked mountain D9', () => {
     // Must setSeries expanded geometry despite appendedGpuThisFrame.
     expect(setSeries).toHaveBeenCalled();
     const uploaded = setSeries.mock.calls[0]![1] as { x?: ArrayLike<number>; length?: number };
-    const expandedN = uploaded && typeof uploaded === 'object' && 'x' in uploaded
-      ? (uploaded.x as ArrayLike<number>).length
-      : Array.isArray(uploaded)
-        ? (uploaded as unknown[]).length
-        : 0;
+    const expandedN =
+      uploaded && typeof uploaded === 'object' && 'x' in uploaded
+        ? (uploaded.x as ArrayLike<number>).length
+        : Array.isArray(uploaded)
+          ? (uploaded as unknown[]).length
+          : 0;
     expect(expandedN).toBeGreaterThan(3);
     expect(gpuSeriesKindByIndex[0]).toBe('other');
     expect(linePrepare).toHaveBeenCalled();
@@ -2107,12 +2088,7 @@ describe('prepareSeries stacked mountain D9', () => {
   });
 
   it('C1: pure area + connectNulls + append skip uploads filtered N and tags other', () => {
-    const rawWithGap = [
-      [0, 1],
-      [1, 2],
-      null,
-      [3, 4],
-    ] as unknown as Array<readonly [number, number]>;
+    const rawWithGap = [[0, 1], [1, 2], null, [3, 4]] as unknown as Array<readonly [number, number]>;
     const series = {
       type: 'area',
       id: 'a0',
@@ -2147,9 +2123,7 @@ describe('prepareSeries stacked mountain D9', () => {
       getSeriesXOffset: vi.fn(() => 0),
       dispose: vi.fn(),
     };
-    const gpuSeriesKindByIndex: Array<'fullRawLine' | 'gpuDecimationRaw' | 'other' | 'unknown'> = [
-      'fullRawLine',
-    ];
+    const gpuSeriesKindByIndex: Array<'fullRawLine' | 'gpuDecimationRaw' | 'other' | 'unknown'> = ['fullRawLine'];
 
     prepareSeries(
       {

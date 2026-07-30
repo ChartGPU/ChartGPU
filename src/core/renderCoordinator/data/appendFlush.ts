@@ -537,15 +537,9 @@ function flushPendingAppendsImplInner(d: any): boolean {
                 }
               }
             }
-            raw = d.createStagingRingView(
-              staging,
-              layout.start,
-              layout.capacity,
-              count,
-              xOffset,
-              prevView,
-              { newBatchAllFinite }
-            );
+            raw = d.createStagingRingView(staging, layout.start, layout.capacity, count, xOffset, prevView, {
+              newBatchAllFinite,
+            });
             d.runtimeRawDataByIndex[seriesIndex] = raw;
             const x0 = d.getX(raw as unknown as CartesianSeriesData, 0);
             const x1 = d.getX(raw as unknown as CartesianSeriesData, Math.max(0, count - 1));

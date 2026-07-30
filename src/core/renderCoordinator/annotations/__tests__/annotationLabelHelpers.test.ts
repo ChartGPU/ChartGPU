@@ -29,12 +29,16 @@ describe('annotationLabelHelpers', () => {
   describe('renderAnnotationTemplate', () => {
     it('substitutes x/y/value/name with optional decimals', () => {
       expect(
-        renderAnnotationTemplate('Point {name}: ({x}, {y}) v={value}', {
-          name: 'A',
-          x: 1.2345,
-          y: 2,
-          value: 3.14159,
-        }, 2)
+        renderAnnotationTemplate(
+          'Point {name}: ({x}, {y}) v={value}',
+          {
+            name: 'A',
+            x: 1.2345,
+            y: 2,
+            value: 3.14159,
+          },
+          2
+        )
       ).toBe('Point A: (1.23, 2.00) v=3.14');
     });
 

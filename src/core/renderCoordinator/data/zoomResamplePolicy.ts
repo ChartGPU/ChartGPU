@@ -14,9 +14,7 @@
  * - `immediate`: mark resample due and schedule flush (period=1).
  * - `debounce`: arm a timer (forbidden for present-fidelity).
  */
-type ZoomResampleScheduleAction =
-  | { readonly kind: 'immediate' }
-  | { readonly kind: 'debounce'; readonly ms: number };
+type ZoomResampleScheduleAction = { readonly kind: 'immediate' } | { readonly kind: 'debounce'; readonly ms: number };
 
 /**
  * Pure policy: how zoom range changes schedule honest CPU re-sampling.

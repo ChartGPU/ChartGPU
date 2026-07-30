@@ -180,11 +180,7 @@ function isMonotonicMutableRingOrStaging(data: RingXYColumns | StagingRingView):
     return cached.mono;
   }
 
-  const store = (
-    mono: boolean,
-    lastX: number,
-    opts?: { proven?: boolean; scanNext?: number }
-  ): boolean => {
+  const store = (mono: boolean, lastX: number, opts?: { proven?: boolean; scanNext?: number }): boolean => {
     const proven = opts?.proven ?? true;
     mutableMonoCache.set(data as object, {
       mono,
@@ -328,11 +324,7 @@ export function isMonotonicNonDecreasingFiniteX(data: CartesianSeriesData): bool
   const n = getPointCount(data);
   const cart = data as CoordinatorCartesianData;
 
-  const storeArray = (
-    mono: boolean,
-    lastX: number,
-    opts: { proven: boolean; scanNext: number }
-  ): boolean => {
+  const storeArray = (mono: boolean, lastX: number, opts: { proven: boolean; scanNext: number }): boolean => {
     if (cacheKey) {
       monotonicXCache.set(cacheKey, {
         mono,

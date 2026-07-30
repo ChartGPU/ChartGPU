@@ -1087,7 +1087,8 @@ const gapScanByData = new WeakMap<object, GapScanCacheEntry>();
 
 function gapScanGeneration(data: CoordinatorCartesianData): { count: number; contentEpoch: number } {
   if (isRingXYColumns(data) || isStagingRingView(data)) {
-    const epoch = typeof data.contentEpoch === 'number' && Number.isFinite(data.contentEpoch) ? data.contentEpoch | 0 : 0;
+    const epoch =
+      typeof data.contentEpoch === 'number' && Number.isFinite(data.contentEpoch) ? data.contentEpoch | 0 : 0;
     return { count: data.count, contentEpoch: epoch };
   }
   return { count: getPointCount(data), contentEpoch: 0 };
@@ -1111,12 +1112,7 @@ export function hasNullGaps(data: CoordinatorCartesianData): boolean {
   const cached = gapScanByData.get(key);
 
   if (mutableRing) {
-    if (
-      cached &&
-      cached.sticky === false &&
-      cached.count === gen.count &&
-      cached.contentEpoch === gen.contentEpoch
-    ) {
+    if (cached && cached.sticky === false && cached.count === gen.count && cached.contentEpoch === gen.contentEpoch) {
       return cached.hadGaps;
     }
   } else if (cached?.sticky === true && cached.hadGaps === true) {

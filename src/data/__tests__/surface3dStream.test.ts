@@ -158,7 +158,11 @@ describe('surface3dStream', () => {
   it('replaceY coerces non-Float32 into targetY scratch without allocating when large enough', () => {
     const g = baseGrid();
     const scratch = new Float32Array(12);
-    const r = applySurface3DReplaceY(g, { mode: 'replaceY', y: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] }, { targetY: scratch });
+    const r = applySurface3DReplaceY(
+      g,
+      { mode: 'replaceY', y: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+      { targetY: scratch }
+    );
     expect(r.data.y).toBe(scratch);
     expect(r.data.y[0]).toBe(1);
     expect(r.data.y[11]).toBe(12);

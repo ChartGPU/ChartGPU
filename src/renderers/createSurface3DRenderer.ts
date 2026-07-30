@@ -347,10 +347,7 @@ export function createSurface3DRenderer(device: GPUDevice, options?: Surface3DRe
     const yRef = dataRef?.y;
     const wire = seriesConfig.wireframe;
     const metaChanged =
-      grid.xStart !== lastXStart ||
-      grid.xStep !== lastXStep ||
-      grid.zStart !== lastZStart ||
-      grid.zStep !== lastZStep;
+      grid.xStart !== lastXStart || grid.xStep !== lastXStep || grid.zStart !== lastZStart || grid.zStep !== lastZStep;
     // Heights upload when data / y / grid meta change. Wireframe-only toggles only
     // rebuild index topology — do not re-write the full height storage.
     // Colormap domain (yMin/yMax) is uniform-only — does not rebuild heights.
