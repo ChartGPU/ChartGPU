@@ -11,8 +11,9 @@ const LABEL_PADDING_CSS_PX = 4;
  * CSS px slack from the plot left/right rails within which an X tick is treated
  * as an edge tick for text anchoring. Outside this band, labels are centered on
  * the tick (required for nice majors that sit inset from the domain ends).
+ * Kept module-private (module honesty: not a public export).
  */
-export const X_TICK_EDGE_ANCHOR_SLACK_CSS_PX = 12;
+const X_TICK_EDGE_ANCHOR_SLACK_CSS_PX = 12;
 
 export function getYAxisLabelX(plotLeftCss: number, tickLengthCssPx: number): number {
   return plotLeftCss - tickLengthCssPx - LABEL_PADDING_CSS_PX;

@@ -5,7 +5,6 @@ import {
   getYAxisTitleX,
   getRightYAxisTitleX,
   resolveXTickLabelAnchor,
-  X_TICK_EDGE_ANCHOR_SLACK_CSS_PX,
 } from '../axisLabelHelpers';
 
 describe('axisLabelHelpers (production exports)', () => {
@@ -23,6 +22,8 @@ describe('axisLabelHelpers (production exports)', () => {
   describe('resolveXTickLabelAnchor', () => {
     const left = 60;
     const right = 740;
+    /** Explicit slack so tests do not depend on a dead modular export. */
+    const edgeSlack = 12;
 
     it('centers inset ticks (nice majors not on domain rails)', () => {
       // Streaming value X: majors well inside [plotLeft, plotRight]
@@ -32,12 +33,12 @@ describe('axisLabelHelpers (production exports)', () => {
     });
 
     it('hugs plot rails only when tick is near the edge', () => {
-      expect(resolveXTickLabelAnchor(left, left, right)).toBe('start');
-      expect(resolveXTickLabelAnchor(left + X_TICK_EDGE_ANCHOR_SLACK_CSS_PX, left, right)).toBe('start');
-      expect(resolveXTickLabelAnchor(left + X_TICK_EDGE_ANCHOR_SLACK_CSS_PX + 1, left, right)).toBe('middle');
-      expect(resolveXTickLabelAnchor(right, left, right)).toBe('end');
-      expect(resolveXTickLabelAnchor(right - X_TICK_EDGE_ANCHOR_SLACK_CSS_PX, left, right)).toBe('end');
-      expect(resolveXTickLabelAnchor(right - X_TICK_EDGE_ANCHOR_SLACK_CSS_PX - 1, left, right)).toBe('middle');
+      expect(resolveXTickLabelAnchor(left, left, right, edgeSlack)).toBe('start');
+      expect(resolveXTickLabelAnchor(left + edgeSlack, left, right, edgeSlack)).toBe('start');
+      expect(resolveXTickLabelAnchor(left + edgeSlack + 1, left, right, edgeSlack)).toBe('middle');
+      expect(resolveXTickLabelAnchor(right, left, right, edgeSlack)).toBe('end');
+      expect(resolveXTickLabelAnchor(right - edgeSlack, left, right, edgeSlack)).toBe('end');
+      expect(resolveXTickLabelAnchor(right - edgeSlack - 1, left, right, edgeSlack)).toBe('middle');
     });
 
     it('returns middle for non-finite inputs', () => {
