@@ -136,6 +136,113 @@ describe('computeVisibleSlice', () => {
       expect(isMonotonicNonDecreasingFiniteX(data)).toBe(false);
     });
 
+    it('soft-cap multi-M unsorted does not declare mono=true (M2)', () => {
+      // n > 250k: previously a strided sample could miss local decreases and
+      // cache mono=true → binary-search wrong window for GPU decimation.
+      const n = 250_001;
+      const x = new Float64Array(n);
+      const y = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        x[i] = i;
+        y[i] = 0;
+      }
+      // Unsorted dip far from stride sample points (stride ≈ n/2048 ≈ 122).
+      // Place inversion at index that is not a multiple of the old stride.
+      const dipAt = 100_001;
+      x[dipAt] = x[dipAt - 1]! - 1;
+      const data = { x, y };
+      expect(isMonotonicNonDecreasingFiniteX(data as any)).toBe(false);
+      // Cached: same identity still false (proven reject).
+      expect(isMonotonicNonDecreasingFiniteX(data as any)).toBe(false);
+      // Binary visible range must fall back to full span (not a wrong sub-window).
+      const vis = findVisibleRangeIndicesByX(data as any, 10, 20);
+      expect(vis.start).toBe(0);
+      expect(vis.end).toBe(n);
+    });
+
+    it('soft-cap multi-M sorted progressive proves mono then tight visible window (M2)', () => {
+      const n = 250_001;
+      const x = new Float64Array(n);
+      const y = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        x[i] = i;
+        y[i] = 0;
+      }
+      const data = { x, y };
+      // First poll: progressive chunk not yet complete → unproven → false (safe full span).
+      expect(isMonotonicNonDecreasingFiniteX(data as any)).toBe(false);
+      // Second poll finishes progressive full-scan → proven mono.
+      expect(isMonotonicNonDecreasingFiniteX(data as any)).toBe(true);
+      // Stable proven mono: tight binary-search visible window (not permanent full-span).
+      const vis = findVisibleRangeIndicesByX(data as any, 100, 200);
+      expect(vis.start).toBe(100);
+      expect(vis.end).toBe(201);
+      expect(vis.end).toBeLessThan(n);
+      expect(vis.end - vis.start).toBeLessThanOrEqual(110);
+      // Subsequent polls stay proven mono without re-scan regression.
+      expect(isMonotonicNonDecreasingFiniteX(data as any)).toBe(true);
+    });
+
+    it('soft-cap multi-M ring progressive proves mono then tight window (M2)', async () => {
+      const { createRingXYColumns } = await import('../../../../data/cartesianData');
+      const n = 250_001;
+      const ring = createRingXYColumns(n);
+      // Seed chronological mono without O(n) append helpers.
+      for (let i = 0; i < n; i++) {
+        ring.x[i] = i;
+        ring.y[i] = 0;
+      }
+      ring.start = 0;
+      ring.count = n;
+      ring.contentEpoch = 1;
+      // First poll unproven.
+      expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(false);
+      // Second poll completes progressive scan.
+      expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+      const vis = findVisibleRangeIndicesByX(ring as any, 100, 200);
+      expect(vis.start).toBe(100);
+      expect(vis.end).toBe(201);
+      expect(vis.end).toBeLessThan(n);
+      expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(true);
+    });
+
+    it('soft-cap multi-M staging progressive proves mono then tight window (M2)', async () => {
+      const { createStagingRingView } = await import('../../../../data/cartesianData');
+      const n = 250_001;
+      // Linear staging (capacity 0): chronological indices map 1:1 into buffer.
+      const staging = new Float32Array(n * 2);
+      for (let i = 0; i < n; i++) {
+        staging[i * 2] = i;
+        staging[i * 2 + 1] = 0;
+      }
+      const view = createStagingRingView(staging, 0, 0, n, 0);
+      expect(isMonotonicNonDecreasingFiniteX(view as any)).toBe(false);
+      expect(isMonotonicNonDecreasingFiniteX(view as any)).toBe(true);
+      const vis = findVisibleRangeIndicesByX(view as any, 50, 150);
+      expect(vis.start).toBe(50);
+      expect(vis.end).toBe(151);
+      expect(vis.end).toBeLessThan(n);
+    });
+
+    it('soft-cap multi-M ring unsorted rejects mono (M2)', async () => {
+      const { createRingXYColumns } = await import('../../../../data/cartesianData');
+      const n = 250_001;
+      const ring = createRingXYColumns(n);
+      for (let i = 0; i < n; i++) {
+        ring.x[i] = i;
+        ring.y[i] = 0;
+      }
+      ring.start = 0;
+      ring.count = n;
+      ring.contentEpoch = 1;
+      // Local inversion off stride grid.
+      ring.x[100_001] = ring.x[100_000]! - 1;
+      expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(false);
+      expect(isMonotonicNonDecreasingFiniteX(ring as any)).toBe(false);
+      const vis = findVisibleRangeIndicesByX(ring as any, 10, 20);
+      expect(vis).toEqual({ start: 0, end: n });
+    });
+
     it('FIFO multi-append at capacity stays mono without full rescan (device auto-window hover)', async () => {
       // ~device ring: many appends between mono polls (hover throttle) must not O(n).
       const { createRingXYColumns, appendIntoRingXY } = await import('../../../../data/cartesianData');

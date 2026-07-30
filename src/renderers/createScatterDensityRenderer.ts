@@ -550,7 +550,21 @@ export function createScatterDensityRenderer(
     assertNotDisposed();
     if (!hasPrepared) return;
     if (!computeDirty) return;
-    if (!binsBuffer || !maxBuffer || !computeBindGroup || lastPointCount <= 0) {
+    // M5: empty / zero point count must zero prior bins (or skip present) — never
+    // clear dirty while leaving a previous density field drawable.
+    if (!binsBuffer || !maxBuffer) {
+      computeDirty = false;
+      return;
+    }
+    if (lastPointCount <= 0) {
+      if (zeroBinsStaging && binsCapacityU32 > 0) {
+        device.queue.writeBuffer(binsBuffer, 0, zeroBinsStaging.buffer, 0, binsCapacityU32 * 4);
+        device.queue.writeBuffer(maxBuffer, 0, ZERO_U32_BUFFER);
+      }
+      computeDirty = false;
+      return;
+    }
+    if (!computeBindGroup) {
       computeDirty = false;
       return;
     }
@@ -587,6 +601,8 @@ export function createScatterDensityRenderer(
   const render: ScatterDensityRenderer['render'] = (passEncoder) => {
     assertNotDisposed();
     if (!hasPrepared) return;
+    // M5: do not present prior density field when series is empty.
+    if (lastPointCount <= 0) return;
     if (!renderBindGroup || !lastPlotScissor || !lutView) return;
     if (lastPlotScissor.w <= 0 || lastPlotScissor.h <= 0) return;
 

@@ -144,19 +144,40 @@ describe('isGpuDecimationEligible', () => {
     expect(isGpuDecimationEligible(s, data)).toBe(true);
   });
 
-  it('treats Float32Array interleaved data as gap-free (no `null` entries possible)', () => {
+  it('treats finite Float32Array interleaved data as gap-free', () => {
     const s = makeLineSeries({ sampling: 'lttb' });
     const data: CartesianSeriesData = new Float32Array([0, 1, 1, 2, 2, 3]);
     expect(isGpuDecimationEligible(s, data)).toBe(true);
   });
 
-  it('treats XYArraysData as gap-free (no `null` entries possible)', () => {
+  it('rejects Float32Array interleaved data with NaN gap markers (H1)', () => {
+    const s = makeLineSeries({ sampling: 'lttb' });
+    const data: CartesianSeriesData = new Float32Array([0, 1, Number.NaN, Number.NaN, 2, 3]);
+    expect(isGpuDecimationEligible(s, data)).toBe(false);
+  });
+
+  it('treats finite XYArraysData as gap-free', () => {
     const s = makeLineSeries({ sampling: 'lttb' });
     const data: CartesianSeriesData = {
       x: [0, 1, 2],
       y: [1, 2, 3],
     };
     expect(isGpuDecimationEligible(s, data)).toBe(true);
+  });
+
+  it('rejects XYArraysData with NaN after null→column promotion (H1)', () => {
+    const s = makeLineSeries({ sampling: 'lttb' });
+    const data: CartesianSeriesData = {
+      x: [0, Number.NaN, 2],
+      y: [1, Number.NaN, 3],
+    };
+    expect(isGpuDecimationEligible(s, data)).toBe(false);
+  });
+
+  it('rejects nullish rawData (L2)', () => {
+    const s = makeLineSeries({ sampling: 'lttb' });
+    expect(isGpuDecimationEligible(s, null as any)).toBe(false);
+    expect(isGpuDecimationEligible(s, undefined as any)).toBe(false);
   });
 });
 

@@ -960,15 +960,100 @@ export function computeRawXExtentFromCartesianData(
 }
 
 /**
- * Returns true if a CartesianSeriesData array contains any null entries (gap markers).
- * Only applies to ReadonlyArray<DataPoint | null> format — XYArraysData and
- * InterleavedXYData cannot contain null entries and always return false.
+ * Gap-scan cache keyed by data identity (H1).
+ *
+ * **Ring / Staging (mutable FIFO):** generation-aware for both true and false
+ * (`count` + `contentEpoch`). Sticky forever is wrong when a NaN scrolls out of
+ * the ring — re-evaluate when contentEpoch advances (Issue 5).
+ *
+ * **Array / XY / interleaved:** sticky `hadGaps:true` only (promote cannot
+ * re-enable GPU on the same identity). **Never cache false** — same-length
+ * in-place NaN injection has no generation signal and must re-scan (Issue 2).
+ */
+type GapScanCacheEntry =
+  | { readonly hadGaps: true; readonly sticky: true }
+  | {
+      readonly hadGaps: boolean;
+      readonly sticky: false;
+      readonly count: number;
+      readonly contentEpoch: number;
+    };
+
+const gapScanByData = new WeakMap<object, GapScanCacheEntry>();
+
+function gapScanGeneration(data: CoordinatorCartesianData): { count: number; contentEpoch: number } {
+  if (isRingXYColumns(data) || isStagingRingView(data)) {
+    const epoch = typeof data.contentEpoch === 'number' && Number.isFinite(data.contentEpoch) ? data.contentEpoch | 0 : 0;
+    return { count: data.count, contentEpoch: epoch };
+  }
+  return { count: getPointCount(data), contentEpoch: 0 };
+}
+
+/**
+ * Returns true if cartesian data contains gap markers:
+ * - `null` / non-object entries in DataPoint[] (classic null gaps)
+ * - non-finite x or y in any format (NaN pairs after null→column promotion;
+ *   Ring / Staging / XY / interleaved)
+ *
+ * Nullish / non-array non-objects return false (callers treat missing raw as
+ * ineligible via {@link isGpuDecimationEligible}).
  */
 export function hasNullGaps(data: CoordinatorCartesianData): boolean {
-  if (isRingXYColumns(data)) return false;
-  if (isStagingRingView(data)) return false;
-  if (!Array.isArray(data)) return false;
-  return data.includes(null);
+  if (data == null || typeof data !== 'object') return false;
+
+  const key = data as object;
+  const mutableRing = isRingXYColumns(data) || isStagingRingView(data);
+  const gen = gapScanGeneration(data);
+  const cached = gapScanByData.get(key);
+
+  if (mutableRing) {
+    if (
+      cached &&
+      cached.sticky === false &&
+      cached.count === gen.count &&
+      cached.contentEpoch === gen.contentEpoch
+    ) {
+      return cached.hadGaps;
+    }
+  } else if (cached?.sticky === true && cached.hadGaps === true) {
+    // Sticky true for promote / DataPoint identities only.
+    return true;
+  }
+  // Non-ring: never trust a cached false (Issue 2).
+
+  const scanHasGaps = (): boolean => {
+    if (Array.isArray(data)) {
+      for (let i = 0; i < data.length; i++) {
+        const p = data[i];
+        if (p === null || p === undefined || typeof p !== 'object') return true;
+        const x = isTupleDataPoint(p) ? p[0] : (p as { x: number }).x;
+        const y = isTupleDataPoint(p) ? p[1] : (p as { y: number }).y;
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return true;
+      }
+      return false;
+    }
+    const n = gen.count;
+    for (let i = 0; i < n; i++) {
+      const x = getX(data, i);
+      const y = getY(data, i);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return true;
+    }
+    return false;
+  };
+
+  const has = scanHasGaps();
+  if (mutableRing) {
+    gapScanByData.set(key, {
+      hadGaps: has,
+      sticky: false,
+      count: gen.count,
+      contentEpoch: gen.contentEpoch,
+    });
+  } else if (has) {
+    gapScanByData.set(key, { hadGaps: true, sticky: true });
+  }
+  // Non-ring clean: do not cache false.
+  return has;
 }
 
 /**

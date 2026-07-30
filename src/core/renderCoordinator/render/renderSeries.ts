@@ -40,13 +40,14 @@ import type { ReferenceLineRenderer } from '../../../renderers/createReferenceLi
 import type { AnnotationMarkerRenderer } from '../../../renderers/createAnnotationMarkerRenderer';
 import type { DecimationCompute } from '../../../renderers/createDecimationCompute';
 import type { DataStore } from '../../../data/createDataStore';
-import { isGpuDecimationEligible, mapSamplingToDecimationAlgorithm } from '../../../data/gpuDecimationEligibility';
+import { mapSamplingToDecimationAlgorithm } from '../../../data/gpuDecimationEligibility';
+import { isPrepareSeriesGpuDecimationEligible } from '../../../data/gpuDecimationPrepareGate';
 import { resolveStepMode, type StepMode } from '../../../data/stepGeometry';
 import { clampInt } from '../utils/canvasUtils';
 import { clamp01 } from '../animation/animationHelpers';
 import { findVisibleRangeIndicesByX } from '../data/computeVisibleSlice';
 import { resolvePieRadiiCss } from '../utils/timeAxisUtils';
-import { isRingXYColumns, isStagingRingView } from '../../../data/cartesianData';
+import { getPointCount, isRingXYColumns, isStagingRingView } from '../../../data/cartesianData';
 import { type FilterGapsCache, getFilteredGapsCached } from './filterGapsCache';
 import { getStackedMountainGeometryMap, type StackedMountainCache } from './stackedMountainCache';
 import { getExpandedStepPolyline, getExpandedStepStacked, type StepExpandCache } from './stepExpandCache';
@@ -429,13 +430,19 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
           seriesIndex: i,
           xAxisType: currentOptions.xAxis.type,
         });
-        if (!appendedGpuThisFrame.has(i)) {
+        // C1: connectNulls may filter N; never skip setSeries / never bind modular raw.
+        const areaConnectNulls = !!s.connectNulls;
+        if (!appendedGpuThisFrame.has(i) || areaConnectNulls) {
           setSeriesIfChanged(i, areaData, { xOffset: packingXOffset });
         }
         const areaBuffer = dataStore.getSeriesBuffer(i);
-        const areaRingLayout = dataStore.getSeriesRingLayout(i);
+        const areaRingLayout = areaConnectNulls
+          ? { start: 0, capacity: 0 }
+          : dataStore.getSeriesRingLayout(i);
+        const areaUploadCount = getPointCount(areaData as CartesianSeriesData);
         // Shared storage only when linear (capacity 0). After modular ring wrap,
         // private-pack chronological areaData (same contract as line+areaStyle).
+        // connectNulls always pins draw N to filtered upload count.
         if (areaRingLayout.capacity === 0) {
           renderers.areaRenderers[i].prepare(
             s,
@@ -444,7 +451,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
             getYScale(s),
             baseline,
             areaBuffer,
-            dataStore.getSeriesPointCount(i),
+            areaConnectNulls ? areaUploadCount : dataStore.getSeriesPointCount(i),
             xOffset,
             undefined,
             areaDrawLod
@@ -463,8 +470,10 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
             areaDrawLod
           );
         }
-        // sampling:'none' keeps full raw resident → ranged append (mirrors line).
-        if (s.sampling === 'none') {
+        // connectNulls → not full-raw residency (C1). sampling:'none' otherwise.
+        if (areaConnectNulls) {
+          gpuSeriesKindByIndex[i] = 'other';
+        } else if (s.sampling === 'none') {
           gpuSeriesKindByIndex[i] = 'fullRawLine';
         } else {
           gpuSeriesKindByIndex[i] = 'other';
@@ -480,7 +489,10 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
         const rawDataForGpu = s.rawData;
         const lineStepMode = resolveStepMode((s as { step?: boolean | StepMode | string | null | undefined }).step);
         const forceStandardDraw = forceStandardDrawLod || lineStepMode != null;
-        const gpuEligible = !stackGeomLine && lineStepMode == null && isGpuDecimationEligible(s, rawDataForGpu);
+        const gpuEligible = isPrepareSeriesGpuDecimationEligible(s, rawDataForGpu, {
+          hasStackGeometry: !!stackGeomLine,
+          stepMode: lineStepMode,
+        });
 
         // Stacked mountain line: stroke at yTop; fill between yBottom and yTop (private pack).
         if (stackGeomLine && s.areaStyle) {
@@ -788,16 +800,20 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
           s.sampling === 'none'
             ? (((s as { rawData?: unknown }).rawData as typeof s.data | undefined) ?? s.data)
             : s.data;
-        const filteredUpload = s.connectNulls
+        const connectNullsActive = !!s.connectNulls;
+        const filteredUpload = connectNullsActive
           ? getFilteredGapsCached(filterGapsCache, i, sourceForUpload)
           : sourceForUpload;
+        // C1: connectNulls / step expand N may differ from full-raw ranged append.
+        // Branch once on connectNullsActive | step; always full-rewrite upload.
+        const nonRawUpload = connectNullsActive || lineStepMode != null;
         const uploadData: CartesianSeriesData = lineStepMode
           ? getExpandedStepPolyline(
               stepExpandCache,
               i,
               filteredUpload as CartesianSeriesData,
               lineStepMode,
-              !!s.connectNulls
+              connectNullsActive
             ).cartesian
           : (filteredUpload as CartesianSeriesData);
         const { packingXOffset, xOffset } = resolveLinePackingXOffset({
@@ -806,15 +822,18 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
           seriesIndex: i,
           xAxisType: currentOptions.xAxis.type,
         });
-        if (!appendedGpuThisFrame.has(i)) {
+        if (!appendedGpuThisFrame.has(i) || nonRawUpload) {
           setSeriesIfChanged(i, uploadData, { xOffset: packingXOffset });
         }
         const buffer = dataStore.getSeriesBuffer(i);
         // Pass filtered/full-raw data to the renderer so point count matches the GPU buffer.
         const lineSeriesForRenderer = uploadData !== s.data ? { ...s, data: uploadData } : s;
         // Full-raw / CPU path may still be modular after maxPoints wrap — pass ring.
-        // Step expand is always chronological linear (not a ring of source points).
-        const cpuPathRingLayout = lineStepMode ? { start: 0, capacity: 0 } : dataStore.getSeriesRingLayout(i);
+        // Step / connectNulls uploads are chronological linear (not modular raw).
+        const cpuPathRingLayout = nonRawUpload
+          ? { start: 0, capacity: 0 }
+          : dataStore.getSeriesRingLayout(i);
+        const uploadPointCount = getPointCount(uploadData);
         renderers.lineRenderers[i].prepare(
           lineSeriesForRenderer,
           buffer,
@@ -824,7 +843,8 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
           gridArea.devicePixelRatio,
           gridArea.canvasWidth,
           gridArea.canvasHeight,
-          undefined,
+          // Pin draw N to filtered/step upload (defensive vs residual DataStore mismatch).
+          nonRawUpload ? uploadPointCount : undefined,
           lineSeriesCount,
           cpuPathRingLayout,
           forceStandardDraw,
@@ -833,8 +853,8 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
 
         // Track the GPU buffer kind for future append fast-path decisions.
         // sampling:'none' keeps full raw resident at any zoom → ranged append
-        // (issue 1.6). Zoomed sampled CPU paths / step tag 'other' (full re-upload).
-        if (lineStepMode) {
+        // (issue 1.6). Zoomed sampled CPU paths / step / connectNulls tag 'other'.
+        if (nonRawUpload) {
           gpuSeriesKindByIndex[i] = 'other';
         } else if (s.sampling === 'none') {
           gpuSeriesKindByIndex[i] = 'fullRawLine';
@@ -863,7 +883,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
             rawBounds: (s as { rawBounds?: ResolvedAreaSeriesConfig['rawBounds'] }).rawBounds,
           };
 
-          const cpuRingLayout = lineStepMode ? { start: 0, capacity: 0 } : dataStore.getSeriesRingLayout(i);
+          const cpuRingLayout = nonRawUpload ? { start: 0, capacity: 0 } : dataStore.getSeriesRingLayout(i);
           if (cpuRingLayout.capacity === 0) {
             renderers.areaRenderers[i].prepare(
               areaLike,
@@ -872,7 +892,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
               yScaleForArea,
               areaBaseline,
               buffer,
-              dataStore.getSeriesPointCount(i),
+              nonRawUpload ? uploadPointCount : dataStore.getSeriesPointCount(i),
               xOffset,
               undefined,
               areaDrawLod

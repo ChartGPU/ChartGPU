@@ -181,3 +181,88 @@ it('allows stroke-only line with inert stack (no areaStyle)', () => {
     })
   ).toBe(true);
 });
+
+describe('canRangedAppendLine — C1 connectNulls + M1 step', () => {
+  it('rejects connectNulls even when sampling none / fullRawLine (C1)', () => {
+    expect(
+      canRangedAppendLine({
+        seriesType: 'line',
+        sampling: 'none',
+        kind: 'fullRawLine',
+        rawData: raw,
+        series: { type: 'line', sampling: 'none', connectNulls: true } as any,
+      })
+    ).toBe(false);
+  });
+
+  it('rejects cold unknown + connectNulls + sampling none (C1)', () => {
+    expect(
+      canRangedAppendLine({
+        seriesType: 'line',
+        sampling: 'none',
+        kind: 'unknown',
+        rawData: raw,
+        series: { type: 'line', sampling: 'none', connectNulls: true } as any,
+      })
+    ).toBe(false);
+  });
+
+  it('rejects step digital line for all step modes (M1)', () => {
+    for (const step of [true, 'after', 'before', 'middle'] as const) {
+      expect(
+        canRangedAppendLine({
+          seriesType: 'line',
+          sampling: 'none',
+          kind: 'unknown',
+          rawData: raw,
+          series: { type: 'line', sampling: 'none', step } as any,
+        })
+      ).toBe(false);
+      expect(
+        canRangedAppendLine({
+          seriesType: 'line',
+          sampling: 'none',
+          kind: 'fullRawLine',
+          rawData: raw,
+          series: { type: 'line', sampling: 'none', step } as any,
+        })
+      ).toBe(false);
+    }
+  });
+
+  it('allows step: false (linear) with sampling none', () => {
+    expect(
+      canRangedAppendLine({
+        seriesType: 'line',
+        sampling: 'none',
+        kind: 'fullRawLine',
+        rawData: raw,
+        series: { type: 'line', sampling: 'none', step: false } as any,
+      })
+    ).toBe(true);
+  });
+
+  it('rejects pure area with connectNulls (C1 area path)', () => {
+    expect(
+      canRangedAppendLine({
+        seriesType: 'area',
+        sampling: 'none',
+        kind: 'fullRawLine',
+        rawData: raw,
+        series: { type: 'area', sampling: 'none', connectNulls: true } as any,
+      })
+    ).toBe(false);
+  });
+
+  it('rejects pure area with step (M1 area path)', () => {
+    expect(
+      canRangedAppendLine({
+        seriesType: 'area',
+        sampling: 'none',
+        kind: 'unknown',
+        rawData: raw,
+        series: { type: 'area', sampling: 'none', step: true } as any,
+      })
+    ).toBe(false);
+  });
+});

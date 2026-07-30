@@ -374,10 +374,10 @@ export function resolveZoomedSeriesEntry(input: {
     };
   }
 
-  const bufferedRaw = input.sliceX(rawCartesian, input.bufferedMin, input.bufferedMax);
-
   // GPU decimation: keep full raw; compute scopes via visibleStart/End in prepare.
-  if (isGpuDecimationEligible(s, bufferedRaw)) {
+  // Eligibility uses **full** rawCartesian (not the buffered slice) so a gap outside
+  // the zoom buffer cannot re-enable GPU decimation while full raw still has gaps (L1/H2).
+  if (isGpuDecimationEligible(s, rawCartesian)) {
     return {
       series: {
         ...s,
@@ -387,6 +387,8 @@ export function resolveZoomedSeriesEntry(input: {
       cacheEntry: null,
     };
   }
+
+  const bufferedRaw = input.sliceX(rawCartesian, input.bufferedMin, input.bufferedMax);
 
   const sampled = resolveCartesianDisplayData({
     series: s,

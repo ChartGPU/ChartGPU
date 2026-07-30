@@ -227,6 +227,53 @@ describe('scatter density dirty gate (issue 0.1)', () => {
     renderer.dispose();
   });
 
+  it('empty pointCount zeros bins and skips density render (M5)', () => {
+    const device = createMockDevice();
+    const renderer = createScatterDensityRenderer(device, { sampleCount: 1 });
+    const buf = mockPointBuffer();
+
+    // Populate density field first.
+    prepareOnce(renderer, {
+      contentVersion: 1,
+      pointBuffer: buf,
+      pointCount: 100,
+    });
+    expect(encodeAndCountBinClears(device, renderer)).toBeGreaterThan(0);
+
+    // Clear / empty series: must re-encode zeros (not leave prior field dirty-cleared).
+    prepareOnce(renderer, {
+      contentVersion: 2,
+      pointBuffer: buf,
+      pointCount: 0,
+    });
+    const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
+    const before = writeBuffer.mock.calls.length;
+    renderer.encodeCompute(mockEncoder());
+    const emptyCalls = writeBuffer.mock.calls.slice(before);
+    // Must zero both bins buffer and max buffer (not just "≥2 writes").
+    expect(emptyCalls.length).toBeGreaterThanOrEqual(2);
+    const destBuffers = emptyCalls.map((c) => c[0]);
+    // Two distinct destinations (bins + max) — both cleared.
+    expect(new Set(destBuffers).size).toBeGreaterThanOrEqual(2);
+
+    // Second encode with still-empty + clean dirty must not re-write.
+    const before2 = writeBuffer.mock.calls.length;
+    renderer.encodeCompute(mockEncoder());
+    expect(writeBuffer.mock.calls.length - before2).toBe(0);
+
+    // render must no-op when empty (no draw of prior density).
+    const pass = {
+      setScissorRect: vi.fn(),
+      setPipeline: vi.fn(),
+      setBindGroup: vi.fn(),
+      draw: vi.fn(),
+    };
+    renderer.render(pass as any);
+    expect(pass.draw).not.toHaveBeenCalled();
+
+    renderer.dispose();
+  });
+
   it('skips bin pass on pure hover (unchanged scale + content)', () => {
     const device = createMockDevice();
     const renderer = createScatterDensityRenderer(device, { sampleCount: 1 });

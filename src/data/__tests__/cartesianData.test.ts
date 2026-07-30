@@ -21,6 +21,87 @@ import {
 } from '../cartesianData';
 import type { DataPoint } from '../../config/types';
 
+describe('hasNullGaps (H1 — null + NaN across formats)', () => {
+  it('detects null entries in DataPoint[]', () => {
+    const data = [[0, 1], null, [2, 3]] as unknown as DataPoint[];
+    expect(hasNullGaps(data as any)).toBe(true);
+  });
+
+  it('detects NaN coordinates in DataPoint[]', () => {
+    const data: DataPoint[] = [
+      [0, 1],
+      [Number.NaN, 2],
+      [2, 3],
+    ];
+    expect(hasNullGaps(data as any)).toBe(true);
+  });
+
+  it('detects NaN in XYArraysData (null→column promotion)', () => {
+    const data = { x: [0, Number.NaN, 2], y: [1, Number.NaN, 3] };
+    expect(hasNullGaps(data as any)).toBe(true);
+  });
+
+  it('detects NaN in interleaved Float32Array', () => {
+    const data = new Float32Array([0, 1, Number.NaN, Number.NaN, 2, 3]);
+    expect(hasNullGaps(data as any)).toBe(true);
+  });
+
+  it('returns false for finite XY / ring / staging', () => {
+    expect(hasNullGaps({ x: [0, 1], y: [1, 2] } as any)).toBe(false);
+    const ring = createRingXYColumns(4);
+    appendIntoRingXY(ring, { x: [0, 1, 2], y: [1, 2, 3] }, 0, 3, 0);
+    expect(hasNullGaps(ring as any)).toBe(false);
+    const staging = createStagingRingView(new Float32Array([0, 1, 1, 2]), 0, 0, 2, 0);
+    expect(hasNullGaps(staging as any)).toBe(false);
+  });
+
+  it('detects NaN inside RingXYColumns chronological scan', () => {
+    const ring = createRingXYColumns(4);
+    appendIntoRingXY(ring, { x: [0, 1, 2], y: [1, 2, 3] }, 0, 3, 0);
+    // Inject a NaN gap at chronological index 1.
+    ring.y[(ring.start + 1) % ring.capacity] = Number.NaN;
+    ring.contentEpoch = (ring.contentEpoch | 0) + 1;
+    expect(hasNullGaps(ring as any)).toBe(true);
+  });
+
+  it('sticky hadGaps: same identity stays gapped after rewrite to finite (H1)', () => {
+    const data = { x: [0, Number.NaN, 2], y: [1, 2, 3] };
+    expect(hasNullGaps(data as any)).toBe(true);
+    // Mutate in place to finite values — sticky must keep true for this identity.
+    data.x[1] = 1;
+    expect(hasNullGaps(data as any)).toBe(true);
+  });
+
+  it('non-ring: same-length in-place NaN invalidates prior clean scan (Issue 2)', () => {
+    const data = { x: [0, 1, 2], y: [1, 2, 3] };
+    expect(hasNullGaps(data as any)).toBe(false);
+    data.x[1] = Number.NaN;
+    expect(hasNullGaps(data as any)).toBe(true);
+  });
+
+  it('ring: contentEpoch bump re-scans (false cache + NaN scroll-out) (Issue 5/14)', () => {
+    const ring = createRingXYColumns(8);
+    appendIntoRingXY(ring, { x: [0, 1, 2, 3], y: [1, 2, 3, 4] }, 0, 4, 0);
+    expect(hasNullGaps(ring as any)).toBe(false);
+    // Inject NaN + bump epoch (writer would bump contentEpoch).
+    ring.y[(ring.start + 1) % ring.capacity] = Number.NaN;
+    ring.contentEpoch = (ring.contentEpoch | 0) + 1;
+    expect(hasNullGaps(ring as any)).toBe(true);
+    // Scroll NaN out with finite rewrite + epoch bump → re-eval (not sticky forever).
+    ring.y[(ring.start + 1) % ring.capacity] = 2;
+    ring.contentEpoch = (ring.contentEpoch | 0) + 1;
+    expect(hasNullGaps(ring as any)).toBe(false);
+  });
+
+  it('ring: pure finite append keeps clean cache across generation (Issue 14)', () => {
+    const ring = createRingXYColumns(16);
+    appendIntoRingXY(ring, { x: [0, 1], y: [1, 2] }, 0, 2, 0);
+    expect(hasNullGaps(ring as any)).toBe(false);
+    appendIntoRingXY(ring, { x: [2, 3], y: [3, 4] }, 0, 2, 0);
+    expect(hasNullGaps(ring as any)).toBe(false);
+  });
+});
+
 describe('hasAnyPerPointSize', () => {
   it('detects tuple [x,y,size] including sparse later size', () => {
     const data: DataPoint[] = [
