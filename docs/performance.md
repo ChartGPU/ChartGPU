@@ -71,6 +71,8 @@ Zoom triggers resampling on the visible range only. Target scales with zoom leve
 
 **Memory (preferred):** Stream with a fixed-capacity ring via `appendData(index, newPoints, { maxPoints })` — GPU modular ring writes, O(append), no full retained-window rewrite. Prefer this over sliding-window full `setOption` for high-rate FIFO.
 
+**Cold FIFO seed (G7 / multi‑M setup):** create the chart with empty series (styles/axes only), then seed with `appendData(i, fullColumns, { maxPoints: N })` when the batch length is ≥ `N`. That is a **strict replace into capacity** — one ring allocation at `N`, one pack/upload per series, ring mode active immediately. Do **not** cold-load multi‑M via full-data `setOption` then switch to `appendData` + `maxPoints` on the stream (linear residency + later promote was the G7 10M setup hang path). Suite group 7 uses this idiomatic path; SciChart parity is `fifoCapacity` at first real ingest.
+
 **Memory (fallback):** When you must fully replace series data, trim client-side then `setOption({ series: [{ data: rawData.slice(-maxPoints) }] })`. See [`examples/live-streaming/`](../examples/live-streaming/) and [Chart API — appendData](https://chartgpu.io/docs/api/streaming/#appenddata).
 
 ### Hover / hit-test during multi‑M streaming
