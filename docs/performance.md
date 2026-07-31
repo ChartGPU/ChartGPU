@@ -138,6 +138,18 @@ ChartGPU.create(el, {
 - Buffer growth: geometric (power-of-two). No shrinking until disposal.
 - Time axis: ChartGPU rebases epoch-ms internally for Float32 precision.
 
+### Multi-chart DataStore staging (JS heap)
+
+Each series keeps a **capacity-sized CPU staging `Float32Array`** (interleaved xy, 8 B/point) for pack + ranged upload. Capacity policy:
+
+| Path | Policy |
+|------|--------|
+| **`setSeries` cold seed** (≥10k points) | `nextPow2(seedBytes × 2)` — **proportional to seed**, no absolute 1M-point floor. A 100k seed → ~2 MiB staging, not ~8 MiB. |
+| **`appendSeries` unbounded growth** (≥100k) | ~2× pad, **capped at 2M points** so N concurrent line slots stay safe. |
+| **FIFO `maxPoints`** | Capacity = ring capacity (exact). |
+
+**Dashboard tip:** Prefer shared `GPUDevice` + `pipelineCache` (see [multi-chart cookbook](guides/multichart-dashboard-cookbook.md)). For long-running streams, pass `{ maxPoints }` on `appendData` so staging does not grow without bound. Suite “Memory (MB)” is often **`usedJSHeapSize` only** — SciChart’s WASM heap is undercounted by that metric; prefer ChartGPU before/after self-comparisons for multi-chart memory claims.
+
 ## Performance baseline (regression tracking)
 
 **Location:** [`examples/performance-baseline/`](../examples/performance-baseline/)

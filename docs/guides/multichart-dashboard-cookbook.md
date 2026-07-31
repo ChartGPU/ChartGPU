@@ -75,6 +75,10 @@ disconnect();
 
 Zoom sync ignores `'auto-scroll'` zoom changes by design to prevent streaming charts from shifting other charts' views.
 
+## Memory (JS staging vs shared device)
+
+Sharing one `GPUDevice` avoids N× adapter/device overhead, but each chart still owns **per-series CPU staging** sized to buffer capacity (interleaved Float32 xy). Cold `setSeries` headroom is **proportional to seed** (`nextPow2(seedBytes × 2)` for mid-size series) — not a fixed ~1M-point floor — so dozens of 100k-point panels stay on the order of **seed × modest pad** of JS heap, not **N × 8 MiB**. Unbounded `appendData` without `maxPoints` still grows with a 2× pad up to a **2M-point cap**. Prefer `{ maxPoints }` on long-lived dashboard streams. Details: [performance — multi-chart staging](../performance.md#multi-chart-datastore-staging-js-heap).
+
 ## Streaming Data
 
 Each chart streams data independently using `appendData()`. Always batch multiple points into a single call for optimal performance.

@@ -1363,33 +1363,150 @@ describe('createDataStore', () => {
   });
 
   describe('streaming headroom policy (setSeries modest vs append cap)', () => {
-    it('setSeries ≥10k reserves ~1M-point headroom (not multi-M hard floor)', () => {
-      const store = createDataStore(device);
-      const n = 10_000;
+    /**
+     * nextPow2 matching createDataStore production form (non-finite / ceil guards).
+     * Live setSeries capacity for ≥10k is nextPow2(n*8*2); below 10k geometric only.
+     * Probe script (scripts/multi-chart-staging-headroom-probe.ts) must track these
+     * unit expectations as source of truth for the ship formula.
+     */
+    function nextPow2(bytes: number): number {
+      if (!Number.isFinite(bytes) || bytes <= 0) return 1;
+      const n = Math.ceil(bytes);
+      return 2 ** Math.ceil(Math.log2(n));
+    }
+
+    /** Ship setSeries capacity formula (mirror of createDataStore; no device clamp). */
+    function expectedSetSeriesCapacityBytes(pointCount: number): number {
+      const targetBytes = pointCount * 8;
+      if (pointCount < 10_000) return nextPow2(targetBytes);
+      return nextPow2(targetBytes * 2);
+    }
+
+    function fillXy(n: number): { x: Float64Array; y: Float64Array } {
       const x = new Float64Array(n);
       const y = new Float64Array(n);
       for (let i = 0; i < n; i++) {
         x[i] = i;
         y[i] = i;
       }
+      return { x, y };
+    }
+
+    it('setSeries just-under-10k (9999) uses geometric only (no 2× mid-size headroom)', () => {
+      const store = createDataStore(device);
+      const n = 9999;
+      const { x, y } = fillXy(n);
       store.setSeries(0, { x, y });
       const buf = store.getSeriesBuffer(0) as unknown as { size: number };
-      // 1M points * 8 bytes = 8_388_608 (pow2). Exact target is 80_000; headroom >> target.
-      expect(buf.size).toBeGreaterThanOrEqual(1_000_000 * 8);
-      // Must not jump to the old 4M-point hard floor on setSeries.
-      expect(buf.size).toBeLessThan(4_000_000 * 8);
+      const staging = store.getSeriesStagingBuffer(0);
+      const expected = nextPow2(n * 8); // geometric only — threshold is >= 10_000
+      expect(buf.size).toBe(expected);
+      expect(staging.byteLength).toBe(expected);
+      expect(staging.length).toBe(expected / 4);
+      // Must not apply 2× mid-size headroom.
+      expect(buf.size).toBe(nextPow2(n * 8));
+      expect(buf.size).not.toBe(nextPow2(n * 8 * 2));
+      expect(buf.size).toBeLessThan(1_000_000 * 8);
     });
 
-    it('unbounded append ≥100k grows with 2× pad but caps at 2M points', () => {
+    it('setSeries mid-size (10k) capacity is proportional to seed, not 1M-point floor', () => {
+      const store = createDataStore(device);
+      const n = 10_000;
+      const { x, y } = fillXy(n);
+      store.setSeries(0, { x, y });
+      const buf = store.getSeriesBuffer(0) as unknown as { size: number };
+      const staging = store.getSeriesStagingBuffer(0);
+      const targetBytes = n * 8;
+      // Policy: nextPow2(targetBytes * 2) — no absolute 1M floor.
+      const expected = nextPow2(targetBytes * 2);
+      expect(buf.size).toBe(expected);
+      expect(staging.byteLength).toBe(expected);
+      expect(staging.length).toBe(expected / 4);
+      // Hard: must be ≪ 1M points (old floor was ≥ 1e6 * 8).
+      expect(buf.size).toBeLessThan(1_000_000 * 8);
+      // Pad ≤ 4× seed bytes (2× then nextPow2 may round up but stays ≤ 4× for 10k).
+      expect(buf.size).toBeLessThanOrEqual(targetBytes * 4);
+    });
+
+    it('setSeries mid-size (100k) capacity is seed×pad (pad ≤ 4×), not ~1M×8', () => {
+      const store = createDataStore(device);
+      const n = 100_000;
+      const { x, y } = fillXy(n);
+      store.setSeries(0, { x, y });
+      const buf = store.getSeriesBuffer(0) as unknown as { size: number };
+      const staging = store.getSeriesStagingBuffer(0);
+      const targetBytes = n * 8; // 800_000
+      const expected = nextPow2(targetBytes * 2); // nextPow2(1_600_000) = 2_097_152
+      expect(buf.size).toBe(expected);
+      expect(staging.byteLength).toBe(expected);
+      expect(staging.length).toBe(expected / 4);
+      expect(buf.size).toBeLessThan(1_000_000 * 8);
+      // On the order of seed×pad with pad ≤ 4× (not 10×).
+      expect(buf.size).toBeLessThanOrEqual(targetBytes * 4);
+      expect(buf.size / targetBytes).toBeLessThanOrEqual(4);
+      expect(buf.size / targetBytes).toBeGreaterThanOrEqual(1);
+    });
+
+    it('setSeries multi-M (1M) capacity is nextPow2(target×2), not multi-GB floor', () => {
+      const store = createDataStore(device);
+      const n = 1_000_000;
+      const { x, y } = fillXy(n);
+      store.setSeries(0, { x, y });
+      const buf = store.getSeriesBuffer(0) as unknown as { size: number };
+      const staging = store.getSeriesStagingBuffer(0);
+      // nextPow2(1e6 * 8 * 2) = nextPow2(16_000_000) = 16_777_216
+      const expected = nextPow2(n * 8 * 2);
+      expect(expected).toBe(16_777_216);
+      expect(buf.size).toBe(expected);
+      expect(staging.byteLength).toBe(expected);
+      expect(staging.length).toBe(expected / 4);
+    });
+
+    it('live setSeries capacity matches ship formula for key sizes (probe lock)', () => {
+      // Source of truth for scripts/multi-chart-staging-headroom-probe.ts capacityBytesShip.
+      const cases = [9999, 10_000, 100_000, 1_000_000] as const;
+      for (const n of cases) {
+        const store = createDataStore(device);
+        const { x, y } = fillXy(n);
+        store.setSeries(0, { x, y });
+        const buf = store.getSeriesBuffer(0) as unknown as { size: number };
+        const staging = store.getSeriesStagingBuffer(0);
+        const expected = expectedSetSeriesCapacityBytes(n);
+        expect(buf.size).toBe(expected);
+        expect(staging.byteLength).toBe(expected);
+      }
+    });
+
+    it('N×100k setSeries staging sum ≪ N × 1M-point floor (multi-chart H1)', () => {
+      const store = createDataStore(device);
+      const n = 100_000;
+      // Primary goal N is 32/64; 32 keeps linear-scale equality without multi-GB fixture cost.
+      const chartsN = 32;
+      const { x, y } = fillXy(n);
+      let sumStaging = 0;
+      const perSeries = nextPow2(n * 8 * 2);
+      for (let s = 0; s < chartsN; s++) {
+        store.setSeries(s, { x, y });
+        const buf = store.getSeriesBuffer(s) as unknown as { size: number };
+        const staging = store.getSeriesStagingBuffer(s);
+        expect(buf.size).toBe(perSeries);
+        expect(staging.byteLength).toBe(perSeries);
+        expect(staging.length).toBe(perSeries / 4);
+        sumStaging += staging.byteLength;
+      }
+      const targetBytes = n * 8;
+      const legacyFloorPerSeries = 1_000_000 * 8; // pre-fix absolute floor (before nextPow2)
+      expect(sumStaging).toBe(perSeries * chartsN);
+      expect(sumStaging).toBeLessThan(legacyFloorPerSeries * chartsN);
+      // Order-of-magnitude: new total is ~N × seed×pad, not N × 8 MiB.
+      expect(sumStaging).toBeLessThanOrEqual(targetBytes * 4 * chartsN);
+    });
+
+    it('unbounded append ≥100k grows with exact 2× stream pad', () => {
       const store = createDataStore(device);
       // Seed just under growth path; small capacity then force past 100k.
       const seedN = 1000;
-      const x0 = new Float64Array(seedN);
-      const y0 = new Float64Array(seedN);
-      for (let i = 0; i < seedN; i++) {
-        x0[i] = i;
-        y0[i] = i;
-      }
+      const { x: x0, y: y0 } = fillXy(seedN);
       store.setSeries(0, { x: x0, y: y0 });
 
       // Grow to 100k+ in one append (unbounded).
@@ -1404,14 +1521,55 @@ describe('createDataStore', () => {
       const nextCount = seedN + add;
       expect(store.getSeriesPointCount(0)).toBe(nextCount);
       const buf = store.getSeriesBuffer(0) as unknown as { size: number };
+      const staging = store.getSeriesStagingBuffer(0);
       const targetBytes = nextCount * 8;
       // Pure geometric nextPow2(target) for 121k pts = 1_048_576.
       // 2× stream pad nextPow2(target*2) = 2_097_152 — must use the larger pad.
-      const pureGeometric = 2 ** Math.ceil(Math.log2(targetBytes));
-      const streamPad = 2 ** Math.ceil(Math.log2(targetBytes * 2));
+      const pureGeometric = nextPow2(targetBytes);
+      const streamPad = nextPow2(targetBytes * 2);
       expect(streamPad).toBeGreaterThan(pureGeometric);
+      expect(streamPad).toBeLessThan(2_000_000 * 8); // not yet at product 2M-point headroom cap
       expect(buf.size).toBe(streamPad);
-      expect(buf.size).toBeLessThanOrEqual(2_000_000 * 8);
+      expect(staging.byteLength).toBe(buf.size);
+      expect(staging.length).toBe(buf.size / 4);
+    });
+
+    it('unbounded append headroom caps at 2M points when 2× pad would exceed', () => {
+      // Cap is on *stream pad headroom* (min(nextPow2(target*2), 2M*8)), not a hard
+      // ceiling below pure geometric nextPow2(target). Bind the min() when:
+      //   nextPow2(target*2) > 2M*8  AND  nextPow2(target) < 2M*8
+      // nextCount = 600_000 → target = 4_800_000;
+      //   pure geo = 8_388_608; preferred = 16_777_216; capped = 16_000_000.
+      const store = createDataStore(device);
+      const seedN = 1000;
+      const { x: x0, y: y0 } = fillXy(seedN);
+      store.setSeries(0, { x: x0, y: y0 });
+
+      const nextCount = 600_000;
+      const add = nextCount - seedN;
+      const x1 = new Float64Array(add);
+      const y1 = new Float64Array(add);
+      for (let i = 0; i < add; i++) {
+        x1[i] = seedN + i;
+        y1[i] = i;
+      }
+      store.appendSeries(0, { x: x1, y: y1 });
+      expect(store.getSeriesPointCount(0)).toBe(nextCount);
+
+      const targetBytes = nextCount * 8;
+      const pureGeometric = nextPow2(targetBytes);
+      const preferred = nextPow2(targetBytes * 2);
+      const MAX_STREAM_HEADROOM_BYTES = 2_000_000 * 8;
+      expect(preferred).toBeGreaterThan(MAX_STREAM_HEADROOM_BYTES);
+      expect(pureGeometric).toBeLessThan(MAX_STREAM_HEADROOM_BYTES);
+      expect(targetBytes).toBeLessThanOrEqual(MAX_STREAM_HEADROOM_BYTES);
+
+      const buf = store.getSeriesBuffer(0) as unknown as { size: number };
+      const staging = store.getSeriesStagingBuffer(0);
+      // Cap binds: capacity is exactly 2M points × 8 B, not preferred 16_777_216.
+      expect(buf.size).toBe(MAX_STREAM_HEADROOM_BYTES);
+      expect(staging.byteLength).toBe(MAX_STREAM_HEADROOM_BYTES);
+      expect(staging.length).toBe(MAX_STREAM_HEADROOM_BYTES / 4);
     });
   });
 });
