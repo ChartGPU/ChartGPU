@@ -1366,8 +1366,6 @@ describe('createDataStore', () => {
     /**
      * nextPow2 matching createDataStore production form (non-finite / ceil guards).
      * Live setSeries capacity for ≥10k is nextPow2(n*8*2); below 10k geometric only.
-     * Probe script (scripts/multi-chart-staging-headroom-probe.ts) must track these
-     * unit expectations as source of truth for the ship formula.
      */
     function nextPow2(bytes: number): number {
       if (!Number.isFinite(bytes) || bytes <= 0) return 1;
@@ -1462,8 +1460,7 @@ describe('createDataStore', () => {
       expect(staging.length).toBe(expected / 4);
     });
 
-    it('live setSeries capacity matches ship formula for key sizes (probe lock)', () => {
-      // Source of truth for scripts/multi-chart-staging-headroom-probe.ts capacityBytesShip.
+    it('live setSeries capacity matches ship formula for key sizes', () => {
       const cases = [9999, 10_000, 100_000, 1_000_000] as const;
       for (const n of cases) {
         const store = createDataStore(device);
