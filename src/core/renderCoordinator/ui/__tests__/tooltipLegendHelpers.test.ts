@@ -204,6 +204,44 @@ describe('computeCandlestickTooltipAnchorFromMatch', () => {
     const anchor = computeCandlestickTooltipAnchorFromMatch({ point }, xScale, yScales, gridArea as any, canvas);
     expect(anchor).toBe(null);
   });
+
+  it('anchors on price yAxis when vol scale is first in the map (dual-Y)', () => {
+    // Volume first — bar renderer contract. Price values must not use this scale.
+    const volScale = createLinearScale().domain(0, 100_000).range(300, 0);
+    const priceScale = createLinearScale().domain(70, 110).range(300, 0);
+    const dualY = new Map([
+      ['vol', volScale],
+      ['price', priceScale],
+    ]);
+    const point: [number, number, number, number, number] = [50, 80, 90, 70, 95];
+    // body mid = 85 → priceScale maps near mid of 70–110 range
+    const anchor = computeCandlestickTooltipAnchorFromMatch(
+      { point, yAxisId: 'price' },
+      xScale,
+      dualY,
+      gridArea as any,
+      canvas
+    );
+    expect(anchor).not.toBe(null);
+    // priceScale: domain 70→110, range 300→0; 85 is (85-70)/(110-70)=0.375 → y=300*0.625=187.5
+    const expectedY = 5 + 20 + priceScale.scale(85);
+    expect(anchor!.y).toBeCloseTo(expectedY, 0);
+    // Must not be near the floor (vol-scale would map 85 ~ 300)
+    expect(anchor!.y).toBeLessThan(5 + 20 + 280);
+  });
+
+  it('prefers price scale over first map entry when yAxisId omitted', () => {
+    const volScale = createLinearScale().domain(0, 100_000).range(300, 0);
+    const priceScale = createLinearScale().domain(70, 110).range(300, 0);
+    const dualY = new Map([
+      ['vol', volScale],
+      ['price', priceScale],
+    ]);
+    const point: [number, number, number, number, number] = [50, 80, 90, 70, 95];
+    const anchor = computeCandlestickTooltipAnchorFromMatch({ point }, xScale, dualY, gridArea as any, canvas);
+    expect(anchor).not.toBe(null);
+    expect(anchor!.y).toBeCloseTo(5 + 20 + priceScale.scale(85), 0);
+  });
 });
 
 describe('isOHLCDataPoint', () => {

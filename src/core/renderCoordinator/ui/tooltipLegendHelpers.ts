@@ -103,8 +103,31 @@ export function isOHLCDataPoint(point: any): point is OHLCDataPoint {
   return false;
 }
 
+/**
+ * Resolve the Y scale for candlestick tooltip anchoring.
+ *
+ * Dual-Y candle+volume charts put `vol` first in the scale map (bar renderer
+ * samples the first Y). Anchoring OHLC body mid against that scale maps price
+ * domain values near the plot floor. Prefer the series `yAxis` id, then common
+ * price ids, then the first scale as last resort.
+ */
+function resolveCandlestickYScale(
+  yScales: Map<string, LinearScale>,
+  yAxisId?: string
+): LinearScale | undefined {
+  if (yAxisId) {
+    const byId = yScales.get(yAxisId);
+    if (byId) return byId;
+  }
+  for (const id of ['price', 'y', 'default'] as const) {
+    const s = yScales.get(id);
+    if (s) return s;
+  }
+  return yScales.values().next().value;
+}
+
 export function computeCandlestickTooltipAnchorFromMatch(
-  match: { readonly point: OHLCDataPoint },
+  match: { readonly point: OHLCDataPoint; readonly yAxisId?: string },
   xScale: LinearScale,
   yScales: Map<string, LinearScale>,
   gridArea: GridArea,
@@ -123,9 +146,9 @@ export function computeCandlestickTooltipAnchorFromMatch(
   // Body center in domain space
   const bodyMidY = (open + close) / 2;
 
-  // Transform to grid-local CSS pixels
+  // Transform to grid-local CSS pixels on the *price* Y scale (not volume).
   const xGridCss = xScale.scale(timestamp);
-  const yScale = yScales.values().next().value;
+  const yScale = resolveCandlestickYScale(yScales, match.yAxisId);
   const yGridCss = yScale ? yScale.scale(bodyMidY) : 0;
 
   if (!Number.isFinite(xGridCss) || !Number.isFinite(yGridCss)) {
