@@ -28,25 +28,35 @@ jobs:
       - name: Determine PRs to check
         id: prs
         env:
-          GH_TOKEN: "${{ secrets.AUTO_MAINTAINER_PAT }}"
+          # Use GITHUB_TOKEN (job permissions). AUTO_MAINTAINER_PAT is intentionally
+          # not used here: an expired PAT still evaluates as set and causes HTTP 401,
+          # which red-fails every PR that triggers this workflow.
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request_target" ]; then
             echo "numbers=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
           else
             # For check_run/status/review events, find PRs labeled ready-to-merge
-            NUMBERS=$(gh pr list --label "state:ready-to-merge" --state open --json number --jq '.[].number' | tr '\n' ' ')
+            if ! NUMBERS=$(gh pr list --label "state:ready-to-merge" --state open --json number --jq '.[].number' 2>/dev/null | tr '\n' ' '); then
+              echo "warn: gh pr list failed (auth?); no PRs to gate"
+              NUMBERS=""
+            fi
             echo "numbers=$NUMBERS" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Run gate checks
         env:
-          GH_TOKEN: "${{ secrets.AUTO_MAINTAINER_PAT }}"
+          GH_TOKEN: ${{ github.token }}
         run: |
           for PR_NUMBER in ${{ steps.prs.outputs.numbers }}; do
             echo "::group::Checking PR #${PR_NUMBER}"
 
-            # Fetch PR data
-            PR_DATA=$(gh pr view "$PR_NUMBER" --json labels,mergeable,reviews,body,headRefName,baseRefName)
+            # Fetch PR data (skip cleanly if token cannot read the PR)
+            if ! PR_DATA=$(gh pr view "$PR_NUMBER" --json labels,mergeable,reviews,body,headRefName,baseRefName 2>/dev/null); then
+              echo "PR #${PR_NUMBER}: could not fetch PR data (auth or network) — skipping"
+              echo "::endgroup::"
+              continue
+            fi
 
             LABELS=$(echo "$PR_DATA" | jq -r '[.labels[].name] | join(" ")')
 
@@ -60,8 +70,8 @@ jobs:
             # Must not have risk:high
             if echo "$LABELS" | grep -q "risk:high"; then
               echo "PR #${PR_NUMBER}: has risk:high label — gate failed"
-              gh pr comment "$PR_NUMBER" --body "Gate check failed: PR has \`risk:high\` label and requires human review."
-              gh pr edit "$PR_NUMBER" --remove-label "state:ready-to-merge" --add-label "state:in-progress"
+              gh pr comment "$PR_NUMBER" --body "Gate check failed: PR has \`risk:high\` label and requires human review." || true
+              gh pr edit "$PR_NUMBER" --remove-label "state:ready-to-merge" --add-label "state:in-progress" || true
               echo "::endgroup::"
               continue
             fi
@@ -69,8 +79,8 @@ jobs:
             # Must have resolution:none
             if ! echo "$LABELS" | grep -q "resolution:none"; then
               echo "PR #${PR_NUMBER}: missing resolution:none label — gate failed"
-              gh pr comment "$PR_NUMBER" --body "Gate check failed: PR is missing the \`resolution:none\` label."
-              gh pr edit "$PR_NUMBER" --remove-label "state:ready-to-merge" --add-label "state:in-progress"
+              gh pr comment "$PR_NUMBER" --body "Gate check failed: PR is missing the \`resolution:none\` label." || true
+              gh pr edit "$PR_NUMBER" --remove-label "state:ready-to-merge" --add-label "state:in-progress" || true
               echo "::endgroup::"
               continue
             fi
@@ -79,8 +89,8 @@ jobs:
             BODY=$(echo "$PR_DATA" | jq -r '.body // ""')
             if [ -z "$BODY" ]; then
               echo "PR #${PR_NUMBER}: empty body — gate failed"
-              gh pr comment "$PR_NUMBER" --body "Gate check failed: PR description is empty."
-              gh pr edit "$PR_NUMBER" --remove-label "state:ready-to-merge" --add-label "state:in-progress"
+              gh pr comment "$PR_NUMBER" --body "Gate check failed: PR description is empty." || true
+              gh pr edit "$PR_NUMBER" --remove-label "state:ready-to-merge" --add-label "state:in-progress" || true
               echo "::endgroup::"
               continue
             fi
@@ -94,8 +104,8 @@ jobs:
             fi
             if [ "$MERGEABLE" != "MERGEABLE" ]; then
               echo "PR #${PR_NUMBER}: not mergeable ($MERGEABLE) — gate failed"
-              gh pr comment "$PR_NUMBER" --body "Gate check failed: PR is not mergeable (status: ${MERGEABLE})."
-              gh pr edit "$PR_NUMBER" --remove-label "state:ready-to-merge" --add-label "state:in-progress"
+              gh pr comment "$PR_NUMBER" --body "Gate check failed: PR is not mergeable (status: ${MERGEABLE})." || true
+              gh pr edit "$PR_NUMBER" --remove-label "state:ready-to-merge" --add-label "state:in-progress" || true
               echo "::endgroup::"
               continue
             fi
@@ -104,8 +114,8 @@ jobs:
             CHANGES_REQUESTED=$(echo "$PR_DATA" | jq '[.reviews[] | select(.state == "CHANGES_REQUESTED")] | length')
             if [ "$CHANGES_REQUESTED" -gt 0 ]; then
               echo "PR #${PR_NUMBER}: has changes-requested reviews — gate failed"
-              gh pr comment "$PR_NUMBER" --body "Gate check failed: PR has outstanding change requests."
-              gh pr edit "$PR_NUMBER" --remove-label "state:ready-to-merge" --add-label "state:in-progress"
+              gh pr comment "$PR_NUMBER" --body "Gate check failed: PR has outstanding change requests." || true
+              gh pr edit "$PR_NUMBER" --remove-label "state:ready-to-merge" --add-label "state:in-progress" || true
               echo "::endgroup::"
               continue
             fi
