@@ -2297,7 +2297,7 @@ export function createRenderCoordinator(
     interactionScales: NonNullable<ReturnType<typeof computeInteractionScalesGridCssPx>>
   ): {
     params: TooltipParams;
-    match: { point: OHLCDataPoint };
+    match: { point: OHLCDataPoint; yAxisId: string };
     seriesIndex: number;
   } | null => {
     // Iterate from last to first for correct z-ordering (last series drawn on top)
@@ -2308,6 +2308,18 @@ export function createRenderCoordinator(
       if (s.visible === false) continue;
 
       const cs = s as FinanceOhlcHitSeriesConfig;
+      // Prefer series.yAxis; fall back to 'price' then 'y' (dual-Y candle+volume
+      // charts put vol first — 'y' alone can miss the price scale id).
+      const yAxisId =
+        (typeof (s as { yAxis?: string }).yAxis === 'string' && (s as { yAxis?: string }).yAxis) ||
+        (interactionScales.yScales.has('price') ? 'price' : 'y');
+      const yScaleForHit =
+        interactionScales.yScales.get(yAxisId) ??
+        interactionScales.yScales.get('price') ??
+        interactionScales.yScales.get('y') ??
+        interactionScales.yScales.values().next().value;
+      if (!yScaleForHit) continue;
+
       const barWidthClip = computeCandlestickBodyWidthRange(
         cs,
         cs.data,
@@ -2320,7 +2332,7 @@ export function createRenderCoordinator(
         gridX,
         gridY,
         interactionScales.xScale,
-        interactionScales.yScales.get((s as any).yAxis || 'y')!,
+        yScaleForHit,
         barWidthClip,
         // OHLC bars: hit stem [low, high] (same as ChartGPU.hitTest). Candles stay body-only.
         { yHitMode: s.type === 'ohlc' ? 'lowHigh' : 'openClose' }
@@ -2328,7 +2340,7 @@ export function createRenderCoordinator(
       if (!m) continue;
 
       const params = buildCandlestickTooltipParams(i, m.dataIndex, m.point);
-      return { params, match: { point: m.point }, seriesIndex: i };
+      return { params, match: { point: m.point, yAxisId }, seriesIndex: i };
     }
     return null;
   };
