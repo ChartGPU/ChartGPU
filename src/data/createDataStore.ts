@@ -682,18 +682,17 @@ export function createDataStore(device: GPUDevice): DataStore {
       }
 
       const grownCapacityBytes = computeGrownCapacityBytes(capacityBytes, targetBytes);
-      // Streaming headroom: series compression / multi-chart line
-      // slots seed ~100k then append 10k/frame unbounded. Pre-reserve headroom for
-      // mid-size seeds, but **do not** 4× multi-M seeds (5M×5 FIFO was reserving
-      // ~256MB/series → multi-GB + Invalid BindGroup under memory pressure).
-      // High-rate pure growth headroom remains on appendSeries (2× / 2M cap).
-      // Always clamp to maxStorageBufferBindingSize (10M seed 2× → 256MB would
+      // setSeries cold headroom: modest pad proportional to seed (2× + nextPow2).
+      // Do **not** pre-reserve an absolute 1M-point floor for mid-size seeds —
+      // multi-chart dashboards (N×100k) were paying ~8 MiB JS staging per series
+      // even when the seed was 10k–100k. High-rate pure growth headroom remains
+      // on appendSeries (2× pad / 2M-point cap). Multi-M also uses 2× and is
+      // always clamped to maxStorageBufferBindingSize (10M seed 2× → 256MB would
       // fail bind-group validation on 128 MiB devices).
       let desired = grownCapacityBytes;
       if (pointCount >= 10_000) {
-        const mult = pointCount >= 1_000_000 ? 2 : 4;
-        const minReservePts = pointCount >= 1_000_000 ? pointCount : 1_000_000;
-        const headroom = nextPow2(Math.max(targetBytes * mult, minReservePts * 2 * 4));
+        const SET_SERIES_HEADROOM_MULT = 2;
+        const headroom = nextPow2(targetBytes * SET_SERIES_HEADROOM_MULT);
         desired = Math.max(desired, headroom);
       }
       capacityBytes = clampSeriesCapacityBytes(desired, targetBytes, maxBufferSize, maxStorageBinding);
