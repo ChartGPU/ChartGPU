@@ -2736,6 +2736,24 @@ export function createRenderCoordinator(
         continue;
       }
 
+      // Sparse stems already keep full raw and zoom via scales.
+      if (baseline.type === 'errorBar' || baseline.type === 'impulse') {
+        next[i] = baseline;
+        continue;
+      }
+
+      // sampling:'none' keeps the full raw series resident and lets the x-scale
+      // select the viewport. Slicing again here scans and materializes streaming
+      // rings after the zoom resample path has already preserved their identity.
+      if (
+        baseline.sampling === 'none' &&
+        baseline.type !== 'candlestick' &&
+        baseline.type !== 'ohlc'
+      ) {
+        next[i] = baseline;
+        continue;
+      }
+
       const cache = lastSampledData[i];
 
       // Strategy 1: Use cache if it covers visible range
@@ -2750,9 +2768,6 @@ export function createRenderCoordinator(
             ...baseline,
             data: sliceBandByX(cache.data as BandSeriesData, visibleX.min, visibleX.max),
           };
-        } else if (baseline.type === 'errorBar' || baseline.type === 'impulse') {
-          // sampling 'none' / sparse stems — keep full raw; zoom via scales.
-          next[i] = baseline;
         } else {
           next[i] = {
             ...baseline,
@@ -2773,8 +2788,6 @@ export function createRenderCoordinator(
           ...baseline,
           data: sliceBandByX(baseline.data, visibleX.min, visibleX.max),
         };
-      } else if (baseline.type === 'errorBar' || baseline.type === 'impulse') {
-        next[i] = baseline;
       } else {
         next[i] = {
           ...baseline,

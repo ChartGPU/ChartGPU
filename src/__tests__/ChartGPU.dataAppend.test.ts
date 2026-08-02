@@ -9,7 +9,22 @@
 import { describe, it, expect, beforeEach, vi, beforeAll, afterEach } from 'vitest';
 import { ChartGPU } from '../ChartGPU';
 import type { ChartGPUInstance, ChartGPUDataAppendPayload } from '../ChartGPU';
-import type { ChartGPUOptions } from '../config/types';
+import type { CartesianSeriesData, ChartGPUOptions } from '../config/types';
+
+const sliceVisibleRangeByXSpy = vi.hoisted(() => vi.fn());
+
+vi.mock('../core/renderCoordinator/data/computeVisibleSlice', async (importOriginal) => {
+  const actual = await importOriginal<{
+    sliceVisibleRangeByX: (data: CartesianSeriesData, xMin: number, xMax: number) => CartesianSeriesData;
+  }>();
+  return {
+    ...actual,
+    sliceVisibleRangeByX: (...args: Parameters<typeof actual.sliceVisibleRangeByX>) => {
+      sliceVisibleRangeByXSpy();
+      return actual.sliceVisibleRangeByX(...args);
+    },
+  };
+});
 
 // Mock WebGPU globals before importing the module
 beforeAll(() => {
@@ -31,6 +46,10 @@ beforeAll(() => {
           style: {},
           appendChild: vi.fn(),
           removeChild: vi.fn(),
+          setAttribute: vi.fn(),
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+          remove: vi.fn(),
         };
       },
     };
@@ -1380,6 +1399,54 @@ describe('ChartGPU - appendData maxPoints (FIFO)', () => {
     expect(hitLeft.match).not.toBeNull();
     expect(hitLeft.match!.value[0]).toBeCloseTo(2, 0);
     expect(hitLeft.match!.value[0]).not.toBe(0);
+
+    await chart.dispose();
+  });
+
+  it("keeps a sampling 'none' ring out of CPU slicing when zoom changes", async () => {
+    const chart = await ChartGPU.create(mockContainer, {
+      animation: false,
+      renderMode: 'external',
+      tooltip: { show: true },
+      dataZoom: [{ type: 'inside' }],
+      grid: { left: 0, right: 0, top: 0, bottom: 0 },
+      yAxis: { min: -10, max: 60 },
+      series: [{ type: 'line', data: [], sampling: 'none' }],
+    });
+
+    const maxPoints = 4;
+    chart.appendData(
+      0,
+      {
+        x: new Float64Array([0, 1, 2, 3]),
+        y: new Float64Array([0, 10, 20, 50]),
+      },
+      { maxPoints }
+    );
+    expect(chart.renderFrame()).toBe(true);
+    chart.appendData(
+      0,
+      {
+        x: new Float64Array([4, 5]),
+        y: new Float64Array([40, 50]),
+      },
+      { maxPoints }
+    );
+    expect(chart.renderFrame()).toBe(true);
+
+    const hitLeft = chart.hitTest(makePointer(1, 343));
+    expect(hitLeft.match).not.toBeNull();
+    expect(hitLeft.match?.value[0]).toBeCloseTo(2, 0);
+    const hitRight = chart.hitTest(makePointer(799, 86));
+    expect(hitRight.match).not.toBeNull();
+    expect(hitRight.match?.value[0]).toBeCloseTo(5, 0);
+
+    sliceVisibleRangeByXSpy.mockClear();
+    chart.setZoomRange(50, 100);
+    expect(chart.renderFrame()).toBe(true);
+
+    expect(chart.getZoomRange()).toEqual({ start: 50, end: 100 });
+    expect(sliceVisibleRangeByXSpy).not.toHaveBeenCalled();
 
     await chart.dispose();
   });
