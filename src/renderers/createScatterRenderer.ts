@@ -29,7 +29,12 @@ export interface ScatterRenderer {
      * MSAA pass (preserves z-order under standard main-pass line strokes).
      * Default true. Coordinator sets false when any visible line series is present.
      */
-    allowPostResolveDense?: boolean
+    allowPostResolveDense?: boolean,
+    /**
+     * Optional append-safe interleaved XY buffer owned by DataStore. Fixed-radius
+     * point scatter can draw it directly and avoid private full-window repacks.
+     */
+    residentData?: Readonly<{ buffer: GPUBuffer; pointCount: number }>
   ): void;
   /**
    * Drop cached instance geometry so the next `prepare` re-packs.
@@ -314,14 +319,64 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
         )
       : null;
 
+  let pipelineConstRadiusResident: GPURenderPipeline | null = null;
+  let pipelineConstRadiusResidentDenseSS1: GPURenderPipeline | null = null;
+  const createResidentPipeline = (residentSampleCount: number, label: string): GPURenderPipeline =>
+    createRenderPipeline(
+      device,
+      {
+        label,
+        bindGroupLayouts: [bindGroupLayout],
+        vertex: {
+          code: scatterWgsl,
+          label: 'scatter.wgsl',
+          entryPoint: 'vsMainConstRadius',
+          buffers: [
+            {
+              arrayStride: 8,
+              stepMode: 'instance',
+              attributes: [{ shaderLocation: 0, format: 'float32x2', offset: 0 }],
+            },
+          ],
+        },
+        fragment: {
+          code: scatterWgsl,
+          label: 'scatter.wgsl',
+          formats: targetFormat,
+          blend: blendState,
+        },
+        primitive: { topology: 'triangle-list', cullMode: 'none' },
+        multisample: { count: residentSampleCount },
+      },
+      pipelineCache
+    );
+  const getResidentPipeline = (): GPURenderPipeline => {
+    pipelineConstRadiusResident ??= createResidentPipeline(
+      sampleCount,
+      'scatterRenderer/pipelineConstRadiusResident'
+    );
+    return pipelineConstRadiusResident;
+  };
+  const getResidentDensePipeline = (): GPURenderPipeline | null => {
+    if (sampleCount <= 1) return null;
+    pipelineConstRadiusResidentDenseSS1 ??= createResidentPipeline(
+      1,
+      'scatterRenderer/pipelineConstRadiusResidentDenseSS1'
+    );
+    return pipelineConstRadiusResidentDenseSS1;
+  };
+
   /** Variable-radius interleaved instance buffer (x,y,r,pad). */
   let instanceBuffer: GPUBuffer | null = null;
+  /** DataStore-owned interleaved XY buffer; borrowed, never destroyed here. */
+  let residentInstanceBuffer: GPUBuffer | null = null;
   /** Const-radius dual buffers. */
   let xInstanceBuffer: GPUBuffer | null = null;
   let yInstanceBuffer: GPUBuffer | null = null;
   let instanceCount = 0;
   /** True when the last prepare used the constant-radius (dual-buffer) path. */
   let useConstRadiusPipeline = false;
+  let useResidentConstRadius = false;
   let lastConstRadiusDevicePx = 0;
   /**
    * When true, main-pass `render` is a no-op and draws go through `renderDense`
@@ -449,7 +504,8 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     yScale,
     gridArea,
     forceStandardDraw,
-    allowPostResolveDense
+    allowPostResolveDense,
+    residentData
   ) => {
     assertNotDisposed();
 
@@ -494,8 +550,15 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     const constantRadiusDevicePx =
       constantSymbolSizeCss != null ? (hasValidDpr ? constantSymbolSizeCss * dpr : constantSymbolSizeCss) : null;
     const useConstRadius = constantRadiusDevicePx != null && constantRadiusDevicePx > 0 && !hasAnyPerPointSize(data);
+    const residentPointCount =
+      residentData != null && Number.isFinite(residentData.pointCount)
+        ? Math.max(0, Math.floor(residentData.pointCount))
+        : 0;
+    const useResident = useConstRadius && residentData != null;
 
     useConstRadiusPipeline = useConstRadius;
+    useResidentConstRadius = useResident;
+    residentInstanceBuffer = useResident ? residentData.buffer : null;
     lastConstRadiusDevicePx = useConstRadius ? constantRadiusDevicePx! : 0;
 
     const viewportW = gridArea?.canvasWidth ?? lastViewportPx[0];
@@ -518,7 +581,7 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
       const plotH = lastScissor?.h ?? viewportH;
       const drawPol = resolveScatterDrawPolicy({
         constRadius: true,
-        pointCount: count,
+        pointCount: useResident ? residentPointCount : count,
         plotWidthDevicePx: plotW,
         plotHeightDevicePx: plotH,
         radiusDevicePx: lastConstRadiusDevicePx,
@@ -537,6 +600,18 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     fsUniformScratchF32[2] = b;
     fsUniformScratchF32[3] = clamp01(a);
     writeUniformBuffer(device, fsUniformBuffer, fsUniformScratchF32);
+
+    if (useResident) {
+      instanceCount = residentPointCount;
+      // A later transition back to private geometry must repack even if it
+      // happens to reuse the data reference from before resident streaming.
+      boundDataRef = null;
+      boundSizeMode = null;
+      boundConstRadiusCss = null;
+      boundDpr = Number.NaN;
+      boundConstPointCount = 0;
+      return;
+    }
 
     // Geometry identity skip: same data ref + size layout → uniforms only.
     // Policy verb shared with line/DataStore via seriesResidency (issue 3.4 / 2.2).
@@ -808,12 +883,14 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
 
   const isDenseDeferred: ScatterRenderer['isDenseDeferred'] = () => {
     assertNotDisposed();
+    const hasConstGeometry = useResidentConstRadius
+      ? residentInstanceBuffer != null
+      : xInstanceBuffer != null && yInstanceBuffer != null;
     return (
       deferDenseToPostResolve &&
       useConstRadiusPipeline &&
       instanceCount > 0 &&
-      xInstanceBuffer != null &&
-      yInstanceBuffer != null
+      hasConstGeometry
     );
   };
 
@@ -842,6 +919,28 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     }
   };
 
+  const drawResidentConstRadiusInstances = (
+    passEncoder: GPURenderPassEncoder,
+    pipeline: GPURenderPipeline,
+    options?: Readonly<{ manageScissor?: boolean }>
+  ): void => {
+    if (!residentInstanceBuffer || instanceCount === 0) return;
+
+    const manageScissor = options?.manageScissor !== false;
+    if (manageScissor && lastScissor && lastCanvasWidth > 0 && lastCanvasHeight > 0) {
+      passEncoder.setScissorRect(lastScissor.x, lastScissor.y, lastScissor.w, lastScissor.h);
+    }
+
+    passEncoder.setPipeline(pipeline);
+    passEncoder.setBindGroup(0, bindGroup);
+    passEncoder.setVertexBuffer(0, residentInstanceBuffer);
+    passEncoder.draw(6, instanceCount);
+
+    if (manageScissor && lastScissor && lastCanvasWidth > 0 && lastCanvasHeight > 0) {
+      passEncoder.setScissorRect(0, 0, lastCanvasWidth, lastCanvasHeight);
+    }
+  };
+
   const render: ScatterRenderer['render'] = (passEncoder) => {
     assertNotDisposed();
     if (instanceCount === 0) return;
@@ -849,7 +948,11 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     if (deferDenseToPostResolve && useConstRadiusPipeline) return;
 
     if (useConstRadiusPipeline) {
-      drawConstRadiusInstances(passEncoder, pipelineConstRadius);
+      if (useResidentConstRadius) {
+        drawResidentConstRadiusInstances(passEncoder, getResidentPipeline());
+      } else {
+        drawConstRadiusInstances(passEncoder, pipelineConstRadius);
+      }
       return;
     }
 
@@ -869,8 +972,17 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
 
   const renderDense: ScatterRenderer['renderDense'] = (passEncoder) => {
     assertNotDisposed();
-    if (!isDenseDeferred() || !pipelineConstRadiusDenseSS1) return;
-    drawConstRadiusInstances(passEncoder, pipelineConstRadiusDenseSS1, { manageScissor: false });
+    if (!isDenseDeferred()) return;
+    if (useResidentConstRadius) {
+      const residentDensePipeline = getResidentDensePipeline();
+      if (residentDensePipeline) {
+        drawResidentConstRadiusInstances(passEncoder, residentDensePipeline, { manageScissor: false });
+      }
+      return;
+    }
+    if (pipelineConstRadiusDenseSS1) {
+      drawConstRadiusInstances(passEncoder, pipelineConstRadiusDenseSS1, { manageScissor: false });
+    }
   };
 
   const dispose: ScatterRenderer['dispose'] = () => {
@@ -885,6 +997,8 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
       }
     }
     instanceBuffer = null;
+    residentInstanceBuffer = null;
+    useResidentConstRadius = false;
     if (xInstanceBuffer) {
       try {
         xInstanceBuffer.destroy();

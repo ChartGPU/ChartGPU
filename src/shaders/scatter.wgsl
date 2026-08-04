@@ -4,8 +4,8 @@
 // - Const-radius dual-buffer (vsMainConstRadiusSplit, production Option A):
 //   separate float32 x and y instance buffers (shaderLocation 0/1); radius from
 //   VSUniforms.radiusPx. Enables equal-N y-only upload of N×4 y bytes only.
-// - Legacy interleaved const-radius entry (vsMainConstRadius): float32x2 centers
-//   in one buffer — kept for shader completeness; renderer uses split path.
+// - Resident interleaved const-radius entry (vsMainConstRadius): float32x2 centers
+//   borrowed directly from DataStore for append-safe point scatter.
 // - Draw call: draw(6, instanceCount) using triangle-list expansion in VS
 // - Uniforms:
 //   - @group(0) @binding(0): VSUniforms { transform, viewportPx, radiusPx }

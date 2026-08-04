@@ -2,7 +2,17 @@ import { describe, it, expect, vi } from 'vitest';
 import { createAppendFlush, type AppendFlushDeps } from '../appendFlush';
 import { canRangedAppendLine } from '../canRangedAppendLine';
 import { demoteStagingViewAfterRebindFailure } from '../stagingThinPath';
-import { createStagingRingView } from '../../../../data/cartesianData';
+import {
+  appendIntoRingXY,
+  createRingXYColumns,
+  createStagingRingView,
+  getPointCount,
+  getSize,
+  getX,
+  getY,
+  isRingXYColumns,
+} from '../../../../data/cartesianData';
+import { planMaxPointsWindow } from '../../../../data/maxPointsWindow';
 
 function baseDeps(overrides: Partial<AppendFlushDeps> = {}): AppendFlushDeps {
   const pendingAppendByIndex = new Map<
@@ -131,6 +141,134 @@ describe('appendFlush module ownership', () => {
     expect(lastSetSeriesCache.has(0)).toBe(true);
     // Runtime columns extended (owned mutable path)
     expect(raw.x.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('ranged-appends fixed-radius point scatter with maxPoints', () => {
+    const appendSeries = vi.fn(() => true);
+    const raw = { x: [0, 1] as number[], y: [10, 11] as number[] };
+    const scatter = {
+      type: 'scatter',
+      mode: 'points',
+      sampling: 'none',
+      samplingThreshold: 0,
+      data: raw,
+      rawData: raw,
+    } as any;
+    const deps = baseDeps({
+      currentOptions: { series: [scatter], autoScroll: false, xAxis: {} } as any,
+      runtimeRawDataByIndex: [raw],
+      gpuSeriesKindByIndex: ['fullRawLine'],
+      isOwnedMutableColumns: () => true,
+      ensureMutableRuntimeColumns: () => raw,
+      normalizeMaxPoints: (value) => (typeof value === 'number' ? value : undefined),
+      dataStore: {
+        appendSeries,
+        getSeriesXOffset: vi.fn(() => 0),
+      } as any,
+    });
+    deps.pendingAppendByIndex.set(0, [{ points: { x: [2], y: [12] }, maxPoints: 4 }]);
+    deps.runtimeBaseSeries = [scatter];
+    deps.renderSeries = [scatter];
+
+    expect(createAppendFlush(() => deps)()).toBe(true);
+
+    expect(appendSeries).toHaveBeenCalledWith(0, { x: [2], y: [12] }, { maxPoints: 4 });
+    expect(deps.appendedGpuThisFrame.has(0)).toBe(true);
+    expect(deps.lastSetSeriesCache.has(0)).toBe(true);
+  });
+
+  it('preserves the option seed when scatter appends before its first resident prepare', () => {
+    const appendSeries = vi.fn(() => true);
+    const raw = { x: [0, 1] as number[], y: [10, 11] as number[] };
+    const scatter = {
+      type: 'scatter',
+      mode: 'points',
+      sampling: 'none',
+      samplingThreshold: 0,
+      symbolSize: 4,
+      data: raw,
+      rawData: raw,
+    } as any;
+    const deps = baseDeps({
+      currentOptions: { series: [scatter], autoScroll: false, xAxis: {} } as any,
+      runtimeRawDataByIndex: [raw],
+      gpuSeriesKindByIndex: ['unknown'],
+      isOwnedMutableColumns: () => true,
+      ensureMutableRuntimeColumns: () => raw,
+      normalizeMaxPoints: (value) => (typeof value === 'number' ? value : undefined),
+      planMaxPointsWindow: (prev, next, maxPoints) => planMaxPointsWindow(prev, next, maxPoints ?? undefined),
+      getPointCount: (data) => getPointCount(data as any),
+      getX: (data, index) => getX(data as any, index),
+      getY: (data, index) => getY(data as any, index),
+      getSize: (data, index) => getSize(data as any, index),
+      createRingXYColumns: (capacity, withSize) => createRingXYColumns(capacity, withSize),
+      appendIntoRingXY: (ring, data, newSrcOffset, keepNewCount, dropPrevCount) =>
+        appendIntoRingXY(ring as any, data as any, newSrcOffset, keepNewCount, dropPrevCount),
+      isRingXYColumns,
+      dataStore: {
+        appendSeries,
+        getSeriesXOffset: vi.fn(() => 0),
+      } as any,
+    });
+    deps.pendingAppendByIndex.set(0, [{ points: { x: [2], y: [12] }, maxPoints: 4 }]);
+    deps.runtimeBaseSeries = [scatter];
+    deps.renderSeries = [scatter];
+
+    expect(createAppendFlush(() => deps)()).toBe(true);
+
+    expect(appendSeries).not.toHaveBeenCalled();
+    expect(deps.lastSetSeriesCache.has(0)).toBe(false);
+    const retained = deps.runtimeRawDataByIndex[0] as any;
+    expect(getPointCount(retained)).toBe(3);
+    expect([getX(retained, 0), getX(retained, 1), getX(retained, 2)]).toEqual([0, 1, 2]);
+    expect([getY(retained, 0), getY(retained, 1), getY(retained, 2)]).toEqual([10, 11, 12]);
+  });
+
+  it('keeps every coalesced scatter batch on the private path when a later batch has sizes', () => {
+    const appendSeries = vi.fn(() => true);
+    const raw: { x: number[]; y: number[]; size?: (number | undefined)[] } = {
+      x: [0, 1],
+      y: [10, 11],
+    };
+    const scatter = {
+      type: 'scatter',
+      mode: 'points',
+      sampling: 'none',
+      samplingThreshold: 0,
+      symbolSize: 4,
+      data: raw,
+      rawData: raw,
+    } as any;
+    const deps = baseDeps({
+      currentOptions: { series: [scatter], autoScroll: false, xAxis: {} } as any,
+      runtimeRawDataByIndex: [raw],
+      gpuSeriesKindByIndex: ['fullRawLine'],
+      isOwnedMutableColumns: () => true,
+      ensureMutableRuntimeColumns: () => raw,
+      normalizeMaxPoints: (value) => (typeof value === 'number' ? value : undefined),
+      planMaxPointsWindow: (prev, next, maxPoints) => planMaxPointsWindow(prev, next, maxPoints ?? undefined),
+      getPointCount: (data) => getPointCount(data as any),
+      getX: (data, index) => getX(data as any, index),
+      getY: (data, index) => getY(data as any, index),
+      getSize: (data, index) => getSize(data as any, index),
+      dataStore: {
+        appendSeries,
+        getSeriesXOffset: vi.fn(() => 0),
+      } as any,
+    });
+    deps.pendingAppendByIndex.set(0, [
+      { points: { x: [2], y: [12] } },
+      { points: { x: [3], y: [13], size: [9] } },
+    ]);
+    deps.runtimeBaseSeries = [scatter];
+    deps.renderSeries = [scatter];
+
+    expect(createAppendFlush(() => deps)()).toBe(true);
+
+    expect(appendSeries).not.toHaveBeenCalled();
+    expect(raw.x).toEqual([0, 1, 2, 3]);
+    expect(raw.y).toEqual([10, 11, 12, 13]);
+    expect(raw.size?.[3]).toBe(9);
   });
 
   it('calls recomputeRuntimeBaseSeries when ranged append is not available', () => {

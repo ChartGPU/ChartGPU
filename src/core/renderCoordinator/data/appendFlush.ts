@@ -359,6 +359,10 @@ function flushPendingAppendsImplInner(d: any): boolean {
         kind,
         rawData: rawForAppend,
         series: s as any,
+        appendedData:
+          s.type === 'scatter'
+            ? batches.map((batch: PendingAppendBatch) => batch.points as CartesianSeriesData)
+            : undefined,
       });
 
       // Thin path = GPU append fast path: bind coordinator raw to DataStore
@@ -769,7 +773,11 @@ function flushPendingAppendsImplInner(d: any): boolean {
     d.lastSampledData[seriesIndex] = null;
     d.filterGapsCache.delete(seriesIndex);
     const reseedRaw = d.runtimeRawDataByIndex[seriesIndex];
-    if (reseedRaw != null) {
+    // Scatter's private/cold fallback has not updated DataStore. A cache hit on
+    // the next prepare would skip the required seed/full upload before binding
+    // a resident buffer. Only reseed scatter after a successful GPU append.
+    const canReseedDataStoreCache = s.type !== 'scatter' || d.appendedGpuThisFrame.has(seriesIndex);
+    if (reseedRaw != null && canReseedDataStoreCache) {
       let reseedXOffset = 0;
       if (d.isStagingRingView(reseedRaw)) {
         reseedXOffset = reseedRaw.xOffset;

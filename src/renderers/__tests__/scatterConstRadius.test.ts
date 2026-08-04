@@ -219,6 +219,54 @@ describe('scatter const-radius instance stride', () => {
   });
 });
 
+describe('scatter resident DataStore buffer', () => {
+  it('draws fixed-radius points from an interleaved resident buffer without private geometry uploads', () => {
+    const device = createMockDevice();
+    const writeBuffer = device.queue.writeBuffer as ReturnType<typeof vi.fn>;
+    const createBuffer = device.createBuffer as ReturnType<typeof vi.fn>;
+    const renderer = createScatterRenderer(device, { sampleCount: 1 });
+    const residentBuffer = { size: 4096 } as unknown as GPUBuffer;
+    const residentPointCount = 4;
+    const data = {
+      x: new Float32Array([0, 1, 2, 3]),
+      y: new Float32Array([1, 2, 3, 4]),
+    };
+
+    writeBuffer.mockClear();
+    createBuffer.mockClear();
+    renderer.prepare(
+      baseSeries(5),
+      data as unknown as never,
+      identityScale,
+      identityScale,
+      gridArea,
+      false,
+      true,
+      { buffer: residentBuffer, pointCount: residentPointCount }
+    );
+
+    expect(createBuffer).not.toHaveBeenCalled();
+    expect(writeBuffer).not.toHaveBeenCalled();
+
+    const pass = {
+      setPipeline: vi.fn(),
+      setBindGroup: vi.fn(),
+      setVertexBuffer: vi.fn(),
+      draw: vi.fn(),
+      setScissorRect: vi.fn(),
+    } as unknown as GPURenderPassEncoder & {
+      setVertexBuffer: ReturnType<typeof vi.fn>;
+      draw: ReturnType<typeof vi.fn>;
+    };
+    renderer.render(pass);
+
+    expect(pass.setVertexBuffer).toHaveBeenCalledWith(0, residentBuffer);
+    expect(pass.setVertexBuffer).not.toHaveBeenCalledWith(1, expect.anything());
+    expect(pass.draw).toHaveBeenCalledWith(6, residentPointCount);
+    renderer.dispose();
+  });
+});
+
 describe('scatter geometry identity cache (issue 1.2)', () => {
   it('skips instance writeBuffer on second prepare with same data ref', () => {
     const device = createMockDevice();

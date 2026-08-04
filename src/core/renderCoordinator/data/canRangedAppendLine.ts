@@ -1,5 +1,5 @@
 /**
- * Pure eligibility for O(k) DataStore.appendSeries on line / area series.
+ * Pure eligibility for O(k) DataStore.appendSeries on append-safe XY series.
  *
  * Full raw resident kinds (`fullRawLine`, `gpuDecimationRaw`) are append-safe at
  * any zoom — the buffer holds full raw, not a zoomed sampled slice.
@@ -16,6 +16,7 @@
 
 import type { ResolvedSeriesConfig } from '../../../config/OptionResolver';
 import type { CartesianSeriesData, SeriesSampling, SeriesType } from '../../../config/types';
+import { getPointCount, hasAnyPerPointSize } from '../../../data/cartesianData';
 import { isGpuDecimationEligible } from '../../../data/gpuDecimationEligibility';
 import { isStackedMountainSeries } from '../../../data/stackedArea';
 import { resolveStepMode } from '../../../data/stepGeometry';
@@ -31,12 +32,42 @@ export type CanRangedAppendLineInput = {
   readonly rawData: CartesianSeriesData | null | undefined;
   /** Full series config when available (areaStyle, samplingThreshold, etc.). */
   readonly series?: ResolvedSeriesConfig | null;
+  /** Coalesced append batches, used to keep scatter size channels on the private path. */
+  readonly appendedData?: ReadonlyArray<CartesianSeriesData>;
 };
 
 /**
  * True when ranged append may write only the new points without full setSeries.
  */
 export function canRangedAppendLine(input: CanRangedAppendLineInput): boolean {
+  // Fixed-radius point scatter can bind the same interleaved XY DataStore buffer
+  // as line/area. Ordering inside a modular ring is irrelevant for point marks.
+  // Density and variable/per-point radius need their dedicated geometry paths.
+  if (input.seriesType === 'scatter') {
+    const series = input.series;
+    const raw = input.rawData ?? null;
+    const symbolSize = series?.type === 'scatter' ? series.symbolSize : undefined;
+    if (
+      series?.type !== 'scatter' ||
+      series.mode === 'density' ||
+      input.sampling !== 'none' ||
+      (symbolSize !== undefined &&
+        (typeof symbolSize !== 'number' || !Number.isFinite(symbolSize) || symbolSize <= 0)) ||
+      raw == null ||
+      hasAnyPerPointSize(raw) ||
+      input.appendedData?.some(hasAnyPerPointSize)
+    ) {
+      return false;
+    }
+    // During append flush, `unknown` can mean the first render has not seeded
+    // DataStore yet. Its maxPoints cold seed contains only the appended batch,
+    // so keep non-empty option data on the CPU path for the first prepare.
+    if (input.kind === 'unknown' && input.appendedData != null && getPointCount(raw) > 0) {
+      return false;
+    }
+    return input.kind === 'fullRawLine' || input.kind === 'unknown';
+  }
+
   // Line and pure area share the XY storage layout; both may ranged-append when
   // the resident buffer is full raw. GPU decimation remains line-only (predicate).
   if (input.seriesType !== 'line' && input.seriesType !== 'area') return false;

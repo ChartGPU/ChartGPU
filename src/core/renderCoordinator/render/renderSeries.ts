@@ -51,6 +51,7 @@ import { getPointCount, isRingXYColumns, isStagingRingView } from '../../../data
 import { type FilterGapsCache, getFilteredGapsCached } from './filterGapsCache';
 import { getStackedMountainGeometryMap, type StackedMountainCache } from './stackedMountainCache';
 import { getExpandedStepPolyline, getExpandedStepStacked, type StepExpandCache } from './stepExpandCache';
+import { canRangedAppendLine } from '../data/canRangedAppendLine';
 
 // Re-export only production-used symbols for coordinator / frameRender.
 export { createStackedMountainCache, invalidateStackedMountainCache } from './stackedMountainCache';
@@ -954,6 +955,29 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
           gpuSeriesKindByIndex[i] = 'other';
         } else {
           const animated = introP < 1 ? ({ ...s, color: withAlpha(s.color, introP) } as const) : s;
+          const rawData = (s.rawData ?? s.data) as CartesianSeriesData;
+          const useResidentBuffer = canRangedAppendLine({
+            seriesType: s.type,
+            sampling: s.sampling,
+            kind: gpuSeriesKindByIndex[i] ?? 'unknown',
+            rawData,
+            series: s,
+          });
+          let residentData: Readonly<{ buffer: GPUBuffer; pointCount: number }> | undefined;
+          if (useResidentBuffer) {
+            if (!appendedGpuThisFrame.has(i)) {
+              setSeriesIfChanged(i, rawData);
+            }
+            residentData = {
+              buffer: dataStore.getSeriesBuffer(i),
+              pointCount: dataStore.getSeriesPointCount(i),
+            };
+            // Legacy name: this kind denotes append-safe full-raw XY residency
+            // for line, pure area, and now fixed-radius point scatter.
+            gpuSeriesKindByIndex[i] = 'fullRawLine';
+          } else {
+            gpuSeriesKindByIndex[i] = 'other';
+          }
           renderers.scatterRenderers[i].prepare(
             animated,
             s.data,
@@ -961,7 +985,8 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
             getYScale(s),
             gridArea,
             forceStandardDrawLod,
-            allowScatterPostResolveDense
+            allowScatterPostResolveDense,
+            residentData
           );
         }
         break;

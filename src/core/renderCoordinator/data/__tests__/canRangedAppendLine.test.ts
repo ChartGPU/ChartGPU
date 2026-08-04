@@ -80,13 +80,126 @@ describe('canRangedAppendLine', () => {
     ).toBe(false);
   });
 
-  it('rejects non-line non-area series', () => {
+  it('rejects non-cartesian streaming series', () => {
+    expect(
+      canRangedAppendLine({
+        seriesType: 'bar',
+        sampling: 'none',
+        kind: 'fullRawLine',
+        rawData: raw,
+      })
+    ).toBe(false);
+  });
+
+  it('allows fixed-radius point scatter with sampling none', () => {
+    const scatter = {
+      type: 'scatter' as const,
+      mode: 'points' as const,
+      sampling: 'none' as const,
+      symbolSize: 4,
+    };
+    expect(
+      canRangedAppendLine({
+        seriesType: 'scatter',
+        sampling: 'none',
+        kind: 'unknown',
+        rawData: raw,
+        series: scatter as any,
+      })
+    ).toBe(true);
     expect(
       canRangedAppendLine({
         seriesType: 'scatter',
         sampling: 'none',
         kind: 'fullRawLine',
         rawData: raw,
+        series: scatter as any,
+      })
+    ).toBe(true);
+    expect(
+      canRangedAppendLine({
+        seriesType: 'scatter',
+        sampling: 'none',
+        kind: 'unknown',
+        rawData: raw,
+        series: { ...scatter, symbolSize: undefined } as any,
+      })
+    ).toBe(true);
+  });
+
+  it('keeps a non-empty cold scatter seed until the first prepare', () => {
+    const scatter = {
+      type: 'scatter' as const,
+      mode: 'points' as const,
+      sampling: 'none' as const,
+      symbolSize: 4,
+    };
+    expect(
+      canRangedAppendLine({
+        seriesType: 'scatter',
+        sampling: 'none',
+        kind: 'unknown',
+        rawData: raw,
+        appendedData: [{ x: [3], y: [4] }],
+        series: scatter as any,
+      })
+    ).toBe(false);
+    expect(
+      canRangedAppendLine({
+        seriesType: 'scatter',
+        sampling: 'none',
+        kind: 'unknown',
+        rawData: { x: [], y: [] },
+        appendedData: [{ x: [3], y: [4] }],
+        series: scatter as any,
+      })
+    ).toBe(true);
+  });
+
+  it('rejects scatter paths that need private geometry', () => {
+    const baseScatter = {
+      type: 'scatter' as const,
+      mode: 'points' as const,
+      sampling: 'none' as const,
+      symbolSize: 4,
+    };
+    const eligible = (overrides: Record<string, unknown>) =>
+      canRangedAppendLine({
+        seriesType: 'scatter',
+        sampling: (overrides.sampling ?? 'none') as any,
+        kind: 'unknown',
+        rawData: raw,
+        series: { ...baseScatter, ...overrides } as any,
+      });
+
+    expect(eligible({ mode: 'density' })).toBe(false);
+    expect(eligible({ sampling: 'lttb' })).toBe(false);
+    expect(eligible({ symbolSize: () => 4 })).toBe(false);
+    expect(
+      canRangedAppendLine({
+        seriesType: 'scatter',
+        sampling: 'none',
+        kind: 'unknown',
+        rawData: [
+          [0, 1, 3],
+          [1, 2, 5],
+        ],
+        series: baseScatter as any,
+      })
+    ).toBe(false);
+    expect(
+      canRangedAppendLine({
+        seriesType: 'scatter',
+        sampling: 'none',
+        kind: 'fullRawLine',
+        rawData: raw,
+        appendedData: [
+          [
+            [3, 4, 9],
+            [4, 5, 11],
+          ],
+        ],
+        series: baseScatter as any,
       })
     ).toBe(false);
   });
