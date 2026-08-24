@@ -559,6 +559,45 @@ describe('ChartGPU - External Render Mode', () => {
   });
 
   describe('Multiple changes coalesce', () => {
+    it('does not throw when setOption is called after an update transition has just completed', async () => {
+      let nowMs = 0;
+      const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => nowMs);
+
+      const buildOptions = (offset: number): ChartGPUOptions => ({
+        animation: { duration: 120, easing: 'cubicOut' },
+        xAxis: { type: 'value', min: 0, max: 10 },
+        yAxis: { type: 'value', min: 0, max: 100 },
+        series: [
+          {
+            type: 'line',
+            data: {
+              x: new Float32Array([0, 1, 2, 3]),
+              y: new Float32Array([10 + offset, 30 + offset, 20 + offset, 40 + offset]),
+            },
+          },
+        ],
+      });
+
+      const chart = await ChartGPU.create(mockContainer, buildOptions(0), {
+        adapter: mockAdapter,
+        device: mockDevice,
+      });
+
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        chart.setOption(buildOptions(10));
+        nowMs = 1;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        nowMs = 200;
+        expect(() => chart.setOption(buildOptions(20))).not.toThrow();
+      } finally {
+        await chart.dispose();
+        nowSpy.mockRestore();
+      }
+    });
+
     it('multiple setOption calls work with manual renderFrame', async () => {
       const options: ChartGPUOptions = {
         renderMode: 'external',

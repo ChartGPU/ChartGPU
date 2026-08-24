@@ -2921,7 +2921,10 @@ export function createRenderCoordinator(
         } catch {
           // best-effort
         }
-        return computeUpdateSnapshotAtProgress(updateTransition, updateProgress01, fromZoomRange);
+        const activeTransition = updateTransition;
+        if (activeTransition !== null) {
+          return computeUpdateSnapshotAtProgress(activeTransition, updateProgress01, fromZoomRange);
+        }
       }
 
       const fromXBase = computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
