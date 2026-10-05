@@ -30,12 +30,24 @@
  * @internal
  */
 
+import { untrackBuffer } from './bufferAllocationTracker';
+
 const pendingByDevice = new WeakMap<GPUDevice, GPUCommandBuffer[]>();
 const scheduledByDevice = new WeakMap<GPUDevice, boolean>();
 /** Bumped on flush so in-flight microtasks no-op after a synchronous drain. */
 const epochByDevice = new WeakMap<GPUDevice, number>();
 /** GPUBuffers awaiting destroy until after the next batched submit on this device. */
 const deferredDestroyByDevice = new WeakMap<GPUDevice, GPUBuffer[]>();
+
+/** Destroy best-effort and remove the buffer from memory accounting. */
+function destroyTrackedBuffer(device: GPUDevice, buffer: GPUBuffer): void {
+  try {
+    buffer.destroy();
+  } catch {
+    // best-effort — already destroyed or mock device
+  }
+  untrackBuffer(device, buffer);
+}
 
 /**
  * Destroy all buffers queued via {@link destroyBufferAfterSubmit} for this device.
@@ -49,11 +61,7 @@ function drainDeferredDestroys(device: GPUDevice): void {
   // Dedup: same buffer may be deferred more than once on rapid growth paths.
   const unique = new Set(list);
   for (const buffer of unique) {
-    try {
-      buffer.destroy();
-    } catch {
-      // best-effort — already destroyed or mock device
-    }
+    destroyTrackedBuffer(device, buffer);
   }
 }
 
@@ -120,11 +128,7 @@ export function flushDeviceSubmit(device: GPUDevice): void {
 export function destroyBufferAfterSubmit(device: GPUDevice, buffer: GPUBuffer): void {
   const pending = pendingByDevice.get(device);
   if (!pending || pending.length === 0) {
-    try {
-      buffer.destroy();
-    } catch {
-      // best-effort — already destroyed or mock device
-    }
+    destroyTrackedBuffer(device, buffer);
     return;
   }
   let list = deferredDestroyByDevice.get(device);

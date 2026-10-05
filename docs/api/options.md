@@ -774,6 +774,8 @@ See [`defaults.ts`](../../src/config/defaults.ts) for the defaults (including gr
 
 - **`PerformanceMetrics`**: `fps`, `frameTimeStats` (min/max/avg/p50/p95/p99), `gpuTiming`, `memory`, `frameDrops`, `totalFrames`, `elapsedTime`. Returns `null` before first frame.
 - **`PerformanceCapabilities`**: `gpuTimingSupported`, `highResTimerSupported`, `performanceMetricsSupported`.
+- **What `memory` counts**: `used` / `peak` / `allocated` count GPU buffers allocated through ChartGPU's tracked paths (series and y-channel data buffers, uniform buffers, stream-buffer slots), keyed per `GPUDevice`. `used` decreases when tracked series/stream buffers are destroyed; `peak` keeps the high-water mark. The values are estimates, not device totals: renderer uniform buffers remain counted after renderer dispose, buffers created directly on the device by renderers and GPU textures are not tracked.
+- **`gpuTiming` status**: GPU timestamp-query is not implemented; `gpuTiming.enabled` is `false` and `gpuTime` is `0`. Detect it via `getPerformanceCapabilities().gpuTimingSupported`.
 - Branded types: `ExactFPS`, `Milliseconds`, `Bytes`. See [`types.ts`](../../src/config/types.ts).
 
 ## `resolveOptions(userOptions?: ChartGPUOptions)` / `OptionResolver.resolve(userOptions?: ChartGPUOptions)`

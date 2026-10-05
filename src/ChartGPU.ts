@@ -1,4 +1,5 @@
 import { GPUContext } from './core/GPUContext';
+import { getBufferMemoryStats } from './core/gpu/bufferAllocationTracker';
 import { createRenderCoordinator } from './core/createRenderCoordinator';
 import type { RenderCoordinator, RenderCoordinatorCallbacks } from './core/createRenderCoordinator';
 import { resolveOptionsForChart } from './config/OptionResolver';
@@ -2232,15 +2233,20 @@ export async function createChartGPU(
     const frameTimeStats = calculateFrameTimeStats();
 
     const gpuTiming: GPUTimingStats = {
-      enabled: false, // GPU timing not yet implemented for main thread
+      // GPU timestamp-query not implemented; see getPerformanceCapabilities().
+      enabled: false,
       cpuTime: lastCPUTime as Milliseconds,
       gpuTime: 0 as Milliseconds,
     };
 
+    // MemoryStats: GPU buffers ChartGPU itself allocates (series, uniforms,
+    // streaming slots). Buffers created directly on the device outside the
+    // library and textures are not included — lower bounds, not device totals.
+    const bufferStats = gpuContext?.device ? getBufferMemoryStats(gpuContext.device) : null;
     const memory: MemoryStats = {
-      used: 0 as Bytes,
-      peak: 0 as Bytes,
-      allocated: 0 as Bytes,
+      used: (bufferStats?.used ?? 0) as Bytes,
+      peak: (bufferStats?.peak ?? 0) as Bytes,
+      allocated: (bufferStats?.allocated ?? 0) as Bytes,
     };
 
     const frameDrops: FrameDropStats =
