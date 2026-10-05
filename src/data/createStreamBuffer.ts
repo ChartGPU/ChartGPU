@@ -1,3 +1,5 @@
+import { trackBuffer, untrackBuffer } from '../core/gpu/bufferAllocationTracker';
+
 export interface StreamBuffer {
   /**
    * Writes a new vertex payload into the streaming buffer.
@@ -54,14 +56,15 @@ export function createStreamBuffer(device: GPUDevice, maxSize: number): StreamBu
 
   const capacityWords = capacityBytes >>> 2;
 
-  const createSlot = (label: string): { readonly buffer: GPUBuffer; readonly mirror: Uint32Array } => ({
-    buffer: device.createBuffer({
+  const createSlot = (label: string): { readonly buffer: GPUBuffer; readonly mirror: Uint32Array } => {
+    const buffer = device.createBuffer({
       label,
       size: capacityBytes,
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    }),
-    mirror: new Uint32Array(capacityWords),
-  });
+    });
+    trackBuffer(device, buffer, capacityBytes);
+    return { buffer, mirror: new Uint32Array(capacityWords) };
+  };
 
   const slots = [createSlot('streamBuffer/a'), createSlot('streamBuffer/b')] as const;
 
@@ -189,6 +192,7 @@ export function createStreamBuffer(device: GPUDevice, maxSize: number): StreamBu
     vertexCount = 0;
 
     for (const slot of slots) {
+      untrackBuffer(device, slot.buffer);
       try {
         slot.buffer.destroy();
       } catch {

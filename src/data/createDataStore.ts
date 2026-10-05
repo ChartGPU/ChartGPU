@@ -1,4 +1,5 @@
 import type { CartesianSeriesData } from '../config/types';
+import { trackBuffer, untrackBuffer } from '../core/gpu/bufferAllocationTracker';
 import { destroyBufferAfterSubmit, flushDeviceSubmit } from '../core/gpu/submitBatcher';
 import { getPointCount, packXYInto } from './cartesianData';
 import { maxPointsPeakRetention, normalizeMaxPoints, planMaxPointsWindow } from './maxPointsWindow';
@@ -460,12 +461,14 @@ export function createDataStore(device: GPUDevice): DataStore {
       size: 16,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    trackBuffer(device, yParamsUniform, 16);
   };
 
   const ensureYChannelCapacity = (pointCount: number): void => {
     const bytes = Math.max(4, roundUpToMultipleOf4(pointCount * 4));
     if (!yChannelBuffer || yChannelCapacityBytes < bytes) {
       if (yChannelBuffer) {
+        untrackBuffer(device, yChannelBuffer);
         try {
           yChannelBuffer.destroy();
         } catch {
@@ -478,6 +481,7 @@ export function createDataStore(device: GPUDevice): DataStore {
         size: grown,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
+      trackBuffer(device, yChannelBuffer, grown);
       yChannelCapacityBytes = grown;
       yChannelStaging = new Float32Array(grown / 4);
     } else if (yChannelStaging.length < pointCount) {
@@ -624,6 +628,7 @@ export function createDataStore(device: GPUDevice): DataStore {
       size: capacityBytes,
       usage: seriesBufferUsage(),
     });
+    trackBuffer(device, buffer, capacityBytes);
     const stagingBuffer = new Float32Array(capacityBytes / 4);
     const xOffset = 0;
 
@@ -701,6 +706,7 @@ export function createDataStore(device: GPUDevice): DataStore {
         size: capacityBytes,
         usage: seriesBufferUsage(),
       });
+      trackBuffer(device, buffer, capacityBytes);
     } else {
       capacityBytes = existing!.capacityBytes;
     }
@@ -905,6 +911,7 @@ export function createDataStore(device: GPUDevice): DataStore {
         size: capacityBytes,
         usage: seriesBufferUsage(),
       });
+      trackBuffer(device, buffer, capacityBytes);
       stagingBuffer = new Float32Array(capacityBytes / 4);
 
       // Linearize previous points into chronological order at offset 0 (CPU mirror).
@@ -1062,6 +1069,7 @@ export function createDataStore(device: GPUDevice): DataStore {
     const entry = series.get(index);
     if (!entry) return;
 
+    untrackBuffer(device, entry.buffer);
     try {
       entry.buffer.destroy();
     } catch {
@@ -1120,6 +1128,7 @@ export function createDataStore(device: GPUDevice): DataStore {
       // best-effort
     }
     for (const entry of series.values()) {
+      untrackBuffer(device, entry.buffer);
       try {
         entry.buffer.destroy();
       } catch {
@@ -1129,6 +1138,7 @@ export function createDataStore(device: GPUDevice): DataStore {
     series.clear();
 
     if (yChannelBuffer) {
+      untrackBuffer(device, yChannelBuffer);
       try {
         yChannelBuffer.destroy();
       } catch {
@@ -1137,6 +1147,7 @@ export function createDataStore(device: GPUDevice): DataStore {
       yChannelBuffer = null;
     }
     if (yParamsUniform) {
+      untrackBuffer(device, yParamsUniform);
       try {
         yParamsUniform.destroy();
       } catch {

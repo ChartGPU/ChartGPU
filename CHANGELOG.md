@@ -52,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Streaming / full-rewrite upload paths** - Ranged append for full-raw and GPU-decimation line buffers; equal-N y-only rewrite; dual-store hit-test skip when tooltips are off; fixed-capacity ring `appendData({ maxPoints })`.
 - **Axes-only `setOption` reuse** - Stable series element identities skip full series re-resolution and avoid O(n) work on axis-range-only ticks.
 
+### Fixed
+
+- **Performance metrics memory reporting** - `getPerformanceMetrics().memory` no longer returns hardcoded zeros. `used` / `peak` / `allocated` now count the GPU buffers ChartGPU allocates through its tracked paths (DataStore series and y-channel buffers, uniform buffers, stream-buffer slots), keyed per `GPUDevice`; `used` decreases when tracked series/stream buffers are destroyed and `peak` keeps the high-water mark. Renderer uniform buffers remain counted after renderer dispose, and buffers the renderers create directly on the device plus textures are not tracked, so the values are estimates of GPU memory use, not device totals. `gpuTiming.gpuTime` remains `0` with `enabled: false` — GPU timestamp-query is not implemented; check `getPerformanceCapabilities().gpuTimingSupported`. Docs: `docs/api/options.md` Performance Metrics Types.
+
 ## [0.2.5] - 2026-02-10
 
 ### Changed

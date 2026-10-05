@@ -12,6 +12,7 @@
  */
 
 import type { PipelineCache } from '../core/PipelineCache';
+import { trackBuffer } from '../core/gpu/bufferAllocationTracker';
 
 export type ShaderStageModuleSource =
   | {
@@ -299,11 +300,13 @@ export function createUniformBuffer(
     );
   }
 
-  return device.createBuffer({
+  const buffer = device.createBuffer({
     label: options?.label,
     size: alignedSize,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
+  trackBuffer(device, buffer, alignedSize);
+  return buffer;
 }
 
 /**
