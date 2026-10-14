@@ -4280,6 +4280,7 @@ export function createRenderCoordinator(
                 effectivePointer.gridY,
                 interactionScales
               );
+              let itemTooltipHandled = false;
               if (candlestickResult) {
                 const content = formatter
                   ? (formatter as (p: TooltipParams) => string)(candlestickResult.params)
@@ -4301,83 +4302,91 @@ export function createRenderCoordinator(
                 } else {
                   hideTooltip();
                 }
-                return;
+                itemTooltipHandled = true;
               }
 
-              const errorBarResult = findErrorBarAtPointerTooltip(
-                seriesForRender,
-                effectivePointer.gridX,
-                effectivePointer.gridY,
-                interactionScales
-              );
-              if (errorBarResult) {
-                const content = formatter
-                  ? (formatter as (p: TooltipParams) => string)(errorBarResult.params)
-                  : formatTooltipItem(errorBarResult.params);
-                if (content && shouldUpdateTooltip(tooltipCache, content, containerX, containerY)) {
-                  updateTooltipCache(tooltipCache, content, containerX, containerY);
-                  showTooltipInternal(containerX, containerY, content, errorBarResult.params);
-                } else if (!content) {
-                  hideTooltip();
+              if (!itemTooltipHandled) {
+                const errorBarResult = findErrorBarAtPointerTooltip(
+                  seriesForRender,
+                  effectivePointer.gridX,
+                  effectivePointer.gridY,
+                  interactionScales
+                );
+                if (errorBarResult) {
+                  const content = formatter
+                    ? (formatter as (p: TooltipParams) => string)(errorBarResult.params)
+                    : formatTooltipItem(errorBarResult.params);
+                  if (content && shouldUpdateTooltip(tooltipCache, content, containerX, containerY)) {
+                    updateTooltipCache(tooltipCache, content, containerX, containerY);
+                    showTooltipInternal(containerX, containerY, content, errorBarResult.params);
+                  } else if (!content) {
+                    hideTooltip();
+                  }
+                  itemTooltipHandled = true;
                 }
-                return;
               }
 
-              const impulseResult = findImpulseAtPointerTooltip(
-                seriesForRender,
-                effectivePointer.gridX,
-                effectivePointer.gridY,
-                interactionScales
-              );
-              if (impulseResult) {
-                const content = formatter
-                  ? (formatter as (p: TooltipParams) => string)(impulseResult.params)
-                  : formatTooltipItem(impulseResult.params);
-                if (content && shouldUpdateTooltip(tooltipCache, content, containerX, containerY)) {
-                  updateTooltipCache(tooltipCache, content, containerX, containerY);
-                  showTooltipInternal(containerX, containerY, content, impulseResult.params);
-                } else if (!content) {
-                  hideTooltip();
+              if (!itemTooltipHandled) {
+                const impulseResult = findImpulseAtPointerTooltip(
+                  seriesForRender,
+                  effectivePointer.gridX,
+                  effectivePointer.gridY,
+                  interactionScales
+                );
+                if (impulseResult) {
+                  const content = formatter
+                    ? (formatter as (p: TooltipParams) => string)(impulseResult.params)
+                    : formatTooltipItem(impulseResult.params);
+                  if (content && shouldUpdateTooltip(tooltipCache, content, containerX, containerY)) {
+                    updateTooltipCache(tooltipCache, content, containerX, containerY);
+                    showTooltipInternal(containerX, containerY, content, impulseResult.params);
+                  } else if (!content) {
+                    hideTooltip();
+                  }
+                  itemTooltipHandled = true;
                 }
-                return;
               }
 
-              const match = sharedNearestMatch ?? null;
-              if (match) {
-                const params = buildTooltipParams(match.seriesIndex, match.dataIndex, match.point, {
-                  stack: match.stack,
-                  stackTotal: match.stackTotal,
-                });
-                const content = formatter
-                  ? (formatter as (p: TooltipParams) => string)(params)
-                  : formatTooltipItem(params);
-                if (content && shouldUpdateTooltip(tooltipCache, content, containerX, containerY)) {
-                  updateTooltipCache(tooltipCache, content, containerX, containerY);
-                  showTooltipInternal(containerX, containerY, content, params);
-                } else if (!content) {
-                  hideTooltip();
+              if (!itemTooltipHandled) {
+                const match = sharedNearestMatch ?? null;
+                if (match) {
+                  const params = buildTooltipParams(match.seriesIndex, match.dataIndex, match.point, {
+                    stack: match.stack,
+                    stackTotal: match.stackTotal,
+                  });
+                  const content = formatter
+                    ? (formatter as (p: TooltipParams) => string)(params)
+                    : formatTooltipItem(params);
+                  if (content && shouldUpdateTooltip(tooltipCache, content, containerX, containerY)) {
+                    updateTooltipCache(tooltipCache, content, containerX, containerY);
+                    showTooltipInternal(containerX, containerY, content, params);
+                  } else if (!content) {
+                    hideTooltip();
+                  }
+                  itemTooltipHandled = true;
                 }
-                return;
               }
 
-              const heatmapParams = findHeatmapAtPointer(
-                seriesForRender,
-                effectivePointer.gridX,
-                effectivePointer.gridY,
-                interactionScales
-              );
-              if (heatmapParams) {
-                const content = formatter
-                  ? (formatter as (p: TooltipParams) => string)(heatmapParams)
-                  : formatTooltipItem(heatmapParams);
-                if (content && shouldUpdateTooltip(tooltipCache, content, containerX, containerY)) {
-                  updateTooltipCache(tooltipCache, content, containerX, containerY);
-                  showTooltipInternal(containerX, containerY, content, heatmapParams);
-                } else if (!content) {
+              if (!itemTooltipHandled) {
+                const heatmapParams = findHeatmapAtPointer(
+                  seriesForRender,
+                  effectivePointer.gridX,
+                  effectivePointer.gridY,
+                  interactionScales
+                );
+                if (heatmapParams) {
+                  const content = formatter
+                    ? (formatter as (p: TooltipParams) => string)(heatmapParams)
+                    : formatTooltipItem(heatmapParams);
+                  if (content && shouldUpdateTooltip(tooltipCache, content, containerX, containerY)) {
+                    updateTooltipCache(tooltipCache, content, containerX, containerY);
+                    showTooltipInternal(containerX, containerY, content, heatmapParams);
+                  } else if (!content) {
+                    hideTooltip();
+                  }
+                } else {
                   hideTooltip();
                 }
-              } else {
-                hideTooltip();
               }
             }
           }
