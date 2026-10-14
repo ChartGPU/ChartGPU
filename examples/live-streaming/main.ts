@@ -39,7 +39,7 @@ const createBaseOptions = (data: ReadonlyArray<DataPoint>, autoScroll: boolean):
   grid: { left: 70, right: 24, top: 24, bottom: 44 },
   xAxis: { type: 'value', name: 't' },
   yAxis: { type: 'value', name: 'value' },
-  tooltip: { trigger: 'axis' },
+  tooltip: { trigger: 'item' },
   autoScroll,
   dataZoom: [{ type: 'inside' }, { type: 'slider', start: 70, end: 100 }],
   palette: ['#4a9eff'],
