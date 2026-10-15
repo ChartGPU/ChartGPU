@@ -163,4 +163,43 @@ describe('band dirty gate', () => {
 
     r.dispose();
   });
+
+  it('packs epoch-ms X relative to an origin so f32 keeps sub-second spacing', async () => {
+    const { writeUniformBuffer } = await import('../rendererUtils');
+    const { createLineRenderer } = await import('../createLineRenderer');
+    const device = makeDevice();
+    const r = createBandRenderer(device, { sampleCount: 4 });
+    const t0 = 1_790_000_000_000;
+    const xs = [t0, t0 + 1000, t0 + 2000];
+    const data = { x: xs, y: [0, 0, 0], y1: [1, 1, 1] };
+    const xScale = createLinearScale().domain(t0, t0 + 2000).range(-1, 1);
+    const yScale = createLinearScale().domain(0, 1).range(-1, 1);
+    const series = makeSeries({ data, rawData: data, lineStyle: { width: 1, opacity: 1, color: '#38bdf8' } });
+    (writeUniformBuffer as ReturnType<typeof vi.fn>).mockClear();
+    r.prepare(series, data, xScale, yScale);
+
+    // First writeBuffer is the BandPoint fill buffer (stride 4).
+    const [, , ab, byteOffset] = (device.queue.writeBuffer as ReturnType<typeof vi.fn>).mock.calls[0];
+    const packed = new Float32Array(ab as ArrayBuffer, byteOffset as number, xs.length * 4);
+    const packedX = [packed[0], packed[4], packed[8]];
+    expect(packedX[1] - packedX[0]).toBe(1000);
+    expect(packedX[2] - packedX[1]).toBe(1000);
+
+    // Fill VS transform maps packed x back to the scale's clip positions.
+    const vsCall = (writeUniformBuffer as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c) => (c[2] as ArrayBuffer).byteLength === 80
+    )!;
+    const mat = new Float32Array(vsCall[2] as ArrayBuffer);
+    const ax = mat[0];
+    const bx = mat[12];
+    for (let i = 0; i < xs.length; i++) {
+      expect(ax * packedX[i] + bx).toBeCloseTo(xScale.scale(xs[i]), 5);
+    }
+
+    // Stroke LineRenderer receives the same packing origin.
+    const strokeRenderer = (createLineRenderer as ReturnType<typeof vi.fn>).mock.results.at(-1)!.value;
+    const strokeXOffset = strokeRenderer.prepare.mock.calls[0][4] as number;
+    expect(packedX[0] + strokeXOffset).toBe(t0);
+    r.dispose();
+  });
 });

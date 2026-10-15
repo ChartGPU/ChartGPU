@@ -17,6 +17,7 @@ import type { PipelineCache } from '../core/PipelineCache';
 import {
   computeClipAffineFromContinuousScale,
   computeClipAffineFromScale,
+  computePackedXAffineFromScale,
   resolveLogProjection,
 } from './packedXAffine';
 import { createLineRenderer, type LineRenderer } from './createLineRenderer';
@@ -168,6 +169,8 @@ export function createBandRenderer(device: GPUDevice, options?: BandRendererOpti
     readonly yMin: number;
     readonly yMax: number;
   } | null = null;
+  // X packing origin (x′ = x − packedXOffset) shared by fill + stroke buffers.
+  let packedXOffset = 0;
   let cpuStaging = new Float32Array(0);
   let lastRewrotePoints = false;
 
@@ -343,10 +346,18 @@ export function createBandRenderer(device: GPUDevice, options?: BandRendererOpti
     const wantStrokeY = strokeEnabled(seriesConfig.lineStyle);
     const wantStrokeY1 = strokeEnabled(seriesConfig.lineStyleY1);
 
-    // Identity cache: re-pack when data ref or length changes.
-    if (boundDataRef !== data || n !== pointCount) {
+    // Identity cache: re-pack when data ref, length or X packing origin changes.
+    const dataChanged = boundDataRef !== data || n !== pointCount;
+    if (dataChanged) {
+      const fromSeries = seriesConfig.rawBounds;
+      cachedBounds = fromSeries ?? bandBounds(source) ?? null;
+    }
+    // Pack x relative to xMin for f32-safe epoch-ms time axes (log X must stay raw).
+    const xMinBound = cachedBounds?.xMin;
+    const xOffset = xScale.kind !== 'log' && xMinBound !== undefined && Number.isFinite(xMinBound) ? xMinBound : 0;
+    if (dataChanged || xOffset !== packedXOffset) {
       ensureCpuStaging(n * 4);
-      packBandPoints(source, cpuStaging, n);
+      packBandPoints(source, cpuStaging, n, xOffset);
       const requiredBytes = Math.max(4, n * 16);
       ensurePrivateBuffer(requiredBytes);
       if (n > 0 && privateBuffer) {
@@ -354,10 +365,8 @@ export function createBandRenderer(device: GPUDevice, options?: BandRendererOpti
       }
       pointCount = n;
       boundDataRef = data;
+      packedXOffset = xOffset;
       lastRewrotePoints = true;
-
-      const fromSeries = seriesConfig.rawBounds;
-      cachedBounds = fromSeries ?? bandBounds(source) ?? null;
     }
 
     drawStrokeY = wantStrokeY;
@@ -369,12 +378,12 @@ export function createBandRenderer(device: GPUDevice, options?: BandRendererOpti
       if (needY || needY1) {
         ensureStrokeStaging(n * 2);
         if (needY) {
-          packBandStrokeXY(source, strokeStaging, 0, n);
+          packBandStrokeXY(source, strokeStaging, 0, n, packedXOffset);
           const buf = ensureStrokeBuffer('y', n * 8);
           device.queue.writeBuffer(buf, 0, strokeStaging.buffer, strokeStaging.byteOffset, n * 8);
         }
         if (needY1) {
-          packBandStrokeXY(source, strokeStaging, 1, n);
+          packBandStrokeXY(source, strokeStaging, 1, n, packedXOffset);
           const buf = ensureStrokeBuffer('y1', n * 8);
           device.queue.writeBuffer(buf, 0, strokeStaging.buffer, strokeStaging.byteOffset, n * 8);
         }
@@ -385,16 +394,9 @@ export function createBandRenderer(device: GPUDevice, options?: BandRendererOpti
       bindStorage(privateBuffer);
     }
 
-    const { xMin, xMax, yMin, yMax } = cachedBounds ?? {
-      xMin: 0,
-      xMax: 1,
-      yMin: 0,
-      yMax: 1,
-    };
-    const { a: ax, b: bx } =
-      xScale.kind === 'log'
-        ? computeClipAffineFromContinuousScale(xScale)
-        : computeClipAffineFromScale(xScale, xMin, xMax);
+    const { yMin, yMax } = cachedBounds ?? { yMin: 0, yMax: 1 };
+    // X: packed-origin affine (log X falls back to log-space affine; packedXOffset is 0 then).
+    const { a: ax, b: bx } = computePackedXAffineFromScale(xScale, packedXOffset);
     const { a: ay, b: by } =
       yScale.kind === 'log'
         ? computeClipAffineFromContinuousScale(yScale)
@@ -424,7 +426,7 @@ export function createBandRenderer(device: GPUDevice, options?: BandRendererOpti
         strokeYBuffer,
         xScale,
         yScale,
-        0,
+        packedXOffset,
         devicePixelRatio,
         canvasWidthDevicePx,
         canvasHeightDevicePx,
@@ -440,7 +442,7 @@ export function createBandRenderer(device: GPUDevice, options?: BandRendererOpti
         strokeY1Buffer,
         xScale,
         yScale,
-        0,
+        packedXOffset,
         devicePixelRatio,
         canvasWidthDevicePx,
         canvasHeightDevicePx,
