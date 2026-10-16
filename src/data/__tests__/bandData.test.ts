@@ -121,6 +121,19 @@ describe('packBandPoints', () => {
     expect(n).toBe(2);
     expect(Array.from(out)).toEqual([0, 1, 2, 0, 1, 3, 4, 0]);
   });
+
+  it('subtracts xOffset from x in fill and stroke packs (epoch-ms precision)', () => {
+    const t0 = 1_790_000_000_000;
+    const data: BandSeriesData = { x: [t0, t0 + 1000, Number.NaN], y: [1, 2, 3], y1: [4, 5, 6] };
+    const fill = new Float32Array(12);
+    packBandPoints(data, fill, undefined, t0);
+    expect([fill[0], fill[4]]).toEqual([0, 1000]);
+    expect(fill[8]).toBeNaN();
+    const stroke = new Float32Array(6);
+    packBandStrokeXY(data, stroke, 1, undefined, t0);
+    expect(Array.from(stroke.subarray(0, 4))).toEqual([0, 4, 1000, 5]);
+    expect(stroke[4]).toBeNaN();
+  });
 });
 
 describe('sampleBandSeries', () => {
