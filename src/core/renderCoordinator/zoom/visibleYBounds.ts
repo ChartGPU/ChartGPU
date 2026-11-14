@@ -16,6 +16,7 @@
 
 import type { CartesianSeriesData } from '../../../config/types';
 import { getPointCount, getX, getY } from '../../../data/cartesianData';
+import { findVisibleRangeIndicesByX } from '../data/computeVisibleSlice';
 import { isFullSpanZoom } from './zoomHelpers';
 
 /** @see isFullSpanZoom — single source of truth (0.5% tolerance). */
@@ -50,8 +51,10 @@ function scanCartesianYBounds(
   const filterX = xWindow != null && Number.isFinite(xWindow.min) && Number.isFinite(xWindow.max);
   const xMinW = filterX ? xWindow!.min : 0;
   const xMaxW = filterX ? xWindow!.max : 0;
-  const n = getPointCount(data);
-  for (let i = 0; i < n; i++) {
+  const { start, end } = filterX
+    ? findVisibleRangeIndicesByX(data, xMinW, xMaxW)
+    : { start: 0, end: getPointCount(data) };
+  for (let i = start; i < end; i++) {
     if (filterX) {
       const x = getX(data, i);
       if (!Number.isFinite(x) || x < xMinW || x > xMaxW) continue;

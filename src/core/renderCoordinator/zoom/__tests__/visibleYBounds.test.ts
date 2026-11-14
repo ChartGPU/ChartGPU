@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { isFullSpanZoomRange, scanCartesianVisibleYBounds, scanCartesianPositiveYBounds } from '../visibleYBounds';
+import { appendIntoRingXY, createRingXYColumns } from '../../../../data/cartesianData';
 
 describe('isFullSpanZoomRange', () => {
   it('treats null/undefined as full span', () => {
@@ -36,6 +37,26 @@ describe('scanCartesianVisibleYBounds', () => {
     // Window [10, 30] sees y = 1, 50, 2 — not 100 or 200
     const b = scanCartesianVisibleYBounds(data, { min: 10, max: 30 });
     expect(b).toEqual({ yMin: 1, yMax: 50 });
+  });
+
+  it('x-window on unsorted x still filters every point', () => {
+    const unsorted = { x: [30, 0, 20, 10, 40], y: [2, 100, 50, 1, 200] };
+    expect(scanCartesianVisibleYBounds(unsorted, { min: 10, max: 30 })).toEqual({ yMin: 1, yMax: 50 });
+  });
+
+  it('x-window on a wrapped ring matches a brute-force scan', () => {
+    const ring = createRingXYColumns(8);
+    const x = Array.from({ length: 13 }, (_, i) => i);
+    const y = x.map((i) => Math.sin(i) * 10);
+    appendIntoRingXY(ring, { x: x.slice(0, 8), y: y.slice(0, 8) }, 0, 8, 0);
+    appendIntoRingXY(ring, { x: x.slice(8), y: y.slice(8) }, 0, 5, 5);
+    expect(ring.start).not.toBe(0);
+    const kept = x.slice(-8).filter((v) => v >= 7 && v <= 10);
+    const ys = kept.map((i) => Math.sin(i) * 10);
+    expect(scanCartesianVisibleYBounds(ring, { min: 7, max: 10 })).toEqual({
+      yMin: Math.min(...ys),
+      yMax: Math.max(...ys),
+    });
   });
 
   it('returns null when window has no points', () => {
