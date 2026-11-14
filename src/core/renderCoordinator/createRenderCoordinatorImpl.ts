@@ -65,6 +65,7 @@ import { renderAnnotationLabels } from './render/renderAnnotationLabels';
 import { prepareOverlays } from './render/renderOverlays';
 import { createOverlayPrepareMemo, clearOverlayPrepareMemo } from './render/overlayPrepareMemo';
 import { createFilterGapsCache } from './render/filterGapsCache';
+import { createGapScanCache } from './render/gapScanCache';
 import {
   didSeriesDataLikelyChange,
   shouldRecomputeBaselineSampling,
@@ -1568,6 +1569,7 @@ export function createRenderCoordinator(
   // P2-12: reuse filterGaps output while series data ref is stable (connectNulls).
   // Cleared with lastSetSeriesCache when data mutates under a stable ref.
   const filterGapsCache = createFilterGapsCache();
+  const gapScanCache = createGapScanCache();
 
   // P1-6: skip grid/axis prepare when layout, counts, colors, and scale affines are unchanged.
   const overlayPrepareMemo = createOverlayPrepareMemo();
@@ -1834,6 +1836,7 @@ export function createRenderCoordinator(
         gpuSeriesKindByIndex,
         lastSetSeriesCache,
         filterGapsCache,
+        gapScanCache,
         invalidateStackedMountainCache: () => invalidateStackedMountainCache(stackedMountainCache),
         invalidateStepExpandCache: () => invalidateStepExpandCache(stepExpandCache),
         lastSampledData,
@@ -1850,7 +1853,12 @@ export function createRenderCoordinator(
         extendBoundsWithCartesianData,
         extendBoundsWithOHLCDataPoints,
         canRangedAppendLine,
-        isGpuDecimationEligible,
+        isGpuDecimationEligible: (series: unknown, raw: unknown) =>
+          isGpuDecimationEligible(
+            series as ResolvedSeriesConfig,
+            raw as CoordinatorCartesianData | null | undefined,
+            gapScanCache.hasNullGaps
+          ),
         normalizeMaxPoints,
         planMaxPointsWindow,
         getPointCount,
@@ -2573,6 +2581,7 @@ export function createRenderCoordinator(
     // setSeries cache so the next render uploads the fresh references (P1-2).
     lastSetSeriesCache.clear();
     filterGapsCache.clear();
+    gapScanCache.clear();
     invalidateStackedMountainCache(stackedMountainCache);
     invalidateStepExpandCache(stepExpandCache);
 
@@ -2855,6 +2864,7 @@ export function createRenderCoordinator(
           spanFraction: spanFracSafe,
           sliceX: sliceVisibleRangeByX,
           sliceOHLC: sliceVisibleRangeByOHLC,
+          hasNullGaps: gapScanCache.hasNullGaps,
         });
         next[i] = result.series;
         if (result.cacheEntry) {
@@ -3020,6 +3030,7 @@ export function createRenderCoordinator(
         gpuSeriesKindByIndex = new Array(resolvedOptions.series.length).fill('unknown');
         lastSetSeriesCache.clear();
         filterGapsCache.clear();
+        gapScanCache.clear();
         invalidateStackedMountainCache(stackedMountainCache);
         invalidateStepExpandCache(stepExpandCache);
         lastSampledData = new Array(resolvedOptions.series.length).fill(null);
@@ -3229,6 +3240,7 @@ export function createRenderCoordinator(
         dataStore.removeSeries(i);
         lastSetSeriesCache.delete(i);
         filterGapsCache.delete(i);
+        gapScanCache.clear();
         stepExpandCache.byIndex.delete(i);
       }
     }
@@ -3900,6 +3912,7 @@ export function createRenderCoordinator(
     if (updateTransition && updateP < 1) {
       lastSetSeriesCache.clear();
       filterGapsCache.clear();
+      gapScanCache.clear();
       // Stack baselines fingerprint peers — clear when values mutate in place.
       invalidateStackedMountainCache(stackedMountainCache);
       // Step expand identity cache — clear when values mutate in place.
@@ -4428,6 +4441,7 @@ export function createRenderCoordinator(
       maxRadiusCss,
       lastSetSeriesCache,
       filterGapsCache,
+      gapScanCache,
       stackedMountainCache,
       stepExpandCache,
     });
@@ -5047,6 +5061,7 @@ export function createRenderCoordinator(
     pendingAppendByIndex.clear();
     lastSetSeriesCache.clear();
     filterGapsCache.clear();
+    gapScanCache.clear();
     invalidateStackedMountainCache(stackedMountainCache);
     invalidateStepExpandCache(stepExpandCache);
     clearOverlayPrepareMemo(overlayPrepareMemo);

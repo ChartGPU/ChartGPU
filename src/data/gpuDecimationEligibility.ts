@@ -67,7 +67,8 @@ export function mapSamplingToDecimationAlgorithm(sampling: SeriesSampling): Deci
  */
 export function isGpuDecimationEligible(
   series: ResolvedSeriesConfig,
-  rawData: CoordinatorCartesianData | null | undefined
+  rawData: CoordinatorCartesianData | null | undefined,
+  hasGaps: (data: CoordinatorCartesianData) => boolean = hasNullGaps
 ): boolean {
   if (series.type !== 'line') return false;
   // Missing raw is never GPU-decimation eligible (pathological / cold).
@@ -80,6 +81,6 @@ export function isGpuDecimationEligible(
   if (step != null && step !== false) return false;
   // Line+areaStyle shares the stroke storage / decimation output (issue 1.4).
   if (!GPU_DECIMATION_SAMPLING_MODES.has(series.sampling)) return false;
-  if (hasNullGaps(rawData)) return false;
+  if (hasGaps(rawData)) return false;
   return true;
 }

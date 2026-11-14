@@ -12,6 +12,7 @@
 
 import type { ResolvedChartGPUOptions, ResolvedSeriesConfig } from '../../../config/OptionResolver';
 import type { BandSeriesData, CartesianSeriesData, OHLCDataPoint } from '../../../config/types';
+import type { CoordinatorCartesianData } from '../../../data/cartesianData';
 import { isGpuDecimationEligible } from '../../../data/gpuDecimationEligibility';
 import { hasBandNullGaps, sampleBandSeries, sliceBandByX } from '../../../data/bandData';
 import {
@@ -287,6 +288,7 @@ export function resolveZoomedSeriesEntry(input: {
   readonly spanFraction: number;
   readonly sliceX: (data: CartesianSeriesData, min: number, max: number) => CartesianSeriesData;
   readonly sliceOHLC: (data: ReadonlyArray<OHLCDataPoint>, min: number, max: number) => ReadonlyArray<OHLCDataPoint>;
+  readonly hasNullGaps?: (data: CoordinatorCartesianData) => boolean;
 }): ZoomedSeriesResult {
   const s = input.series;
   const anyS = s as ResolvedSeriesConfig & {
@@ -377,7 +379,7 @@ export function resolveZoomedSeriesEntry(input: {
   // GPU decimation: keep full raw; compute scopes via visibleStart/End in prepare.
   // Eligibility uses **full** rawCartesian (not the buffered slice) so a gap outside
   // the zoom buffer cannot re-enable GPU decimation while full raw still has gaps (L1/H2).
-  if (isGpuDecimationEligible(s, rawCartesian)) {
+  if (isGpuDecimationEligible(s, rawCartesian, input.hasNullGaps)) {
     return {
       series: {
         ...s,
