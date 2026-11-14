@@ -88,6 +88,7 @@ export interface AppendFlushDeps {
   gpuSeriesKindByIndex: DataStoreBufferKind[];
   lastSetSeriesCache: Map<number, { data: unknown; xOffset: number }>;
   filterGapsCache: { delete: (index: number) => void; clear?: () => void };
+  gapScanCache?: { clear: () => void };
   /**
    * Invalidate stacked mountain prepare cache (and similar peer caches) when
    * append mutates data under stable refs / grows columns.
@@ -768,6 +769,7 @@ function flushPendingAppendsImplInner(d: any): boolean {
     // which would linearize an active modular ring (issue 0.2).
     d.lastSampledData[seriesIndex] = null;
     d.filterGapsCache.delete(seriesIndex);
+    d.gapScanCache?.clear();
     const reseedRaw = d.runtimeRawDataByIndex[seriesIndex];
     if (reseedRaw != null) {
       let reseedXOffset = 0;

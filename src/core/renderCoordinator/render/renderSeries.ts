@@ -49,6 +49,7 @@ import { findVisibleRangeIndicesByX } from '../data/computeVisibleSlice';
 import { resolvePieRadiiCss } from '../utils/timeAxisUtils';
 import { getPointCount, isRingXYColumns, isStagingRingView } from '../../../data/cartesianData';
 import { type FilterGapsCache, getFilteredGapsCached } from './filterGapsCache';
+import type { GapScanCache } from './gapScanCache';
 import { getStackedMountainGeometryMap, type StackedMountainCache } from './stackedMountainCache';
 import { getExpandedStepPolyline, getExpandedStepStacked, type StepExpandCache } from './stepExpandCache';
 
@@ -125,6 +126,7 @@ export interface SeriesPrepareContext {
    * under a stable reference.
    */
   filterGapsCache: FilterGapsCache;
+  gapScanCache?: GapScanCache;
   /**
    * Per-chart stacked mountain baseline cache (not process-global).
    * Caller owns and must {@link invalidateStackedMountainCache} with lastSetSeriesCache.
@@ -202,6 +204,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
     maxRadiusCss,
     lastSetSeriesCache,
     filterGapsCache,
+    gapScanCache,
     stackedMountainCache,
     stepExpandCache,
   } = context;
@@ -490,6 +493,7 @@ export function prepareSeries(renderers: SeriesRenderers, context: SeriesPrepare
         const gpuEligible = isPrepareSeriesGpuDecimationEligible(s, rawDataForGpu, {
           hasStackGeometry: !!stackGeomLine,
           stepMode: lineStepMode,
+          hasNullGaps: gapScanCache?.hasNullGaps,
         });
 
         // Stacked mountain line: stroke at yTop; fill between yBottom and yTop (private pack).

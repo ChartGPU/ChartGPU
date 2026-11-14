@@ -28,9 +28,10 @@ export function isPrepareSeriesGpuDecimationEligible(
     readonly hasStackGeometry?: boolean;
     /** Resolved step mode from {@link resolveStepMode}; null = linear. */
     readonly stepMode?: StepMode | null;
+    readonly hasNullGaps?: (data: CoordinatorCartesianData) => boolean;
   }
 ): boolean {
   if (extras?.hasStackGeometry) return false;
   if (extras?.stepMode != null) return false;
-  return isGpuDecimationEligible(series, rawData);
+  return isGpuDecimationEligible(series, rawData, extras?.hasNullGaps);
 }
