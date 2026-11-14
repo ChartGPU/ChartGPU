@@ -1919,6 +1919,10 @@ export function createRenderCoordinator(
       didResample = true;
     }
 
+    if (didResample) {
+      sliceRenderSeriesDue = false;
+    }
+
     if ((didAppend || didResample) && requestRenderAfter) {
       requestRender();
     }
