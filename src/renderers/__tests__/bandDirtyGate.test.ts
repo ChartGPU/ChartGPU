@@ -172,7 +172,9 @@ describe('band dirty gate', () => {
     const t0 = 1_790_000_000_000;
     const xs = [t0, t0 + 1000, t0 + 2000];
     const data = { x: xs, y: [0, 0, 0], y1: [1, 1, 1] };
-    const xScale = createLinearScale().domain(t0, t0 + 2000).range(-1, 1);
+    const xScale = createLinearScale()
+      .domain(t0, t0 + 2000)
+      .range(-1, 1);
     const yScale = createLinearScale().domain(0, 1).range(-1, 1);
     const series = makeSeries({ data, rawData: data, lineStyle: { width: 1, opacity: 1, color: '#38bdf8' } });
     (writeUniformBuffer as ReturnType<typeof vi.fn>).mockClear();

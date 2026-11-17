@@ -111,10 +111,7 @@ export function isOHLCDataPoint(point: any): point is OHLCDataPoint {
  * domain values near the plot floor. Prefer the series `yAxis` id, then common
  * price ids, then the first scale as last resort.
  */
-function resolveCandlestickYScale(
-  yScales: Map<string, LinearScale>,
-  yAxisId?: string
-): LinearScale | undefined {
+function resolveCandlestickYScale(yScales: Map<string, LinearScale>, yAxisId?: string): LinearScale | undefined {
   if (yAxisId) {
     const byId = yScales.get(yAxisId);
     if (byId) return byId;

@@ -2745,11 +2745,7 @@ export function createRenderCoordinator(
       // sampling:'none' keeps the full raw series resident and lets the x-scale
       // select the viewport. Slicing again here scans and materializes streaming
       // rings after the zoom resample path has already preserved their identity.
-      if (
-        baseline.sampling === 'none' &&
-        baseline.type !== 'candlestick' &&
-        baseline.type !== 'ohlc'
-      ) {
+      if (baseline.sampling === 'none' && baseline.type !== 'candlestick' && baseline.type !== 'ohlc') {
         next[i] = baseline;
         continue;
       }
