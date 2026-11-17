@@ -239,8 +239,6 @@ describe('OptionResolver candlestick contentHash reuse', () => {
       [0, 1, 2, 0.5, 2.5],
       [1, 2, 1.5, 1, 2.2],
     ];
-    // Suppress one-time candlestick warning.
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const first = resolveOptions({
       series: [{ type: 'candlestick', data, sampling: 'none' }],
     });
@@ -258,7 +256,6 @@ describe('OptionResolver candlestick contentHash reuse', () => {
       (first.series[0] as { contentHash?: number }).contentHash
     );
     cheapSpy.mockRestore();
-    warnSpy.mockRestore();
   });
 });
 
