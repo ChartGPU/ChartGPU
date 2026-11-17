@@ -72,7 +72,9 @@ describe('item tooltip frame submission', () => {
     const getCurrentTexture = vi.fn(() => ({ createView: vi.fn(() => ({})) }));
     const canvasContext = { configure: vi.fn(), unconfigure: vi.fn(), getCurrentTexture };
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(((kind: string) =>
-      kind === 'webgpu' ? (canvasContext as unknown as GPUCanvasContext) : null) as typeof HTMLCanvasElement.prototype.getContext);
+      kind === 'webgpu'
+        ? (canvasContext as unknown as GPUCanvasContext)
+        : null) as typeof HTMLCanvasElement.prototype.getContext);
     vi.spyOn(HTMLCanvasElement.prototype, 'getBoundingClientRect').mockImplementation(
       () => new DOMRect(0, 0, 800, 600)
     );
@@ -89,8 +91,25 @@ describe('item tooltip frame submission', () => {
       gpu: { getPreferredCanvasFormat: vi.fn(() => 'bgra8unorm'), requestAdapter: vi.fn(async () => adapter) },
     });
     vi.stubGlobal('GPUShaderStage', { VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 });
-    vi.stubGlobal('GPUTextureUsage', { COPY_SRC: 1, COPY_DST: 2, TEXTURE_BINDING: 4, STORAGE_BINDING: 8, RENDER_ATTACHMENT: 16 });
-    vi.stubGlobal('GPUBufferUsage', { MAP_READ: 1, MAP_WRITE: 2, COPY_SRC: 4, COPY_DST: 8, INDEX: 16, VERTEX: 32, UNIFORM: 64, STORAGE: 128, INDIRECT: 256, QUERY_RESOLVE: 512 });
+    vi.stubGlobal('GPUTextureUsage', {
+      COPY_SRC: 1,
+      COPY_DST: 2,
+      TEXTURE_BINDING: 4,
+      STORAGE_BINDING: 8,
+      RENDER_ATTACHMENT: 16,
+    });
+    vi.stubGlobal('GPUBufferUsage', {
+      MAP_READ: 1,
+      MAP_WRITE: 2,
+      COPY_SRC: 4,
+      COPY_DST: 8,
+      INDEX: 16,
+      VERTEX: 32,
+      UNIFORM: 64,
+      STORAGE: 128,
+      INDIRECT: 256,
+      QUERY_RESOLVE: 512,
+    });
 
     const container = document.createElement('div');
     Object.defineProperty(container, 'clientWidth', { value: 800 });
@@ -107,7 +126,17 @@ describe('item tooltip frame submission', () => {
         xAxis: { min: 0, max: 3 },
         yAxis: { min: 0, max: 20 },
         tooltip: { show: true, trigger: 'item' },
-        series: [{ type: 'line', sampling: 'none', data: [[0, 10], [1, 10], [2, 10]] }],
+        series: [
+          {
+            type: 'line',
+            sampling: 'none',
+            data: [
+              [0, 10],
+              [1, 10],
+              [2, 10],
+            ],
+          },
+        ],
       },
       { adapter, device }
     );

@@ -1484,7 +1484,6 @@ function warnStepWithSamplingOnce(seriesIndex: number, sampling: SeriesSampling)
   );
 }
 
-let candlestickWarned = false;
 const warnedStackedAreaBaseline = new Set<number>();
 const warnStackedAreaBaselineIgnored = (seriesIndex: number): void => {
   if (warnedStackedAreaBaseline.has(seriesIndex)) return;
@@ -1548,13 +1547,6 @@ function applyStackedMountainBounds(series: ResolvedSeriesConfig[]): void {
     }
   }
 }
-
-const warnCandlestickNotImplemented = (): void => {
-  if (!candlestickWarned) {
-    console.warn('ChartGPU: Candlestick series rendering is not yet implemented. Series will be skipped.');
-    candlestickWarned = true;
-  }
-};
 
 /**
  * Optional reuse of a prior resolve result (P1-7).
@@ -2701,8 +2693,6 @@ export function resolveOptions(
               };
             }
             case 'candlestick': {
-              warnCandlestickNotImplemented();
-
               const resolvedSampling: 'none' | 'ohlc' =
                 normalizeCandlestickSampling((s as unknown as { sampling?: unknown }).sampling) ??
                 candlestickDefaults.sampling;
