@@ -167,7 +167,7 @@ import type { ZoomChangeSourceKind } from '../../ChartGPU';
 
 // Canonical pure helpers (one-way cutover — do not re-define below)
 import { getCanvasCssWidth, getCanvasCssHeight, getCanvasCssSizeFromDevicePixels } from './utils/canvasUtils';
-import { finiteOrNull, finiteOrUndefined, getPointXY } from './utils/dataPointUtils';
+import { finiteOrUndefined, getPointXY } from './utils/dataPointUtils';
 /* dataPointUtils cutover */
 import {
   computeGridArea,
@@ -3817,8 +3817,8 @@ export function createRenderCoordinator(
     let xTickValues: readonly number[] = [];
     if (currentOptions.xAxis.type === 'time') {
       const computed = computeAdaptiveTimeXAxisTicks({
-        axisMin: finiteOrNull(currentOptions.xAxis.min),
-        axisMax: finiteOrNull(currentOptions.xAxis.max),
+        axisMin: visibleXDomain.min,
+        axisMax: visibleXDomain.max,
         xScale,
         plotClipLeft: plotClipRect.left,
         plotClipRight: plotClipRect.right,
